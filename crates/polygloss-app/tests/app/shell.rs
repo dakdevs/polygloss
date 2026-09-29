@@ -5,6 +5,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 use futures::FutureExt as _;
 use gpui_kit::{Entity, SharedString, TestAppContext, VisualTestContext};
@@ -34,6 +35,12 @@ pub fn start(cx: &mut TestAppContext) -> Shell<'_> {
     let c = core.clone();
     let (window, main) = cx.update(|cx| {
         startup::init(c, cx);
+        // Tests never start a real editor (T3.16): `tests/app/editor.rs`
+        // installs a recording spawner; anything else fails loudly.
+        polygloss_app::editor::set_host(
+            polygloss_app::editor::EditorHost::new(Arc::new(NoEditors), || None),
+            cx,
+        );
         window::open_main_window(cx).expect("open the main window")
     });
     let vcx = VisualTestContext::from_window(window, cx).into_mut();
@@ -42,6 +49,15 @@ pub fn start(cx: &mut TestAppContext) -> Shell<'_> {
         core,
         main,
         cx: vcx,
+    }
+}
+
+/// The editor spawner of tests that did not install their own.
+struct NoEditors;
+
+impl polygloss_platform::editor::Spawner for NoEditors {
+    fn spawn(&self, argv: &[std::ffi::OsString]) -> std::io::Result<()> {
+        panic!("a test tried to start an editor: {argv:?}");
     }
 }
 
