@@ -247,10 +247,13 @@ fn not_a_blob(oid: &Oid, kind: gix::objs::Kind) -> ObjectError {
 /// Makes `<scratch>/info/alternates` exactly one entry: `repo_objects`. Written to
 /// a temp file and renamed, so concurrent snapshotters of one repo (which write the
 /// same content) never expose a torn file to git or gix.
-fn ensure_alternates(scratch_objects: &Path, repo_objects: &Path) -> std::io::Result<()> {
+pub(crate) fn ensure_alternates(
+    scratch_objects: &Path,
+    repo_objects: &Path,
+) -> std::io::Result<()> {
     let info = scratch_objects.join("info");
     let path = info.join("alternates");
-    let mut want = alternates_entry(repo_objects.as_os_str());
+    let mut want = c_quoted_line(repo_objects.as_os_str());
     want.push(b'\n');
     match std::fs::read(&path) {
         Ok(have) if have == want => return Ok(()),
@@ -278,10 +281,11 @@ fn ensure_alternates(scratch_objects: &Path, repo_objects: &Path) -> std::io::Re
     }
 }
 
-/// One `info/alternates` line. Plain unless the path has a control character or
-/// starts with `"`; then git's C-style quoting, which both git and gix unquote, so
-/// repo paths containing newlines still work.
-fn alternates_entry(path: &OsStr) -> Vec<u8> {
+/// One path per line for git (`info/alternates`, `hash-object --stdin-paths`). Plain
+/// unless the path has a control character or starts with `"`; then git's C-style
+/// quoting, which git (and gix, for alternates) unquote, so paths containing
+/// newlines still work.
+pub(crate) fn c_quoted_line(path: &OsStr) -> Vec<u8> {
     let bytes = path.as_bytes();
     let needs_quoting =
         bytes.first() == Some(&b'"') || bytes.iter().any(|&b| b < 0x20 || b == 0x7f);
@@ -306,21 +310,21 @@ fn alternates_entry(path: &OsStr) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::alternates_entry;
+    use super::c_quoted_line;
     use std::ffi::OsStr;
 
     #[test]
-    fn alternates_entry_plain_path_is_verbatim() {
+    fn c_quoted_line_plain_path_is_verbatim() {
         assert_eq!(
-            alternates_entry(OsStr::new("/repo with space/.git/objects")),
+            c_quoted_line(OsStr::new("/repo with space/.git/objects")),
             b"/repo with space/.git/objects"
         );
     }
 
     #[test]
-    fn alternates_entry_quotes_control_characters() {
+    fn c_quoted_line_quotes_control_characters() {
         assert_eq!(
-            alternates_entry(OsStr::new("/a\"b\nc\\d\te\x01/objects")),
+            c_quoted_line(OsStr::new("/a\"b\nc\\d\te\x01/objects")),
             b"\"/a\\\"b\\nc\\\\d\\te\\001/objects\""
         );
     }
