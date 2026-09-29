@@ -6634,6 +6634,7 @@ dependencies = [
  "polygloss-diff",
  "polygloss-highlight",
  "polygloss-viewport",
+ "tempfile",
 ]
 
 [[package]]

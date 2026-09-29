@@ -1,16 +1,20 @@
-//! Shared helpers for the viewport's GPUI tests: an in-memory `DiffProvider`,
-//! a window with a `DiffViewport` in it, and readers for what it painted.
+//! Shared helpers for the viewport's GPUI tests: a per-test sandbox, an
+//! in-memory `DiffProvider`, a window with a `DiffViewport` in it, and readers
+//! for what it painted.
 //!
-//! GPUI's test platform shapes text with a no-op text system: every char is
-//! `0.6 × font size` wide and the font is irrelevant, so geometry is exact.
+//! Every test starts with `let _sb = sandbox();` (plan "Test hygiene"; `open`
+//! checks it). GPUI's test platform shapes text with a no-op text system:
+//! every char is `0.6 × font size` wide and the font is irrelevant, so
+//! geometry is exact.
 
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use gpui_kit::{
     Entity, Hsla, Modifiers, Pixels, ScrollDelta, ScrollWheelEvent, Subscription, TestAppContext,
@@ -19,8 +23,8 @@ use gpui_kit::{
 use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid};
 use polygloss_highlight::{Appearance, pierre_theme};
 use polygloss_viewport::{
-    DiffProvider, DiffViewport, LayoutMode, ViewportDebug, ViewportEvent, ViewportOptions,
-    ViewportTheme,
+    DiffProvider, DiffViewport, FrameStats, LayoutMode, ViewportDebug, ViewportEvent,
+    ViewportOptions, ViewportTheme,
 };
 
 /// Code font size the tests use: one char is `0.6 × 13 = 7.8` px wide.
@@ -29,6 +33,62 @@ pub const ADVANCE: f32 = 0.6 * FONT_SIZE;
 /// Row height for `FONT_SIZE` (`round(13 × 1.5)`).
 pub const ROW_H: f32 = 20.0;
 pub const HEADER_H: f32 = 40.0;
+/// A one-label body (`Binary file`, `Large diff`, a load error): 2.4 rows.
+pub const PLACEHOLDER_H: f32 = 48.0;
+
+/// Set while a [`Sandbox`] is alive; `open` refuses to run without it.
+const SANDBOX_MARKER: &str = "POLYGLOSS_VIEWPORT_TEST_SANDBOX";
+
+/// A per-test temp `HOME`, data dir, config and cache dirs and an empty git
+/// config (plan "Test hygiene"). Keep it alive for the whole test; dropping it
+/// deletes the temp dir. Env is not restored (one process per test).
+pub struct Sandbox {
+    _root: tempfile::TempDir,
+    pub home: PathBuf,
+}
+
+/// Points `HOME`, `POLYGLOSS_DATA_DIR`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`
+/// and git's global config at a fresh temp dir. Call it first in every test:
+/// it sets **process** env, which is only sound because nextest runs every
+/// test in its own process.
+pub fn sandbox() -> Sandbox {
+    let root = tempfile::Builder::new()
+        .prefix("polygloss-viewport-test-")
+        .tempdir()
+        .expect("create sandbox temp dir");
+    let base = std::fs::canonicalize(root.path()).expect("canonicalize sandbox");
+    let home = base.join("home");
+    let data = base.join("data");
+    let config = home.join(".config");
+    let cache = home.join(".cache");
+    for dir in [&home, &data, &config, &cache] {
+        std::fs::create_dir_all(dir).expect("create sandbox dir");
+    }
+    let git_config = home.join(".gitconfig-empty");
+    std::fs::write(&git_config, "").expect("create empty git config");
+    // SAFETY: nextest runs each test in its own process and the sandbox is
+    // made first, before the test starts any thread that reads the env (the
+    // GPUI test platform runs everything on the test thread).
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::set_var("POLYGLOSS_DATA_DIR", &data);
+        std::env::set_var("XDG_CONFIG_HOME", &config);
+        std::env::set_var("XDG_CACHE_HOME", &cache);
+        std::env::set_var("GIT_CONFIG_GLOBAL", &git_config);
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        std::env::set_var(SANDBOX_MARKER, &home);
+    }
+    Sandbox { _root: root, home }
+}
+
+/// Panics unless the test made a [`Sandbox`] and `HOME` still points into it.
+pub fn assert_sandboxed() {
+    let marker = std::env::var_os(SANDBOX_MARKER);
+    assert!(
+        marker.is_some() && marker == std::env::var_os("HOME"),
+        "start the test with `let _sb = sandbox();` (plan \"Test hygiene\")"
+    );
+}
 
 /// One file of a synthetic diff. `None` sides are absent (added or deleted).
 pub struct Spec {
@@ -71,10 +131,12 @@ impl Spec {
     }
 }
 
-/// An in-memory `DiffProvider` that counts blob loads.
+/// An in-memory `DiffProvider` that counts blob loads and can fail them.
 pub struct MemProvider {
     files: Arc<Vec<FileChange>>,
     blobs: HashMap<String, Arc<[u8]>>,
+    /// Blobs that fail to load (see [`MemProvider::set_broken`]).
+    broken: Mutex<HashSet<String>>,
     pub loads: AtomicUsize,
 }
 
@@ -126,12 +188,37 @@ impl MemProvider {
         Arc::new(MemProvider {
             files: Arc::new(files),
             blobs,
+            broken: Mutex::new(HashSet::new()),
             loads: AtomicUsize::new(0),
         })
     }
 
     pub fn load_count(&self) -> usize {
         self.loads.load(Ordering::SeqCst)
+    }
+
+    /// Makes loading file `idx`'s blobs fail (like objects missing from a
+    /// shallow clone), or succeed again.
+    pub fn set_broken(&self, idx: usize, broken: bool) {
+        let change = &self.files[idx];
+        let mut set = self.broken.lock().unwrap();
+        for oid in [&change.old_blob, &change.new_blob] {
+            if oid.is_zero() {
+                continue;
+            }
+            if broken {
+                set.insert(oid.as_str().to_owned());
+            } else {
+                set.remove(oid.as_str());
+            }
+        }
+    }
+
+    fn check(&self, oid: &Oid) -> anyhow::Result<()> {
+        if self.broken.lock().unwrap().contains(oid.as_str()) {
+            anyhow::bail!("object {} is missing", oid.short());
+        }
+        Ok(())
     }
 }
 
@@ -146,6 +233,7 @@ impl DiffProvider for MemProvider {
 
     fn load_blob(&self, oid: &Oid) -> anyhow::Result<Arc<[u8]>> {
         self.loads.fetch_add(1, Ordering::SeqCst);
+        self.check(oid)?;
         self.blobs
             .get(oid.as_str())
             .cloned()
@@ -153,6 +241,7 @@ impl DiffProvider for MemProvider {
     }
 
     fn blob_size(&self, oid: &Oid) -> anyhow::Result<u64> {
+        self.check(oid)?;
         self.blobs
             .get(oid.as_str())
             .map(|b| b.len() as u64)
@@ -184,6 +273,7 @@ pub fn open(
     width: f32,
     height: f32,
 ) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+    assert_sandboxed();
     let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
         DiffViewport::new(provider as Arc<dyn DiffProvider>, opts, window, cx)
     });
@@ -200,6 +290,12 @@ pub fn settle(cx: &mut VisualTestContext) {
         cx.update(|window, _| window.refresh());
     }
     cx.run_until_parked();
+}
+
+/// Draws one frame without running background work (loads and highlights
+/// started by it stay pending).
+pub fn redraw(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.refresh());
 }
 
 pub fn debug(view: &Entity<DiffViewport>, cx: &mut VisualTestContext) -> ViewportDebug {
@@ -243,6 +339,56 @@ pub fn record_events(
         })
     });
     (events, sub)
+}
+
+/// The stats of the last frame among recorded `events`.
+pub fn last_stats(events: &Rc<RefCell<Vec<ViewportEvent>>>) -> FrameStats {
+    events
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            ViewportEvent::FrameStats(s) => Some(*s),
+            _ => None,
+        })
+        .expect("a frame was painted")
+}
+
+/// Every recorded frame's stats, in order.
+pub fn all_stats(events: &Rc<RefCell<Vec<ViewportEvent>>>) -> Vec<FrameStats> {
+    events
+        .borrow()
+        .iter()
+        .filter_map(|e| match e {
+            ViewportEvent::FrameStats(s) => Some(*s),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Text painted within visible row `i` of `d` as `(x, text)`, left to right
+/// (x relative to the viewport's left edge).
+pub fn texts_in_row(d: &ViewportDebug, i: usize) -> Vec<(f32, String)> {
+    let (top, height) = d.row_bounds[i];
+    let mut texts: Vec<(f32, String)> = d
+        .painted_text
+        .iter()
+        .filter(|(_, y, _)| *y >= top && *y < top + height)
+        .map(|(x, _, t)| (*x, t.clone()))
+        .collect();
+    texts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    texts
+}
+
+/// Asserts that `actual` (from [`texts_in_row`]) is `expected`, x within
+/// 0.01 px.
+pub fn assert_texts(actual: &[(f32, String)], expected: &[(f32, &str)]) {
+    let same = actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(a, e)| (a.0 - e.0).abs() < 0.01 && a.1 == e.1);
+    assert!(same, "painted {actual:?}, expected {expected:?}");
 }
 
 /// Solid quads of the last frame as `(x, y, width, height, color)` in

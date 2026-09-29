@@ -5,6 +5,10 @@
 //! text), the pair index behind `words`, the token fields and
 //! [`MaterializedFile::load`]. T2.6 owns this module and turns the loading
 //! into the prioritized, cancellable pipeline.
+//!
+//! Everything but the tokens sits behind an `Arc`, so a new version of a file
+//! (tokens swapped in or dropped) shares the diff, rows, word ranges and
+//! blobs of the old one instead of copying them on the main thread.
 
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
@@ -21,24 +25,26 @@ use crate::provider::DiffProvider;
 /// One file's diff with both blobs, its rows (per layout, built on first use),
 /// word ranges for paired lines and, once highlighted, syntax tokens.
 /// Immutable once shared; a new version (e.g. with tokens) replaces the whole
-/// `Arc`.
+/// `Arc` and shares everything but the tokens with the old one.
 #[derive(Debug)]
 pub struct MaterializedFile {
-    pub diff: FileDiff,
-    pub rows_split: OnceLock<Vec<Row>>,
-    pub rows_unified: OnceLock<Vec<Row>>,
+    pub diff: Arc<FileDiff>,
+    /// Rows per layout, built on first use and shared by every version.
+    pub rows_split: Arc<OnceLock<Vec<Row>>>,
+    pub rows_unified: Arc<OnceLock<Vec<Row>>>,
     /// Word ranges of `pairs[i]`, or empty when word diff is off. `None` for
     /// a pair with a line over the word-diff limit.
-    pub words: Vec<Option<WordRanges>>,
+    pub words: Arc<[Option<WordRanges>]>,
     /// Every paired line (GitHub-style pairing, `pair_lines` of each change
     /// block) in file order; old and new lines both strictly increase.
-    pub pairs: Vec<LinePair>,
+    pub pairs: Arc<[LinePair]>,
     /// The blobs the diff was computed from (empty for a missing side).
     pub old_text: Arc<[u8]>,
     pub new_text: Arc<[u8]>,
     pub old_tokens: Option<Arc<Tokens>>,
     pub new_tokens: Option<Arc<Tokens>>,
-    /// Approximate heap size, for the document's eviction budget.
+    /// Approximate heap size of the data and tokens, without the rows (built
+    /// on demand; [`MaterializedFile::resident_bytes`] adds them).
     pub heap_bytes: usize,
 }
 
@@ -71,14 +77,15 @@ impl MaterializedFile {
         MaterializedFile::assemble(diff, words, pairs, old, new)
     }
 
-    /// Reads `change`'s blobs from `provider` and builds the file, with its
-    /// rows for `layout` ready. Runs on the background executor.
+    /// Reads `change`'s blobs from `provider` and builds the file (no rows
+    /// yet: the caller builds the ones it will show with
+    /// [`MaterializedFile::rows`], still in the background). Runs on the
+    /// background executor.
     pub fn load(
         provider: &dyn DiffProvider,
         change: &FileChange,
         opts: &DiffOptions,
         word_diff: Option<Granularity>,
-        layout: Layout,
     ) -> anyhow::Result<MaterializedFile> {
         let read = |oid: &polygloss_diff::Oid| -> anyhow::Result<Arc<[u8]>> {
             if oid.is_zero() {
@@ -89,9 +96,7 @@ impl MaterializedFile {
         };
         let old = read(&change.old_blob)?;
         let new = read(&change.new_blob)?;
-        let file = MaterializedFile::from_blobs(old, new, opts, word_diff);
-        file.rows(layout);
-        Ok(file)
+        Ok(MaterializedFile::from_blobs(old, new, opts, word_diff))
     }
 
     fn assemble(
@@ -107,17 +112,27 @@ impl MaterializedFile {
             + old_text.len()
             + new_text.len();
         MaterializedFile {
-            diff,
-            rows_split: OnceLock::new(),
-            rows_unified: OnceLock::new(),
-            words,
-            pairs,
+            diff: Arc::new(diff),
+            rows_split: Arc::default(),
+            rows_unified: Arc::default(),
+            words: words.into(),
+            pairs: pairs.into(),
             old_text,
             new_text,
             old_tokens: None,
             new_tokens: None,
             heap_bytes,
         }
+    }
+
+    /// Heap bytes held for the eviction budget: [`MaterializedFile::heap_bytes`]
+    /// plus the rows built so far.
+    pub fn resident_bytes(&self) -> usize {
+        let rows = |cell: &OnceLock<Vec<Row>>| {
+            cell.get()
+                .map_or(0, |rows| rows.capacity() * size_of::<Row>())
+        };
+        self.heap_bytes + rows(&self.rows_split) + rows(&self.rows_unified)
     }
 
     /// The rows of `layout` with nothing expanded, built on first use.
@@ -160,7 +175,8 @@ impl MaterializedFile {
         }
     }
 
-    /// A copy with `old`/`new` tokens (rows already built are kept).
+    /// A new version with `old`/`new` tokens that shares everything else
+    /// (rows included, also those built later) with this one: O(1), no copy.
     pub fn with_tokens(
         &self,
         old: Option<Arc<Tokens>>,

@@ -32,13 +32,17 @@ use crate::layout::{Columns, Geometry, LayoutMode, Pane, digits, resolve_layout,
 use crate::materialize::MaterializedFile;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::DebugRow;
-use crate::paint_rows::{Frame, Painter, special_label};
+use crate::paint_rows::{Frame, Painter, failed_label, special_label};
 use crate::provider::DiffProvider;
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{TEXT_CACHE_CAPACITY, TextCache};
 
 /// Font used when the configured code font is not installed.
 const FALLBACK_CODE_FONT: &str = "Menlo";
+
+/// Times a frame is built at most while wrapped rows are measured (each pass
+/// fixes the heights of the rows the previous one found mis-estimated).
+const WRAP_PASSES: usize = 3;
 
 /// Everything that configures a viewport. Changing it with
 /// [`DiffViewport::set_options`] keeps the scroll anchor.
@@ -177,6 +181,8 @@ pub struct DiffViewport {
     top_file: u32,
     #[cfg(feature = "debug-inspect")]
     debug_rows: Vec<DebugRow>,
+    #[cfg(feature = "debug-inspect")]
+    debug_text: Vec<(f32, f32, std::rc::Rc<crate::text_cache::ShapedText>)>,
 }
 
 impl EventEmitter<ViewportEvent> for DiffViewport {}
@@ -228,6 +234,8 @@ impl DiffViewport {
             top_file: 0,
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
+            #[cfg(feature = "debug-inspect")]
+            debug_text: Vec::new(),
         }
     }
 
@@ -335,6 +343,11 @@ impl DiffViewport {
             shaped_cache_misses: self.text_cache.misses,
             row_bounds,
             styled_rows,
+            painted_text: self
+                .debug_text
+                .iter()
+                .map(|(x, y, t)| (*x, *y, t.text().to_owned()))
+                .collect(),
         }
     }
 
@@ -360,10 +373,14 @@ impl DiffViewport {
 
         let scale = f64::from(window.scale_factor().max(1.0));
         let mut frame = self.frame_pool.take().unwrap_or_default();
-        for pass in 0..3 {
+        let misses = self.text_cache.misses;
+        for pass in 0..WRAP_PASSES {
             frame.clear();
             #[cfg(feature = "debug-inspect")]
-            self.debug_rows.clear();
+            {
+                self.debug_rows.clear();
+                self.debug_text.clear();
+            }
             let mut painter = Painter {
                 doc: &self.doc,
                 files: &self.files,
@@ -384,10 +401,12 @@ impl DiffViewport {
                 corrections: Vec::new(),
                 #[cfg(feature = "debug-inspect")]
                 debug: &mut self.debug_rows,
+                #[cfg(feature = "debug-inspect")]
+                debug_text: &mut self.debug_text,
             };
             painter.paint_visible();
             let corrections = painter.corrections;
-            if corrections.is_empty() || pass == 2 {
+            if corrections.is_empty() {
                 break;
             }
             // Wrapped rows measured taller or shorter than estimated: fix the
@@ -395,7 +414,16 @@ impl DiffViewport {
             for (f, row, h) in corrections {
                 self.doc.set_row_height(f, row, h);
             }
+            if pass + 1 == WRAP_PASSES {
+                // Out of passes: this frame shows the old heights, the next
+                // one the fixed ones (and measures whatever they reveal).
+                let view = cx.entity_id();
+                window.on_next_frame(move |_, cx| cx.notify(view));
+            }
         }
+        // Every pass's cache misses: lines shaped by a pass that was then
+        // rebuilt were still shaped this frame.
+        frame.shaped = (self.text_cache.misses - misses) as u32;
         frame
     }
 
@@ -497,8 +525,15 @@ impl DiffViewport {
         if !needs_blobs(change) {
             return Some(FileLayout::new(Vec::new(), &[]));
         }
-        let FileState::Materialized(file) = self.doc.state(f) else {
-            return None;
+        let file = match self.doc.state(f) {
+            FileState::Materialized(file) => file,
+            // The error replaces whatever the file showed before (rows kept
+            // while it reloaded, or an estimate).
+            FileState::Failed(msg) => {
+                self.labels[f as usize] = Some(failed_label(msg).into());
+                return Some(FileLayout::placeholder(metrics.placeholder_height));
+            }
+            _ => return None,
         };
         let changed = file.diff.additions + file.diff.deletions;
         if changed > key.large_file_changed_lines {
@@ -520,10 +555,17 @@ impl DiffViewport {
         let provider = self.provider.clone();
         let change = self.files[f as usize].clone();
         let (diff, words, layout) = (self.opts.diff, self.opts.word_diff, self.layout);
+        let large = self.opts.large_file_changed_lines;
         let task = cx.spawn(async move |this, cx| {
             let built = cx
                 .background_spawn(async move {
-                    MaterializedFile::load(&*provider, &change, &diff, words, layout)
+                    let file = MaterializedFile::load(&*provider, &change, &diff, words)?;
+                    // Build the rows it will show here, off the main thread; a
+                    // large diff shows a placeholder and needs none.
+                    if file.diff.additions + file.diff.deletions <= large {
+                        file.rows(layout);
+                    }
+                    Ok(file)
                 })
                 .await;
             this.update(cx, |v, cx| v.finish_load(f, generation, built, cx))
@@ -565,6 +607,8 @@ impl DiffViewport {
                 if !self.doc.set_failed(f, generation, format!("{e:#}")) {
                     return;
                 }
+                // Lay the error out on the next frame.
+                self.layout_keys[f as usize] = None;
             }
         }
         cx.notify();
@@ -642,7 +686,9 @@ impl DiffViewport {
 
     /// Recomputes every loaded file (diff or word-diff options changed):
     /// files go back to unloaded (keeping their heights) and reload when near
-    /// the viewport.
+    /// the viewport. Failed files are retried. Until a file's new data
+    /// arrives its rows stay in place, blank, and a placeholder shows
+    /// "Loading…" instead of its stale label (an error, a large-diff count).
     fn reload_all(&mut self) {
         self.loads.clear();
         self.highlights.clear();
@@ -653,6 +699,7 @@ impl DiffViewport {
             ) {
                 self.doc.begin_loading(f);
                 self.doc.cancel_loading(f);
+                self.labels[f as usize] = None;
             }
         }
     }
@@ -693,18 +740,23 @@ fn highlight_side(
 
 /// The code font (the configured family, or Menlo when it is missing) and its
 /// geometry.
+///
+/// Resolving a font falls back to GPUI's default stack when the family is not
+/// installed; the family the result belongs to tells which happened. This is
+/// on the first-paint path, so it resolves one font instead of listing every
+/// installed family.
 fn resolve_font(opts: &ViewportOptions, window: &Window) -> (Font, Geometry) {
     let text_system = window.text_system();
-    let family = if text_system
-        .all_font_names()
-        .iter()
-        .any(|name| **name == *opts.code_font)
-    {
-        opts.code_font.clone()
+    let wanted = font(opts.code_font.clone());
+    let wanted_id = text_system.resolve_font(&wanted);
+    let installed = text_system
+        .get_font_for_id(wanted_id)
+        .is_some_and(|resolved| resolved.family == wanted.family);
+    let code = if installed {
+        wanted
     } else {
-        SharedString::new_static(FALLBACK_CODE_FONT)
+        font(FALLBACK_CODE_FONT)
     };
-    let code = font(family);
     let font_id = text_system.resolve_font(&code);
     let size = opts.code_font_size.max(1.0);
     let advance = text_system

@@ -8,7 +8,8 @@ use gpui_kit::TestAppContext;
 use polygloss_diff::Side;
 use polygloss_diff::rows::Layout;
 use polygloss_viewport::{
-    DiffStyle, Indicators, LayoutMode, RowKey, ScrollAnchor, ScrollTarget, ViewportEvent,
+    DiffStyle, DiffViewport, FileState, Indicators, LayoutMode, RowKey, ScrollAnchor, ScrollTarget,
+    ViewportEvent,
 };
 
 use crate::support::*;
@@ -29,6 +30,7 @@ fn one_change() -> Spec {
 
 #[gpui_kit::test]
 fn viewport_renders_first_rows_of_synthetic_diff(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![one_change(), Spec::added("src/b.rs", "fn b() {}\n")]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 600.);
     let d = debug(&view, cx);
@@ -58,6 +60,7 @@ fn viewport_renders_first_rows_of_synthetic_diff(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn viewport_unified_has_two_line_number_columns(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     // An insertion above shifts the new numbering: context rows show both.
     let provider = MemProvider::new(vec![Spec::modified(
         "src/a.rs",
@@ -76,10 +79,29 @@ fn viewport_unified_has_two_line_number_columns(cx: &mut TestAppContext) {
             unified(Some(3), Some(4), ' ', "c"),
         ]
     );
+    // What the gutter painted, and where: two number columns of 4 advances
+    // (3 digits + 1) with numbers right-aligned half an advance from their
+    // edge, then the 2-advance indicator column, then the code.
+    let old_x = 4.0 * ADVANCE - 0.5 * ADVANCE - ADVANCE;
+    let new_x = 8.0 * ADVANCE - 0.5 * ADVANCE - ADVANCE;
+    let (marker_x, code_x) = (8.5 * ADVANCE, 10.0 * ADVANCE);
+    assert_texts(
+        &texts_in_row(&d, 1),
+        &[(old_x, "1"), (new_x, "1"), (code_x, "a")],
+    );
+    assert_texts(
+        &texts_in_row(&d, 2),
+        &[(new_x, "2"), (marker_x, "+"), (code_x, "X")],
+    );
+    assert_texts(
+        &texts_in_row(&d, 3),
+        &[(old_x, "2"), (new_x, "3"), (code_x, "b")],
+    );
 }
 
 #[gpui_kit::test]
 fn viewport_split_left_old_right_new(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![
         one_change(),
         Spec::modified("src/c.rs", "a\nb\n", "a\nX\nb\n"),
@@ -109,6 +131,38 @@ fn viewport_split_left_old_right_new(cx: &mut TestAppContext) {
             split(Some((2, ' ', "b")), Some((3, ' ', "b"))),
         ]
     );
+    // Old text is painted in the left half and new text in the right one
+    // (which starts at 500): per half a 4-advance number column, a 2-advance
+    // indicator column, then the code.
+    let (num_x, marker_x, code_x) = (2.5 * ADVANCE, 4.5 * ADVANCE, 6.0 * ADVANCE);
+    assert_texts(
+        &texts_in_row(&d, 5),
+        &[
+            (num_x, "5"),
+            (marker_x, "-"),
+            (code_x, "line 4"),
+            (500.0 + num_x, "5"),
+            (500.0 + marker_x, "+"),
+            (500.0 + code_x, "LINE 4"),
+        ],
+    );
+    assert_texts(
+        &texts_in_row(&d, 12),
+        &[
+            (500.0 + num_x, "2"),
+            (500.0 + marker_x, "+"),
+            (500.0 + code_x, "X"),
+        ],
+    );
+    assert_texts(
+        &texts_in_row(&d, 13),
+        &[
+            (num_x, "2"),
+            (code_x, "b"),
+            (500.0 + num_x, "3"),
+            (500.0 + code_x, "b"),
+        ],
+    );
     // Removed backgrounds sit in the left half, added ones in the right half.
     let removed = quads_of(cx, theme.removed_background);
     let added = quads_of(cx, theme.added_background);
@@ -128,6 +182,7 @@ fn viewport_split_left_old_right_new(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn viewport_auto_layout_switches_at_160_columns_with_hysteresis(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     // 160 columns of 7.8 px = 1248 px; switching back needs ±8 columns.
     let provider = MemProvider::new(vec![one_change()]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Auto), 1300., 400.);
@@ -152,6 +207,7 @@ fn viewport_auto_layout_switches_at_160_columns_with_hysteresis(cx: &mut TestApp
 
 #[gpui_kit::test]
 fn viewport_auto_layout_starts_unified_below_160_columns(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![one_change()]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Auto), 1240., 400.); // 159 cols
     assert_eq!(
@@ -162,6 +218,7 @@ fn viewport_auto_layout_starts_unified_below_160_columns(cx: &mut TestAppContext
 
 #[gpui_kit::test]
 fn viewport_scroll_updates_anchor(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let a = numbered("a", 30).concat();
     let b = numbered("b", 20).concat();
     let provider = MemProvider::new(vec![Spec::added("a.rs", &a), Spec::added("b.rs", &b)]);
@@ -228,6 +285,7 @@ fn viewport_scroll_updates_anchor(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn viewport_scroll_to_line_puts_it_at_top(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let a = numbered("a", 30).concat();
     let b = numbered("b", 60).concat();
     let provider = MemProvider::new(vec![Spec::added("a.rs", &a), Spec::added("b.rs", &b)]);
@@ -262,6 +320,7 @@ fn viewport_scroll_to_line_puts_it_at_top(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn viewport_plain_text_then_tokens_same_geometry(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let src = "fn main() {\n    let x = 1;\n    println!(\"{x}\");\n}\n";
     let provider = MemProvider::new(vec![Spec::added("src/main.rs", src)]);
     let mut opts = options(LayoutMode::Split);
@@ -281,6 +340,7 @@ fn viewport_plain_text_then_tokens_same_geometry(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn shaped_line_cache_hits_on_rescroll(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let src = numbered("row", 400).concat();
     let provider = MemProvider::new(vec![Spec::added("a.txt", &src)]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 400.);
@@ -308,6 +368,7 @@ fn shaped_line_cache_hits_on_rescroll(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn word_ranges_painted_on_paired_lines(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![Spec::modified(
         "src/a.rs",
         "let value = 1;\n",
@@ -335,6 +396,7 @@ fn word_ranges_painted_on_paired_lines(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn word_diff_off_paints_no_highlights(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![Spec::modified("a", "x = 1\n", "x = 2\n")]);
     let mut opts = options(LayoutMode::Split);
     opts.word_diff = None;
@@ -346,6 +408,7 @@ fn word_diff_off_paints_no_highlights(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn diff_style_bars_and_no_backgrounds(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![one_change()]);
     let opts = options(LayoutMode::Unified);
     let theme = opts.theme.clone();
@@ -386,6 +449,7 @@ fn diff_style_bars_and_no_backgrounds(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn wrap_on_wraps_long_lines_and_keeps_anchor(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let long = "word ".repeat(80); // 400 chars
     let tail: Vec<String> = numbered("tail", 40);
     let old = format!("a\nshort\nc\n{}", tail.concat());
@@ -451,6 +515,7 @@ fn wrap_on_wraps_long_lines_and_keeps_anchor(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn special_files_render_without_loading_blobs(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![
         Spec::binary("img.png"),
         Spec::modified("a.rs", "a\n", "b\n"),
@@ -472,6 +537,7 @@ fn special_files_render_without_loading_blobs(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn display_text_expands_tabs_and_hides_carriage_returns(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![Spec::added("a.go", "\tx := 1\r\nab\tc\n\u{1b}[0m\n")]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 400.);
     let d = debug(&view, cx);
@@ -487,6 +553,7 @@ fn display_text_expands_tabs_and_hides_carriage_returns(cx: &mut TestAppContext)
 
 #[gpui_kit::test]
 fn long_lines_are_cut_when_not_wrapping(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let huge = "x".repeat(200_000);
     let provider = MemProvider::new(vec![Spec::added("min.js", &format!("{huge}\n"))]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 400.);
@@ -498,6 +565,7 @@ fn long_lines_are_cut_when_not_wrapping(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn frame_stats_are_emitted_per_frame(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     let provider = MemProvider::new(vec![one_change()]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 400.);
     let (events, _sub) = record_events(&view, cx);
@@ -516,6 +584,7 @@ fn frame_stats_are_emitted_per_frame(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn theme_change_repaints_with_new_colors(cx: &mut TestAppContext) {
+    let _sb = sandbox();
     use polygloss_highlight::{Appearance, pierre_theme};
     use polygloss_viewport::ViewportTheme;
     let provider = MemProvider::new(vec![one_change()]);
@@ -529,6 +598,7 @@ fn theme_change_repaints_with_new_colors(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn frame_stats_count_loading_and_unhighlighted_rows(cx: &mut TestAppContext) {
     use gpui_kit::{VisualTestContext, px, size};
+    let _sb = sandbox();
     let src = "fn main() {\n    let x = 1;\n}\n";
     let provider = MemProvider::new(vec![Spec::added("src/main.rs", src)]);
     let mut opts = options(LayoutMode::Unified);
@@ -539,20 +609,9 @@ fn frame_stats_count_loading_and_unhighlighted_rows(cx: &mut TestAppContext) {
     let view = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(*window, cx).into_mut();
     let (events, _sub) = record_events(&view, cx);
-    let last_stats = |events: &std::rc::Rc<std::cell::RefCell<Vec<ViewportEvent>>>| {
-        events
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|e| match e {
-                ViewportEvent::FrameStats(s) => Some(*s),
-                _ => None,
-            })
-            .expect("a frame was painted")
-    };
 
     // Nothing has loaded yet: the body is a "Loading…" row.
-    cx.update(|window, _| window.refresh());
+    redraw(cx);
     assert_eq!(
         debug(&view, cx).visible_rows,
         ["== src/main.rs", "Loading…"]
@@ -571,10 +630,140 @@ fn frame_stats_count_loading_and_unhighlighted_rows(cx: &mut TestAppContext) {
         o.syntax = true;
         v.set_options(o, cx)
     });
-    cx.update(|window, _| window.refresh());
+    redraw(cx);
     assert_eq!(last_stats(&events).unhighlighted_rows, 3);
     settle(cx);
     let stats = last_stats(&events);
     assert_eq!((stats.loading_rows, stats.unhighlighted_rows), (0, 0));
     assert_eq!(debug(&view, cx).styled_rows, 3);
+}
+
+/// The error label a file whose blobs could not be read shows.
+fn assert_load_error(row: &str) {
+    assert!(
+        row.starts_with("Could not load this file: ") && row.contains("is missing"),
+        "{row}"
+    );
+}
+
+#[gpui_kit::test]
+fn failed_load_shows_error_and_is_not_counted_as_loading(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![one_change(), Spec::added("src/b.rs", "fn b() {}\n")]);
+    provider.set_broken(0, true);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 600.);
+    let (events, _sub) = record_events(&view, cx);
+    redraw(cx);
+
+    let d = debug(&view, cx);
+    assert_eq!(d.visible_rows.len(), 4, "{:?}", d.visible_rows);
+    assert_eq!(d.visible_rows[0], "== src/a.rs");
+    assert_load_error(&d.visible_rows[1]);
+    assert_eq!(
+        d.visible_rows[2..],
+        [
+            "== src/b.rs".to_owned(),
+            unified(None, Some(1), '+', "fn b() {}")
+        ]
+    );
+    // The error is a one-label body of exact height, not an estimate.
+    assert_eq!(d.row_bounds[1], (HEADER_H, PLACEHOLDER_H));
+    assert_eq!(d.row_bounds[2].0, HEADER_H + PLACEHOLDER_H);
+    assert!(view.read_with(cx, |v, _| v.document().is_exact(0)));
+    // Nothing is loading any more: first paint is over.
+    let stats = last_stats(&events);
+    assert_eq!((stats.loading_rows, stats.unhighlighted_rows), (0, 0));
+}
+
+#[gpui_kit::test]
+fn failed_reload_replaces_stale_rows_with_error(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![one_change()]);
+    let (view, cx) = open(
+        cx,
+        provider.clone(),
+        options(LayoutMode::Unified),
+        1000.,
+        600.,
+    );
+    let loaded = debug(&view, cx).visible_rows;
+    assert_eq!(loaded.len(), 11, "{loaded:?}");
+    let (events, _sub) = record_events(&view, cx);
+
+    // A diff option change reloads the file, and the reload fails: the old
+    // rows give way to the error.
+    provider.set_broken(0, true);
+    set_options(&view, cx, |o| o.diff.ignore_whitespace = true);
+    let d = debug(&view, cx);
+    assert_eq!(d.visible_rows.len(), 2, "{:?}", d.visible_rows);
+    assert_load_error(&d.visible_rows[1]);
+    assert_eq!(d.row_bounds[1], (HEADER_H, PLACEHOLDER_H));
+    let stats = last_stats(&events);
+    assert_eq!((stats.loading_rows, stats.unhighlighted_rows), (0, 0));
+
+    // The next reload retries: "Loading…" (counted) instead of the stale
+    // error until the rows are back.
+    provider.set_broken(0, false);
+    view.update(cx, |v: &mut DiffViewport, cx| {
+        let mut o = v.options().clone();
+        o.diff.ignore_whitespace = false;
+        v.set_options(o, cx)
+    });
+    redraw(cx);
+    assert_eq!(debug(&view, cx).visible_rows, ["== src/a.rs", "Loading…"]);
+    assert_eq!(last_stats(&events).loading_rows, 1);
+    settle(cx);
+    assert_eq!(debug(&view, cx).visible_rows, loaded);
+    let stats = last_stats(&events);
+    assert_eq!((stats.loading_rows, stats.unhighlighted_rows), (0, 0));
+}
+
+#[gpui_kit::test]
+fn large_file_placeholder_keeps_no_rows(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let old = numbered("line", 10);
+    let new = numbered("LINE", 10);
+    let provider = MemProvider::new(vec![Spec::modified("big.rs", &old.concat(), &new.concat())]);
+    let mut opts = options(LayoutMode::Unified);
+    opts.large_file_changed_lines = 5;
+    let (view, cx) = open(cx, provider, opts, 1000., 600.);
+    assert_eq!(
+        debug(&view, cx).visible_rows,
+        ["== big.rs", "Large diff · 20 changed lines"]
+    );
+    // Only the placeholder shows: no rows were built for either layout.
+    let built = view.read_with(cx, |v, _| match v.document().state(0) {
+        FileState::Materialized(f) => {
+            (f.rows_split.get().is_some(), f.rows_unified.get().is_some())
+        }
+        other => panic!("{other:?}"),
+    });
+    assert_eq!(built, (false, false));
+}
+
+#[gpui_kit::test]
+fn frame_stats_shaped_lines_add_up_across_wrap_passes(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Ten 40-char words per line: at 117 columns wrapping at word boundaries
+    // needs 5 rows where the estimate says 4, so the first wrapped frame is
+    // measured and built again.
+    let line = format!("{} ", "w".repeat(39)).repeat(10);
+    let src: String = (0..20).map(|_| format!("{line}\n")).collect();
+    let provider = MemProvider::new(vec![Spec::added("a.txt", &src)]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 600.);
+    let before = debug(&view, cx).shaped_cache_misses;
+    let (events, _sub) = record_events(&view, cx);
+
+    set_options(&view, cx, |o| o.style.wrap = true);
+    let row_h = view.read_with(cx, |v, _| {
+        v.document().file_layout(0).unwrap().row_height(0)
+    });
+    assert_eq!(row_h, 5.0 * ROW_H, "the row was measured");
+    let shaped: u64 = all_stats(&events)
+        .iter()
+        .map(|s| u64::from(s.shaped_lines))
+        .sum();
+    let misses = debug(&view, cx).shaped_cache_misses - before;
+    assert!(misses > 0);
+    assert_eq!(shaped, misses, "every line shaped is reported once");
 }

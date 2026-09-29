@@ -36,6 +36,11 @@ pub struct ViewportDebug {
     pub row_bounds: Vec<(f32, f32)>,
     /// Code rows painted with syntax tokens.
     pub styled_rows: u32,
+    /// Every text run painted (line numbers, markers, code, labels) as
+    /// `(x, y, text)`, its top-left corner relative to the viewport's, in
+    /// paint order. Unlike `visible_rows`, which is built from row data, this
+    /// is what the gutter and the panes actually drew, and where.
+    pub painted_text: Vec<(f32, f32, String)>,
 }
 
 #[cfg(feature = "debug-inspect")]
