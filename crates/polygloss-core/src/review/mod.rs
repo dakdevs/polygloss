@@ -19,7 +19,7 @@ pub use open::Core;
 pub use sessions::{AssignedBy, SessionInfo};
 pub use submit::{Submission, Verdict};
 pub use suggestions::parse_suggestions;
-pub use summary::{ReviewFilter, ReviewSummary, SubmissionSummary, SummaryCursor};
+pub use summary::{RecentRepo, ReviewFilter, ReviewSummary, SubmissionSummary, SummaryCursor};
 pub use threads::{
     AGENT_THREAD_CAP, Author, AuthorKind, CommentView, DeletedComment, NewThread, ResolvedBy,
     Subject, ThreadAnchor, ThreadFilter, ThreadKind, ThreadScope, ThreadStatus, ThreadView, Viewer,

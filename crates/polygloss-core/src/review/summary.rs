@@ -258,6 +258,56 @@ fn read_summary(r: &Row) -> Result<ReviewSummary, StoreError> {
     })
 }
 
+/// A repo Polygloss has opened (a `repos` row), for the open flow's recent
+/// repos (design §11.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentRepo {
+    /// The repo identity (design §4.3).
+    pub common_dir: PathBuf,
+    /// Its main worktree (the common dir without `.git`), or the common dir of a
+    /// bare repo.
+    pub path: PathBuf,
+    /// `repos.display_name`.
+    pub display_name: String,
+    /// Unix ms of the last open.
+    pub last_opened_at: i64,
+}
+
+impl Core {
+    /// The `limit` most recently opened repos, most recent first. Repos whose
+    /// directory is gone are listed too; the caller decides what to show.
+    pub fn recent_repos(&self, limit: u32) -> Result<Vec<RecentRepo>, CoreError> {
+        let rows = self.store.read(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT common_dir, display_name, last_opened_at FROM repos \
+                 ORDER BY last_opened_at DESC, id DESC LIMIT ?1",
+            )?;
+            let rows = stmt
+                .query_map([i64::from(limit)], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })?;
+        Ok(rows
+            .into_iter()
+            .map(|(dir, display_name, last_opened_at)| {
+                let common_dir = path_from_db(&dir);
+                RecentRepo {
+                    path: repo_path(&common_dir),
+                    common_dir,
+                    display_name,
+                    last_opened_at,
+                }
+            })
+            .collect())
+    }
+}
+
 fn parse_kind(s: &str) -> Option<ReviewKind> {
     [ReviewKind::Live, ReviewKind::Compare, ReviewKind::Commit]
         .into_iter()
