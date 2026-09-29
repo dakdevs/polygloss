@@ -29,7 +29,8 @@ use std::sync::Arc;
 
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, App, Entity, HeadlessAppContext, Render, Window, WindowHandle, px, size,
+    AnyWindowHandle, App, Entity, HeadlessAppContext, Modifiers, MouseMoveEvent, PlatformInput,
+    Render, Window, WindowHandle, point, px, size,
 };
 use image::{Rgba, RgbaImage};
 
@@ -60,13 +61,38 @@ pub fn headless_app() -> HeadlessAppContext {
     )
 }
 
-/// Opens a 1280×800 window whose root view `build` returns.
+/// Where [`open_window`] parks the pointer: outside the window.
+pub const POINTER_AWAY: (f32, f32) = (-100.0, -100.0);
+
+/// Opens a 1280×800 window whose root view `build` returns, with the
+/// pointer outside it. The test platform starts the pointer at the window's
+/// origin, where it would hover whatever is there (the first file header's
+/// collapse chevron) in every capture; a real window only sees the pointer
+/// once the user moves it in.
 pub fn open_window<V: Render + 'static>(
     cx: &mut HeadlessAppContext,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
 ) -> WindowHandle<V> {
-    cx.open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), build)
-        .expect("open a headless window")
+    let window = cx
+        .open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), build)
+        .expect("open a headless window");
+    cx.update_window(*window, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: point(px(POINTER_AWAY.0), px(POINTER_AWAY.1)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        assert_eq!(
+            window.mouse_position(),
+            point(px(POINTER_AWAY.0), px(POINTER_AWAY.1)),
+            "the pointer is parked outside the window"
+        );
+    })
+    .expect("window is open");
+    window
 }
 
 /// Runs every pending task, then draws one frame.
