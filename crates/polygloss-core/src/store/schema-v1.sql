@@ -1,0 +1,1 @@
+-- Schema v1: design §7.2 copied exactly (T1.10). Applied by store/migrations.rs.

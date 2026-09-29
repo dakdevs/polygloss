@@ -1,0 +1,17 @@
+{
+  "description": "Golden diff_id vectors (design §4.1, plan OQ-1). Checked by crates/polygloss-core/tests/ids.rs and tests/scripts/diff-id-vectors.test.ts. Head trees hold one file README.md = \"hello\\n\" (git mktree). Frozen at the first public release.",
+  "vectors": [
+    {
+      "object_format": "sha1",
+      "base_tree": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "head_tree": "853694aae8816094a0d875fee7ea26278dbf5d0f",
+      "diff_id": "07d807debe352376cfbc6eeb2aca228e18d016ec167cf3ea7748ed823946553e"
+    },
+    {
+      "object_format": "sha256",
+      "base_tree": "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+      "head_tree": "422950a7e508e04a1a72c95d6e167ccc83d1e2e8829ed2039dc2b9066a7bdae3",
+      "diff_id": "32501f02f72fa8fc05b7f481d3b7894dad95aa53f63764b869a2ecb0d1da3109"
+    }
+  ]
+}
