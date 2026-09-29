@@ -447,4 +447,5 @@ snapshot_cases! {
     hunks_snapshot_empty_to_content => "empty-to-content",
     hunks_snapshot_content_to_empty => "content-to-empty",
     hunks_snapshot_unicode => "unicode",
+    hunks_snapshot_blank_line_multimatch => "blank-line-multimatch",
 }

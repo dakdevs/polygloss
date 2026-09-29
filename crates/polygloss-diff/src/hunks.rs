@@ -10,6 +10,7 @@ use std::ops::Range;
 use gix_imara_diff::sources::byte_lines;
 use gix_imara_diff::{Diff, IndentHeuristic, IndentLevel, InternedInput, Interner, Token};
 
+use crate::git_myers;
 use crate::lines::LineIndex;
 use crate::options::{Algorithm, DiffOptions};
 use crate::whitespace::strip_whitespace;
@@ -44,7 +45,8 @@ pub struct FileDiff {
 }
 
 /// Diffs two blobs line by line: imara over `byte_lines` (the `\n` belongs to
-/// the line, so a missing final newline is a change, as in git), then
+/// the line, so a missing final newline is a change, as in git; Myers runs
+/// behind git's own preprocessing, see [`crate::git_myers`]), then
 /// `postprocess_lines` (git's indent/slider heuristic, tab width 8), then
 /// context grouping per `opts`.
 pub fn diff_blobs(old: &[u8], new: &[u8], opts: &DiffOptions) -> FileDiff {
@@ -77,15 +79,32 @@ pub(crate) fn line_changes(
         return changes_ignoring_whitespace(old, new, opts.algorithm);
     }
     let input = InternedInput::new(byte_lines(old), byte_lines(new));
-    let mut diff = Diff::compute(imara_algorithm(opts.algorithm), &input);
+    let mut diff = compute(
+        opts.algorithm,
+        &input.before,
+        &input.after,
+        input.interner.num_tokens(),
+    );
     diff.postprocess_lines(&input);
     diff.hunks().map(|h| (h.before, h.after)).collect()
 }
 
-fn imara_algorithm(algorithm: Algorithm) -> gix_imara_diff::Algorithm {
+/// The raw line diff before post-processing. Myers goes through git's
+/// preprocessing ([`git_myers::myers`]); Histogram is imara's as is (git skips
+/// that preprocessing for histogram too).
+fn compute(algorithm: Algorithm, before: &[Token], after: &[Token], num_tokens: u32) -> Diff {
     match algorithm {
-        Algorithm::Myers => gix_imara_diff::Algorithm::Myers,
-        Algorithm::Histogram => gix_imara_diff::Algorithm::Histogram,
+        Algorithm::Myers => git_myers::myers(before, after, num_tokens),
+        Algorithm::Histogram => {
+            let mut diff = Diff::default();
+            diff.compute_with(
+                gix_imara_diff::Algorithm::Histogram,
+                before,
+                after,
+                num_tokens,
+            );
+            diff
+        }
     }
 }
 
@@ -114,13 +133,7 @@ fn changes_ignoring_whitespace(
     };
     let before = tokens(old);
     let after = tokens(new);
-    let mut diff = Diff::default();
-    diff.compute_with(
-        imara_algorithm(algorithm),
-        &before,
-        &after,
-        interner.num_tokens(),
-    );
+    let mut diff = compute(algorithm, &before, &after, interner.num_tokens());
     diff.postprocess_with(
         &before,
         &after,

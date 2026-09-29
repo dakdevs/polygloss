@@ -25,6 +25,7 @@ const CASES: &[&str] = &[
     "empty-to-content",
     "content-to-empty",
     "unicode",
+    "blank-line-multimatch",
 ];
 
 fn fixture_dir(case: &str) -> PathBuf {
