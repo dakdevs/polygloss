@@ -286,9 +286,13 @@ impl DiffViewport {
             // the viewport. Until a file's new data arrives its rows stay in
             // place, blank, and a placeholder shows "Loading…" instead of its
             // stale label (an error, a large-diff count).
-            for f in self.pipeline.reload_all(&mut self.doc, self.opts.diff) {
+            for f in self.pipeline.reload_all(&mut self.doc) {
                 self.labels[f as usize] = None;
             }
+        }
+        if old.diff != self.opts.diff {
+            // Line counts depend on the diff options alone.
+            self.pipeline.recount(&self.doc, self.opts.diff);
         }
         if old.syntax != self.opts.syntax {
             self.pipeline.set_syntax(self.opts.syntax);

@@ -11,22 +11,24 @@
 //! 2. the rest of the materialization window, nearest to the viewport first
 //!    (a file's load before its highlights);
 //! 3. once a frame has painted every visible row ("first paint"), a pass over
-//!    every file: blob sizes (height estimates), then added and removed line
-//!    counts (header counts, better estimates), which also finds binary files
-//!    that were listed as text.
+//!    every file, nearest the viewport first: blob sizes (height estimates),
+//!    then added and removed line counts (header counts, better estimates),
+//!    which also finds binary files that were listed as text.
 //!
-//! A fixed set of workers each pop the most urgent job whenever they are
-//! free, so the order holds even while the queue changes under them; one
-//! worker is always left to urgent work. A file that leaves the window (plus
-//! [`CANCEL_SLACK_SCREENS`]) has its work cancelled: queued jobs are dropped,
-//! running ones see their `AtomicUsize` flag at the next stage (lumis checks
-//! it while parsing), and the document's per-file generation makes anything
-//! that still arrives stale.
+//! A fixed set of workers (at least two) each pop the most urgent job
+//! whenever they are free, so the order holds even while the queue changes
+//! under them; one worker is always left to urgent work. A file that leaves
+//! the window (plus [`CANCEL_SLACK_SCREENS`]) has its work cancelled: queued
+//! jobs are dropped, running ones see their `AtomicUsize` flag at the next
+//! stage (lumis checks it while parsing), and the document's per-file
+//! generation makes anything that still arrives stale.
 //!
 //! Tokens are cached by `(blob, language, theme)` in a [`TokenCache`], so a
-//! file that was evicted and comes back gets its tokens with its load. Files
-//! with more than 100k lines on a side render without syntax until
-//! [`crate::DiffViewport::highlight_anyway`] (design §11.11, OQ-14).
+//! file that was evicted and comes back gets its tokens with its load (unless
+//! the theme changed meanwhile: tokens of another theme never land). A side
+//! with more than 100k lines renders without syntax until
+//! [`crate::DiffViewport::highlight_anyway`] (design §11.11, OQ-14); the
+//! other side of the file is highlighted as usual.
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -65,8 +67,8 @@ pub const HIGHLIGHT_ANYWAY_BUDGET: Budget = Budget {
 
 /// Files per background job: few main-thread hops, short enough that urgent
 /// work never waits long for a worker (**Provisional**).
-const SIZES_PER_JOB: u32 = 256;
-const COUNTS_PER_JOB: u32 = 16;
+const SIZES_PER_JOB: usize = 256;
+const COUNTS_PER_JOB: usize = 16;
 
 /// Added and removed lines of one file (design §6.3 "Counts").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,12 +135,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Workers: one core is left to the main thread (**Provisional**).
-fn worker_count() -> usize {
-    std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .saturating_sub(1)
-        .clamp(1, 8)
+/// Workers for `parallelism` cores, and how many of them the background pass
+/// may use: one core is left to the main thread, and one worker to urgent
+/// work, so there are at least two (**Provisional**).
+fn worker_split(parallelism: usize) -> (usize, usize) {
+    let workers = parallelism.saturating_sub(1).clamp(2, 8);
+    (workers, workers - 1)
 }
 
 /// A queued or running job, as the main thread tracks it.
@@ -198,7 +200,9 @@ struct Job {
 
 enum Work {
     Load {
+        /// Rows are built for the layout on screen when the job runs.
         opts: LoadOptions,
+        /// The syntax theme when the job was queued (cached tokens).
         theme: ThemeId,
     },
     Highlight {
@@ -216,20 +220,87 @@ impl Job {
     }
 }
 
-/// The pass over every file that starts after first paint.
+/// Hands out file indexes nearest a focus file first (below before above at
+/// the same distance), each once.
+struct Outward {
+    taken: Vec<bool>,
+    left: u32,
+    focus: u32,
+    /// Every file in `up..down` has been handed out.
+    up: u32,
+    down: u32,
+}
+
+impl Outward {
+    fn new(len: u32, focus: u32) -> Outward {
+        let focus = focus.min(len.saturating_sub(1));
+        Outward {
+            taken: vec![false; len as usize],
+            left: len,
+            focus,
+            up: focus,
+            down: focus,
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        self.left == 0
+    }
+
+    /// The viewport moved: the files nearest `focus` come next.
+    fn refocus(&mut self, focus: u32) {
+        let focus = focus.min((self.taken.len() as u32).saturating_sub(1));
+        if focus != self.focus {
+            self.focus = focus;
+            self.up = focus;
+            self.down = focus;
+        }
+    }
+
+    /// Up to `n` files not handed out yet, nearest the focus first. Files
+    /// `skip` says need nothing are handed out without being returned.
+    fn take(&mut self, n: usize, skip: impl Fn(u32) -> bool) -> Vec<u32> {
+        let len = self.taken.len() as u32;
+        let mut out = Vec::with_capacity(n.min(self.left as usize));
+        while out.len() < n && self.left > 0 {
+            while self.down < len && self.taken[self.down as usize] {
+                self.down += 1;
+            }
+            while self.up > 0 && self.taken[self.up as usize - 1] {
+                self.up -= 1;
+            }
+            let below = (self.down < len).then(|| self.down - self.focus);
+            let above = (self.up > 0).then(|| self.focus - (self.up - 1));
+            let f = match (below, above) {
+                (Some(b), Some(a)) if a < b => self.up - 1,
+                (Some(_), _) => self.down,
+                (None, Some(_)) => self.up - 1,
+                (None, None) => break,
+            };
+            self.taken[f as usize] = true;
+            self.left -= 1;
+            if !skip(f) {
+                out.push(f);
+            }
+        }
+        out
+    }
+}
+
+/// The pass over every file that starts after first paint, nearest the
+/// viewport first (so after a jump the counts fill in where the user looks).
 struct Pass {
-    len: u32,
-    next_size: u32,
-    next_count: u32,
+    sizes: Outward,
+    counts: Outward,
     /// Counts of older epochs (other diff options) are dropped.
     epoch: u64,
     diff: DiffOptions,
 }
 
 enum Chunk {
-    Sizes(Range<u32>),
+    Sizes(Vec<u32>),
     Counts {
-        files: Range<u32>,
+        files: Vec<u32>,
         epoch: u64,
         diff: DiffOptions,
     },
@@ -237,27 +308,27 @@ enum Chunk {
 
 impl Pass {
     fn has_more(&self) -> bool {
-        self.next_size < self.len || self.next_count < self.len
+        !self.sizes.is_done() || !self.counts.is_done()
     }
 
-    fn next(&mut self) -> Option<Chunk> {
-        if self.next_size < self.len {
-            let end = self.next_size.saturating_add(SIZES_PER_JOB).min(self.len);
-            let files = self.next_size..end;
-            self.next_size = end;
-            return Some(Chunk::Sizes(files));
+    fn refocus(&mut self, focus: u32) {
+        self.sizes.refocus(focus);
+        self.counts.refocus(focus);
+    }
+
+    /// The next chunk; the counts skip files already `counted`.
+    fn next(&mut self, counted: &[AtomicBool]) -> Option<Chunk> {
+        if !self.sizes.is_done() {
+            return Some(Chunk::Sizes(self.sizes.take(SIZES_PER_JOB, |_| false)));
         }
-        if self.next_count < self.len {
-            let end = self.next_count.saturating_add(COUNTS_PER_JOB).min(self.len);
-            let files = self.next_count..end;
-            self.next_count = end;
-            return Some(Chunk::Counts {
-                files,
-                epoch: self.epoch,
-                diff: self.diff,
-            });
-        }
-        None
+        let files = self.counts.take(COUNTS_PER_JOB, |f| {
+            counted[f as usize].load(Ordering::Relaxed)
+        });
+        (!files.is_empty()).then_some(Chunk::Counts {
+            files,
+            epoch: self.epoch,
+            diff: self.diff,
+        })
     }
 }
 
@@ -285,14 +356,14 @@ impl Queue {
         !self.urgent.is_empty() || self.background_ready()
     }
 
-    fn pop(&mut self) -> Option<Popped> {
+    fn pop(&mut self, counted: &[AtomicBool]) -> Option<Popped> {
         if let Some(job) = self.urgent.pop_front() {
             return Some(Popped::Job(job));
         }
         if !self.background_ready() {
             return None;
         }
-        let chunk = self.pass.as_mut()?.next()?;
+        let chunk = self.pass.as_mut()?.next(counted)?;
         self.running_background += 1;
         Some(Popped::Chunk(chunk))
     }
@@ -310,6 +381,8 @@ struct Shared {
     /// them. (A file whose load is running when the pass reaches it is read
     /// by both; skipping it would lose its counts if the load is cancelled.)
     counted: Box<[AtomicBool]>,
+    /// The layout on screen (split when set): loads build its rows.
+    split: AtomicBool,
 }
 
 /// One file's line counts, or binary content.
@@ -352,6 +425,9 @@ pub(crate) enum Outcome {
         languages: [Option<Language>; 2],
         /// Sides whose tokens came from the cache.
         cached: u32,
+        /// The syntax theme of those tokens: the theme when the load was
+        /// queued, which may have changed since.
+        theme: ThemeId,
         /// More changed lines than the "Load diff" threshold: no rows.
         large: bool,
     },
@@ -363,7 +439,7 @@ impl Shared {
     /// Pops and runs the most urgent job (on a worker). `None` when there is
     /// nothing a worker may take.
     fn run_next(&self) -> Option<Done> {
-        let popped = lock(&self.queue).pop()?;
+        let popped = lock(&self.queue).pop(&self.counted)?;
         Some(match popped {
             Popped::Job(job) => self.run_job(job),
             Popped::Chunk(chunk) => {
@@ -388,6 +464,16 @@ impl Shared {
         let change = &self.changes[file as usize];
         match work {
             Work::Load { opts, theme } => {
+                // The layout on screen now, not when the job was queued.
+                let layout = if self.split.load(Ordering::Relaxed) {
+                    Layout::Split
+                } else {
+                    Layout::Unified
+                };
+                let opts = LoadOptions {
+                    rows: Some(layout),
+                    ..opts
+                };
                 let outcome = match MaterializedFile::load(&*self.provider, change, &opts, &cancel)
                 {
                     Err(LoadError::Cancelled) => return Done::Cancelled { flight, file },
@@ -478,6 +564,7 @@ impl Shared {
             file,
             languages,
             cached,
+            theme,
             large,
         }
     }
@@ -493,6 +580,7 @@ impl Shared {
                     }
                 };
                 let sizes = files
+                    .into_iter()
                     .filter_map(|f| {
                         let change = &self.changes[f as usize];
                         if change.kind == FileKind::Submodule {
@@ -505,6 +593,7 @@ impl Shared {
             }
             Chunk::Counts { files, epoch, diff } => {
                 let counted = files
+                    .into_iter()
                     .filter(|&f| !self.counted[f as usize].load(Ordering::Relaxed))
                     .filter_map(|f| Some((f, self.count(&self.changes[f as usize], &diff)?)))
                     .collect();
@@ -596,7 +685,8 @@ impl Pipeline {
             .iter()
             .map(|c| AtomicBool::new(!needs_counts(c)))
             .collect();
-        let max_workers = worker_count();
+        let (max_workers, max_background) =
+            worker_split(std::thread::available_parallelism().map_or(4, |n| n.get()));
         Pipeline {
             shared: Arc::new(Shared {
                 provider,
@@ -605,10 +695,11 @@ impl Pipeline {
                     urgent: VecDeque::new(),
                     pass: None,
                     running_background: 0,
-                    max_background: max_workers.saturating_sub(1).max(1),
+                    max_background,
                 }),
                 tokens: Mutex::new(TokenCache::new(TOKEN_CACHE_BYTES)),
                 counted,
+                split: AtomicBool::new(false),
             }),
             work,
             active: Vec::new(),
@@ -698,9 +789,26 @@ impl Pipeline {
         layout: Layout,
         cx: &mut Context<DiffViewport>,
     ) {
-        if doc.is_empty() {
-            return;
+        if self.plan_window(doc, files, opts, layout) {
+            self.wake(cx);
         }
+    }
+
+    /// [`Pipeline::schedule`] without waking workers: whether anything was
+    /// queued or cancelled, or the window moved.
+    fn plan_window(
+        &mut self,
+        doc: &mut Document,
+        files: &[FileChange],
+        opts: &ViewportOptions,
+        layout: Layout,
+    ) -> bool {
+        if doc.is_empty() {
+            return false;
+        }
+        self.shared
+            .split
+            .store(layout == Layout::Split, Ordering::Relaxed);
         let h = doc.viewport_height();
         let visible = doc.visible(h);
         let window = doc.materialize_range(h, opts.window_screens);
@@ -724,24 +832,25 @@ impl Pipeline {
         let mut jobs = Vec::new();
         for f in window.clone() {
             if !doc.is_collapsed(f) {
-                self.plan(f, &files[f as usize], doc, opts, layout, &mut jobs);
+                self.plan(f, &files[f as usize], doc, opts, &mut jobs);
             }
         }
         if jobs.is_empty() && !changed {
-            return;
+            return false;
         }
         self.last_window = window;
         self.last_visible = visible.clone();
-        {
-            let mut q = lock(&self.shared.queue);
-            q.urgent.retain(|j| j.cancel.load(Ordering::Relaxed) == 0);
-            q.urgent.extend(jobs);
-            let (top, bottom) = (doc.scroll_top(), doc.scroll_top() + f64::from(h));
-            q.urgent
-                .make_contiguous()
-                .sort_by_key(|j| priority(j.file, j.highlight(), doc, &visible, top, bottom));
+        let mut q = lock(&self.shared.queue);
+        q.urgent.retain(|j| j.cancel.load(Ordering::Relaxed) == 0);
+        q.urgent.extend(jobs);
+        let (top, bottom) = (doc.scroll_top(), doc.scroll_top() + f64::from(h));
+        q.urgent
+            .make_contiguous()
+            .sort_by_key(|j| priority(j.file, j.highlight(), doc, &visible, top, bottom));
+        if let Some(pass) = &mut q.pass {
+            pass.refocus(visible.start);
         }
-        self.wake(cx);
+        true
     }
 
     /// Queues what file `f` (in the window, expanded) still needs.
@@ -751,7 +860,6 @@ impl Pipeline {
         change: &FileChange,
         doc: &mut Document,
         opts: &ViewportOptions,
-        layout: Layout,
         jobs: &mut Vec<Job>,
     ) {
         let idx = f as usize;
@@ -774,7 +882,7 @@ impl Pipeline {
                         diff: opts.diff,
                         word_diff: opts.word_diff,
                         large_file_changed_lines: opts.large_file_changed_lines,
-                        rows: Some(layout),
+                        rows: None,
                     },
                     theme: self.highlighter.theme().id(),
                 },
@@ -791,14 +899,14 @@ impl Pipeline {
             return;
         };
         let generation = doc.generation(f);
-        let lines = file.diff.old.len().max(file.diff.new.len());
-        let too_large = lines > Budget::DEFAULT_MAX_LINES && !self.work[idx].highlight_anyway;
+        // The cutoff is per side (design §11.11, OQ-14).
+        let lines = [file.diff.old.len(), file.diff.new.len()];
         for side in SIDES {
             let s = side_index(side);
             if !matches!(self.work[idx].syntax[s], Syntax::Unknown) {
                 continue;
             }
-            if too_large {
+            if lines[s] > Budget::DEFAULT_MAX_LINES && !self.work[idx].highlight_anyway {
                 self.work[idx].syntax[s] = Syntax::TooLarge;
                 continue;
             }
@@ -903,13 +1011,14 @@ impl Pipeline {
         false
     }
 
-    /// Starts the pass over every file (after first paint).
+    /// Starts the pass over every file (after first paint), nearest the
+    /// viewport first.
     pub fn start_background(&mut self, diff: DiffOptions, cx: &mut Context<DiffViewport>) {
         self.background_started = true;
+        let (len, focus) = (self.work.len() as u32, self.last_visible.start);
         lock(&self.shared.queue).pass = Some(Pass {
-            len: self.work.len() as u32,
-            next_size: 0,
-            next_count: 0,
+            sizes: Outward::new(len, focus),
+            counts: Outward::new(len, focus),
             epoch: self.epoch,
             diff,
         });
@@ -1031,11 +1140,19 @@ impl Pipeline {
     ) {
         match outcome {
             Outcome::File {
-                file,
+                mut file,
                 languages,
-                cached,
+                mut cached,
+                theme,
                 large,
             } => {
+                if cached > 0 && theme != self.highlighter.theme().id() {
+                    // The theme changed while the load was queued or running:
+                    // those style ids mean other styles now. The sides go
+                    // back to `Unknown` below and are highlighted again.
+                    file = file.with_tokens(None, None);
+                    cached = 0;
+                }
                 let counts = FileCounts {
                     additions: file.diff.additions,
                     deletions: file.diff.deletions,
@@ -1150,12 +1267,12 @@ impl Pipeline {
         }
     }
 
-    /// Diff options changed: every loaded file goes back to unloaded (heights
-    /// kept) and reloads when near the viewport; counts are recomputed.
-    /// Returns the files reset.
-    pub fn reload_all(&mut self, doc: &mut Document, diff: DiffOptions) -> Vec<u32> {
+    /// Diff options, word diff or the "Load diff" threshold changed: every
+    /// loaded file goes back to unloaded (heights kept) and reloads when near
+    /// the viewport. Counts stay: only diff options change them
+    /// ([`Pipeline::recount`]). Returns the files reset.
+    pub fn reload_all(&mut self, doc: &mut Document) -> Vec<u32> {
         self.cancel_all(doc);
-        self.epoch += 1;
         self.dirty = true;
         let mut reset = Vec::new();
         for f in 0..doc.len() {
@@ -1170,18 +1287,28 @@ impl Pipeline {
             let w = &mut self.work[f as usize];
             w.syntax = [Syntax::Unknown, Syntax::Unknown];
             w.languages = [None, None];
-            let change = &self.shared.changes[f as usize];
+        }
+        reset
+    }
+
+    /// Diff options changed: every file's line counts are computed again
+    /// (results of the old options are dropped by epoch).
+    pub fn recount(&mut self, doc: &Document, diff: DiffOptions) {
+        self.epoch += 1;
+        self.dirty = true;
+        // Kinds as the document has them: a file found binary is not read
+        // again.
+        for (f, change) in doc.files().iter().enumerate() {
             if needs_counts(change) {
-                w.counts = None;
-                self.shared.counted[f as usize].store(false, Ordering::Relaxed);
+                self.work[f].counts = None;
+                self.shared.counted[f].store(false, Ordering::Relaxed);
             }
         }
         if let Some(pass) = &mut lock(&self.shared.queue).pass {
-            pass.next_count = 0;
+            pass.counts = Outward::new(self.work.len() as u32, self.last_visible.start);
             pass.epoch = self.epoch;
             pass.diff = diff;
         }
-        reset
     }
 }
 
@@ -1234,4 +1361,176 @@ fn priority(
         ((start - bottom).max(0.0), 0)
     };
     (1, distance.round() as u64, stage << 1 | above)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::thread;
+
+    use polygloss_diff::{FileStatus, Mode, ObjectFormat};
+    use polygloss_highlight::{Appearance, pierre_theme};
+
+    use super::*;
+    use crate::document::{Metrics, RowKey};
+
+    #[test]
+    fn background_never_takes_the_last_worker() {
+        for n in 1..=64 {
+            let (workers, background) = worker_split(n);
+            assert!((2..=8).contains(&workers), "{n} cores: {workers} workers");
+            assert!(
+                (1..workers).contains(&background),
+                "{n} cores: {background} of {workers} workers for the background"
+            );
+        }
+        assert_eq!(worker_split(1), (2, 1));
+        assert_eq!(worker_split(2), (2, 1));
+        assert_eq!(worker_split(4), (3, 2));
+        assert_eq!(worker_split(12), (8, 7));
+    }
+
+    #[test]
+    fn outward_hands_out_files_nearest_the_focus_first() {
+        let mut o = Outward::new(10, 4);
+        // Below before above at the same distance.
+        assert_eq!(o.take(4, |_| false), [4, 5, 3, 6]);
+        // A skipped file is handed out (never again) but not returned.
+        assert_eq!(o.take(2, |f| f == 2), [7, 1]);
+        // A new focus goes on from there, past what was handed out.
+        o.refocus(9);
+        assert_eq!(o.take(5, |_| false), [9, 8, 0]);
+        assert!(o.is_done());
+        assert!(o.take(5, |_| false).is_empty());
+        assert!(Outward::new(0, 3).take(1, |_| false).is_empty());
+    }
+
+    /// Added files with the given texts, in memory.
+    struct Blobs {
+        files: Arc<Vec<FileChange>>,
+        blobs: HashMap<String, Arc<[u8]>>,
+    }
+
+    impl Blobs {
+        fn new(texts: Vec<String>) -> Arc<Blobs> {
+            let mut blobs = HashMap::new();
+            let files = texts
+                .into_iter()
+                .enumerate()
+                .map(|(i, text)| {
+                    let oid = Oid::parse(&format!("{:040x}", i + 1), ObjectFormat::Sha1).unwrap();
+                    blobs.insert(oid.as_str().to_owned(), Arc::<[u8]>::from(text.as_bytes()));
+                    FileChange {
+                        idx: i as u32,
+                        status: FileStatus::Added,
+                        old_path: None,
+                        new_path: Some(GitPath::from_bytes(format!("src/f{i}.rs").as_bytes())),
+                        old_mode: None,
+                        new_mode: Some(Mode(0o100644)),
+                        old_blob: Oid::zero(ObjectFormat::Sha1),
+                        new_blob: oid,
+                        similarity: None,
+                        kind: FileKind::Text,
+                        generated: false,
+                    }
+                })
+                .collect();
+            Arc::new(Blobs {
+                files: Arc::new(files),
+                blobs,
+            })
+        }
+    }
+
+    impl DiffProvider for Blobs {
+        fn object_format(&self) -> ObjectFormat {
+            ObjectFormat::Sha1
+        }
+
+        fn files(&self) -> Arc<Vec<FileChange>> {
+            self.files.clone()
+        }
+
+        fn load_blob(&self, oid: &Oid) -> anyhow::Result<Arc<[u8]>> {
+            self.blobs
+                .get(oid.as_str())
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no blob {oid:?}"))
+        }
+
+        fn blob_size(&self, oid: &Oid) -> anyhow::Result<u64> {
+            Ok(self.load_blob(oid)?.len() as u64)
+        }
+    }
+
+    /// GPUI's test scheduler runs every task on the test thread, so a job
+    /// there is never running while the main thread cancels it. Here a real
+    /// thread runs the job while the file scrolls away.
+    #[test]
+    fn running_highlight_is_cancelled_when_its_file_scrolls_away() {
+        // File 0 is long enough that lumis is still at it when cancelled.
+        let big: String = (0..90_000)
+            .map(|i| format!("fn f{i}() {{ let x = {i}; }}\n"))
+            .collect();
+        let mut texts = vec![big];
+        texts.extend((1..40).map(|i| format!("fn g{i}() {{}}\n")));
+        let provider = Blobs::new(texts);
+        let files = provider.files();
+        let theme = Arc::new(SyntaxTheme::from_zed(pierre_theme(Appearance::Light)));
+        let metrics = Metrics {
+            layout: Layout::Unified,
+            load_diff_changed_lines: 200_000,
+            ..Metrics::default()
+        };
+        let mut doc = Document::new(files.clone(), metrics);
+        doc.set_viewport_height(400.0);
+        let mut p = Pipeline::new(provider, files.clone(), theme);
+        let opts = ViewportOptions {
+            window_screens: 0.0,
+            // Not a "Load diff" placeholder: its rows are highlighted.
+            large_file_changed_lines: 200_000,
+            ..ViewportOptions::default()
+        };
+        let plan = |p: &mut Pipeline, doc: &mut Document| {
+            p.plan_window(doc, &files, &opts, Layout::Unified)
+        };
+
+        assert!(plan(&mut p, &mut doc));
+        assert_eq!(lock(&p.shared.queue).urgent.len(), 1);
+        let loaded = p.shared.run_next().expect("file 0's load");
+        let window = doc.materialize_range(400.0, 0.0);
+        p.apply(loaded, &mut doc, window);
+        assert!(doc.state(0).is_materialized());
+        assert!(plan(&mut p, &mut doc));
+        assert!(matches!(p.work[0].syntax[1], Syntax::Pending(_)));
+        assert_eq!(lock(&p.shared.queue).urgent.len(), 1, "only the highlight");
+
+        let shared = p.shared.clone();
+        let worker = thread::spawn(move || shared.run_next());
+        // The worker took the job; let lumis get going.
+        while lock(&p.shared.queue).urgent.iter().any(|j| j.file == 0) {
+            thread::yield_now();
+        }
+        thread::sleep(Duration::from_millis(20));
+        doc.scroll_to(30, RowKey::Header);
+        assert!(plan(&mut p, &mut doc));
+        assert_eq!(p.stats.cancelled, 1);
+
+        let done = worker.join().unwrap().expect("the highlight ran");
+        assert!(
+            matches!(done, Done::Cancelled { file: 0, .. }),
+            "the highlight finished"
+        );
+        let window = doc.materialize_range(400.0, 0.0);
+        p.apply(done, &mut doc, window);
+        // Nothing landed; the side is highlighted again when it comes back.
+        assert!(matches!(p.work[0].syntax[1], Syntax::Unknown));
+        let FileState::Materialized(file) = doc.state(0) else {
+            panic!("file 0 keeps its data")
+        };
+        assert!(file.new_tokens.is_none());
+        doc.scroll_to(0, RowKey::Header);
+        assert!(plan(&mut p, &mut doc));
+        assert!(matches!(p.work[0].syntax[1], Syntax::Pending(_)));
+    }
 }

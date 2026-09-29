@@ -97,6 +97,8 @@ pub struct Spec {
     pub new: Option<String>,
     pub kind: FileKind,
     pub old_path: Option<String>,
+    /// Listed as generated (drawn collapsed, never loaded; design §12.3).
+    pub generated: bool,
 }
 
 impl Spec {
@@ -107,6 +109,15 @@ impl Spec {
             new: Some(new.to_owned()),
             kind: FileKind::Text,
             old_path: None,
+            generated: false,
+        }
+    }
+
+    /// A modified text file listed as generated.
+    pub fn generated(path: &str, old: &str, new: &str) -> Spec {
+        Spec {
+            generated: true,
+            ..Spec::modified(path, old, new)
         }
     }
 
@@ -117,6 +128,7 @@ impl Spec {
             new: Some(new.to_owned()),
             kind: FileKind::Text,
             old_path: None,
+            generated: false,
         }
     }
 
@@ -127,6 +139,7 @@ impl Spec {
             new: Some("\0new".to_owned()),
             kind: FileKind::Binary,
             old_path: None,
+            generated: false,
         }
     }
 }
@@ -193,7 +206,7 @@ impl MemProvider {
                     new_blob,
                     similarity: s.old_path.as_ref().map(|_| 90),
                     kind: s.kind,
-                    generated: false,
+                    generated: s.generated,
                 }
             })
             .collect();
@@ -307,14 +320,14 @@ pub fn options(layout: LayoutMode) -> ViewportOptions {
 /// and lets every background task finish.
 pub fn open(
     cx: &mut TestAppContext,
-    provider: Arc<MemProvider>,
+    provider: Arc<dyn DiffProvider>,
     opts: ViewportOptions,
     width: f32,
     height: f32,
 ) -> (Entity<DiffViewport>, &mut VisualTestContext) {
     assert_sandboxed();
     let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
-        DiffViewport::new(provider as Arc<dyn DiffProvider>, opts, window, cx)
+        DiffViewport::new(provider, opts, window, cx)
     });
     let view = window.root(cx).expect("window has a root view");
     let cx = VisualTestContext::from_window(*window, cx).into_mut();
@@ -327,7 +340,7 @@ pub fn open(
 /// window opens, so the loads it starts stay pending.
 pub fn open_idle(
     cx: &mut TestAppContext,
-    provider: Arc<MemProvider>,
+    provider: Arc<dyn DiffProvider>,
     opts: ViewportOptions,
     width: f32,
     height: f32,
@@ -339,7 +352,7 @@ pub fn open_idle(
 /// frame.
 pub fn open_idle_at(
     cx: &mut TestAppContext,
-    provider: Arc<MemProvider>,
+    provider: Arc<dyn DiffProvider>,
     opts: ViewportOptions,
     width: f32,
     height: f32,
@@ -347,7 +360,7 @@ pub fn open_idle_at(
 ) -> (Entity<DiffViewport>, &mut VisualTestContext) {
     assert_sandboxed();
     let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
-        let mut view = DiffViewport::new(provider as Arc<dyn DiffProvider>, opts, window, cx);
+        let mut view = DiffViewport::new(provider, opts, window, cx);
         view.scroll_to(target, cx);
         view
     });
