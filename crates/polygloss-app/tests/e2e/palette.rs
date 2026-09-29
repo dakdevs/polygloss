@@ -26,6 +26,10 @@ const MAX_FRAMES: usize = 20;
 fn review_window(
     cx: &mut HeadlessAppContext,
 ) -> (AnyWindowHandle, Entity<MainWindow>, FixtureRepo) {
+    // The dialogs' entrance animation settles on its first frame, so the
+    // capture never depends on how long the frames took (it flaked under
+    // load before).
+    cx.update(|cx| cx.set_reduce_motion(true));
     let repo = code_change_repo();
     let core = Core::open_default().expect("open the sandbox store");
     let (handle, main) = cx.update(|cx| {

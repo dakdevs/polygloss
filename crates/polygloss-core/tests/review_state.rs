@@ -393,7 +393,7 @@ fn sample_view_state() -> ViewState {
         collapsed: vec!["Cargo.lock".into()],
         expanded: BTreeMap::from([("src/lib.rs".into(), vec![[1, 20], [90, 110]])]),
         layout: Some(Layout::Unified),
-        tree_expanded: vec!["src".into(), "src/review".into()],
+        tree_expanded: Some(vec!["src".into(), "src/review".into()]),
         composer: BTreeMap::from([("line:src/lib.rs:new:42".into(), "draft text".into())]),
     }
 }
@@ -458,6 +458,29 @@ fn view_state_roundtrip_v1() {
     let partial = core.load_view_state(&opened.diff_id).unwrap().unwrap();
     assert_eq!(partial.layout, Some(Layout::Split));
     assert!(partial.collapsed.is_empty() && partial.scroll_anchor.is_none());
+    // A state saved without the tree's expansion (T3.2's layout-only write)
+    // says nothing about it, unlike an empty list (every folder collapsed).
+    assert_eq!(partial.tree_expanded, None);
+    exec(
+        &core,
+        "UPDATE view_state SET state_json = ?1",
+        [r#"{"v":1,"tree_expanded":[]}"#],
+    );
+    let collapsed = core.load_view_state(&opened.diff_id).unwrap().unwrap();
+    assert_eq!(collapsed.tree_expanded, Some(Vec::new()));
+    // `None` is left out of the JSON.
+    let mut unsaved = sample_view_state();
+    unsaved.tree_expanded = None;
+    core.save_view_state(&opened.diff_id, &unsaved).unwrap();
+    let json: String = core
+        .store
+        .read(|c| Ok(c.query_row("SELECT state_json FROM view_state", [], |r| r.get(0))?))
+        .unwrap();
+    assert!(!json.contains("tree_expanded"), "{json}");
+    assert_eq!(
+        core.load_view_state(&opened.diff_id).unwrap(),
+        Some(unsaved)
+    );
 }
 
 #[test]
