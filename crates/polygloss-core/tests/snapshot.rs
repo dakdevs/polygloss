@@ -1,6 +1,10 @@
 //! Worktree snapshots in a scratch store, pinning and pruning (T1.5, design §5,
 //! ADR-0008). Every test runs under `Sandbox::isolate()`; the scratch root lives in
 //! the sandbox cache dir, never in the real `~/Library/Caches`.
+//!
+//! Only nextest (one process per test) is supported: `Sandbox::isolate()` and
+//! `snapshot_leaves_user_index_untouched` set process env vars, which under plain
+//! `cargo test` would leak into the git commands of tests running on other threads.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -208,7 +212,8 @@ fn snapshot_leaves_user_index_untouched() {
 }
 
 fn set_env(key: &str, val: impl AsRef<std::ffi::OsStr>) {
-    // SAFETY: one process per test (nextest); no other thread reads env here.
+    // SAFETY: one process per test (nextest only, see the module doc); no other
+    // thread reads env here.
     unsafe { std::env::set_var(key, val) }
 }
 
@@ -705,6 +710,68 @@ fn pin_copies_big_file_streamed_into_a_scratch_pack() {
     repo.git(&["gc", "-q", "--prune=now"]);
     assert!(cat_file_exists(&repo, &blob));
     assert_eq!(repo.git(&["rev-parse", &name]), state.head_tree.as_str());
+}
+
+/// git's strict object fsck flags symlinked `.gitignore`, `.gitattributes` and
+/// `.mailmap` (INFO-level `*Symlink` messages), yet `git add -A` and `write-tree`
+/// accept such trees, so pinning a dirty worktree that holds them must work too.
+#[test]
+fn pin_with_symlinked_dotfiles_at_root_and_in_subdir() {
+    let sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("shared", b"*.log\n");
+    repo.write("sub/f", b"*.tmp\n");
+    for name in [".gitignore", ".gitattributes", ".mailmap"] {
+        std::os::unix::fs::symlink("shared", repo.path().join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink("f", repo.path().join("sub/.gitignore")).unwrap();
+    repo.commit("c1");
+    // Dirty at the root and in `sub`, so both trees are new and must be written.
+    repo.write("new.txt", b"dirty root\n");
+    repo.write("sub/g.txt", b"dirty sub\n");
+
+    let snap = snapshotter(&sb);
+    let state = snap.snapshot(&info(&repo), repo.path()).unwrap();
+    let name = snap.pin(&info(&repo), &state).unwrap();
+
+    std::fs::remove_dir_all(sb.cache_dir().join("polygloss")).unwrap();
+    repo.git(&["gc", "-q", "--prune=now"]);
+    assert_eq!(repo.git(&["rev-parse", &name]), state.head_tree.as_str());
+    assert_eq!(
+        repo.git(&["ls-tree", "-r", "--name-only", &name]),
+        ".gitattributes\n.gitignore\n.mailmap\nnew.txt\nshared\nsub/.gitignore\nsub/f\nsub/g.txt"
+    );
+    assert_eq!(
+        repo.git(&["cat-file", "-p", &format!("{name}:sub/g.txt")]),
+        "dirty sub"
+    );
+}
+
+#[test]
+fn pin_sha256_repo_survives_gc() {
+    let sb = Sandbox::isolate();
+    let repo = base_repo(ObjectFormat::Sha256);
+    repo.write("a.txt", b"sha256 pinned\n");
+    repo.write("n/deep/new.txt", b"sha256 new file\n");
+    let snap = snapshotter(&sb);
+    let state = snap.snapshot(&info(&repo), repo.path()).unwrap();
+    let blob = blob_in(&repo, &state, "n/deep/new.txt");
+    assert_eq!(blob.object_format(), ObjectFormat::Sha256);
+    assert!(!cat_file_exists(&repo, &blob));
+
+    let name = snap.pin(&info(&repo), &state).unwrap();
+    assert_eq!(name, snapshot_ref(&state.head_tree));
+    assert_eq!(snap.pin(&info(&repo), &state).unwrap(), name);
+
+    std::fs::remove_dir_all(sb.cache_dir().join("polygloss")).unwrap();
+    repo.git(&["gc", "-q", "--prune=now"]);
+    assert_eq!(repo.git(&["rev-parse", &name]), state.head_tree.as_str());
+    assert!(cat_file_exists(&repo, &blob));
+    assert_eq!(
+        repo.git(&["ls-tree", "-r", "--name-only", &name]),
+        ".gitignore\na.txt\ndir/b.txt\nn/deep/new.txt"
+    );
+    repo.git(&["fsck", "--connectivity-only", "--no-dangling"]);
 }
 
 #[test]

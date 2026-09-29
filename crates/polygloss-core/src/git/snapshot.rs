@@ -818,6 +818,12 @@ fn plan_copy(
 /// hash-object -w --no-filters --stdin-paths` over temp files in `dir`, and checks
 /// that git computed the same ids. git writes them in the order given (the caller
 /// passes trees children-first).
+///
+/// Trees get `--literally`: without it hash-object runs a strict fsck on each tree
+/// that treats even INFO-level findings as fatal, so a tree holding a symlinked
+/// `.gitignore`, `.gitattributes` or `.mailmap` is refused ("refusing to create
+/// malformed object") although `git add -A` and `write-tree` accept it. The id
+/// check below guards integrity. Blobs keep the default (streamed) path.
 fn write_objects(
     repo: &RepoInfo,
     scratch: &OdbHandle,
@@ -845,17 +851,20 @@ fn write_objects(
         stdin.push(b'\n');
     }
     let kind_name = kind.to_string();
-    let out = Git::new(&repo.common_dir).output_stdin(
-        &[
-            OsStr::new("hash-object"),
-            OsStr::new("-w"),
-            OsStr::new("--no-filters"),
-            OsStr::new("-t"),
-            OsStr::new(&kind_name),
-            OsStr::new("--stdin-paths"),
-        ],
-        &stdin,
-    )?;
+    let mut args = vec![
+        OsStr::new("hash-object"),
+        OsStr::new("-w"),
+        OsStr::new("--no-filters"),
+    ];
+    if kind == gix::objs::Kind::Tree {
+        args.push(OsStr::new("--literally"));
+    }
+    args.extend([
+        OsStr::new("-t"),
+        OsStr::new(&kind_name),
+        OsStr::new("--stdin-paths"),
+    ]);
+    let out = Git::new(&repo.common_dir).output_stdin(&args, &stdin)?;
     let text = String::from_utf8_lossy(&out);
     let written: Vec<&str> = text.lines().collect();
     if written.len() != ids.len() {
