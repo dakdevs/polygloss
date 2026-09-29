@@ -1,0 +1,18 @@
+pub fn parse(input: &str) -> Result<u32, String> {
+    input.trim().parse().map_err(|e| format!("{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_padded_number() {
+        assert_eq!(parse(" 7 "), Ok(7));
+    }
+
+    #[test]
+    fn parses_number() {
+        assert_eq!(parse("42"), Ok(42));
+    }
+}

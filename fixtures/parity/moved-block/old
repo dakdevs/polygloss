@@ -1,0 +1,32 @@
+function moved(a, b) {
+  const sum = a + b;
+  if (sum > 10) {
+    return sum;
+  }
+  return 0;
+}
+
+export const k0 = 0;
+export const k1 = 1;
+export const k2 = 2;
+export const k3 = 3;
+export const k4 = 4;
+export const k5 = 5;
+export const k6 = 6;
+export const k7 = 7;
+export const k8 = 8;
+export const k9 = 9;
+export const k10 = 10;
+export const k11 = 11;
+export const k12 = 12;
+export const k13 = 13;
+export const k14 = 14;
+export const k15 = 15;
+export const k16 = 16;
+export const k17 = 17;
+export const k18 = 18;
+export const k19 = 19;
+
+function other() {
+  return moved(1, 2);
+}

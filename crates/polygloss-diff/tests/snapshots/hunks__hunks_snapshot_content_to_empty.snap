@@ -1,0 +1,9 @@
+---
+source: crates/polygloss-diff/tests/hunks.rs
+expression: render(& fd)
+---
+old lines: 4 (trailing newline: true)
+new lines: 0 (trailing newline: true)
+additions: 0, deletions: 4
+hunk -0..4 +0..0
+  change -0..4 +0..0
