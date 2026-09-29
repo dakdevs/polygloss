@@ -17,13 +17,16 @@
 //! ([`private_paths`]), removed on exit, so a run by hand never writes the
 //! corpus review into the real store.
 //!
-//! Scenarios: `open` ([`open`], `app_first_paint_ms`). T3.10 adds
-//! `comment-roundtrip`, T3.11 `watcher-banner`.
+//! Scenarios: `open` ([`open`], `app_first_paint_ms`) and
+//! `watcher-banner` ([`watcher_banner`], `watcher_banner_ms`). T3.10 adds
+//! `comment-roundtrip`.
 
 pub mod open;
+pub mod watcher_banner;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, bail};
@@ -31,7 +34,7 @@ use polygloss_diff::rows::Layout;
 use serde_json::{Map, Value, json};
 
 /// Printed with every usage error.
-pub const USAGE: &str = "usage: POLYGLOSS_TEST=1 Polygloss --perf-scenario open --corpus <name> \
+pub const USAGE: &str = "usage: POLYGLOSS_TEST=1 Polygloss --perf-scenario open|watcher-banner --corpus <name> \
     [--layout split|unified] [--json] [--repo <path> --base <rev> --head <rev> [--direct]]";
 
 /// The environment variable that enables test-only surfaces (OQ-P4).
@@ -42,18 +45,22 @@ pub const TEST_ENV: &str = "POLYGLOSS_TEST";
 pub enum Scenario {
     /// `app_first_paint_ms` (T3.1).
     Open,
+    /// `watcher_banner_ms` (T3.11).
+    WatcherBanner,
 }
 
 impl Scenario {
     pub fn as_str(self) -> &'static str {
         match self {
             Scenario::Open => "open",
+            Scenario::WatcherBanner => "watcher-banner",
         }
     }
 
     fn parse(s: &str) -> Option<Scenario> {
         match s {
             "open" => Some(Scenario::Open),
+            "watcher-banner" => Some(Scenario::WatcherBanner),
             _ => None,
         }
     }
@@ -161,6 +168,7 @@ pub fn main(args: &[String], clock: Clock) -> ExitCode {
     };
     match args.scenario {
         Scenario::Open => open::run(args, spec, clock),
+        Scenario::WatcherBanner => watcher_banner::run(args, spec, clock),
     }
 }
 
@@ -178,6 +186,62 @@ pub fn private_paths(root: &Path) -> anyhow::Result<polygloss_core::paths::DataP
             _ => None,
         },
     )?)
+}
+
+/// The run's private dir ([`run_dir`]), removed by [`finish`] (the process
+/// exits without running destructors).
+static RUN_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Creates the run's private temporary dir and its data paths
+/// ([`private_paths`]); [`finish`] removes it.
+pub fn run_dir() -> anyhow::Result<(PathBuf, polygloss_core::paths::DataPaths)> {
+    let dir = tempfile::Builder::new()
+        .prefix("polygloss-app-perf-")
+        .tempdir()
+        .context("creating the run's data dir")?;
+    let root = dir.keep();
+    let _ = RUN_DIR.set(root.clone());
+    let paths = private_paths(&root)?;
+    Ok((root, paths))
+}
+
+/// Prints the result (or the error) and exits: 0 with a result, 1 on
+/// failure. GPUI's macOS run loop never returns, so the process exits here,
+/// after removing the run's private dir.
+pub fn finish(outcome: anyhow::Result<ScenarioResult>, args: &PerfArgs) -> ! {
+    use std::io::Write as _;
+    let code = match outcome {
+        Ok(result) => {
+            let mut stdout = std::io::stdout().lock();
+            let _ = writeln!(stdout, "{}", result.render(args.json).trim_end());
+            let _ = stdout.flush();
+            0
+        }
+        Err(err) => {
+            eprintln!(
+                "Polygloss --perf-scenario {} {}: {err:#}",
+                args.scenario.as_str(),
+                args.corpus
+            );
+            1
+        }
+    };
+    if let Some(dir) = RUN_DIR.get() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    std::process::exit(code)
+}
+
+/// The nearest-rank 95th percentile of `values` (the 19th smallest of 20,
+/// as `polygloss-perf` and `run-perf.ts` compute it); `None` when empty.
+pub fn p95(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let rank = (0.95 * sorted.len() as f64).ceil() as usize;
+    Some(sorted[rank.clamp(1, sorted.len()) - 1])
 }
 
 /// The checkout this binary was built from (for the corpus manifest).

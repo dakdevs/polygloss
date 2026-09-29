@@ -77,13 +77,17 @@ impl ReviewTab {
         let banners =
             cx.new(|_| BannerStrip::new(description(&opened).into()).with_target(focus.clone()));
         let core = AppState::global(cx).core.clone();
-        let diff_id = opened.diff_id.clone();
         let subscriptions = vec![
-            cx.subscribe(&viewport, move |_, _, event: &ViewportEvent, cx| {
-                if let ViewportEvent::BinaryDetected(idx) = *event {
-                    write_binary_kind(&core, &diff_id, idx, cx);
-                }
-            }),
+            // The diff shown now: a refresh (T3.11) swaps it in the same
+            // viewport.
+            cx.subscribe(
+                &viewport,
+                move |tab: &mut ReviewTab, _, event: &ViewportEvent, cx| {
+                    if let ViewportEvent::BinaryDetected(idx) = *event {
+                        write_binary_kind(&core, &tab.opened.diff_id, idx, cx);
+                    }
+                },
+            ),
             cx.observe_global::<SettingsStore>(|tab: &mut ReviewTab, cx| tab.apply_settings(cx)),
         ];
         ReviewTab {
@@ -428,12 +432,18 @@ impl MainWindow {
     ) -> Entity<ReviewTab> {
         if let Some(ix) = self.tabs().find_review(&opened.review_id, cx) {
             self.activate_tab(ix, window, cx);
-            return self
+            let tab = self
                 .tabs()
                 .get(ix)
                 .and_then(|t| t.review())
                 .cloned()
                 .expect("a review tab");
+            // The open produced another diff (the refs or the worktree
+            // moved): the tab keeps what it shows and offers a refresh.
+            tab.update(cx, |tab, cx| {
+                crate::live::newer_diff_opened(tab, &opened, cx)
+            });
+            return tab;
         }
         for warning in &opened.warnings {
             tracing::info!("{}: {warning}", opened.review_key);

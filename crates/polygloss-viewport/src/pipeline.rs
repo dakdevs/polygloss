@@ -990,8 +990,14 @@ impl Pipeline {
                 loop {
                     let worker = shared.clone();
                     let done = cx.background_spawn(async move { worker.run_next() }).await;
+                    // A view that shows another diff now has another
+                    // pipeline (`DiffViewport::set_provider`): this worker's
+                    // result belongs to the old one and is dropped.
                     let more = this
-                        .update(cx, |view, cx| view.pipeline_done(done, cx))
+                        .update(cx, |view, cx| {
+                            Arc::ptr_eq(&view.pipeline.shared, &shared)
+                                && view.pipeline_done(done, cx)
+                        })
                         .unwrap_or(false);
                     if !more {
                         break;
@@ -1203,6 +1209,38 @@ impl Pipeline {
     fn settle(&mut self, f: u32) {
         if !self.work[f as usize].busy() {
             self.active.retain(|&a| a != f);
+        }
+    }
+
+    /// Stops this pipeline for good (its view shows another diff now):
+    /// everything queued or running is cancelled, and workers that come back
+    /// with a result find the view's pipeline replaced and stop
+    /// ([`Pipeline::wake`]).
+    pub fn shut_down(&mut self, doc: &mut Document) {
+        self.cancel_all(doc);
+        lock(&self.shared.queue).pass = None;
+    }
+
+    /// New file `f` is file `from` of `old` unchanged, and the document
+    /// already holds `from`'s loaded data for it: takes over what `old` knew
+    /// about it (counts, sizes, languages, finished highlights). A highlight
+    /// that was still running starts again when the file is scheduled.
+    pub fn carry(&mut self, f: u32, old: &Pipeline, from: u32) {
+        let (Some(w), Some(o)) = (self.work.get_mut(f as usize), old.work.get(from as usize))
+        else {
+            return;
+        };
+        w.counts = o.counts;
+        w.sizes = o.sizes;
+        w.languages = o.languages;
+        for (s, os) in w.syntax.iter_mut().zip(&o.syntax) {
+            *s = match os {
+                Syntax::Pending(_) => Syntax::Unknown,
+                other => other.clone(),
+            };
+        }
+        if w.counts.is_some() {
+            self.shared.counted[f as usize].store(true, Ordering::Relaxed);
         }
     }
 

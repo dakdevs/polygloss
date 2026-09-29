@@ -422,6 +422,93 @@ impl DiffViewport {
         self.after_scroll(cx);
     }
 
+    /// Restores a scroll position (a line-mapped anchor after a refresh, or
+    /// saved view state): `anchor` goes to the viewport's top edge, exactly
+    /// once its file is laid out. Closes the ⋯ menu.
+    pub fn scroll_to_anchor(&mut self, anchor: ScrollAnchor, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        self.cursor.pending = None;
+        self.doc.scroll_to_anchor(anchor);
+        self.after_scroll(cx);
+    }
+
+    /// Shows another diff in this view (a live refresh or a new iteration):
+    /// `provider`'s files replace the current ones. The options, the code
+    /// font, the measured width and layout stay, and so does every
+    /// subscription to the view; everything per file starts over (loads,
+    /// layouts, collapse, revealed context, flags, blocks, the cursor, the
+    /// selection, the ⋯ menu) with the scroll at the top. The host restores
+    /// what it keeps ([`DiffViewport::set_collapsed`],
+    /// [`DiffViewport::set_expansions`], [`DiffViewport::set_file_flags`],
+    /// [`DiffViewport::set_blocks`], [`DiffViewport::scroll_to_anchor`])
+    /// before the next frame, so nothing flashes.
+    ///
+    /// `carry[i] = Some(j)`: new file `i` is old file `j` unchanged (same
+    /// paths, modes, blobs and kind). Its loaded rows and tokens are reused,
+    /// so it shows at once instead of loading again. Entries that do not
+    /// match are ignored. Work still running for the old files is cancelled,
+    /// and its results are dropped.
+    pub fn set_provider(
+        &mut self,
+        provider: Arc<dyn DiffProvider>,
+        carry: &[Option<u32>],
+        cx: &mut Context<Self>,
+    ) {
+        self.close_menu(cx);
+        let files = provider.files();
+        let metrics = self
+            .geometry
+            .metrics(self.layout, self.opts.large_file_changed_lines);
+        let mut doc = Document::new(files.clone(), metrics);
+        doc.set_viewport_height(self.doc.viewport_height());
+        let mut old_doc = std::mem::replace(&mut self.doc, doc);
+        let pipeline = Pipeline::new(
+            provider.clone(),
+            files.clone(),
+            self.opts.theme.syntax.clone(),
+        );
+        let mut old_pipeline = std::mem::replace(&mut self.pipeline, pipeline);
+        old_pipeline.shut_down(&mut old_doc);
+        let old_files = std::mem::replace(&mut self.files, files.clone());
+        for (f, from) in carry.iter().enumerate() {
+            let Some(from) = *from else {
+                continue;
+            };
+            let (Some(new), Some(old)) = (files.get(f), old_files.get(from as usize)) else {
+                continue;
+            };
+            if !same_change(old, new) {
+                continue;
+            }
+            if let FileState::Materialized(file) = old_doc.state(from) {
+                let generation = self.doc.begin_loading(f as u32);
+                self.doc
+                    .set_materialized(f as u32, generation, file.clone());
+                self.pipeline.carry(f as u32, &old_pipeline, from);
+            }
+        }
+        self.provider = provider;
+        self.special = Specials::default();
+        self.labels = files
+            .iter()
+            .enumerate()
+            .map(|(f, c)| self.special.body_label(f as u32, c, None))
+            .collect();
+        self.layout_keys = vec![None; files.len()];
+        self.flags = vec![FileFlags::default(); files.len()];
+        self.gaps = Gaps::default();
+        self.blocks = Blocks::default();
+        self.cursor = Cursor::default();
+        self.selection = None;
+        self.drag = None;
+        self.pressed = None;
+        // Shaped lines are keyed by file index.
+        self.text_cache.clear();
+        // The next `after_scroll` reports the top file, whatever it is.
+        self.top_file = u32::MAX;
+        self.after_scroll(cx);
+    }
+
     /// Scrolls by `dy` pixels (positive = down), clamped to the document.
     /// Closes the ⋯ menu (it would no longer sit under its button).
     pub fn scroll_by(&mut self, dy: f32, cx: &mut Context<Self>) {
@@ -817,6 +904,20 @@ impl Render for DiffViewport {
             .child(DiffElement::new(cx.entity()))
             .children(self.menu_element())
     }
+}
+
+/// Whether two file changes show the same thing (everything but their
+/// index), so one's loaded data serves the other.
+fn same_change(a: &FileChange, b: &FileChange) -> bool {
+    a.status == b.status
+        && a.old_path == b.old_path
+        && a.new_path == b.new_path
+        && a.old_mode == b.old_mode
+        && a.new_mode == b.new_mode
+        && a.old_blob == b.old_blob
+        && a.new_blob == b.new_blob
+        && a.kind == b.kind
+        && a.generated == b.generated
 }
 
 /// The code font (the configured family, or Menlo when it is missing) and its

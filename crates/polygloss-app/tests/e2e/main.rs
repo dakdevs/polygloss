@@ -14,6 +14,7 @@ mod support;
 mod cursor;
 mod home;
 mod kit_fonts;
+mod live;
 mod open_flow;
 mod palette;
 mod shell;
@@ -49,5 +50,6 @@ fn main() -> std::process::ExitCode {
         threads::TESTS,
         submit::TESTS,
         cursor::TESTS,
+        live::TESTS,
     ])
 }

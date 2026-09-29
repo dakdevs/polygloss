@@ -286,11 +286,12 @@ describe("plan", () => {
         .filter((r) => r.scenario === "app-open")
         .every((r) => r.runner === "app" && r.enabled),
     ).toBe(true);
-    // App-level scenarios are planned but not run until the app has them.
+    // The watcher→banner time runs in the app (T3.11) on the typical
+    // corpus, where its budget applies.
     const banner = runs.filter((r) => r.scenario === "watcher-banner");
-    expect(banner.map((r) => [r.corpus, r.enabled])).toEqual([
-      ["typical", false],
-      ["typical", false],
+    expect(banner.map((r) => [r.corpus, r.runner, r.enabled])).toEqual([
+      ["typical", "app", true],
+      ["typical", "app", true],
     ]);
   });
 
@@ -310,13 +311,27 @@ describe("plan", () => {
       enabled: true,
     });
     // Nothing runs, nothing to warm up.
-    const disabled = planRuns({
+    const none = planRuns({
+      corpora: ["huge-file"],
+      layouts: ["split"],
+      scenarios: ["watcher-banner"],
+      budgets,
+    });
+    expect(none).toEqual([]);
+    expect(warmupRun(none)).toBeNull();
+    // An app-only plan warms up the app, not polygloss-perf.
+    const banner = planRuns({
       corpora: ["typical"],
       layouts: ["split"],
       scenarios: ["watcher-banner"],
       budgets,
     });
-    expect(warmupRun(disabled)).toBeNull();
+    expect(warmupRun(banner)).toBeNull();
+    expect(warmupRun(banner, "app")).toMatchObject({
+      scenario: "app-open",
+      corpus: "typical",
+      layout: "split",
+    });
     // Each runner warms up its own binary: the app has its own Metal shader
     // cache (OQ-P12).
     const both = planRuns({
@@ -339,7 +354,7 @@ describe("plan", () => {
       metrics: ["app_first_paint_ms"],
       enabled: true,
     });
-    expect(warmupRun(disabled, "app")).toBeNull();
+    expect(warmupRun(none, "app")).toBeNull();
   });
 
   test("a scenario filter and a corpus subset narrow the plan", () => {
@@ -466,6 +481,7 @@ done
 sleep 0.2
 case "$scenario" in
   open) metrics="\\"app_first_paint_ms\\": \${APP_FIRST_PAINT:-150}" ;;
+  watcher-banner) metrics="\\"watcher_banner_ms\\": \${WATCHER_BANNER:-260}" ;;
   *) echo "fake-app: unknown scenario $scenario" >&2; exit 2 ;;
 esac
 printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"repo":"%s","base":"%s","head":"%s","mode":"%s","polygloss_test":"%s"}}\\n' \\
@@ -528,7 +544,7 @@ type Results = {
   budgets?: Array<{ metric: string; status: string }>;
 };
 
-// Each fake run lives ~0.2 s; the full matrix is 24 of them.
+// Each fake run lives ~0.2 s; the full matrix is 30 of them.
 const cliTimeout = 60_000;
 
 describe("run-perf CLI", () => {
@@ -556,7 +572,7 @@ describe("run-perf CLI", () => {
         scroll_p95_ms: 2.5,
         highlight_ms: 40,
         comment_repaint_ms: 12,
-        watcher_banner_ms: null,
+        watcher_banner_ms: 260,
         app_first_paint_ms: 150,
       });
       expect(typical.metrics.peak_rss_mb).toBeGreaterThan(0);
@@ -575,7 +591,8 @@ describe("run-perf CLI", () => {
       expect(results.machine.cpu.length).toBeGreaterThan(0);
       expect(results.git_sha).toMatch(/^[0-9a-f]{7,}/);
       expect(r.stdout).toContain("typical");
-      expect(r.stdout).toContain("n/a");
+      // The watcher→banner time comes from the app (T3.11).
+      expect(r.stdout).toContain("260 ✓");
     },
     cliTimeout,
   );
