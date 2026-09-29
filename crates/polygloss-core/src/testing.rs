@@ -331,3 +331,24 @@ where
 pub fn git_spawns(subcommand: &str) -> usize {
     crate::git::runner::spawn_count(subcommand)
 }
+
+/// Makes every `Core` pin in this process sleep `pause` after `Snapshotter::pin`
+/// created the snapshot ref and before the iteration naming it commits (while the
+/// per-repo pin/prune guard is held), so tests can race a prune against a pin
+/// (T1.12). `Duration::ZERO` turns it off.
+pub fn pause_after_snapshot_pin(pause: std::time::Duration) {
+    crate::review::open::set_pin_pause(pause);
+}
+
+/// Runs `hook` once, inside the next `Core::prune_stale` in this process, after it
+/// selected its candidates and before it deletes any, so tests can change a
+/// candidate in between the way another process could (T1.12).
+pub fn before_prune_stale_deletes(hook: impl FnOnce() + Send + 'static) {
+    crate::review::open::set_prune_stale_hook(Box::new(hook));
+}
+
+/// Makes the per-repo pin/prune guard give up after `timeout` instead of the
+/// default (T1.12). `None` restores the default.
+pub fn set_repo_guard_timeout(timeout: Option<std::time::Duration>) {
+    crate::review::open::set_guard_timeout(timeout);
+}
