@@ -1480,3 +1480,26 @@ fn mark_file_binary_writes_kind_back_once() {
     );
     assert!(!core.mark_file_binary(&unstored, 0).unwrap());
 }
+
+#[test]
+fn recent_repos_are_most_recently_opened_first() {
+    let _sb = Sandbox::isolate();
+    let core = core();
+    assert!(core.recent_repos(10).unwrap().is_empty());
+    let a = feature_repo();
+    let b = feature_repo();
+    let wt = a.add_worktree("wt");
+    core.open(&req(a.path(), commit("HEAD"))).unwrap();
+    core.open(&req(b.path(), commit("HEAD"))).unwrap();
+    exec(&core, "UPDATE repos SET last_opened_at = 1000");
+    // Opening from a linked worktree touches the same repo row.
+    core.open(&req(&wt, commit("HEAD"))).unwrap();
+
+    let repos = core.recent_repos(10).unwrap();
+    let paths: Vec<&Path> = repos.iter().map(|r| r.path.as_path()).collect();
+    assert_eq!(paths, [a.path(), b.path()], "a was opened last");
+    assert_eq!(repos[0].common_dir, a.path().join(".git"));
+    assert_eq!(repos[0].display_name, "repo");
+    assert!(repos[0].last_opened_at > repos[1].last_opened_at);
+    assert_eq!(core.recent_repos(1).unwrap().len(), 1);
+}
