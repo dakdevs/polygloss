@@ -17,7 +17,7 @@ mod window;
 
 use std::sync::Arc;
 
-use polygloss_diff::FileChange;
+use polygloss_diff::{FileChange, FileKind};
 
 pub use anchor::{BlockId, RowKey, ScrollAnchor};
 pub use file_layout::{BodyRow, FileLayout};
@@ -307,6 +307,24 @@ impl Document {
     /// headers can still show counts).
     pub fn size_hint(&self, idx: u32) -> Option<SizeHint> {
         self.entries.get(idx as usize)?.hint
+    }
+
+    /// Changes file `idx`'s kind (binary content found when its blobs were
+    /// first read, design §6.4) and re-estimates its body unless its height is
+    /// exact. The file list is copied on the first change if it is shared.
+    pub fn set_kind(&mut self, idx: u32, kind: FileKind) {
+        let i = idx as usize;
+        if self.files[i].kind == kind {
+            return;
+        }
+        Arc::make_mut(&mut self.files)[i].kind = kind;
+        if let Body::Estimated(_) = self.entries[i].body {
+            let estimate = self
+                .metrics
+                .estimate_body(&self.files[i], self.entries[i].hint);
+            self.entries[i].body = Body::Estimated(estimate);
+            self.refresh(idx);
+        }
     }
 
     /// Whether file `idx`'s height is exact (laid out or set), not estimated.

@@ -5,7 +5,8 @@ use gpui_kit::{TestAppContext, VisualTestContext};
 use polygloss_diff::rows::{ExpandBy, GapId};
 use polygloss_diff::{FileKind, Mode, ObjectFormat, Oid, Side};
 use polygloss_viewport::{
-    BodyRow, ControlAction, FileFlags, HeaderDebug, LayoutMode, RowKey, ScrollTarget, ViewportEvent,
+    BodyRow, ControlAction, FileFlags, FileState, HeaderDebug, LayoutMode, RowKey, ScrollTarget,
+    ViewportEvent,
 };
 
 use crate::support::*;
@@ -487,6 +488,43 @@ fn large_file_over_threshold_shows_load_diff(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn load_diff_on_a_loaded_large_file_loads_it_again_in_the_background(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let old = numbered("line", 10);
+    let new = numbered("LINE", 10);
+    let provider = MemProvider::new(vec![Spec::modified("big.rs", &old.concat(), &new.concat())]);
+    let mut opts = options(LayoutMode::Unified);
+    opts.large_file_changed_lines = 5;
+    let (view, cx) = open(cx, provider.clone(), opts, 1000., 800.);
+    let (events, _sub) = record_events(&view, cx);
+    let words = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| match v.document().state(0) {
+            FileState::Materialized(file) => Some(file.words.len()),
+            _ => None,
+        })
+    };
+    // A large load (T2.6) keeps no word ranges and no rows.
+    assert_eq!(words(cx), Some(0));
+    assert_eq!(provider.loads_of(0), 2);
+
+    view.update(cx, |v, cx| v.load_diff(0, cx));
+    redraw(cx);
+    // Nothing is built on the main thread: the body says "Loading…" (and
+    // counts as loading) until the background load lands.
+    assert_eq!(debug(&view, cx).visible_rows, ["== big.rs", "Loading…"]);
+    assert!(last_stats(&events).loading_rows > 0);
+
+    settle(cx);
+    let d = debug(&view, cx);
+    assert_eq!(d.visible_rows.len(), 21, "{:?}", d.visible_rows);
+    assert_eq!(d.visible_rows[1], unified(Some(1), None, '-', "line 0"));
+    // Loaded again, this time with word ranges for its ten paired lines.
+    assert_eq!(provider.loads_of(0), 4);
+    assert_eq!(words(cx), Some(10));
+    assert_eq!(last_stats(&events).loading_rows, 0);
+}
+
+#[gpui_kit::test]
 fn generated_file_collapsed_with_load_diff(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let provider = MemProvider::new_with(
@@ -515,8 +553,12 @@ fn generated_file_collapsed_with_load_diff(cx: &mut TestAppContext) {
     );
     assert_eq!(d.row_bounds[1], (HEADER_H, PLACEHOLDER_H));
     control(&d, ControlAction::LoadDiff(0));
-    // Only src/a.rs was read.
-    assert_eq!(provider.load_count(), 2);
+    // Its body is not loaded: only the background pass read its blobs, for
+    // the header's counts (design §6.3, T2.6).
+    assert!(!view.read_with(cx, |v, _| v.document().state(0).is_materialized()));
+    assert_eq!(header(&d, 0).counts, Some((1, 1)));
+    assert_eq!(provider.loads_of(0), 2);
+    assert_eq!(provider.load_count(), 4);
 
     view.update(cx, |v, cx| v.load_diff(0, cx));
     settle(cx);
@@ -530,7 +572,7 @@ fn generated_file_collapsed_with_load_diff(cx: &mut TestAppContext) {
             "== src/a.rs".to_owned()
         ]
     );
-    assert_eq!(provider.load_count(), 4);
+    assert_eq!(provider.loads_of(0), 4);
     assert!(header(&d, 0).badges.contains(&"generated".to_owned()));
     assert_eq!(header(&d, 0).counts, Some((1, 1)));
 }
@@ -549,6 +591,7 @@ fn binary_placeholder_shows_sizes(cx: &mut TestAppContext) {
         new,
         kind: FileKind::Binary,
         old_path: None,
+        generated: false,
     };
     let provider = MemProvider::new(vec![
         spec("img.png", Some(bin(12 * 1024)), Some(bin(14_541))),
@@ -727,6 +770,36 @@ fn header_menu_comment_on_file_emits_event(cx: &mut TestAppContext) {
     click_menu_item(cx, "Comment on file");
     assert_eq!(events_of(&events), [ViewportEvent::FileCommentRequested(1)]);
     assert!(debug(&view, cx).menu.is_none());
+}
+
+#[gpui_kit::test]
+fn header_menu_highlight_anyway_while_syntax_is_skipped(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    init_kit(cx);
+    // 100,001 lines a side, one changed in the middle: plain until
+    // "Highlight anyway" (design §11.11, T2.6).
+    let old = "1\n".repeat(100_001);
+    let new = format!("{}2\n{}", "1\n".repeat(50_000), "1\n".repeat(50_000));
+    let provider = MemProvider::new(vec![Spec::modified("big.py", &old, &new)]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 800.);
+    assert!(view.read_with(cx, |v, _| v.syntax_skipped(0)));
+    assert_eq!(debug(&view, cx).styled_rows, 0);
+
+    click_control(&view, cx, ControlAction::Menu(0));
+    let d = debug(&view, cx);
+    let labels: Vec<&str> = d
+        .menu
+        .as_ref()
+        .expect("the menu is open")
+        .items
+        .iter()
+        .map(|(l, _)| l.as_str())
+        .collect();
+    assert_eq!(labels.last(), Some(&"Highlight anyway"), "{labels:?}");
+    assert!(menu_enabled(&d, "Highlight anyway"));
+    click_menu_item(cx, "Highlight anyway");
+    assert!(!view.read_with(cx, |v, _| v.syntax_skipped(0)));
+    assert!(debug(&view, cx).styled_rows > 0);
 }
 
 #[gpui_kit::test]
@@ -939,7 +1012,10 @@ fn header_fits_narrow_widths(cx: &mut TestAppContext) {
         files[0].generated = true;
         files[0].new_mode = Some(Mode(0o100755));
     });
-    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 400., 300.);
+    // Wide enough for the counts (known for generated files too, from the
+    // background pass) and the review flag, not for the change badges.
+    let width = 440.;
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), width, 300.);
     view.update(cx, |v, cx| {
         v.set_file_flags(
             vec![FileFlags {
@@ -952,8 +1028,9 @@ fn header_fits_narrow_widths(cx: &mut TestAppContext) {
     settle(cx);
     let d = debug(&view, cx);
     let h = header(&d, 0);
-    // The change badges give way first; the review flag stays.
+    // The change badges give way first; the review flag and counts stay.
     assert_eq!(h.badges, ["3 open threads"]);
+    assert_eq!(h.counts, Some((1, 1)));
     // The title keeps its end, cut with "…", and does not run into the
     // badge.
     assert!(h.title.starts_with('…'), "{h:?}");
@@ -975,7 +1052,7 @@ fn header_fits_narrow_widths(cx: &mut TestAppContext) {
         ControlAction::Menu(0),
     ] {
         let (x, _, w, _) = control(&d, action);
-        assert!(x >= 0.0 && x + w <= 400.0 + 1e-3, "{action:?}");
+        assert!(x >= 0.0 && x + w <= width + 1e-3, "{action:?}");
     }
 }
 

@@ -414,6 +414,7 @@ enum MenuItem {
     CopyPath,
     ExpandAll,
     LoadDiff,
+    HighlightAnyway,
 }
 
 impl DiffViewport {
@@ -448,16 +449,22 @@ impl DiffViewport {
             Some(open) => open.previous_focus,
             None => window.focused(cx).map(|f| (window.window_handle(), f)),
         };
-        let items = [
+        let mut items = vec![
             (MenuItem::OpenInEditor, "Open in editor", true),
             (MenuItem::CommentOnFile, "Comment on file", true),
             (MenuItem::CopyPath, "Copy path", true),
             (MenuItem::ExpandAll, "Expand all", self.can_expand(f)),
             (MenuItem::LoadDiff, "Load diff", self.can_load_diff(f)),
         ];
+        // Only while a side renders plain for its size (design §11.11).
+        if self.syntax_skipped(f) {
+            items.push((MenuItem::HighlightAnyway, "Highlight anyway", true));
+        }
+        #[cfg(feature = "debug-inspect")]
+        let debug_items = items.iter().map(|(_, l, e)| (*l, *e)).collect();
         let this = cx.entity().downgrade();
         let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
-            for (item, label, enabled) in items {
+            for &(item, label, enabled) in &items {
                 if item == MenuItem::ExpandAll {
                     menu = menu.separator();
                 }
@@ -483,7 +490,7 @@ impl DiffViewport {
             view: menu,
             position: point(button.right(), button.bottom()),
             #[cfg(feature = "debug-inspect")]
-            items: items.iter().map(|(_, l, e)| (*l, *e)).collect(),
+            items: debug_items,
             previous_focus,
             _dismiss: dismiss,
         });
@@ -554,6 +561,7 @@ impl DiffViewport {
                 self.load_diff(f, cx);
                 cx.emit(ViewportEvent::LoadDiffRequested(f));
             }
+            MenuItem::HighlightAnyway => self.highlight_anyway(f, cx),
         }
     }
 

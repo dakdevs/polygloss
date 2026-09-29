@@ -10,13 +10,14 @@
 //! | LFS pointer | the pointer as text; the header gets an `LFS` badge         |
 //! | Load error  | `Could not load this file: …`                               |
 //!
-//! Blob sizes are read on the background executor, never on the main thread;
-//! the label shows "Binary file" until they arrive.
+//! Blob sizes come from the pipeline's background pass
+//! ([`crate::DiffViewport::blob_sizes`]), never from the main thread; the
+//! label shows "Binary file" until they arrive.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use gpui_kit::{AppContext as _, Context, SharedString, Task};
-use polygloss_diff::{FileChange, FileKind, Oid};
+use gpui_kit::{Context, SharedString};
+use polygloss_diff::{FileChange, FileKind};
 
 use crate::controls::ControlAction;
 use crate::document::FileState;
@@ -41,18 +42,9 @@ impl BodyLabel {
     }
 }
 
-/// Blob sizes in bytes; `None` for a missing side or a failed read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BlobSizes {
-    old: Option<u64>,
-    new: Option<u64>,
-}
-
 /// Per-file facts for special bodies and header badges.
 #[derive(Default)]
 pub(crate) struct Specials {
-    sizes: HashMap<u32, BlobSizes>,
-    size_reads: HashMap<u32, Task<()>>,
     /// Files seen to hold a git-lfs pointer (kept after eviction).
     lfs: HashSet<u32>,
     /// Large or generated files the user asked to see.
@@ -77,12 +69,16 @@ impl Specials {
 
     /// The body of a file drawn from metadata alone (binary, submodule, a
     /// generated file not loaded on request), or `None` for code rows.
-    pub(crate) fn body_label(&self, f: u32, change: &FileChange) -> Option<BodyLabel> {
+    /// `sizes` are its old and new blob sizes once read (0 for a missing
+    /// side).
+    pub(crate) fn body_label(
+        &self,
+        f: u32,
+        change: &FileChange,
+        sizes: Option<(u64, u64)>,
+    ) -> Option<BodyLabel> {
         match change.kind {
-            FileKind::Binary => Some(BodyLabel::plain(binary_label(
-                change,
-                self.sizes.get(&f).copied(),
-            ))),
+            FileKind::Binary => Some(BodyLabel::plain(binary_label(change, sizes))),
             FileKind::Submodule => Some(BodyLabel::plain(submodule_label(change))),
             _ if change.generated && !self.load_requested(f) => Some(BodyLabel {
                 text: SharedString::new_static("Generated file"),
@@ -110,20 +106,18 @@ pub(crate) fn large_label(changed: u32) -> BodyLabel {
     }
 }
 
-fn binary_label(change: &FileChange, sizes: Option<BlobSizes>) -> String {
+fn binary_label(change: &FileChange, sizes: Option<(u64, u64)>) -> String {
     const BINARY: &str = "Binary file";
-    let Some(sizes) = sizes else {
+    let Some((old_size, new_size)) = sizes else {
         return BINARY.to_owned();
     };
-    let old = (!change.old_blob.is_zero()).then_some(sizes.old);
-    let new = (!change.new_blob.is_zero()).then_some(sizes.new);
+    let old = (!change.old_blob.is_zero()).then_some(old_size);
+    let new = (!change.new_blob.is_zero()).then_some(new_size);
     match (old, new) {
-        (Some(Some(o)), Some(Some(n))) => {
-            format!("{BINARY} · {} → {}", format_size(o), format_size(n))
-        }
-        (None, Some(Some(n))) => format!("{BINARY} · {}", format_size(n)),
-        (Some(Some(o)), None) => format!("{BINARY} · {}", format_size(o)),
-        _ => BINARY.to_owned(),
+        (Some(o), Some(n)) => format!("{BINARY} · {} → {}", format_size(o), format_size(n)),
+        (None, Some(n)) => format!("{BINARY} · {}", format_size(n)),
+        (Some(o), None) => format!("{BINARY} · {}", format_size(o)),
+        (None, None) => BINARY.to_owned(),
     }
 }
 
@@ -190,10 +184,12 @@ pub fn is_lfs_pointer(blob: &[u8]) -> bool {
 impl DiffViewport {
     /// Shows file `file_idx`'s diff although it is large or generated (the
     /// "Load diff" link and menu item). A generated file loads; a large one,
-    /// already loaded, gets its rows; one not loaded yet shows its rows
-    /// however large it turns out to be. Nothing above it moves. Ignored for
-    /// files with no diff to show (binary, submodule, content unchanged) and
-    /// for a file already shown in full.
+    /// already loaded (a large load keeps no word ranges and no rows), loads
+    /// again in the background with them; one not loaded yet shows its rows
+    /// however large it turns out to be. The body shows "Loading…" until the
+    /// rows arrive, and nothing above it moves. Ignored for files with no
+    /// diff to show (binary, submodule, content unchanged) and for a file
+    /// already shown in full.
     pub fn load_diff(&mut self, file_idx: u32, cx: &mut Context<Self>) {
         let Some(change) = self.files.get(file_idx as usize) else {
             return;
@@ -211,7 +207,9 @@ impl DiffViewport {
         {
             return;
         }
-        // "Loading…" until its rows are there.
+        // The pipeline loads it (again) with no "Load diff" threshold, off
+        // the main thread; "Loading…" until its rows are there.
+        self.pipeline.load_diff(file_idx, &mut self.doc);
         self.labels[file_idx as usize] = None;
         self.relayout(file_idx);
         cx.notify();
@@ -223,44 +221,6 @@ impl DiffViewport {
             .get(f as usize)
             .and_then(Option::as_ref)
             .is_some_and(|l| l.load_diff)
-    }
-
-    /// Starts reading binary file `f`'s blob sizes in the background, once.
-    pub(crate) fn request_blob_sizes(&mut self, f: u32, cx: &mut Context<Self>) {
-        let change = &self.files[f as usize];
-        if change.kind != FileKind::Binary
-            || self.special.sizes.contains_key(&f)
-            || self.special.size_reads.contains_key(&f)
-        {
-            return;
-        }
-        let provider = self.provider.clone();
-        let (old, new) = (change.old_blob.clone(), change.new_blob.clone());
-        let task = cx.spawn(async move |this, cx| {
-            let sizes = cx
-                .background_spawn(async move {
-                    let size = |oid: &Oid| {
-                        if oid.is_zero() {
-                            None
-                        } else {
-                            provider.blob_size(oid).ok()
-                        }
-                    };
-                    BlobSizes {
-                        old: size(&old),
-                        new: size(&new),
-                    }
-                })
-                .await;
-            this.update(cx, |v, cx| {
-                v.special.size_reads.remove(&f);
-                v.special.sizes.insert(f, sizes);
-                v.labels[f as usize] = v.special.body_label(f, &v.files[f as usize]);
-                cx.notify();
-            })
-            .ok();
-        });
-        self.special.size_reads.insert(f, task);
     }
 }
 

@@ -1182,3 +1182,48 @@ fn file_layout_of_200k_rows_is_fast() {
     let elapsed = start.elapsed();
     assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
 }
+
+#[test]
+fn eviction_can_keep_the_materialization_window() {
+    const MB: usize = 1 << 20;
+    let mut d = doc_with_heights(&[100.0; 20], 200.0);
+    for f in 0..20 {
+        let generation = d.begin_loading(f);
+        assert!(d.set_materialized(f, generation, materialized(10 * MB)));
+    }
+    d.scroll_to(10, RowKey::Header);
+    // Everything but the window 8..14 goes, even with no budget at all.
+    let evicted = d.evict_over_budget_keeping(0, 8..14);
+    let kept: Vec<u32> = (0..20).filter(|&f| d.state(f).is_materialized()).collect();
+    assert_eq!(kept, (8..14).collect::<Vec<u32>>());
+    assert_eq!(evicted.len(), 14);
+    assert_eq!(evicted[0], 0, "farthest first");
+    // The visible files are kept even when `keep` misses them.
+    d.evict_over_budget_keeping(0, 0..0);
+    assert!(d.state(10).is_materialized() && d.state(11).is_materialized());
+    assert!(!d.state(8).is_materialized());
+}
+
+#[test]
+fn set_kind_reestimates_unless_exact() {
+    let mut d = doc(3);
+    d.set_viewport_height(100.0);
+    let m = d.metrics().clone();
+    let text = m.header_height + m.default_body_rows as f32 * m.row_height;
+    assert_eq!(d.file_height(1), text);
+    // An estimated text file that turns out binary becomes a placeholder.
+    d.set_kind(1, FileKind::Binary);
+    assert_eq!(d.files()[1].kind, FileKind::Binary);
+    assert_eq!(d.file_height(1), m.header_height + m.placeholder_height);
+    // An exact height stays as it is.
+    d.set_file_height(2, 77.0);
+    d.set_kind(2, FileKind::Binary);
+    assert_eq!(d.files()[2].kind, FileKind::Binary);
+    assert_eq!(d.file_height(2), 77.0);
+    // The list is copied on write: the caller's shared list is untouched.
+    let shared = files(3);
+    let mut d = Document::new(shared.clone(), metrics());
+    d.set_kind(0, FileKind::Binary);
+    assert_eq!(shared[0].kind, FileKind::Text);
+    assert_eq!(d.files()[0].kind, FileKind::Binary);
+}

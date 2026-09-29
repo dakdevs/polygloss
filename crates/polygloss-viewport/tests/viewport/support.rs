@@ -24,8 +24,8 @@ use gpui_kit::{
 use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid};
 use polygloss_highlight::{Appearance, pierre_theme};
 use polygloss_viewport::{
-    ControlAction, DiffProvider, DiffViewport, FrameStats, LayoutMode, ViewportDebug,
-    ViewportEvent, ViewportOptions, ViewportTheme,
+    ControlAction, DiffProvider, DiffViewport, FrameStats, LayoutMode, PipelineStats, ScrollTarget,
+    ViewportDebug, ViewportEvent, ViewportOptions, ViewportTheme,
 };
 
 /// Code font size the tests use: one char is `0.6 × 13 = 7.8` px wide.
@@ -98,6 +98,8 @@ pub struct Spec {
     pub new: Option<String>,
     pub kind: FileKind,
     pub old_path: Option<String>,
+    /// Listed as generated (drawn collapsed, never loaded; design §12.3).
+    pub generated: bool,
 }
 
 impl Spec {
@@ -108,6 +110,15 @@ impl Spec {
             new: Some(new.to_owned()),
             kind: FileKind::Text,
             old_path: None,
+            generated: false,
+        }
+    }
+
+    /// A modified text file listed as generated.
+    pub fn generated(path: &str, old: &str, new: &str) -> Spec {
+        Spec {
+            generated: true,
+            ..Spec::modified(path, old, new)
         }
     }
 
@@ -118,6 +129,7 @@ impl Spec {
             new: Some(new.to_owned()),
             kind: FileKind::Text,
             old_path: None,
+            generated: false,
         }
     }
 
@@ -128,16 +140,25 @@ impl Spec {
             new: Some("\0new".to_owned()),
             kind: FileKind::Binary,
             old_path: None,
+            generated: false,
         }
     }
 }
 
-/// An in-memory `DiffProvider` that counts blob loads and can fail them.
+/// What [`MemProvider::mark`] logs.
+pub const MARK: usize = usize::MAX;
+
+/// An in-memory `DiffProvider` that counts blob loads, records their order
+/// and can fail them.
 pub struct MemProvider {
     files: Arc<Vec<FileChange>>,
     blobs: HashMap<String, Arc<[u8]>>,
+    /// The file each blob belongs to.
+    owners: HashMap<String, usize>,
     /// Blobs that fail to load (see [`MemProvider::set_broken`]).
     broken: Mutex<HashSet<String>>,
+    /// The file of every `load_blob` call, in call order.
+    order: Mutex<Vec<usize>>,
     pub loads: AtomicUsize,
 }
 
@@ -161,12 +182,16 @@ impl MemProvider {
             }
             None => Oid::zero(ObjectFormat::Sha1),
         };
+        let mut owners = HashMap::new();
         let files = specs
             .iter()
             .enumerate()
             .map(|(idx, s)| {
                 let old_blob = blob(&s.old);
                 let new_blob = blob(&s.new);
+                for oid in [&old_blob, &new_blob] {
+                    owners.insert(oid.as_str().to_owned(), idx);
+                }
                 let status = match (&s.old, &s.new, &s.old_path) {
                     (None, _, _) => FileStatus::Added,
                     (_, None, _) => FileStatus::Deleted,
@@ -189,7 +214,7 @@ impl MemProvider {
                     new_blob,
                     similarity: s.old_path.as_ref().map(|_| 90),
                     kind: s.kind,
-                    generated: false,
+                    generated: s.generated,
                 }
             })
             .collect::<Vec<_>>();
@@ -198,13 +223,37 @@ impl MemProvider {
         Arc::new(MemProvider {
             files: Arc::new(files),
             blobs,
+            owners,
             broken: Mutex::new(HashSet::new()),
+            order: Mutex::new(Vec::new()),
             loads: AtomicUsize::new(0),
         })
     }
 
     pub fn load_count(&self) -> usize {
         self.loads.load(Ordering::SeqCst)
+    }
+
+    /// The file whose blob each `load_blob` call read, in call order, with
+    /// the [`MemProvider::mark`]s in between.
+    pub fn load_order(&self) -> Vec<usize> {
+        self.order.lock().unwrap().clone()
+    }
+
+    /// Puts [`MARK`] into the [`MemProvider::load_order`] log (e.g. when a
+    /// frame is painted), to see which reads came before and after.
+    pub fn mark(&self) {
+        self.order.lock().unwrap().push(MARK);
+    }
+
+    /// `load_blob` calls that read a blob of file `idx`.
+    pub fn loads_of(&self, idx: usize) -> usize {
+        self.order
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&f| f == idx)
+            .count()
     }
 
     /// Makes loading file `idx`'s blobs fail (like objects missing from a
@@ -243,6 +292,9 @@ impl DiffProvider for MemProvider {
 
     fn load_blob(&self, oid: &Oid) -> anyhow::Result<Arc<[u8]>> {
         self.loads.fetch_add(1, Ordering::SeqCst);
+        if let Some(&idx) = self.owners.get(oid.as_str()) {
+            self.order.lock().unwrap().push(idx);
+        }
         self.check(oid)?;
         self.blobs
             .get(oid.as_str())
@@ -278,19 +330,58 @@ pub fn options(layout: LayoutMode) -> ViewportOptions {
 /// and lets every background task finish.
 pub fn open(
     cx: &mut TestAppContext,
-    provider: Arc<MemProvider>,
+    provider: Arc<dyn DiffProvider>,
     opts: ViewportOptions,
     width: f32,
     height: f32,
 ) -> (Entity<DiffViewport>, &mut VisualTestContext) {
     assert_sandboxed();
     let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
-        DiffViewport::new(provider as Arc<dyn DiffProvider>, opts, window, cx)
+        DiffViewport::new(provider, opts, window, cx)
     });
     let view = window.root(cx).expect("window has a root view");
     let cx = VisualTestContext::from_window(*window, cx).into_mut();
     settle(cx);
     (view, cx)
+}
+
+/// Opens a window of `width × height` showing a viewport over `provider`
+/// without running any background work. GPUI draws the first frame when the
+/// window opens, so the loads it starts stay pending.
+pub fn open_idle(
+    cx: &mut TestAppContext,
+    provider: Arc<dyn DiffProvider>,
+    opts: ViewportOptions,
+    width: f32,
+    height: f32,
+) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+    open_idle_at(cx, provider, opts, width, height, ScrollTarget::File(0))
+}
+
+/// [`open_idle`] with the viewport scrolled to `target` before its first
+/// frame.
+pub fn open_idle_at(
+    cx: &mut TestAppContext,
+    provider: Arc<dyn DiffProvider>,
+    opts: ViewportOptions,
+    width: f32,
+    height: f32,
+    target: ScrollTarget,
+) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+    assert_sandboxed();
+    let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
+        let mut view = DiffViewport::new(provider, opts, window, cx);
+        view.scroll_to(target, cx);
+        view
+    });
+    let view = window.root(cx).expect("window has a root view");
+    let cx = VisualTestContext::from_window(*window, cx).into_mut();
+    (view, cx)
+}
+
+/// The viewport's background pipeline counters.
+pub fn pipeline_stats(view: &Entity<DiffViewport>, cx: &mut VisualTestContext) -> PipelineStats {
+    view.read_with(cx, |v, _| v.pipeline_stats())
 }
 
 /// Runs background work and redraws until nothing is left to do.

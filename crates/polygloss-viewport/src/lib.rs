@@ -4,12 +4,14 @@
 //! - [`document`]: every file's height, the logical scroll anchor, the
 //!   materialization window and eviction (pure Rust).
 //! - [`DiffViewport`]: the GPUI view. It reads files and blobs from a
-//!   [`DiffProvider`], materializes files near the viewport in the background
-//!   and paints only visible rows, split or unified, with line numbers, change
-//!   indicators, word highlights and syntax colors; sticky file headers with
-//!   the host's review flags ([`FileFlags`]), a collapse chevron, a Viewed
-//!   checkbox and a ⋯ menu; gap expanders; and placeholders for binary,
-//!   submodule, generated and large files.
+//!   [`DiffProvider`] and paints only visible rows, split or unified, with
+//!   line numbers, change indicators, word highlights and syntax colors;
+//!   sticky file headers with the host's review flags ([`FileFlags`]), a
+//!   collapse chevron, a Viewed checkbox and a ⋯ menu; gap expanders; and
+//!   placeholders for binary, submodule, generated and large files.
+//! - [`pipeline`]: the prioritized, cancellable background work behind it:
+//!   loads and highlights for the files near the viewport, then sizes and
+//!   line counts of every file.
 //!
 //! The ⋯ menu is a gpui-kit `PopupMenu`: hosts call `gpui_kit::init` first,
 //! as every Polygloss window does.
@@ -25,6 +27,7 @@ mod header;
 pub mod layout;
 pub mod materialize;
 mod paint_rows;
+pub mod pipeline;
 pub mod provider;
 pub mod special;
 pub mod style;
@@ -39,7 +42,8 @@ pub use document::{
 };
 pub use file_flags::FileFlags;
 pub use layout::{LayoutMode, resolve_layout};
-pub use materialize::MaterializedFile;
+pub use materialize::{LoadError, LoadOptions, Loaded, MaterializedFile};
+pub use pipeline::{FileCounts, PipelineStats};
 pub use provider::DiffProvider;
 pub use style::{DiffStyle, Indicators, ViewportTheme};
 pub use view::{DiffViewport, FrameStats, ScrollTarget, ViewportEvent, ViewportOptions};
