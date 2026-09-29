@@ -1,0 +1,8 @@
+/target
+/target-shared
+/node_modules
+/vendor/
+/dist/
+/benches/results/
+*.profraw
+.DS_Store

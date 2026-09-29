@@ -1,0 +1,107 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/polygloss-diff",
+  "crates/polygloss-core",
+  "crates/polygloss-highlight",
+  "crates/polygloss-viewport",
+  "crates/polygloss-platform",
+  "crates/polygloss-app",
+  "crates/polygloss-mcp",
+  "crates/polygloss-cli",
+  "crates/polygloss-perf",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dakdevs/polygloss"
+
+[workspace.dependencies]
+# --- workspace members ---
+polygloss-diff = { path = "crates/polygloss-diff" }
+polygloss-core = { path = "crates/polygloss-core" }
+polygloss-highlight = { path = "crates/polygloss-highlight" }
+polygloss-viewport = { path = "crates/polygloss-viewport" }
+polygloss-platform = { path = "crates/polygloss-platform" }
+polygloss-mcp = { path = "crates/polygloss-mcp" }
+
+# Verified block from docs/research/library-choices.md, copied verbatim.
+# --- UI: app, viewport, highlight, platform ---
+gpui-kit = { version = "=0.7.0", default-features = false, features = ["component", "assets"] }
+lumis = { version = "=0.15.0", default-features = false, features = [
+  "lang-bundle-web", "lang-bundle-backend", "lang-bundle-system",
+  "lang-markdown", "lang-markdown-inline", "lang-yaml", "lang-toml", "lang-diff",
+  "lang-dockerfile", "lang-swift", "lang-objc", "lang-lua", "lang-nix", "lang-graphql",
+  "lang-scss", "lang-vue", "lang-svelte", "lang-xml", "lang-hcl"
+] }
+nucleo-matcher = "0.3.1"
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", features = ["NSString"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSDockTile"] }
+
+# --- core, diff (no GPUI; shared by app and cli) ---
+gix = { version = "0.88.0", default-features = false, features = ["sha1", "sha256", "revision", "max-performance-safe"] }
+gix-imara-diff = "0.3.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite_migration = "2.6.0"
+markdown = "1.0.0"
+sha2 = "0.11.0"
+hex = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+interprocess = "2.4.4"
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-appender = "0.2.5"
+futures = "0.3.34"
+
+# --- mcp, cli (no GPUI) ---
+clap = { version = "4.6.7", features = ["derive"] }
+rmcp = { version = "~3.5.0", default-features = false, features = ["server", "macros", "transport-io"] }
+schemars = "1.2.2"
+tokio = { version = "1.53.1", features = ["rt", "macros", "io-std", "io-util", "sync", "time"] }
+
+# --- dev / test / bench ---
+insta = { version = "1.48.0", features = ["json"] }
+tempfile = "3.27.0"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+# --- plan additions (docs/plan.md Open questions) ---
+uuid = { version = "1", features = ["v7", "serde"] } # OQ-P2
+regex = "1.13.1"                                      # OQ-P8 (app find)
+
+[profile.dev]
+debug = "line-tables-only" # full debuginfo for gpui-kit bloats target/ by GBs
+incremental = true
+
+[profile.dev.package]
+"*" = { debug = false }
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+gpui-pre-sum-tree = { opt-level = 3 }
+taffy = { opt-level = 3 }
+resvg = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+smol = { opt-level = 3 }
+ropey = { opt-level = 3 }
+markdown = { opt-level = 3 }
+tree-sitter = { opt-level = 3 }
+gix-imara-diff = { opt-level = 3 }
+
+[profile.release]
+lto = "thin"
+debug = false
+strip = "debuginfo"
+
+[profile.perf] # for polygloss-perf and samply profiles
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

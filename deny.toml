@@ -1,0 +1,40 @@
+# cargo-deny policy (ADR-0004): permissive licenses only, crates.io only.
+# Run: scripts/cargo.sh deny check licenses bans sources
+
+[graph]
+# v1 ships on macOS arm64 only (ADR-0016); audit the graph that is actually built.
+targets = ["aarch64-apple-darwin"]
+all-features = false
+
+[licenses]
+# Everything not listed is denied, including every GPL, LGPL and AGPL variant.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "BSL-1.0",
+  "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+# Narrow, per-crate exceptions for permissive licenses outside the list above.
+[[licenses.exceptions]]
+# bzip2-1.0.6 is a permissive BSD-style license. Reached only via
+# gpui-pre-http-client -> async-compression -> bzip2 (GPUI's null HTTP client).
+crate = "libbz2-rs-sys"
+allow = ["bzip2-1.0.6"]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

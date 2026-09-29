@@ -1,0 +1,33 @@
+[package]
+name = "polygloss-app"
+description = "Polygloss: native macOS diff reviewer (GPUI app)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "Polygloss"
+
+[[bin]]
+name = "Polygloss"
+path = "src/main.rs"
+
+[dependencies]
+polygloss-core.workspace = true
+polygloss-diff.workspace = true
+polygloss-highlight.workspace = true
+polygloss-viewport.workspace = true
+polygloss-platform = { workspace = true, features = ["appkit"] }
+gpui-kit.workspace = true
+nucleo-matcher.workspace = true
+notify.workspace = true
+notify-debouncer-full.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+insta.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "polygloss-core"
+description = "Polygloss core: git, ids, snapshots, store, events and review domain (no GPUI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# T1.1 adds every dependency the ownership table allows.

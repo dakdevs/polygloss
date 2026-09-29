@@ -1,0 +1,17 @@
+[package]
+name = "polygloss-platform"
+description = "Polygloss macOS glue: launch, Dock badge, Sparkle, editor detection, CLI install (no GPUI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+appkit = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, optional = true }
+objc2-foundation = { workspace = true, optional = true }
+objc2-app-kit = { workspace = true, optional = true }

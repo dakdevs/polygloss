@@ -1,0 +1,4 @@
+# Tests may unwrap/expect/print freely; library and binary code may not rely on it.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true

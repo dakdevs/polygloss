@@ -1,0 +1,16 @@
+[package]
+name = "polygloss-viewport"
+description = "Polygloss diff viewport: document model and GPUI element"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+polygloss-diff.workspace = true
+polygloss-highlight.workspace = true
+gpui-kit.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

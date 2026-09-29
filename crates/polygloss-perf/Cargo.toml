@@ -1,0 +1,20 @@
+[package]
+name = "polygloss-perf"
+description = "Polygloss perf harness (dev only, never shipped)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "polygloss-perf"
+path = "src/main.rs"
+
+[dependencies]
+polygloss-core.workspace = true
+polygloss-diff.workspace = true
+polygloss-highlight.workspace = true
+polygloss-viewport.workspace = true
+gpui-kit.workspace = true
