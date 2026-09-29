@@ -6610,11 +6610,16 @@ dependencies = [
 name = "polygloss-perf"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "futures",
  "gpui-kit",
+ "libc",
  "polygloss-core",
  "polygloss-diff",
  "polygloss-highlight",
  "polygloss-viewport",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

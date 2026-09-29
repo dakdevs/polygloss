@@ -86,6 +86,40 @@ describe("nightly workflow", () => {
     expect(upload?.with?.["if-no-files-found"]).toBe("ignore");
   });
 
+  test("perf builds the harness, makes every corpus and compares with the CI baseline", () => {
+    const job = loadWorkflow().jobs?.perf;
+    if (!job) throw new Error("nightly.yml has no perf job");
+    expect(job["runs-on"]).toBe("macos-15");
+    const steps = job.steps ?? [];
+    const runs = steps.flatMap((s) => (s.run ? [s.run] : [])).join("\n");
+    expect(runs).toContain("rustup toolchain install");
+    expect(runs).toContain(
+      "scripts/cargo.sh build --profile perf -p polygloss-perf",
+    );
+    for (const script of [
+      "bun benches/corpora/make-typical.ts",
+      "bun benches/corpora/make-synthetic.ts",
+      "bun benches/corpora/make-huge-file.ts",
+      "benches/corpora/fetch-linux.sh",
+    ])
+      expect(runs).toContain(script);
+    const matrix = steps.find((s) => s.run?.includes("benches/run-perf.ts"));
+    // Budgets are gated on the developer's machine; CI compares against the
+    // baseline recorded for its runner class (OQ-P9).
+    expect(matrix?.run).toContain(
+      "bun benches/run-perf.ts --corpus all --layouts split,unified --compare-baseline",
+    );
+    expect(matrix?.run).not.toContain("--check-budgets");
+    for (const s of steps.filter(
+      (s) => s.run?.includes("corpora") || s.run?.includes("run-perf"),
+    ))
+      expect(s.env?.POLYGLOSS_CORPORA).toBe("${{ runner.temp }}/corpora");
+    expect(runs).not.toMatch(/(^|\s)cargo (build|test|run)/m);
+    const upload = steps.find((s) => s.uses === "actions/upload-artifact@v7");
+    expect(upload?.if).toBe("always()");
+    expect(upload?.with?.path).toBe("benches/results");
+  });
+
   test("uploads mismatches as an artifact whether or not parity passes", () => {
     const upload = (parityJob().steps ?? []).find(
       (s) => s.uses === "actions/upload-artifact@v7",
