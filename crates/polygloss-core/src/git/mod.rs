@@ -10,6 +10,8 @@ pub mod runner;
 pub mod snapshot;
 pub mod version;
 
+pub use attrs::{BUILTIN_GENERATED, classify};
+pub use diff_tree::{ParseError, list_changes, parse_raw_z};
 pub use repo::{RepoInfo, discover};
 pub use resolve::{
     CompareMode, HeadSpec, Resolution, ResolveError, ResolveWarning, ResolvedSide, ReviewKind,
