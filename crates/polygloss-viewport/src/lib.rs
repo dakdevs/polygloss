@@ -14,6 +14,9 @@
 //!   line counts of every file.
 //! - [`blocks`]: host elements (threads, composers, notes) below their
 //!   anchored line, measured near the viewport, with split spacers.
+//! - The line cursor and ranges ([`CursorPos`], `j`/`k`, `⇧↑`/`⇧↓`, `]`/`[`,
+//!   `n`/`p`, `e`/`E`, `c`), the "+" on hovered line numbers, dragging
+//!   across them for a range, and text selection with copy.
 //!
 //! The ⋯ menu is a gpui-kit `PopupMenu`: hosts initialize gpui-kit first, as
 //! every Polygloss window does, with [`kit::init_kit`] (`gpui_kit::init`
@@ -21,6 +24,7 @@
 
 pub mod blocks;
 mod controls;
+mod cursor;
 pub mod debug;
 pub mod document;
 mod element;
@@ -34,6 +38,7 @@ pub mod materialize;
 mod paint_rows;
 pub mod pipeline;
 pub mod provider;
+mod selection;
 pub mod special;
 pub mod style;
 mod text_cache;
@@ -41,7 +46,8 @@ mod view;
 
 pub use blocks::{BlockSpec, ESTIMATED_BLOCK_ROWS, RenderBlock};
 pub use controls::ControlAction;
-pub use debug::{ControlDebug, HeaderDebug, MenuDebug, ViewportDebug};
+pub use cursor::{CursorPos, Direction};
+pub use debug::{ControlDebug, HeaderDebug, MenuDebug, PlusDebug, ViewportDebug};
 pub use document::{
     BlockAnchor, BlockId, BodyRow, Document, FileLayout, FileState, HeightIndex, Metrics,
     PlacedBlock, RowKey, ScrollAnchor, SizeHint,

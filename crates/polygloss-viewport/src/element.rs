@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    App, BorderStyle, Bounds, ContentMask, DispatchPhase, Element, ElementId, Entity,
+    App, BorderStyle, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, Entity,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
     Pixels, ScrollWheelEvent, Style, Window, fill, px, quad, relative,
 };
@@ -21,6 +21,7 @@ use gpui_kit::{
 use crate::blocks::{self, PreparedBlock};
 use crate::controls::{self, ControlLayer, Target};
 use crate::paint_rows::{Frame, HEADERS, Layer};
+use crate::selection;
 use crate::view::{DiffViewport, FrameStats};
 
 pub(crate) struct DiffElement {
@@ -39,6 +40,8 @@ pub(crate) struct Prepainted {
     blocks: Vec<PreparedBlock>,
     hitbox: Hitbox,
     targets: Rc<[Target]>,
+    /// The code cells' gutter and code hitboxes, with their pointer cursors.
+    cells: Rc<[(Hitbox, CursorStyle)]>,
     prepaint: Duration,
 }
 
@@ -96,14 +99,17 @@ impl Element for DiffElement {
         // cut by the viewport's edges (a header pushed up by the next one, a
         // gap row half scrolled off, an expander past the right edge) must
         // not take the pointer from the host's chrome around the viewport.
-        let targets = window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            controls::insert_hitboxes(&frame, window)
+        let (cells, targets) = window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            // Code cells under the controls and the header strips.
+            let cells = selection::insert_hitboxes(&frame, window);
+            (cells, controls::insert_hitboxes(&frame, window))
         });
         Prepainted {
             frame: Some(frame),
             blocks,
             hitbox,
             targets,
+            cells,
             prepaint: started.elapsed(),
         }
     }
@@ -142,6 +148,14 @@ impl Element for DiffElement {
                 cx.stop_propagation();
             }
         });
+        // Presses on code cells, drags and the "+" hover: after the wheel,
+        // before the blocks and controls, which get the pointer first.
+        selection::wire(
+            &self.view,
+            prepainted.hitbox.clone(),
+            prepainted.cells.clone(),
+            window,
+        );
         let (rows, headers) = frame.layers.split_at(HEADERS);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for layer in rows {

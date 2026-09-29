@@ -22,6 +22,7 @@ use polygloss_diff::{FileChange, FileKind, Side};
 
 use crate::blocks::Blocks;
 use crate::controls::Pressed;
+use crate::cursor::Cursor;
 use crate::document::{
     BlockId, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document, FileLayout,
     FileState, RowKey, ScrollAnchor,
@@ -34,9 +35,10 @@ use crate::layout::{Columns, Geometry, LayoutMode, Pane, digits, resolve_layout,
 use crate::materialize::MaterializedFile;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::DebugRow;
-use crate::paint_rows::{Frame, Painter, failed_label};
+use crate::paint_rows::{Frame, Marks, Painter, failed_label};
 use crate::pipeline::{Applied, Done, FileCounts, Pipeline, PipelineStats};
 use crate::provider::DiffProvider;
+use crate::selection::{Drag, TextSelection};
 use crate::special::{BodyLabel, Specials, large_label, needs_blobs};
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{TEXT_CACHE_CAPACITY, TextCache};
@@ -212,6 +214,14 @@ pub struct DiffViewport {
     pub(crate) pressed: Option<Pressed>,
     /// Host blocks (threads, composers, notes; see [`crate::blocks`]).
     pub(crate) blocks: Blocks,
+    /// The line cursor and range ([`crate::cursor`]).
+    pub(crate) cursor: Cursor,
+    /// Selected text ([`crate::selection`]).
+    pub(crate) selection: Option<TextSelection>,
+    /// A mouse drag across line numbers or code.
+    pub(crate) drag: Option<Drag>,
+    /// The pointer is over the viewport (not a header or a popup over it).
+    pub(crate) pointer_inside: bool,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
@@ -274,6 +284,10 @@ impl DiffViewport {
             menu: None,
             pressed: None,
             blocks: Blocks::default(),
+            cursor: Cursor::default(),
+            selection: None,
+            drag: None,
+            pointer_inside: false,
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
             #[cfg(feature = "debug-inspect")]
@@ -377,6 +391,7 @@ impl DiffViewport {
     /// menu.
     pub fn scroll_to(&mut self, target: ScrollTarget, cx: &mut Context<Self>) {
         self.close_menu(cx);
+        self.cursor.pending = None;
         let (file_idx, row) = match target {
             ScrollTarget::File(f) => (f, RowKey::Header),
             ScrollTarget::Line {
@@ -411,6 +426,7 @@ impl DiffViewport {
     /// Closes the ⋯ menu (it would no longer sit under its button).
     pub fn scroll_by(&mut self, dy: f32, cx: &mut Context<Self>) {
         self.close_menu(cx);
+        self.cursor.pending = None;
         self.doc.scroll_by(dy);
         self.after_scroll(cx);
     }
@@ -472,6 +488,14 @@ impl DiffViewport {
                         .collect()
                 })
                 .unwrap_or_default(),
+            plus_button: self.frame_pool.as_ref().and_then(|f| f.plus).map(|p| {
+                crate::debug::PlusDebug {
+                    file_idx: p.file_idx,
+                    side: p.side,
+                    line: p.line,
+                    bounds: p.bounds,
+                }
+            }),
             menu: self.menu.as_ref().map(|m| crate::debug::MenuDebug {
                 file_idx: m.file_idx,
                 items: m.items.iter().map(|(l, e)| ((*l).to_owned(), *e)).collect(),
@@ -498,6 +522,24 @@ impl DiffViewport {
         }
         self.text_cache.begin_frame();
         self.prepare_window(height, cx);
+        // A cursor move into a file that was not laid out lands now; if it
+        // scrolled, the files around the new position are laid out too.
+        if self.resolve_pending_cursor(cx) {
+            self.prepare_window(height, cx);
+        }
+        let pointer = self.pointer_inside.then(|| {
+            let p = window.mouse_position();
+            (
+                (p.x - bounds.origin.x).as_f32(),
+                (p.y - bounds.origin.y).as_f32(),
+            )
+        });
+        let marks = Marks {
+            cursor: self.cursor.pos,
+            selection: self.selection,
+            pointer,
+            text_drag: self.drag == Some(Drag::Text),
+        };
 
         let scale = f64::from(window.scale_factor().max(1.0));
         let mut frame = self.frame_pool.take().unwrap_or_default();
@@ -530,6 +572,7 @@ impl DiffViewport {
                 pipeline: &self.pipeline,
                 blocks: &self.blocks,
                 text_system: window.text_system().clone(),
+                marks,
                 frame: &mut frame,
                 corrections: Vec::new(),
                 #[cfg(feature = "debug-inspect")]

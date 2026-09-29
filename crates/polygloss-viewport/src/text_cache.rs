@@ -78,6 +78,39 @@ impl Shaped {
         self.0.width().as_f32()
     }
 
+    /// The char boundary (display byte index) closest to `x` on visual row
+    /// `row`, relative to the text origin: 0 before the text, the row's end
+    /// past it. A binary search over [`Shaped::position`] (positions grow
+    /// along the text, row by row), so it costs `O(log n)` lookups.
+    pub fn closest_index(&self, x: f32, row: u32, line_height: f32) -> usize {
+        let text = &self.0.text;
+        let bounds: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        let key = |i: usize| self.position(bounds[i], line_height);
+        let before = |(bx, br): (f32, u32)| br < row || (br == row && bx < x);
+        let (mut lo, mut hi) = (0, bounds.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if before(key(mid)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let at = lo;
+        let candidates = [at.checked_sub(1), (at < bounds.len()).then_some(at)];
+        candidates
+            .into_iter()
+            .flatten()
+            .filter(|&i| key(i).1 == row)
+            .min_by(|&a, &b| (key(a).0 - x).abs().total_cmp(&(key(b).0 - x).abs()))
+            .or(candidates[0])
+            .map_or(0, |i| bounds[i])
+    }
+
     /// Position of byte `index` relative to the text origin: `(x, visual row)`.
     pub fn position(&self, index: usize, line_height: f32) -> (f32, u32) {
         match self.0.position_for_index(index, px(line_height)) {
@@ -213,6 +246,8 @@ pub(crate) struct DisplayLine {
     /// `(source offset, display offset)` after every char that changed
     /// length; offsets in between shift by the last entry.
     breaks: Vec<(u32, u32)>,
+    /// `(source offset, display offset)` before each of those chars.
+    starts: Vec<(u32, u32)>,
     /// Source bytes shown (everything before the cut or the hidden `\r`).
     shown: u32,
     /// Display bytes before the `…`.
@@ -224,6 +259,7 @@ impl DisplayLine {
         let src = src.strip_suffix(b"\r").unwrap_or(src);
         let mut text = String::with_capacity(src.len().min(max_chars.saturating_mul(4)) + 3);
         let mut breaks = Vec::new();
+        let mut starts = Vec::new();
         let (mut at, mut chars, mut col) = (0usize, 0usize, 0usize);
         let mut cut = false;
         'chunks: for chunk in src.utf8_chunks() {
@@ -232,16 +268,19 @@ impl DisplayLine {
                     cut = true;
                     break 'chunks;
                 }
+                let before = (at as u32, text.len() as u32);
                 at += ch.len_utf8();
                 chars += 1;
                 match ch {
                     '\t' => {
+                        starts.push(before);
                         let n = TAB_WIDTH - col % TAB_WIDTH;
                         text.extend(std::iter::repeat_n(' ', n));
                         col += n;
                         breaks.push((at as u32, text.len() as u32));
                     }
                     c if let Some(picture) = control_picture(c) => {
+                        starts.push(before);
                         text.push(picture);
                         col += 1;
                         breaks.push((at as u32, text.len() as u32));
@@ -257,6 +296,7 @@ impl DisplayLine {
                     cut = true;
                     break;
                 }
+                starts.push((at as u32, text.len() as u32));
                 at += chunk.invalid().len();
                 chars += 1;
                 col += 1;
@@ -271,6 +311,7 @@ impl DisplayLine {
         DisplayLine {
             text,
             breaks,
+            starts,
             shown: at as u32,
             shown_display,
         }
@@ -296,6 +337,33 @@ impl DisplayLine {
             d -= 1;
         }
         d
+    }
+}
+
+impl DisplayLine {
+    /// The source byte offset shown at display offset `display` (a char
+    /// boundary of the display text): inside an expanded tab, a Control
+    /// Picture or a replacement char, the nearer end of the source char;
+    /// from the cut `…` on, the end of what is shown.
+    pub fn unmap(&self, display: usize) -> u32 {
+        if display >= self.shown_display {
+            return self.shown;
+        }
+        let d = display as u32;
+        // Changed chars that end at or before `d`.
+        let j = self.breaks.partition_point(|&(_, e)| e <= d);
+        if let Some(&(start_src, start_disp)) = self.starts.get(j)
+            && start_disp < d
+        {
+            let (end_src, end_disp) = self.breaks[j];
+            return if d - start_disp <= end_disp - d {
+                start_src
+            } else {
+                end_src
+            };
+        }
+        let (s, e) = j.checked_sub(1).map_or((0, 0), |i| self.breaks[i]);
+        s + (d - e)
     }
 }
 
@@ -473,4 +541,31 @@ fn word_rects(
         }
     }
     rects
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DisplayLine;
+
+    #[test]
+    fn unmap_inverts_map_and_snaps_inside_expanded_chars() {
+        // `\t` expands to 4 spaces, `\x1b` to `␛` (3 bytes), `é` is 2 bytes
+        // on both sides.
+        let src = "a\tb\x1bé".as_bytes();
+        let line = DisplayLine::new(src, 1024);
+        assert_eq!(line.text, "a   b␛é");
+        for s in [0u32, 1, 2, 3, 4, 6] {
+            assert_eq!(line.unmap(line.map(s)), s, "source offset {s}");
+        }
+        // Inside the tab (display 1..4): the nearer end of the `\t`.
+        assert_eq!(line.unmap(2), 1);
+        assert_eq!(line.unmap(3), 2);
+        // Past the end.
+        assert_eq!(line.unmap(100), src.len() as u32);
+        // A cut line: from the `…` on, the end of what is shown.
+        let cut = DisplayLine::new(b"abcdef", 3);
+        assert_eq!(cut.text, "abc…");
+        assert_eq!(cut.unmap(3), 3);
+        assert_eq!(cut.unmap(6), 3);
+    }
 }
