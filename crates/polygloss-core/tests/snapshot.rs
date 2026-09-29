@@ -79,7 +79,8 @@ fn blob_in(repo: &FixtureRepo, state: &LiveState, path: &str) -> Oid {
     Oid::parse(String::from_utf8(out.stdout).unwrap().trim(), fmt_of(repo)).unwrap()
 }
 
-/// Every file under `dir` with its bytes, to prove a directory was not written.
+/// Every file (with its bytes), directory and socket under `dir`, to prove a
+/// directory was not written.
 /// (Not mtimes: when `git add` finds an object it would write already present in
 /// an alternate it "freshens" that file's mtime, and it freshens a split index's
 /// `sharedindex.*` on read. Contents and the set of files never change.)
@@ -87,10 +88,14 @@ fn listing(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn walk(dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_dir() {
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                out.insert(entry.path(), b"<dir>".to_vec());
                 walk(&entry.path(), out);
-            } else {
+            } else if kind.is_file() {
                 out.insert(entry.path(), std::fs::read(entry.path()).unwrap());
+            } else {
+                out.insert(entry.path(), b"<special>".to_vec());
             }
         }
     }
@@ -113,9 +118,11 @@ fn git_ok(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
 }
 
+/// Whether the repo itself has `oid` (never lazily fetched in a partial clone).
 fn cat_file_exists(repo: &FixtureRepo, oid: &Oid) -> bool {
     Command::new("git")
         .current_dir(repo.path())
+        .env("GIT_NO_LAZY_FETCH", "1")
         .args(["cat-file", "-e", oid.as_str()])
         .status()
         .unwrap()
@@ -164,10 +171,31 @@ fn snapshot_leaves_user_index_untouched() {
     let index = repo.path().join(".git/index");
     let index_before = std::fs::read(&index).unwrap();
     let status_before = repo.git(&["status", "--porcelain=v2", "-z"]);
+    let repo_info = info(&repo);
 
-    let state = snapshotter(&sb)
-        .snapshot(&info(&repo), repo.path())
-        .unwrap();
+    // What agents and hooks export (RF3), all pointing somewhere else: the snapshot
+    // must neither follow nor write through them.
+    let other = base_repo(ObjectFormat::Sha1);
+    let other_git_dir = other.path().join(".git");
+    let other_before = listing(&other_git_dir);
+    let bogus = sb.home().join("bogus");
+    std::fs::create_dir_all(&bogus).unwrap();
+    let exported = [
+        ("GIT_DIR", other_git_dir.clone()),
+        ("GIT_WORK_TREE", other.path().to_path_buf()),
+        ("GIT_COMMON_DIR", other_git_dir.clone()),
+        ("GIT_INDEX_FILE", bogus.join("index")),
+        ("GIT_OBJECT_DIRECTORY", bogus.join("objects")),
+        ("GIT_ALTERNATE_OBJECT_DIRECTORIES", bogus.join("alt")),
+    ];
+    for (key, val) in &exported {
+        set_env(key, val);
+    }
+    let state = snapshotter(&sb).snapshot(&repo_info, repo.path());
+    for (key, _) in &exported {
+        remove_env(key);
+    }
+    let state = state.unwrap();
 
     assert_eq!(std::fs::read(&index).unwrap(), index_before);
     assert_eq!(repo.git(&["status", "--porcelain=v2", "-z"]), status_before);
@@ -175,6 +203,33 @@ fn snapshot_leaves_user_index_untouched() {
         ls_tree(&repo, &state),
         [".gitignore", "a.txt", "dir/b.txt", "untracked.txt"]
     );
+    assert_eq!(listing(&other_git_dir), other_before);
+    assert_eq!(std::fs::read_dir(&bogus).unwrap().count(), 0);
+}
+
+fn set_env(key: &str, val: impl AsRef<std::ffi::OsStr>) {
+    // SAFETY: one process per test (nextest); no other thread reads env here.
+    unsafe { std::env::set_var(key, val) }
+}
+
+fn remove_env(key: &str) {
+    // SAFETY: as in `set_env`.
+    unsafe { std::env::remove_var(key) }
+}
+
+#[test]
+fn snapshot_with_fsmonitor_configured_starts_no_daemon() {
+    let sb = Sandbox::isolate();
+    let repo = base_repo(ObjectFormat::Sha1);
+    repo.git(&["config", "core.fsmonitor", "true"]);
+    repo.write("a.txt", b"watched\n");
+    let before = listing(&repo.path().join(".git"));
+    let state = snapshotter(&sb)
+        .snapshot(&info(&repo), repo.path())
+        .unwrap();
+    // No daemon socket, cookie dir or anything else appears in the git dir.
+    assert_eq!(listing(&repo.path().join(".git")), before);
+    assert_eq!(ls_tree(&repo, &state), [".gitignore", "a.txt", "dir/b.txt"]);
 }
 
 #[test]
@@ -454,6 +509,184 @@ fn pin_copies_objects_and_survives_gc() {
     assert_eq!(repo.git(&["status", "--porcelain"]), " M a.txt\n?? n/");
 }
 
+/// Writes `id` (read from the snapshot's scratch store) into the repo alone, as a
+/// pin that stopped right after writing a tree, before its children, would.
+fn plant_in_repo(repo: &FixtureRepo, state: &LiveState, id: &Oid) {
+    let out = Command::new("git")
+        .current_dir(repo.path())
+        .env("GIT_OBJECT_DIRECTORY", &state.scratch_objects)
+        .args(["cat-file", "tree", id.as_str()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), &out.stdout).unwrap();
+    let written = repo.git(&[
+        "hash-object",
+        "-w",
+        "-t",
+        "tree",
+        tmp.path().to_str().unwrap(),
+    ]);
+    assert_eq!(written, id.as_str());
+}
+
+#[test]
+fn pin_completes_a_partially_copied_tree_and_gc_succeeds() {
+    let sb = Sandbox::isolate();
+    let repo = base_repo(ObjectFormat::Sha1);
+    repo.write("a.txt", b"partial pin\n");
+    repo.write("n/deep/new.txt", b"only in the scratch store\n");
+    let snap = snapshotter(&sb);
+    let state = snap.snapshot(&info(&repo), repo.path()).unwrap();
+    let blob = blob_in(&repo, &state, "n/deep/new.txt");
+    // Only the root tree made it into the repo; its new subtrees and blobs did not.
+    plant_in_repo(&repo, &state, &state.head_tree);
+    assert!(cat_file_exists(&repo, &state.head_tree));
+    assert!(!cat_file_exists(&repo, &blob));
+
+    let name = snap.pin(&info(&repo), &state).unwrap();
+
+    std::fs::remove_dir_all(sb.cache_dir().join("polygloss")).unwrap();
+    repo.git(&["gc", "-q", "--prune=now"]);
+    assert!(cat_file_exists(&repo, &blob));
+    assert_eq!(
+        repo.git(&["ls-tree", "-r", "--name-only", &name]),
+        ".gitignore\na.txt\ndir/b.txt\nn/deep/new.txt"
+    );
+    repo.git(&["fsck", "--connectivity-only", "--no-dangling"]);
+}
+
+#[test]
+fn pin_errors_when_an_object_is_missing_from_both_stores() {
+    let sb = Sandbox::isolate();
+    let repo = base_repo(ObjectFormat::Sha1);
+    repo.write("n/new.txt", b"about to be purged\n");
+    let snap = snapshotter(&sb);
+    let state = snap.snapshot(&info(&repo), repo.path()).unwrap();
+    let blob = blob_in(&repo, &state, "n/new.txt");
+    // A damaged or partly purged scratch store (macOS may purge ~/Library/Caches).
+    let loose = state
+        .scratch_objects
+        .join(&blob.as_str()[..2])
+        .join(&blob.as_str()[2..]);
+    std::fs::remove_file(loose).unwrap();
+
+    let result = snap.pin(&info(&repo), &state);
+    match result {
+        Err(SnapshotError::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::InvalidData),
+        other => panic!("expected an InvalidData error, got {other:?}"),
+    }
+    assert!(
+        repo.git(&["for-each-ref", &snapshot_ref(&state.head_tree)])
+            .is_empty()
+    );
+    repo.git(&["gc", "-q", "--prune=now"]);
+}
+
+#[test]
+fn pin_in_partial_clone_skips_promisor_objects() {
+    let sb = Sandbox::isolate();
+    let source = base_repo(ObjectFormat::Sha1);
+    source.write("dir/c.txt", b"old c\n");
+    source.commit("c2");
+    let old_c = source.oid("HEAD:dir/c.txt");
+    source.write("dir/c.txt", b"new c\n");
+    source.commit("c3");
+    let clone = source.clone_blobless();
+    assert!(!cat_file_exists(&clone, &old_c));
+    // A sparse entry whose blob was never fetched, in a directory that changes.
+    let cacheinfo = format!("100644,{old_c},dir/c.txt");
+    clone.git(&["update-index", "--cacheinfo", &cacheinfo]);
+    clone.git(&["update-index", "--skip-worktree", "dir/c.txt"]);
+    std::fs::remove_file(clone.path().join("dir/c.txt")).unwrap();
+    clone.write("dir/b.txt", b"bravo changed\n");
+
+    let snap = snapshotter(&sb);
+    let state = snap.snapshot(&info(&clone), clone.path()).unwrap();
+    assert_eq!(blob_in(&clone, &state, "dir/c.txt"), old_c);
+    let changed = blob_in(&clone, &state, "dir/b.txt");
+
+    let name = snap.pin(&info(&clone), &state).unwrap();
+
+    assert_eq!(clone.git(&["rev-parse", &name]), state.head_tree.as_str());
+    assert!(cat_file_exists(&clone, &changed));
+    assert!(!cat_file_exists(&clone, &old_c), "nothing is ever fetched");
+}
+
+#[test]
+fn pin_runs_no_reference_transaction_hook() {
+    let sb = Sandbox::isolate();
+    let repo = base_repo(ObjectFormat::Sha1);
+    let marker = sb.home().join("hook-ran");
+    let hook = repo.path().join(".git/hooks/reference-transaction");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\necho \"$1\" >> '{}'\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    // The hook works for the user's own ref updates.
+    repo.git(&["update-ref", "refs/heads/probe", "HEAD"]);
+    assert!(marker.exists());
+    std::fs::remove_file(&marker).unwrap();
+
+    repo.write("a.txt", b"hooked\n");
+    let snap = snapshotter(&sb);
+    let state = snap.snapshot(&info(&repo), repo.path()).unwrap();
+    snap.pin(&info(&repo), &state).unwrap();
+    snap.pin_tree(&info(&repo), &repo.oid("HEAD^{tree}"))
+        .unwrap();
+    snap.delete_unreferenced_refs(&info(&repo), &HashSet::new())
+        .unwrap();
+    assert!(
+        !marker.exists(),
+        "the user's reference-transaction hook ran"
+    );
+}
+
+#[test]
+fn pin_honors_core_shared_repository() {
+    let sb = Sandbox::isolate();
+    let repo = base_repo(ObjectFormat::Sha1);
+    repo.git(&["config", "core.sharedRepository", "group"]);
+    let snap = snapshotter(&sb);
+    let objects = repo.path().join(".git/objects");
+    // Pick content whose blob lands in a fan-out dir the repo does not have yet.
+    let (state, blob) = (0..)
+        .find_map(|i| {
+            repo.write(
+                "n/new.txt",
+                format!("shared with the group {i}\n").as_bytes(),
+            );
+            let state = snap.snapshot(&info(&repo), repo.path()).unwrap();
+            let blob = blob_in(&repo, &state, "n/new.txt");
+            (!objects.join(&blob.as_str()[..2]).exists()).then_some((state, blob))
+        })
+        .unwrap();
+    let fanout = objects.join(&blob.as_str()[..2]);
+    let entries_before: HashSet<PathBuf> = std::fs::read_dir(&objects)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+
+    snap.pin(&info(&repo), &state).unwrap();
+
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = std::fs::metadata(&fanout).unwrap().permissions().mode();
+    assert_eq!(mode & 0o070, 0o070, "fan-out dir mode {mode:o}");
+    assert!(cat_file_exists(&repo, &blob));
+    // No temp files are left in the objects dir.
+    let new: Vec<PathBuf> = std::fs::read_dir(&objects)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| !entries_before.contains(p))
+        .filter(|p| !p.is_dir())
+        .collect();
+    assert!(new.is_empty(), "{new:?}");
+}
+
 #[test]
 fn pin_copies_big_file_streamed_into_a_scratch_pack() {
     let sb = Sandbox::isolate();
@@ -577,6 +810,29 @@ fn prune_scratch_keeps_last_two() {
     // The next snapshot still works after a prune.
     repo.write("a.txt", b"state 4\n");
     snap.snapshot(&info(&repo), repo.path()).unwrap();
+}
+
+#[test]
+fn prune_scratch_accepts_a_subdirectory() {
+    let sb = Sandbox::isolate();
+    let repo = base_repo(ObjectFormat::Sha1);
+    let snap = snapshotter(&sb);
+    let mut blobs = Vec::new();
+    for i in 1..=3 {
+        repo.write("a.txt", format!("sub {i}\n").as_bytes());
+        let state = snap.snapshot(&info(&repo), repo.path()).unwrap();
+        blobs.push((blob_in(&repo, &state, "a.txt"), state));
+    }
+    let sub = repo.path().join("dir");
+    snap.prune_scratch(&discover(&sub).unwrap(), &sub, 1)
+        .unwrap();
+    let reader = BlobReader::open(&info(&repo))
+        .unwrap()
+        .with_scratch(&blobs[0].1.scratch_objects)
+        .unwrap();
+    assert!(!reader.exists(&blobs[0].0));
+    assert!(!reader.exists(&blobs[1].0));
+    assert!(reader.exists(&blobs[2].0));
 }
 
 #[test]

@@ -14,14 +14,24 @@
 //!    `info/alternates` file (written by the same helper `BlobReader::with_scratch`
 //!    uses), which, unlike the colon-separated `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
 //!    handles any repo path. `core.splitIndex=false` is forced so a split user index
-//!    never makes git write a new `sharedindex.*` into the user's git dir.
+//!    never makes git write a new `sharedindex.*` into the user's git dir, and
+//!    `core.fsmonitor=false` so a configured fsmonitor daemon is never started (it
+//!    would create its socket and cookie dir in the user's git dir).
 //! 3. `diff_env` gives any later git call (`diff-tree`, §6) the same object view.
 //!
 //! Pinning (§5.1) copies every object reachable from the tree that the repo lacks
-//! into the repo's object store (as loose objects, written through gix, which also
-//! verifies each id) and then points `refs/polygloss/snapshots/<tree>` at the tree.
-//! Objects missing from both stores (a partial clone's promisor objects) are skipped:
-//! they were missing before the snapshot too, and nothing is ever fetched.
+//! into the repo's object store and then points `refs/polygloss/snapshots/<tree>` at
+//! the tree. Objects are written by `git hash-object -w` (so `core.sharedRepository`,
+//! `core.fsync` and git's own temp-file cleanup apply, and each id is checked),
+//! blobs first and then trees children-first: a tree in the repo is always
+//! complete, even after a pin that stopped midway. The walk trusts only subtrees
+//! equal to the worktree's `HEAD^{tree}` at the same path (a ref keeps those
+//! complete); every other tree is walked even when the repo has it, so a partially
+//! copied tree is completed rather than referenced. An object missing from both
+//! stores is an error, except in a partial clone, where it is a promisor object that
+//! was missing before the snapshot too (nothing is ever fetched). Ref updates run
+//! with `core.hooksPath=/dev/null`: the user's `reference-transaction` hook never sees
+//! Polygloss's private refs.
 //!
 //! Layout under the scratch root (`DataPaths.scratch_dir`, design §13.2):
 //!
@@ -37,7 +47,7 @@
 //! of the repo reaches. The locks (`File::lock`) make snapshots, pins and prunes
 //! safe across threads and processes (app, CLI, MCP).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
@@ -47,13 +57,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gix::objs::{Exists as _, Find as _, Write as _};
+use gix::objs::{Exists as _, Find as _};
 use polygloss_diff::{ObjectFormat, Oid};
 use sha2::{Digest, Sha256};
 
 use crate::git::repo::{RepoInfo, discover};
 use crate::git::runner::{Git, GitError};
-use crate::objects::ensure_alternates;
+use crate::objects::{c_quoted_line, ensure_alternates};
 
 /// The ref namespace pinned snapshots live in (design §5.1).
 pub const SNAPSHOT_REF_PREFIX: &str = "refs/polygloss/snapshots/";
@@ -138,12 +148,12 @@ impl Snapshotter {
             return Err(SnapshotError::IndexLocked);
         }
 
-        let git = Git::new(&toplevel)
-            .with_env("GIT_INDEX_FILE", &scratch_index)
-            .with_env("GIT_OBJECT_DIRECTORY", &objects)
-            .with_env("GIT_CONFIG_COUNT", "1")
-            .with_env("GIT_CONFIG_KEY_0", "core.splitIndex")
-            .with_env("GIT_CONFIG_VALUE_0", "false");
+        let git = with_config(
+            Git::new(&toplevel)
+                .with_env("GIT_INDEX_FILE", &scratch_index)
+                .with_env("GIT_OBJECT_DIRECTORY", &objects),
+            &[("core.splitIndex", "false"), ("core.fsmonitor", "false")],
+        );
         git.output(&[OsStr::new("add"), OsStr::new("-A")])?;
         let out = git.output(&[OsStr::new("write-tree")])?;
         let head_tree = parse_oid(&out, repo.object_format)?;
@@ -156,15 +166,18 @@ impl Snapshotter {
         })
     }
 
-    /// `git` with the scratch object store, so `diff-tree` and friends see both the
-    /// repo's trees and the live state's tree.
+    /// `git` with `GIT_OBJECT_DIRECTORY` = the scratch object store, whose
+    /// `info/alternates` reaches the repo's objects, so `diff-tree` and friends see
+    /// both the repo's trees and the live state's tree.
     pub fn diff_env(&self, state: &LiveState, git: Git) -> Git {
         git.with_env("GIT_OBJECT_DIRECTORY", &state.scratch_objects)
     }
 
     /// Makes `state` durable: copies the objects the repo lacks into it and points
     /// `refs/polygloss/snapshots/<tree>` at the tree. Returns the ref name.
-    /// Idempotent.
+    /// Idempotent. An object missing from both the repo and the scratch store (a
+    /// damaged or purged scratch store) is `Io` with kind `InvalidData`, and no ref
+    /// is created; in a partial clone such objects are promisor objects and skipped.
     pub fn pin(&self, repo: &RepoInfo, state: &LiveState) -> Result<String, SnapshotError> {
         let name = snapshot_ref(&state.head_tree);
         if ref_target(repo, &name)?.as_deref() == Some(state.head_tree.as_str()) {
@@ -174,7 +187,14 @@ impl Snapshotter {
             let repo_dir = self.repo_dir(repo);
             create_private_dir(&repo_dir)?;
             let _repo_lock = lock(&repo_dir.join("lock"), false)?;
-            copy_missing_objects(repo, &state.scratch_objects, &state.head_tree)?;
+            let head = head_tree(&state.worktree);
+            copy_missing_objects(
+                repo,
+                &repo_dir,
+                &state.scratch_objects,
+                &state.head_tree,
+                head,
+            )?;
         }
         update_ref(repo, &name, &state.head_tree)?;
         Ok(name)
@@ -190,9 +210,10 @@ impl Snapshotter {
         Ok(name)
     }
 
-    /// Keeps the last `keep_last` states of `worktree` (pass `LiveState.worktree`)
-    /// and deletes every scratch object that no remembered state of any worktree of
-    /// the repo reaches (design §5.1 step 5).
+    /// Keeps the last `keep_last` states of `worktree` (any path inside it; pass
+    /// `LiveState.worktree`) and deletes every scratch object that no remembered
+    /// state of any worktree of the repo reaches (design §5.1 step 5), plus temp
+    /// dirs a crashed pin left behind.
     pub fn prune_scratch(
         &self,
         repo: &RepoInfo,
@@ -204,7 +225,11 @@ impl Snapshotter {
             return Ok(());
         }
         let _repo_lock = lock(&repo_dir.join("lock"), true)?;
-        let worktree = fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+        // A removed worktree cannot be resolved; its recorded path is the canonical one.
+        let worktree = match worktree_dirs(repo, worktree) {
+            Ok((toplevel, _)) => toplevel,
+            Err(_) => fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf()),
+        };
         let states_file = repo_dir.join(path_hash(&worktree)).join("states");
         let mut states = read_states(&states_file)?;
         if states.len() > keep_last {
@@ -219,7 +244,16 @@ impl Snapshotter {
         let hash = hash_kind(repo.object_format);
         let mut keep_trees = Vec::new();
         for entry in fs::read_dir(&repo_dir)? {
-            let file = entry?.path().join("states");
+            let path = entry?.path();
+            let is_pin_tmp = path
+                .file_name()
+                .is_some_and(|n| n.as_bytes().starts_with(PIN_TMP_PREFIX.as_bytes()));
+            if is_pin_tmp {
+                // We hold the exclusive lock, so no pin is using it.
+                fs::remove_dir_all(&path)?;
+                continue;
+            }
+            let file = path.join("states");
             if file.is_file() {
                 keep_trees.extend(read_states(&file)?);
             }
@@ -228,7 +262,7 @@ impl Snapshotter {
         let mut keep = HashSet::new();
         for tree in keep_trees {
             if let Some(id) = object_id(&tree) {
-                reachable(&scratch, id, hash, &mut keep, |_| true)?;
+                reachable(&scratch, id, hash, &mut keep)?;
             }
         }
         drop(scratch);
@@ -240,12 +274,17 @@ impl Snapshotter {
     /// Deletes every `refs/polygloss/snapshots/*` ref not in `referenced` (full ref
     /// names) in one transaction and returns the deleted names. Never touches refs
     /// outside that namespace.
+    ///
+    /// Not atomic with respect to a concurrent `pin`: a ref created after the caller
+    /// built `referenced` is deleted too. Callers must build `referenced` and call
+    /// this under a guard that every pin also holds until the row naming its ref is
+    /// committed (plan T1.12).
     pub fn delete_unreferenced_refs(
         &self,
         repo: &RepoInfo,
         referenced: &HashSet<String>,
     ) -> Result<Vec<String>, SnapshotError> {
-        let git = Git::new(&repo.common_dir);
+        let git = refs_git(repo);
         let out = git.output(&[
             OsStr::new("for-each-ref"),
             OsStr::new("--format=%(refname)"),
@@ -336,6 +375,30 @@ fn remove_if_exists(path: &Path) -> io::Result<()> {
 }
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Name prefix of a pin's temp dir under the repo's scratch dir.
+const PIN_TMP_PREFIX: &str = "pin-tmp-";
+
+/// A private temp dir, removed (with its contents) on drop.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(parent: &Path) -> io::Result<TempDir> {
+        let dir = parent.join(format!(
+            "{PIN_TMP_PREFIX}{}-{}",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        create_private_dir(&dir)?;
+        Ok(TempDir(dir))
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 fn tmp_path(dest: &Path) -> PathBuf {
     let mut name = dest.file_name().unwrap_or_default().to_os_string();
@@ -437,8 +500,29 @@ fn ref_target(repo: &RepoInfo, name: &str) -> Result<Option<String>, GitError> {
     Ok((!text.is_empty()).then_some(text))
 }
 
+/// Adds `pairs` as per-invocation config (`GIT_CONFIG_COUNT/KEY_n/VALUE_n`), which
+/// keeps the subcommand the first argument (the runner's spawn hook counts by it).
+fn with_config(mut git: Git, pairs: &[(&str, &str)]) -> Git {
+    git = git.with_env("GIT_CONFIG_COUNT", pairs.len().to_string());
+    for (i, (key, value)) in pairs.iter().enumerate() {
+        git = git
+            .with_env(&format!("GIT_CONFIG_KEY_{i}"), key)
+            .with_env(&format!("GIT_CONFIG_VALUE_{i}"), value);
+    }
+    git
+}
+
+/// `git` in the common dir with hooks disabled, for updating Polygloss's own refs:
+/// the user's `reference-transaction` hook must not see or veto them.
+fn refs_git(repo: &RepoInfo) -> Git {
+    with_config(
+        Git::new(&repo.common_dir),
+        &[("core.hooksPath", "/dev/null")],
+    )
+}
+
 fn update_ref(repo: &RepoInfo, name: &str, tree: &Oid) -> Result<(), GitError> {
-    Git::new(&repo.common_dir).output(&[
+    refs_git(repo).output(&[
         OsStr::new("update-ref"),
         OsStr::new("--no-deref"),
         OsStr::new(name),
@@ -477,83 +561,313 @@ fn open_handle(objects: &Path, hash: gix::hash::Kind) -> Result<OdbHandle, Snaps
 }
 
 /// Adds `root` and every tree and blob it reaches to `out` (gitlinks are skipped:
-/// submodule commits live in another repo), descending only into trees for which
-/// `descend` is true. Trees that cannot be found are skipped (a partial clone's
-/// promisor objects); nothing is fetched.
+/// submodule commits live in another repo). Trees that cannot be found are skipped
+/// (a partial clone's promisor objects); nothing is fetched.
 fn reachable(
     odb: &OdbHandle,
     root: gix::ObjectId,
     hash: gix::hash::Kind,
     out: &mut HashSet<gix::ObjectId>,
-    descend: impl Fn(&gix::ObjectId) -> bool,
 ) -> Result<(), SnapshotError> {
     let mut stack = vec![root];
     let mut buf = Vec::new();
     while let Some(id) = stack.pop() {
-        if !out.insert(id) || !descend(&id) {
+        if !out.insert(id) {
             continue;
         }
-        let data = match odb.try_find(&id, &mut buf) {
-            Ok(Some(data)) => data,
-            Ok(None) => {
-                tracing::debug!(%id, "snapshot walk: tree not available; skipped");
-                continue;
-            }
-            Err(err) => return Err(invalid(format!("reading tree {id}: {}", err.into_error()))),
+        let Some(entries) = read_tree(odb, &id, hash, &mut buf)? else {
+            tracing::debug!(%id, "snapshot walk: tree not available; skipped");
+            continue;
         };
-        if data.kind != gix::objs::Kind::Tree {
-            return Err(invalid(format!("{id} is a {}, not a tree", data.kind)));
-        }
-        for entry in gix::objs::TreeRefIter::from_bytes(data.data, hash) {
-            let entry = entry.map_err(|e| invalid(format!("parsing tree {id}: {e}")))?;
-            let child = entry.oid.to_owned();
-            if entry.mode.is_tree() {
-                stack.push(child);
-            } else if !entry.mode.is_commit() {
-                out.insert(child);
+        for entry in entries {
+            match entry.kind {
+                EntryKind::Tree => stack.push(entry.id),
+                EntryKind::Blob => {
+                    out.insert(entry.id);
+                }
+                EntryKind::Gitlink => {}
             }
         }
     }
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    Tree,
+    /// Any blob: file, executable or symlink.
+    Blob,
+    /// A submodule commit, which lives in another repo.
+    Gitlink,
+}
+
+struct TreeEntry {
+    name: Vec<u8>,
+    id: gix::ObjectId,
+    kind: EntryKind,
+}
+
+/// The entries of tree `id`, or `None` when the store does not have it.
+fn read_tree(
+    odb: &OdbHandle,
+    id: &gix::ObjectId,
+    hash: gix::hash::Kind,
+    buf: &mut Vec<u8>,
+) -> Result<Option<Vec<TreeEntry>>, SnapshotError> {
+    let data = match odb.try_find(id, buf) {
+        Ok(Some(data)) => data,
+        Ok(None) => return Ok(None),
+        Err(err) => return Err(invalid(format!("reading tree {id}: {}", err.into_error()))),
+    };
+    if data.kind != gix::objs::Kind::Tree {
+        return Err(invalid(format!("{id} is a {}, not a tree", data.kind)));
+    }
+    gix::objs::TreeRefIter::from_bytes(data.data, hash)
+        .map(|entry| {
+            let entry = entry.map_err(|e| invalid(format!("parsing tree {id}: {e}")))?;
+            let kind = if entry.mode.is_tree() {
+                EntryKind::Tree
+            } else if entry.mode.is_commit() {
+                EntryKind::Gitlink
+            } else {
+                EntryKind::Blob
+            };
+            Ok(TreeEntry {
+                name: entry.filename.to_vec(),
+                id: entry.oid.to_owned(),
+                kind,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// The worktree's `HEAD^{tree}`, or `None` (unborn HEAD, worktree gone, any error:
+/// the pin then walks every tree, which is only slower).
+fn head_tree(worktree: &Path) -> Option<gix::ObjectId> {
+    let out = Git::new(worktree)
+        .run(&[
+            OsStr::new("rev-parse"),
+            OsStr::new("--verify"),
+            OsStr::new("-q"),
+            OsStr::new("HEAD^{tree}"),
+        ])
+        .ok()?;
+    if !out.success() {
+        return None;
+    }
+    gix::ObjectId::from_hex(String::from_utf8_lossy(&out.stdout).trim().as_bytes()).ok()
+}
+
+/// Whether the repo is a partial clone (`extensions.partialClone`, or any
+/// `remote.<name>.promisor` set to true), whose missing objects are promised by a
+/// remote rather than lost.
+fn is_promisor_repo(repo: &RepoInfo) -> Result<bool, GitError> {
+    let args = [
+        OsStr::new("config"),
+        OsStr::new("--get-regexp"),
+        OsStr::new(r"^(extensions\.partialclone|remote\..*\.promisor)$"),
+    ];
+    let out = Git::new(&repo.common_dir).run(&args)?;
+    match out.code {
+        Some(0) => {}
+        // No such key.
+        Some(1) => return Ok(false),
+        code => {
+            return Err(GitError::Failed {
+                args: "config --get-regexp".into(),
+                code,
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
+        }
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        if key == "extensions.partialclone" {
+            !value.is_empty()
+        } else {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "" | "true" | "yes" | "on" | "1"
+            )
+        }
+    }))
+}
+
+/// Decides what an object missing from both stores means: skipped (with the answer
+/// cached in `promisor`) in a partial clone, else an `InvalidData` error.
+fn allow_missing(
+    repo: &RepoInfo,
+    promisor: &mut Option<bool>,
+    id: &gix::ObjectId,
+) -> Result<(), SnapshotError> {
+    let is_promisor = match *promisor {
+        Some(known) => known,
+        None => *promisor.insert(is_promisor_repo(repo)?),
+    };
+    if is_promisor {
+        tracing::debug!(%id, "pin: promisor object in neither store; skipped");
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "object {id} is in neither the repository nor the scratch store"
+        )))
+    }
+}
+
 /// Copies every object reachable from `tree` that the repo lacks from the scratch
-/// store into the repo's objects dir as loose objects (§5.1 pin step 1).
+/// store into the repo's object store (§5.1 pin step 1): blobs first, then trees
+/// children-first, so any tree the repo has is complete even if this stops midway.
+///
+/// Subtrees equal to the tree at the same path of `head` (the worktree's
+/// `HEAD^{tree}`) are trusted: a ref keeps them and everything they reach in the
+/// repo. Every other tree is walked, even when the repo already has it: a pin that
+/// crashed before this fix, or any other writer, may have left it without children.
 fn copy_missing_objects(
     repo: &RepoInfo,
+    repo_dir: &Path,
     scratch_objects: &Path,
     tree: &Oid,
+    head: Option<gix::ObjectId>,
 ) -> Result<(), SnapshotError> {
     let hash = hash_kind(repo.object_format);
-    let repo_objects = repo.common_dir.join("objects");
     let root = object_id(tree).ok_or_else(|| invalid(format!("bad tree id {tree}")))?;
+    // The scratch store also sees the repo's objects, through its alternates.
     let scratch = open_handle(scratch_objects, hash)?;
-    let repo_odb = open_handle(&repo_objects, hash)?;
-    // A tree the repo already has comes with everything it reaches (git's
-    // connectivity invariant), so only trees new in this state are walked.
-    let mut ids = HashSet::new();
-    reachable(&scratch, root, hash, &mut ids, |tree| {
-        !repo_odb.exists(tree)
-    })?;
-    let loose = gix::odb::loose::Store::at(repo_objects, hash);
+    let (blobs, trees) = plan_copy(repo, &scratch, root, head)?;
+    if blobs.is_empty() && trees.is_empty() {
+        return Ok(());
+    }
+    let tmp = TempDir::new(repo_dir)?;
+    write_objects(repo, &scratch, &tmp.0, gix::objs::Kind::Blob, &blobs)?;
+    write_objects(repo, &scratch, &tmp.0, gix::objs::Kind::Tree, &trees)?;
+    Ok(())
+}
+
+/// The blobs and trees `copy_missing_objects` must write, trees in post-order
+/// (every tree after the subtrees it contains).
+fn plan_copy(
+    repo: &RepoInfo,
+    scratch: &OdbHandle,
+    root: gix::ObjectId,
+    head: Option<gix::ObjectId>,
+) -> Result<(Vec<gix::ObjectId>, Vec<gix::ObjectId>), SnapshotError> {
+    enum Step {
+        /// Walk a tree; the second id is the `head` tree at the same path, if any.
+        Enter(gix::ObjectId, Option<gix::ObjectId>),
+        /// Every child of this tree is in the repo (or queued before it).
+        Exit(gix::ObjectId),
+    }
+
+    let hash = hash_kind(repo.object_format);
+    let repo_odb = open_handle(&repo.common_dir.join("objects"), hash)?;
+    let mut promisor = None;
+    let mut blobs = Vec::new();
+    let mut trees = Vec::new();
+    let mut seen = HashSet::new();
     let mut buf = Vec::new();
-    for id in ids {
-        if repo_odb.exists(&id) {
-            continue;
-        }
-        let data = match scratch.try_find(&id, &mut buf) {
-            Ok(Some(data)) => data,
-            Ok(None) => {
-                tracing::debug!(%id, "pin: object in neither store; skipped");
+    let mut stack = vec![Step::Enter(root, head)];
+    while let Some(step) = stack.pop() {
+        let (id, head) = match step {
+            Step::Exit(id) => {
+                if !repo_odb.exists(&id) {
+                    trees.push(id);
+                }
                 continue;
             }
+            Step::Enter(id, head) => (id, head),
+        };
+        if head == Some(id) || !seen.insert(id) {
+            continue;
+        }
+        let Some(entries) = read_tree(scratch, &id, hash, &mut buf)? else {
+            allow_missing(repo, &mut promisor, &id)?;
+            continue;
+        };
+        let head_subtrees: HashMap<Vec<u8>, gix::ObjectId> = head
+            .and_then(|h| read_tree(scratch, &h, hash, &mut buf).ok().flatten())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.kind == EntryKind::Tree)
+            .map(|e| (e.name, e.id))
+            .collect();
+        stack.push(Step::Exit(id));
+        for entry in entries {
+            match entry.kind {
+                EntryKind::Tree => {
+                    let head = head_subtrees.get(&entry.name).copied();
+                    stack.push(Step::Enter(entry.id, head));
+                }
+                EntryKind::Blob => {
+                    if seen.insert(entry.id) && !repo_odb.exists(&entry.id) {
+                        if scratch.exists(&entry.id) {
+                            blobs.push(entry.id);
+                        } else {
+                            allow_missing(repo, &mut promisor, &entry.id)?;
+                        }
+                    }
+                }
+                EntryKind::Gitlink => {}
+            }
+        }
+    }
+    Ok((blobs, trees))
+}
+
+/// Writes `ids` (all of `kind`, read from `scratch`) into the repo with `git
+/// hash-object -w --no-filters --stdin-paths` over temp files in `dir`, and checks
+/// that git computed the same ids. git writes them in the order given (the caller
+/// passes trees children-first).
+fn write_objects(
+    repo: &RepoInfo,
+    scratch: &OdbHandle,
+    dir: &Path,
+    kind: gix::objs::Kind,
+    ids: &[gix::ObjectId],
+) -> Result<(), SnapshotError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut buf = Vec::new();
+    let mut stdin = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        let data = match scratch.try_find(id, &mut buf) {
+            Ok(Some(data)) => data,
+            Ok(None) => return Err(invalid(format!("{id} vanished from the scratch store"))),
             Err(err) => return Err(invalid(format!("reading {id}: {}", err.into_error()))),
         };
-        let written = loose
-            .write_buf(data.kind, data.data)
-            .map_err(|err| io::Error::other(format!("writing {id}: {}", err.into_error())))?;
-        if written != id {
-            return Err(invalid(format!("object {id} rehashed to {written}")));
+        if data.kind != kind {
+            return Err(invalid(format!("{id} is a {}, not a {kind}", data.kind)));
+        }
+        let path = dir.join(format!("{kind}-{i}"));
+        fs::write(&path, data.data)?;
+        stdin.extend(c_quoted_line(path.as_os_str()));
+        stdin.push(b'\n');
+    }
+    let kind_name = kind.to_string();
+    let out = Git::new(&repo.common_dir).output_stdin(
+        &[
+            OsStr::new("hash-object"),
+            OsStr::new("-w"),
+            OsStr::new("--no-filters"),
+            OsStr::new("-t"),
+            OsStr::new(&kind_name),
+            OsStr::new("--stdin-paths"),
+        ],
+        &stdin,
+    )?;
+    let text = String::from_utf8_lossy(&out);
+    let written: Vec<&str> = text.lines().collect();
+    if written.len() != ids.len() {
+        return Err(invalid(format!(
+            "hash-object wrote {} of {} objects",
+            written.len(),
+            ids.len()
+        )));
+    }
+    for (id, line) in ids.iter().zip(written) {
+        if gix::ObjectId::from_hex(line.as_bytes()).ok() != Some(*id) {
+            return Err(invalid(format!("object {id} rehashed to {line}")));
         }
     }
     Ok(())
@@ -657,6 +971,42 @@ mod tests {
     fn stem_strips_every_extension() {
         assert_eq!(stem(OsStr::new("pack-ab.idx")), b"pack-ab");
         assert_eq!(stem(OsStr::new("tmp_pack_x")), b"tmp_pack_x");
+    }
+
+    #[test]
+    fn pin_plan_writes_trees_children_first() {
+        use crate::testing::{FixtureRepo, Sandbox};
+        let sb = Sandbox::isolate();
+        let repo = FixtureRepo::init(ObjectFormat::Sha1);
+        repo.write("top.txt", b"top\n");
+        repo.commit("c1");
+        repo.write("a/b/c/deep.txt", b"deep\n");
+        repo.write("a/b/side.txt", b"side\n");
+        repo.write("a/x/y.txt", b"y\n");
+        repo.write("top.txt", b"top changed\n");
+        let info = crate::git::discover(repo.path()).unwrap();
+        let snap = Snapshotter::new(sb.cache_dir().join("scratch"));
+        let state = snap.snapshot(&info, repo.path()).unwrap();
+        let hash = hash_kind(info.object_format);
+        let scratch = open_handle(&state.scratch_objects, hash).unwrap();
+        let root = object_id(&state.head_tree).unwrap();
+        let head = head_tree(repo.path());
+        assert!(head.is_some());
+
+        let (blobs, trees) = plan_copy(&info, &scratch, root, head).unwrap();
+
+        assert_eq!(blobs.len(), 4);
+        // root, a, a/b, a/b/c, a/x: every tree after each subtree it contains.
+        assert_eq!(trees.len(), 5);
+        assert_eq!(trees.last(), Some(&root));
+        let mut buf = Vec::new();
+        for (i, tree) in trees.iter().enumerate() {
+            let entries = read_tree(&scratch, tree, hash, &mut buf).unwrap().unwrap();
+            for child in entries.iter().filter(|e| e.kind == EntryKind::Tree) {
+                let pos = trees.iter().position(|t| *t == child.id).unwrap();
+                assert!(pos < i, "subtree written after its parent");
+            }
+        }
     }
 
     #[test]
