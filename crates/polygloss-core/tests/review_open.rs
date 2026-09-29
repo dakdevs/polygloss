@@ -1503,3 +1503,168 @@ fn recent_repos_are_most_recently_opened_first() {
     assert!(repos[0].last_opened_at > repos[1].last_opened_at);
     assert_eq!(core.recent_repos(1).unwrap().len(), 1);
 }
+
+/// T3.12: the picker's iterations and an earlier iteration opened from the
+/// store (trees, provenance and files as recorded; nothing resolved again).
+#[test]
+fn open_iteration_reads_an_earlier_iteration_from_the_store() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let first = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    repo.checkout("feature");
+    repo.write("c.txt", b"sea\n");
+    repo.commit("f2");
+    let mut refresh = req(repo.path(), compare("main", "feature"));
+    refresh.pin = Some(PinnedBy::Refresh);
+    let current = core.open(&refresh).unwrap();
+
+    let entries = core.iteration_entries(&current.review_id).unwrap();
+    let seqs: Vec<(u32, PinnedBy)> = entries.iter().map(|e| (e.info.seq, e.pinned_by)).collect();
+    assert_eq!(seqs, [(1, PinnedBy::Open), (2, PinnedBy::Refresh)]);
+    assert_eq!(entries[0].info.diff_id, first.diff_id);
+    assert_eq!(entries[0].head_tree, tree_of(&repo, "feature~1"));
+    assert_eq!(entries[1].head_tree, tree_of(&repo, "feature"));
+    assert_eq!(entries[0].head_commit, Some(repo.oid("feature~1")));
+    assert_eq!(entries[0].base_tree, first.base.tree);
+    assert_eq!(entries[0].base_ref.as_deref(), Some("refs/heads/main"));
+
+    let earlier = core.open_iteration(&current, 1).unwrap();
+    assert_eq!(earlier.diff_id, first.diff_id);
+    assert_eq!(earlier.iteration.as_ref(), Some(&entries[0].info));
+    assert_eq!(earlier.review_id, current.review_id);
+    assert_eq!(earlier.base, first.base);
+    assert_eq!(earlier.head_tree, first.head_tree);
+    assert_eq!(earlier.head_commit, first.head_commit);
+    assert_eq!(*earlier.files, *first.files);
+    assert!(earlier.live.is_none());
+    // No new iteration, no event.
+    assert_eq!(count(&core, "SELECT count(*) FROM iterations"), 2);
+
+    assert!(matches!(
+        core.open_iteration(&current, 3),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert!(matches!(
+        core.iteration_entries("no-such-review"),
+        Err(CoreError::NotFound { .. })
+    ));
+}
+
+/// T3.12, OQ-9: "Changes since last review" is the stored diff from the head
+/// of the submitted iteration to the head shown now.
+#[test]
+fn open_changes_since_diffs_the_submitted_head_to_the_current_head() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let first = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    assert_eq!(core.last_submission(&first.review_id).unwrap(), None);
+    assert!(core.open_changes_since(&first).unwrap().is_none());
+
+    let submitted = core
+        .submit_review(
+            &first.review_id,
+            polygloss_core::review::Verdict::RequestChanges,
+            "",
+            None,
+        )
+        .unwrap();
+    repo.checkout("feature");
+    repo.write("a.txt", b"one\n2\n3\n");
+    repo.commit("f2");
+    let mut refresh = req(repo.path(), compare("main", "feature"));
+    refresh.pin = Some(PinnedBy::Refresh);
+    let current = core.open(&refresh).unwrap();
+
+    let last = core
+        .last_submission(&current.review_id)
+        .unwrap()
+        .expect("a submission");
+    assert_eq!(last.submission_id, submitted.id);
+    assert_eq!(last.iteration.info.seq, 1);
+    assert_eq!(last.iteration.head_tree, tree_of(&repo, "feature~1"));
+
+    let since = core
+        .open_changes_since(&current)
+        .unwrap()
+        .expect("changes since the submission");
+    assert_eq!(since.base.tree, tree_of(&repo, "feature~1"));
+    assert_eq!(since.base.commit, Some(repo.oid("feature~1")));
+    assert_eq!(since.head_tree, current.head_tree);
+    assert_eq!(since.head_commit, current.head_commit);
+    assert_eq!(
+        since.diff_id,
+        diff_id(ObjectFormat::Sha1, &since.base.tree, &since.head_tree)
+    );
+    let paths: Vec<&str> = since.files.iter().map(|f| f.display_path()).collect();
+    assert_eq!(paths, ["a.txt"], "b.txt did not change since the review");
+    assert_eq!(since.iteration, None);
+    assert!(since.live.is_none());
+    // Stored, so threads can be created on it; no iteration is recorded.
+    let stored = core
+        .files_for_diff(&since.diff_id)
+        .unwrap()
+        .expect("stored");
+    assert_eq!(*stored, *since.files);
+    assert_eq!(count(&core, "SELECT count(*) FROM iterations"), 2);
+}
+
+/// A live head must be pinned before it is compared with the last review:
+/// an unpinned state's objects may only be in the scratch store.
+#[test]
+fn open_changes_since_needs_a_pinned_live_state() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    repo.checkout("feature");
+    repo.write("a.txt", b"one\n2\n3\n");
+    let core = core();
+    let opened = core
+        .open(&req(repo.path(), live(Since::MergeBase)))
+        .unwrap();
+    let state = opened.live.clone().unwrap();
+    core.submit_review(
+        &opened.review_id,
+        polygloss_core::review::Verdict::Comment,
+        "",
+        Some((&opened.base, &state)),
+    )
+    .unwrap();
+
+    repo.write("b.txt", b"bee!\n");
+    let current = core
+        .open(&req(repo.path(), live(Since::MergeBase)))
+        .unwrap();
+    assert!(current.iteration.is_none(), "not pinned");
+    assert!(matches!(
+        core.open_changes_since(&current),
+        Err(CoreError::Conflict(_))
+    ));
+
+    let it = core
+        .pin_live_on_base(
+            &current.review_id,
+            &current.base,
+            current.live.as_ref().unwrap(),
+            PinnedBy::Manual,
+            &Actor::human(),
+        )
+        .unwrap();
+    let pinned = polygloss_core::review::OpenedDiff {
+        iteration: Some(it),
+        ..current.clone()
+    };
+    let since = core
+        .open_changes_since(&pinned)
+        .unwrap()
+        .expect("changes since");
+    assert_eq!(since.base.tree, state.head_tree);
+    assert_eq!(since.base.commit, None);
+    assert_eq!(since.head_tree, current.head_tree);
+    let paths: Vec<&str> = since.files.iter().map(|f| f.display_path()).collect();
+    assert_eq!(paths, ["b.txt"]);
+}
