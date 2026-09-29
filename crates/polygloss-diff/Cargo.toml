@@ -1,0 +1,13 @@
+[package]
+name = "polygloss-diff"
+description = "Polygloss diff model: hunks, word diff, line mapping and row model (no git, IO or GPUI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# T1.1 adds every other dependency the ownership table allows. gix-imara-diff is
+# here from T0.1 so the workspace `[profile.dev.package]` override matches a package.
+[dependencies]
+gix-imara-diff.workspace = true

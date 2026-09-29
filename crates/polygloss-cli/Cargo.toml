@@ -1,0 +1,24 @@
+[package]
+name = "polygloss-cli"
+description = "Polygloss command line: human CLI, JSON CLI, MCP server and hook waiter (no GPUI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "polygloss-cli"
+path = "src/main.rs"
+
+[dependencies]
+polygloss-core.workspace = true
+polygloss-mcp.workspace = true
+polygloss-platform.workspace = true
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

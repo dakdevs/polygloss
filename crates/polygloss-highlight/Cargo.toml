@@ -1,0 +1,18 @@
+[package]
+name = "polygloss-highlight"
+description = "Polygloss syntax highlighting: lumis adapter, compact tokens, Zed-format themes (no GPUI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lumis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+criterion.workspace = true
