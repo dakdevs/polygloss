@@ -18,6 +18,8 @@ import {
   budgetsPassed,
   checkBudgets,
   compareBaseline,
+  FRAME_BOUND_METRICS,
+  FRAME_NOISE_MS,
   findBaseline,
   formatTable,
   loadBudgets,
@@ -207,6 +209,50 @@ describe("baseline", () => {
         budgets,
       ),
     ).toEqual([]);
+  });
+
+  test("frame-bound metrics regress only past 10 percent and one 120 Hz frame (OQ-P18)", () => {
+    const entry = {
+      machine,
+      git_sha: "abc1234",
+      date: "2026-09-29",
+      rows: [
+        row("huge-file", "unified", { highlight_ms: 9.8, scroll_p95_ms: 1 }),
+        row("typical", "split", {
+          highlight_ms: 15.4,
+          comment_repaint_ms: 11.5,
+          watcher_banner_ms: 100,
+          app_first_paint_ms: 200,
+        }),
+      ],
+    };
+    const regressions = compareBaseline(
+      [
+        // +2.2 ms (22%): one frame of noise, not a regression. scroll_p95_ms
+        // is CPU time per frame, not frame-bound: 10% is enough.
+        row("huge-file", "unified", { highlight_ms: 12.0, scroll_p95_ms: 1.2 }),
+        row("typical", "split", {
+          // +8.3 ms exactly: still within one frame.
+          highlight_ms: 23.7,
+          // +13.5 ms and over 10%: a regression.
+          comment_repaint_ms: 25,
+          // +9 ms but under 10%: not a regression.
+          watcher_banner_ms: 109,
+          // +30 ms and 15%: a regression.
+          app_first_paint_ms: 230,
+        }),
+      ],
+      entry,
+      budgets,
+    );
+    expect(regressions.map((r) => `${r.corpus}/${r.metric}`)).toEqual([
+      "huge-file/scroll_p95_ms",
+      "typical/comment_repaint_ms",
+      "typical/app_first_paint_ms",
+    ]);
+    expect(FRAME_NOISE_MS).toBe(8.3);
+    expect(FRAME_BOUND_METRICS).not.toContain("scroll_p95_ms");
+    expect(FRAME_BOUND_METRICS).not.toContain("peak_rss_mb");
   });
 
   test("a baseline is looked up by the machine's CPU", () => {

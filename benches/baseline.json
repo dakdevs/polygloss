@@ -1,5 +1,5 @@
 {
-  "$comment": "Perf baselines per machine (plan T2.9/T2.10): `bun benches/run-perf.ts --compare-baseline` fails on a >10% regression (provisional) against the entry whose machine.cpu matches this machine. Entries are written with `--write-baseline` after a passing run; T2.10 records the first one.",
+  "$comment": "Perf baselines per machine (plan T2.9/T2.10): `bun benches/run-perf.ts --compare-baseline` fails on a >10% regression against the entry whose machine.cpu matches this machine; a frame-bound metric (first paint, highlight, comment, banner, app first paint) must also be more than 8.3 ms (one 120 Hz frame) above it (OQ-P18). Entries are written with `--write-baseline` after a passing run; T2.10 recorded the first one.",
   "entries": [
     {
       "machine": {

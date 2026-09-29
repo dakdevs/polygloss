@@ -28,7 +28,8 @@
 //
 // Exit codes: 1 when a run fails, with --check-budgets when a budget is
 // missed, with --compare-baseline when a metric regressed by more than 10%
-// against this machine's baseline entry (provisional), and when
+// against this machine's baseline entry (a frame-bound metric also by more
+// than one 120 Hz frame, 8.3 ms: OQ-P18), and when
 // --write-baseline refuses; 2 for usage errors, a missing corpus or a missing
 // harness binary.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -73,6 +74,25 @@ export type Budgets = {
 
 /** A regression is a value more than this fraction above the baseline. */
 export const REGRESSION_TOLERANCE = 0.1;
+
+/**
+ * Metrics that end on a presented display frame, so a run's value moves by a
+ * frame or two of the 120 Hz display (OQ-P18). `scroll_p95_ms` (CPU time per
+ * frame) and `peak_rss_mb` are not frame-bound.
+ */
+export const FRAME_BOUND_METRICS: readonly MetricName[] = [
+  "first_paint_ms",
+  "highlight_ms",
+  "comment_repaint_ms",
+  "watcher_banner_ms",
+  "app_first_paint_ms",
+];
+
+/**
+ * OQ-P18: a frame-bound metric regresses only when it is more than
+ * REGRESSION_TOLERANCE **and** more than one 120 Hz frame above its baseline.
+ */
+export const FRAME_NOISE_MS = 8.3;
 
 /** Longest a single harness run may take before it is killed. */
 const RUN_TIMEOUT_MS = 15 * 60 * 1000;
@@ -197,8 +217,9 @@ export function withBaseline(
 
 /**
  * Metrics budgeted for a row's corpus that are more than `tolerance` above
- * the baseline entry's value for the same corpus and layout. Metrics either
- * side did not measure cannot regress.
+ * the baseline entry's value for the same corpus and layout; a frame-bound
+ * metric must also be more than FRAME_NOISE_MS above it (OQ-P18). Metrics
+ * either side did not measure cannot regress.
  */
 export function compareBaseline(
   rows: Row[],
@@ -217,7 +238,10 @@ export function compareBaseline(
       const value = row.metrics[metric];
       const before = base.metrics[metric];
       if (typeof value !== "number" || typeof before !== "number") continue;
-      if (value > before * (1 + tolerance))
+      const frameNoise = FRAME_BOUND_METRICS.includes(metric)
+        ? FRAME_NOISE_MS
+        : 0;
+      if (value > before * (1 + tolerance) && value - before > frameNoise)
         regressions.push({
           corpus: row.corpus,
           layout: row.layout,
@@ -876,7 +900,7 @@ async function main(argv: string[]): Promise<number> {
       for (const r of regressions) {
         code = 1;
         process.stderr.write(
-          `run-perf: ${r.metric} ${r.corpus} ${r.layout} regressed: ${r.value} vs baseline ${r.baseline} (> ${REGRESSION_TOLERANCE * 100}%)\n`,
+          `run-perf: ${r.metric} ${r.corpus} ${r.layout} regressed: ${r.value} vs baseline ${r.baseline} (> ${REGRESSION_TOLERANCE * 100}%${FRAME_BOUND_METRICS.includes(r.metric) ? ` and > ${FRAME_NOISE_MS} ms` : ""})\n`,
         );
       }
     }
