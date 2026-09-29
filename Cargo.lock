@@ -6516,6 +6516,7 @@ dependencies = [
  "image",
  "insta",
  "libc",
+ "markdown",
  "notify 8.2.0",
  "notify-debouncer-full",
  "nucleo-matcher",

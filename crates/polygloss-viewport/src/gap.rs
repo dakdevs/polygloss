@@ -1,6 +1,8 @@
 //! Hidden context (design §11.6 "Context"): gap rows with their expanders
 //! ("↑ 20", "↓ 20", "Expand all"), and each file's revealed old-side ranges
-//! ([`Expansions`], which view state persists, design §11.12).
+//! ([`Expansions`], which view state persists, design §11.12). Hosts also
+//! reveal one hidden line with [`DiffViewport::reveal_line`] (going to a
+//! thread or a find match inside collapsed context).
 //!
 //! A file with nothing revealed paints the rows its [`MaterializedFile`]
 //! shares between versions. Revealing context builds that file's rows again
@@ -13,6 +15,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui_kit::Context;
+use polygloss_diff::Side;
 use polygloss_diff::hunks::FileDiff;
 use polygloss_diff::rows::{ExpandBy, Expansions, GapId, Layout, Row, build_rows};
 
@@ -25,10 +28,16 @@ use crate::view::DiffViewport;
 /// Lines one "↑"/"↓" click reveals (design §11.6: 20).
 pub const EXPAND_STEP: u32 = 20;
 
+/// Lines [`DiffViewport::reveal_line`] reveals above and below a hidden line.
+pub const REVEAL_CONTEXT: u32 = 3;
+
 /// Revealed context per file, and the rows built with it.
 #[derive(Default)]
 pub(crate) struct Gaps {
     files: HashMap<u32, FileGaps>,
+    /// Lines to reveal once their file's diff is loaded
+    /// ([`DiffViewport::reveal_line`] before it was).
+    deferred: HashMap<u32, Vec<(Side, u32)>>,
 }
 
 #[derive(Default)]
@@ -120,6 +129,21 @@ impl Gaps {
         }
     }
 
+    /// Applies the reveals deferred for file `f` now that its diff `fd` is
+    /// loaded; returns whether its expansions changed.
+    fn apply_deferred(&mut self, f: u32, fd: &FileDiff) -> bool {
+        let Some(lines) = self.deferred.remove(&f) else {
+            return false;
+        };
+        let mut changed = false;
+        for (side, line) in lines {
+            if let Some(range) = hidden_reveal(fd, side, line) {
+                changed |= self.update(f, |e| e.reveal(range));
+            }
+        }
+        changed
+    }
+
     /// Drops file `f`'s built rows (its data was evicted); its expansions
     /// stay.
     pub(crate) fn forget_rows(&mut self, f: u32) {
@@ -127,6 +151,36 @@ impl Gaps {
             g.rows = None;
         }
     }
+}
+
+/// The old lines to reveal around line `line` of `side` when no hunk of
+/// `fd` shows it (context between hunks, before the first or after the
+/// last); `None` when a hunk shows it or it is past the end.
+fn hidden_reveal(fd: &FileDiff, side: Side, line: u32) -> Option<Range<u32>> {
+    let range = |h: &polygloss_diff::hunks::Hunk| match side {
+        Side::Old => h.old.clone(),
+        Side::New => h.new.clone(),
+    };
+    // Unchanged lines keep the offset the last hunk above them leaves.
+    let mut old = line;
+    for h in &fd.hunks {
+        let r = range(h);
+        if r.contains(&line) {
+            return None;
+        }
+        if r.end > line {
+            break;
+        }
+        old = h.old.end + (line - r.end);
+    }
+    let len = match side {
+        Side::Old => fd.old.len(),
+        Side::New => fd.new.len(),
+    };
+    if line >= len || old >= fd.old.len() {
+        return None;
+    }
+    Some(old.saturating_sub(REVEAL_CONTEXT)..(old + REVEAL_CONTEXT + 1).min(fd.old.len()))
 }
 
 /// The old lines an expander on hidden run `run` reveals.
@@ -216,6 +270,44 @@ impl DiffViewport {
             .collect();
         out.sort_unstable_by_key(|(f, _)| *f);
         out
+    }
+
+    /// Reveals line `line` (0-based) of `side` of file `file_idx` when it is
+    /// hidden context (in a gap), with [`REVEAL_CONTEXT`] lines above and
+    /// below, so that a host can put the cursor on it (going to a thread or
+    /// a find match). Lines already shown change nothing. Before the file's
+    /// diff is loaded the reveal waits for it and applies when the file is
+    /// laid out.
+    pub fn reveal_line(&mut self, file_idx: u32, side: Side, line: u32, cx: &mut Context<Self>) {
+        if file_idx >= self.doc.len() {
+            return;
+        }
+        match self.loaded(file_idx) {
+            Some(file) => {
+                if let Some(range) = hidden_reveal(&file.diff, side, line)
+                    && self.gaps.update(file_idx, |e| e.reveal(range))
+                {
+                    self.after_reveal(file_idx, cx);
+                }
+            }
+            None => self
+                .gaps
+                .deferred
+                .entry(file_idx)
+                .or_default()
+                .push((side, line)),
+        }
+    }
+
+    /// Applies file `f`'s deferred reveals when its diff is loaded (before
+    /// its layout key is taken, so the layout is built once).
+    pub(crate) fn apply_deferred_reveals(&mut self, f: u32) {
+        if !self.gaps.deferred.contains_key(&f) {
+            return;
+        }
+        if let Some(file) = self.loaded(f) {
+            self.gaps.apply_deferred(f, &file.diff);
+        }
     }
 
     fn loaded(&self, f: u32) -> Option<Arc<MaterializedFile>> {

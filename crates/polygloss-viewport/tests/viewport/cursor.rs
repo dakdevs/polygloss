@@ -469,3 +469,59 @@ fn expand_context_reveals_20_lines_toward_the_cursor(cx: &mut TestAppContext) {
         [(0, vec![[0, 100]])]
     );
 }
+
+#[gpui_kit::test]
+fn reveal_line_shows_a_line_hidden_in_a_gap(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Changes at lines 10 and 80 of 100: a 63-line gap (old 14..77) between
+    // the hunks; the new side is one line longer after line 10.
+    let old = numbered("x", 100);
+    let mut new = old.clone();
+    new[10] = "X 10\n".to_owned();
+    new.insert(11, "inserted\n".to_owned());
+    new[81] = "X 80\n".to_owned();
+    let provider = MemProvider::new(vec![Spec::modified("x.rs", &old.concat(), &new.concat())]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 2000.);
+    // New line 41 is old line 40: revealed with 3 lines around it.
+    view.update(cx, |v, cx| v.reveal_line(0, Side::New, 41, cx));
+    settle(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.expansions()),
+        [(0, vec![[37, 44]])]
+    );
+    assert!(
+        debug(&view, cx)
+            .visible_rows
+            .iter()
+            .any(|r| r.ends_with(" x 40")),
+        "{:#?}",
+        debug(&view, cx).visible_rows
+    );
+    // Old-side lines map to themselves; lines already shown change nothing.
+    view.update(cx, |v, cx| v.reveal_line(0, Side::Old, 60, cx));
+    view.update(cx, |v, cx| v.reveal_line(0, Side::New, 11, cx));
+    view.update(cx, |v, cx| v.reveal_line(0, Side::Old, 40, cx));
+    settle(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.expansions()),
+        [(0, vec![[37, 44], [57, 64]])]
+    );
+}
+
+#[gpui_kit::test]
+fn reveal_line_before_the_file_loads_applies_once_it_does(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let old = numbered("x", 100);
+    let mut new = old.clone();
+    new[10] = "X 10\n".to_owned();
+    new[80] = "X 80\n".to_owned();
+    let provider = MemProvider::new(vec![Spec::modified("x.rs", &old.concat(), &new.concat())]);
+    let (view, cx) = open_idle(cx, provider, options(LayoutMode::Unified), 1000., 2000.);
+    view.update(cx, |v, cx| v.reveal_line(0, Side::New, 50, cx));
+    assert!(view.read_with(cx, |v, _| v.expansions()).is_empty());
+    settle(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.expansions()),
+        [(0, vec![[47, 54]])]
+    );
+}
