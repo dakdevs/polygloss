@@ -205,6 +205,27 @@ fn git_runner_sets_offline_env_and_flags() {
 }
 
 #[test]
+fn git_binary_bypasses_the_xcode_shim() {
+    // T2.10.1: the Xcode shim (`/usr/bin/git`) costs ~9 ms per process on top
+    // of git itself; the runner spawns the git it would run instead.
+    let _sb = Sandbox::isolate();
+    let first_on_path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("git"))
+        .find(|g| g.is_file());
+    let bin = git_binary();
+    if cfg!(target_os = "macos") && first_on_path.as_deref() == Some(Path::new("/usr/bin/git")) {
+        assert_ne!(bin, PathBuf::from("git"));
+        assert_ne!(bin, PathBuf::from("/usr/bin/git"));
+        assert!(bin.is_absolute() && bin.is_file(), "{bin:?}");
+    } else {
+        // Any other git (Homebrew on CI) is found on PATH by the spawn.
+        assert_eq!(bin, PathBuf::from("git"));
+    }
+    // It is a working git that passes the version check.
+    assert!(check_version().unwrap() >= GitVersion::MIN);
+}
+
+#[test]
 fn sandbox_keeps_caller_git_bin() {
     // S13: `POLYGLOSS_GIT_BIN=<old git> nextest run` must reach the runner, so the
     // suite really runs against that git. Set before `isolate()`, like a caller does.
