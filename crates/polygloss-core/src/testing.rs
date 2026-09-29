@@ -331,3 +331,11 @@ where
 pub fn git_spawns(subcommand: &str) -> usize {
     crate::git::runner::spawn_count(subcommand)
 }
+
+/// Makes every `Core` pin in this process sleep `pause` after `Snapshotter::pin`
+/// created the snapshot ref and before the iteration naming it commits (while the
+/// per-repo pin/prune guard is held), so tests can race a prune against a pin
+/// (T1.12). `Duration::ZERO` turns it off.
+pub fn pause_after_snapshot_pin(pause: std::time::Duration) {
+    crate::review::open::set_pin_pause(pause);
+}

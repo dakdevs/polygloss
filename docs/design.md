@@ -214,7 +214,7 @@ This is the **Provisional** mechanism for the log's "content-hashed in memory, w
 
 ### 5.3 Retention and guards
 
-- A snapshot ref is kept while any iteration references it. The "Prune old reviews" setting deletes reviews, then deletes snapshot refs nothing references anymore. Polygloss never runs `git gc` itself (**Provisional**).
+- A snapshot ref is kept while any iteration references it. The "Prune old reviews" setting deletes reviews, then deletes snapshot refs nothing references anymore. Pins and prunes of one repo hold an exclusive advisory lock (`locks/repo-<hash>.lock` in the data dir, §13.2), from creating the ref until the iteration naming it commits, and from reading the referenced set until the refs are deleted, so a prune never deletes the ref of a pin in flight. Polygloss never runs `git gc` itself (**Provisional**).
 - A fixed `since=<commit>` base also gets a ref (`refs/polygloss/snapshots/<base_tree>`) so it cannot be collected (**Provisional**). Commit and compare iterations rely on the user's own refs; if those objects are gone, the UI says "objects no longer available".
 - `git add -A` runs the repo's configured clean filters. git-lfs, for example, may write to `.git/lfs/objects`. Documented as a risk (§25).
 - If `index.lock` exists while copying the index, retry after the next debounce.
@@ -524,18 +524,18 @@ CREATE TABLE view_state (                        -- per diff_id (§11.12)
 
 ### 7.3 Events
 
-| `kind`                                     | Actor        | Seen by agents | Payload                       |
-| ------------------------------------------ | ------------ | -------------- | ----------------------------- |
-| `review.created`, `review.archived`        | any          | yes            | `key`, `kind`                 |
-| `iteration.created`                        | any          | yes            | `seq`, `diff_id`, `pinned_by` |
-| `thread.created`                           | human, agent | yes            | `kind`, `subject`             |
-| `comment.created` / `.edited` / `.deleted` | human, agent | yes            | —                             |
-| `thread.resolved` / `thread.unresolved`    | human, agent | yes            | —                             |
-| `review.submitted`                         | human        | yes            | `submission_id`, `verdict`    |
-| `review.rereview_requested`                | agent        | yes            | `summary`                     |
-| `review.assigned`                          | any          | yes            | `session_id`                  |
-| `viewed.changed`                           | human        | no             | `path`, blobs, `viewed`       |
-| `draft.changed`                            | human        | **no**         | app-internal                  |
+| `kind`                                     | Actor        | Seen by agents | Payload                                                     |
+| ------------------------------------------ | ------------ | -------------- | ----------------------------------------------------------- |
+| `review.created`, `review.archived`        | any          | yes            | `key`, `kind` (+ `pruned: true` when the review was pruned) |
+| `iteration.created`                        | any          | yes            | `seq`, `diff_id`, `pinned_by`                               |
+| `thread.created`                           | human, agent | yes            | `kind`, `subject`                                           |
+| `comment.created` / `.edited` / `.deleted` | human, agent | yes            | —                                                           |
+| `thread.resolved` / `thread.unresolved`    | human, agent | yes            | —                                                           |
+| `review.submitted`                         | human        | yes            | `submission_id`, `verdict`                                  |
+| `review.rereview_requested`                | agent        | yes            | `summary`                                                   |
+| `review.assigned`                          | any          | yes            | `session_id`                                                |
+| `viewed.changed`                           | human        | no             | `path`, blobs, `viewed`                                     |
+| `draft.changed`                            | human        | **no**         | app-internal                                                |
 
 Human `thread.created` and `comment.created` events are written when a submission publishes them, not when the draft is saved.
 
@@ -896,6 +896,7 @@ flowchart LR
   polygloss.db, polygloss.db-wal, polygloss.db-shm, polygloss.db.lock
   polygloss.sock                                 0600  app IPC
   app.lock                                       single-instance lock (dev builds)
+  locks/repo-<sha256(common_dir)[..16]>.lock     per-repo pin/prune guard (§5.3)
   bin/polygloss -> …/Polygloss.app/Contents/MacOS/polygloss-cli   stable path, refreshed at launch
 ~/Library/Caches/polygloss/
   scratch/<repo-hash>/{objects/,<worktree-hash>/index}   unpinned snapshots (§5)
