@@ -210,11 +210,36 @@ impl DiffViewport {
         self.jump_file(Direction::Up, cx);
     }
 
+    /// Whether old-side lines may be commented on (default on).
+    pub fn old_side_comments(&self) -> bool {
+        self.old_side_comments
+    }
+
+    /// Allows or blocks comments on old-side lines: when blocked, their
+    /// line numbers show no "+", and neither `c`, a click nor a drag there
+    /// asks for a comment (the cursor still moves). "Changes since last
+    /// review" blocks them (OQ-9).
+    pub fn set_old_side_comments(&mut self, allowed: bool, cx: &mut Context<Self>) {
+        if self.old_side_comments != allowed {
+            self.old_side_comments = allowed;
+            cx.notify();
+        }
+    }
+
+    /// Whether a comment may be asked for on `side`.
+    pub(crate) fn may_comment(&self, side: Side) -> bool {
+        side == Side::New || self.old_side_comments
+    }
+
     /// `c`: asks the host for a comment on the selected text's lines, else
     /// on the cursor's line or range ([`ViewportEvent::CommentRequested`]).
-    /// Without a cursor, places one on the first line shown instead.
+    /// Without a cursor, places one on the first line shown instead. Asks
+    /// nothing for old-side lines while [`Self::old_side_comments`] is off.
     pub fn request_comment(&mut self, cx: &mut Context<Self>) {
         if let Some(sel) = self.selection.filter(|s| !s.is_empty()) {
+            if !self.may_comment(sel.side) {
+                return;
+            }
             let (start, end) = sel.ordered();
             cx.emit(ViewportEvent::CommentRequested {
                 file_idx: sel.file_idx,
@@ -225,6 +250,7 @@ impl DiffViewport {
             return;
         }
         match self.cursor.pos {
+            Some(pos) if !self.may_comment(pos.side) => {}
             Some(pos) => {
                 let (start_line, line) = pos.lines();
                 cx.emit(ViewportEvent::CommentRequested {

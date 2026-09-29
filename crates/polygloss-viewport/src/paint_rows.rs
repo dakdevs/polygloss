@@ -119,6 +119,8 @@ pub(crate) struct Marks {
     pub pointer: Option<(f32, f32)>,
     /// A text drag is in progress (no "+" then).
     pub text_drag: bool,
+    /// Old-side lines get a "+" ([`crate::DiffViewport::set_old_side_comments`]).
+    pub old_side_comments: bool,
 }
 
 impl Frame {

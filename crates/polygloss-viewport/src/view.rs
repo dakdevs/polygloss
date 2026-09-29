@@ -222,6 +222,9 @@ pub struct DiffViewport {
     pub(crate) drag: Option<Drag>,
     /// The pointer is over the viewport (not a header or a popup over it).
     pub(crate) pointer_inside: bool,
+    /// Old-side lines may be commented on (the host turns it off, e.g. for
+    /// "Changes since last review", OQ-9).
+    pub(crate) old_side_comments: bool,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
@@ -288,6 +291,7 @@ impl DiffViewport {
             selection: None,
             drag: None,
             pointer_inside: false,
+            old_side_comments: true,
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
             #[cfg(feature = "debug-inspect")]
@@ -626,6 +630,7 @@ impl DiffViewport {
             selection: self.selection,
             pointer,
             text_drag: self.drag == Some(Drag::Text),
+            old_side_comments: self.old_side_comments,
         };
 
         let scale = f64::from(window.scale_factor().max(1.0));

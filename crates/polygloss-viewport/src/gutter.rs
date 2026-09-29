@@ -89,6 +89,9 @@ impl Painter<'_> {
         let Some(line) = line else {
             return;
         };
+        if cell.side == polygloss_diff::Side::Old && !self.marks.old_side_comments {
+            return;
+        }
         if self.marks.text_drag
             || px < cell.x
             || px >= cell.code_x

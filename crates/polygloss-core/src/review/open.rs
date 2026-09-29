@@ -625,7 +625,7 @@ impl Core {
     }
 
     /// The stored file list of `id`, or `diff-tree` + `classify` when not stored.
-    fn files_or_compute(
+    pub(crate) fn files_or_compute(
         &self,
         repo: &RepoInfo,
         fmt: ObjectFormat,

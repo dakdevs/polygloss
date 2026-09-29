@@ -47,7 +47,8 @@ use polygloss_core::git::RepoInfo;
 use polygloss_core::ids::DiffId;
 use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{
-    AuthorKind, Position, ThreadFilter, ThreadKind, ThreadScope, ThreadStatus, ThreadView, Viewer,
+    AuthorKind, OpenedDiff, Position, ThreadFilter, ThreadKind, ThreadScope, ThreadStatus,
+    ThreadView, Viewer,
 };
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::{FileChange, FileKind, Side};
@@ -58,6 +59,7 @@ use polygloss_viewport::{
 use crate::app_state::AppState;
 use crate::keymap::actions::{tab as tab_actions, viewport as viewport_actions};
 use crate::keymap::handlers;
+use crate::live::DiffRefreshed;
 use crate::review_tab::ReviewTab;
 use crate::settings::SettingsStore;
 use crate::window::MenuKind;
@@ -170,6 +172,16 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
     })
     .detach();
     cx.observe(&model, |_, _, cx| cx.notify()).detach();
+    // The tab shows another diff (a live refresh, another iteration,
+    // "Changes since last review"): place the threads in it again.
+    cx.subscribe_self(|tab: &mut ReviewTab, _: &DiffRefreshed, cx| {
+        let Some(model) = threads(tab).cloned() else {
+            return;
+        };
+        let opened = tab.opened.clone();
+        model.update(cx, |m, cx| m.set_diff(&opened, cx));
+    })
+    .detach();
     // `agent_notes.hidden` changed in settings.json: follow it.
     let weak = model.downgrade();
     cx.observe_global::<SettingsStore>(move |_, cx| {
@@ -415,6 +427,37 @@ impl ReviewThreads {
         self.update_blocks(&HashMap::new(), cx);
         cx.emit(ThreadsEvent::Changed);
         cx.notify();
+    }
+
+    /// The tab shows `opened` now (a [`DiffRefreshed`]): positions are
+    /// computed for its diff and every thread's block is placed again (the
+    /// viewport dropped them all when its provider was swapped).
+    pub fn set_diff(&mut self, opened: &OpenedDiff, cx: &mut Context<Self>) {
+        self.diff_id = opened.diff_id.clone();
+        self.files = opened.files.clone();
+        self.file_index = placement::file_index(&opened.files);
+        self.repo = opened.repo.clone();
+        let scratch = opened.live.as_ref().map(|l| l.scratch_objects.clone());
+        if scratch.is_some() || scratch != self.scratch {
+            // A new live state's objects are new files in its scratch store.
+            self.blobs = None;
+        }
+        self.scratch = scratch;
+        // Everything keyed by file index belongs to the old list.
+        self.positions.clear();
+        self.places.clear();
+        self.changes.clear();
+        self.applied.clear();
+        self.digests.clear();
+        self.nav = None;
+        self.reload(cx);
+        cx.emit(ThreadsEvent::Changed);
+        cx.notify();
+    }
+
+    /// The diff the threads are placed in.
+    pub fn diff_id(&self) -> &DiffId {
+        &self.diff_id
     }
 
     /// Loads the threads and positions again on the background executor.

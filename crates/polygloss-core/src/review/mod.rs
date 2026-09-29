@@ -3,6 +3,7 @@
 //! of `polygloss-diff` to the 1-based anchors of the store and agent surfaces.
 
 pub mod carry_forward;
+pub mod iterations;
 pub mod models;
 pub mod open;
 pub mod sessions;
@@ -14,6 +15,7 @@ pub mod view_state;
 pub mod viewed;
 
 pub use carry_forward::{CARRY_FORWARD_ENGINE_VERSION, Position, PositionState, position_of};
+pub use iterations::{IterationEntry, LastSubmission};
 pub use models::{IterationInfo, OpenRequest, OpenedDiff, PinnedBy};
 pub use open::Core;
 pub use sessions::{AssignedBy, SessionInfo};

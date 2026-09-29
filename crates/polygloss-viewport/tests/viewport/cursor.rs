@@ -371,6 +371,60 @@ fn gutter_plus_on_hover_emits_comment_requested(cx: &mut TestAppContext) {
     assert_eq!((plus.side, plus.line), (Side::New, 3));
 }
 
+/// T3.12, OQ-9: with old-side comments off ("Changes since last review"),
+/// old-side lines show no "+" and ask for no comment (not by `c`, a click
+/// or a drag); new-side lines still do.
+#[gpui_kit::test]
+fn old_side_comments_off_blocks_the_plus_and_requests(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = open(cx, two_files(), options(LayoutMode::Unified), 1000., 2000.);
+    let (events, _sub) = record_events(&view, cx);
+    assert!(view.read_with(cx, |v, _| v.old_side_comments()));
+    view.update(cx, |v, cx| v.set_old_side_comments(false, cx));
+    settle(cx);
+    assert!(!view.read_with(cx, |v, _| v.old_side_comments()));
+
+    // No "+" on the removed line 5; context line 3 (new side) keeps it.
+    let removed = point(px(20.), px(row_y(3) + 10.));
+    cx.simulate_mouse_move(removed, None, Modifiers::default());
+    settle(cx);
+    assert_eq!(debug(&view, cx).plus_button, None);
+    cx.simulate_mouse_move(
+        point(px(20.), px(row_y(1) + 10.)),
+        None,
+        Modifiers::default(),
+    );
+    settle(cx);
+    let plus = debug(&view, cx).plus_button.expect("a + button");
+    assert_eq!((plus.side, plus.line), (Side::New, 3));
+
+    // `c` on an old-side cursor or range asks for nothing.
+    set_cursor(&view, cx, pos(0, Side::Old, 5));
+    view.update(cx, |v, cx| v.request_comment(cx));
+    set_cursor(&view, cx, ranged(0, Side::Old, 5, 4));
+    view.update(cx, |v, cx| v.request_comment(cx));
+    // Nor does pressing the removed line's numbers; the cursor still goes
+    // there.
+    cx.simulate_mouse_move(removed, None, Modifiers::default());
+    cx.simulate_mouse_down(removed, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(removed, MouseButton::Left, Modifiers::default());
+    settle(cx);
+    assert!(comments(&events).is_empty(), "{:?}", comments(&events));
+    assert_eq!(cursor(&view, cx), Some(pos(0, Side::Old, 5)));
+
+    // The new side still asks.
+    set_cursor(&view, cx, pos(0, Side::New, 3));
+    view.update(cx, |v, cx| v.request_comment(cx));
+    assert_eq!(comments(&events), [comment(0, Side::New, 3, 3)]);
+
+    // Back on: the removed line's "+" returns.
+    view.update(cx, |v, cx| v.set_old_side_comments(true, cx));
+    cx.simulate_mouse_move(removed, None, Modifiers::default());
+    settle(cx);
+    let plus = debug(&view, cx).plus_button.expect("a + button");
+    assert_eq!((plus.side, plus.line), (Side::Old, 5));
+}
+
 #[gpui_kit::test]
 fn drag_line_numbers_selects_range(cx: &mut TestAppContext) {
     let _sb = sandbox();

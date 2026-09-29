@@ -364,6 +364,10 @@ impl DiffViewport {
                 let Some(pos) = self.cursor.pos.filter(|p| p.file_idx == file_idx) else {
                     return;
                 };
+                if !self.may_comment(side) {
+                    cx.notify();
+                    return;
+                }
                 let (start_line, line) = pos.lines();
                 cx.emit(ViewportEvent::CommentRequested {
                     file_idx,

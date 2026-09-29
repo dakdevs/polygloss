@@ -192,7 +192,9 @@ fn start_watcher(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
 /// (what the watcher does after each batch). Serialized: while one runs,
 /// another is queued.
 pub fn recompute_now(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
-    let shown = recompute::Shown::of(&tab.opened);
+    // The tab's current state, even while it shows an earlier iteration or
+    // the changes since the last review (T3.12).
+    let shown = recompute::Shown::of(crate::iterations::current(tab));
     let Some(live) = tab.extension_mut::<Live>() else {
         return;
     };
@@ -277,13 +279,14 @@ fn show_banner(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
 /// tab keeps what it shows and offers the refresh (never auto-applied,
 /// ADR-0009).
 pub fn newer_diff_opened(tab: &mut ReviewTab, opened: &OpenedDiff, cx: &mut Context<ReviewTab>) {
-    if opened.diff_id == tab.opened.diff_id {
+    let current = crate::iterations::current(tab);
+    if opened.diff_id == current.diff_id {
         return;
     }
     let newer = Newer {
         diff_id: opened.diff_id.clone(),
-        files_changed: recompute::changed_files(&tab.opened.files, &opened.files),
-        base_moved: opened.base.tree != tab.opened.base.tree,
+        files_changed: recompute::changed_files(&current.files, &opened.files),
+        base_moved: opened.base.tree != current.base.tree,
         other_review: None,
     };
     let Some(live) = tab.extension_mut::<Live>() else {
@@ -365,6 +368,8 @@ fn refreshed(
             let context = crate::review_tab::description(&tab.opened);
             tab.banners
                 .update(cx, |b, cx| b.set_context(context.into(), cx));
+            // The new state is the tab's current one (T3.12).
+            crate::iterations::refreshed(tab, cx);
             if old.diff_id != tab.opened.diff_id {
                 refresh::apply(tab, old.diff_id, Arc::new(provider), plan, cx);
             }
@@ -389,12 +394,15 @@ fn clear_newer(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
 /// `tab::Snapshot`: pins the live state shown as an iteration
 /// (`pinned_by = manual`, design §5.2), on its displayed base.
 pub fn snapshot(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
-    let Some(state) = tab.opened.live.clone() else {
+    // The current live state, also while the tab shows an earlier
+    // iteration (T3.12).
+    let current = crate::iterations::current(tab);
+    let Some(state) = current.live.clone() else {
         return;
     };
     let core = AppState::global(cx).core.clone();
     let review_id = tab.review_id.clone();
-    let base = tab.opened.base.clone();
+    let base = current.base.clone();
     cx.spawn_in(window, async move |tab, cx: &mut AsyncWindowContext| {
         let pinned = cx
             .background_spawn(async move {
@@ -404,9 +412,7 @@ pub fn snapshot(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Revie
         let _ = tab.update_in(cx, |tab, window, cx| match pinned {
             Ok(it) => {
                 let message = format!("Snapshot saved as iteration {}", it.seq);
-                if it.diff_id == tab.opened.diff_id {
-                    tab.opened.iteration = Some(it);
-                }
+                crate::iterations::pinned(tab, it, cx);
                 toast(message, false, window, cx);
                 cx.notify();
             }
@@ -452,11 +458,11 @@ pub fn toolbar_items(
     let Some(since) = since(tab) else {
         return Vec::new();
     };
-    let pinned = tab
-        .opened
+    let current = crate::iterations::current(tab);
+    let pinned = current
         .iteration
         .as_ref()
-        .filter(|it| it.diff_id == tab.opened.diff_id)
+        .filter(|it| it.diff_id == current.diff_id)
         .map(|it| it.seq);
     let base = Button::new("live-base")
         .label(format!("Base: {}", base_picker::since_label(&since)))

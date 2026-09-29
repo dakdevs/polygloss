@@ -47,6 +47,7 @@ use polygloss_viewport::{FileFlags, ViewportEvent};
 use crate::app_state::AppState;
 use crate::keymap::actions::{tree as tree_actions, viewport as viewport_actions};
 use crate::keymap::handlers;
+use crate::live::DiffRefreshed;
 use crate::review_tab::ReviewTab;
 use crate::tree::{FileTreeEvent, file_tree};
 
@@ -121,6 +122,9 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
             },
         ),
         cx.observe_global::<ViewedRevision>(|tab: &mut ReviewTab, cx| reload(tab, cx)),
+        // Another diff is shown (a refresh, another iteration): its files'
+        // marks, including "changed since viewed", come from the store.
+        cx.subscribe_self(|tab: &mut ReviewTab, _: &DiffRefreshed, cx| reload(tab, cx)),
     ];
     if let Some(tree) = file_tree(tab).cloned() {
         subscriptions.push(cx.subscribe(

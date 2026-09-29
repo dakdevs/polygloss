@@ -300,14 +300,15 @@ fn refresh_preserves_collapsed_expanded_viewed(cx: &mut gpui_kit::TestAppContext
     let tab = open_watched(&mut shell, live_req(repo.path(), Since::MergeBase));
     let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
     // a.rs: context revealed and viewed; b.rs: viewed and collapsed.
+    // Viewed marks are stored (a refresh reloads them from the store,
+    // design §9); marking collapses both, so a.rs is expanded again.
+    tab.update(shell.cx, |t, cx| {
+        polygloss_app::viewed::set_viewed(t, &[0, 1], true, cx)
+    });
+    draw(shell.cx);
     viewport.update(shell.cx, |v, cx| {
+        v.set_collapsed(0, false, cx);
         v.set_expansions(0, &[[0, 20]], cx);
-        v.set_collapsed(1, true, cx);
-        let viewed = FileFlags {
-            viewed: true,
-            ..FileFlags::default()
-        };
-        v.set_file_flags(vec![viewed, viewed], cx);
     });
     draw(shell.cx);
 
