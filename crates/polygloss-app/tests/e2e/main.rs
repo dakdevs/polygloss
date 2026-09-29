@@ -12,6 +12,7 @@
 mod support;
 
 mod cursor;
+mod feed;
 mod find;
 mod home;
 mod iterations;
@@ -55,5 +56,6 @@ fn main() -> std::process::ExitCode {
         live::TESTS,
         find::TESTS,
         iterations::TESTS,
+        feed::TESTS,
     ])
 }

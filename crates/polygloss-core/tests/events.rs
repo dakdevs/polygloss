@@ -553,6 +553,31 @@ fn feed_starts_after_seq_and_pages_large_backlog() {
     assert_eq!(visible.cursor(), *seqs.last().unwrap());
 }
 
+#[test]
+fn feed_seek_to_latest_skips_the_backlog() {
+    let _sb = Sandbox::isolate();
+    let (paths, store) = open_store();
+    append(&store, &event(EventKind::ReviewCreated, Some("r1")));
+    let last = append(&store, &event(EventKind::CommentCreated, Some("r1")));
+    let mut feed = EventFeed::open(&paths, 0, EventFilter::default()).unwrap();
+    assert_eq!(feed.seek_to_latest().unwrap(), last);
+    assert_eq!(feed.cursor(), last);
+    // The backlog is skipped; later events still arrive.
+    assert!(feed.poll().unwrap().is_empty());
+    let next = append(&store, &event(EventKind::ThreadResolved, Some("r1")));
+    assert_eq!(
+        feed.poll()
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect::<Vec<_>>(),
+        [next]
+    );
+    // Never moves the cursor back.
+    let mut ahead = EventFeed::open(&paths, next + 10, EventFilter::default()).unwrap();
+    assert_eq!(ahead.seek_to_latest().unwrap(), next + 10);
+}
+
 // ---------------------------------------------------------------------------
 // Multi-process
 

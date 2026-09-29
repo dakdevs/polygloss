@@ -2,6 +2,7 @@
 //! view state, sessions and carry-forward (T1.12–T1.15). Converts the 0-based lines
 //! of `polygloss-diff` to the 1-based anchors of the store and agent surfaces.
 
+pub mod activity;
 pub mod carry_forward;
 pub mod iterations;
 pub mod models;
@@ -14,6 +15,7 @@ pub mod threads;
 pub mod view_state;
 pub mod viewed;
 
+pub use activity::{Rereview, ReviewActivity, UnreadThread};
 pub use carry_forward::{CARRY_FORWARD_ENGINE_VERSION, Position, PositionState, position_of};
 pub use iterations::{IterationEntry, LastSubmission};
 pub use models::{IterationInfo, OpenRequest, OpenedDiff, PinnedBy};

@@ -98,6 +98,15 @@ impl BannerStrip {
             .collect()
     }
 
+    /// The action the button of the banner of `kind` dispatches, if it
+    /// shows.
+    pub fn action(&self, kind: BannerKind) -> Option<&dyn Action> {
+        self.banners
+            .iter()
+            .find(|b| b.kind == kind)
+            .map(|b| &*b.action)
+    }
+
     /// The text shown without banners.
     pub fn context(&self) -> &SharedString {
         &self.context
@@ -147,13 +156,23 @@ impl Render for BannerStrip {
             .children(self.banners.iter().enumerate().map(|(i, b)| {
                 let action = b.action.boxed_clone();
                 let target = self.target.clone();
+                // Long texts shrink and truncate, so every button stays in
+                // view.
                 h_flex()
+                    .min_w_0()
                     .gap_2()
                     .when(i > 0, |d| d.pl_3().border_l_1().border_color(theme.border))
-                    .child(div().size(px(6.)).rounded_full().bg(theme.info))
-                    .child(div().text_color(fg).truncate().child(b.text.clone()))
+                    .child(div().flex_none().size(px(6.)).rounded_full().bg(theme.info))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_color(fg)
+                            .truncate()
+                            .child(b.text.clone()),
+                    )
                     .child(
                         Button::new(("banner", i))
+                            .flex_none()
                             .label(button_label(b.kind))
                             .xsmall()
                             .ghost()
