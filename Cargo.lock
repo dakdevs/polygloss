@@ -6629,9 +6629,11 @@ dependencies = [
 name = "polygloss-viewport"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "gpui-kit",
  "polygloss-diff",
  "polygloss-highlight",
+ "polygloss-viewport",
 ]
 
 [[package]]
