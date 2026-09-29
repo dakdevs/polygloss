@@ -20,6 +20,7 @@ use polygloss_diff::rows::Layout;
 use polygloss_diff::word::Granularity;
 use polygloss_diff::{FileChange, FileKind, Side};
 
+use crate::blocks::Blocks;
 use crate::controls::Pressed;
 use crate::document::{
     BlockId, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document, FileLayout,
@@ -209,6 +210,8 @@ pub struct DiffViewport {
     /// The control a mouse button went down on (a click needs the release
     /// there too).
     pub(crate) pressed: Option<Pressed>,
+    /// Host blocks (threads, composers, notes; see [`crate::blocks`]).
+    pub(crate) blocks: Blocks,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
@@ -270,6 +273,7 @@ impl DiffViewport {
             special,
             menu: None,
             pressed: None,
+            blocks: Blocks::default(),
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
             #[cfg(feature = "debug-inspect")]
@@ -381,11 +385,8 @@ impl DiffViewport {
                 line,
             } => (file_idx, RowKey::Line { side, line }),
             ScrollTarget::Block(id) => {
-                let Some(f) = (0..self.doc.len()).find(|&f| {
-                    self.doc
-                        .file_layout(f)
-                        .is_some_and(|l| l.find(RowKey::Block(id)).is_some())
-                }) else {
+                // A block of a file not laid out yet lands once it is.
+                let Some(f) = self.blocks.file_of(id) else {
                     return;
                 };
                 (f, RowKey::Block(id))
@@ -527,6 +528,7 @@ impl DiffViewport {
                 scroll_top: (self.doc.scroll_top() * scale).round() / scale,
                 cache: &mut self.text_cache,
                 pipeline: &self.pipeline,
+                blocks: &self.blocks,
                 text_system: window.text_system().clone(),
                 frame: &mut frame,
                 corrections: Vec::new(),

@@ -12,10 +12,13 @@
 //! - [`pipeline`]: the prioritized, cancellable background work behind it:
 //!   loads and highlights for the files near the viewport, then sizes and
 //!   line counts of every file.
+//! - [`blocks`]: host elements (threads, composers, notes) below their
+//!   anchored line, measured near the viewport, with split spacers.
 //!
 //! The ⋯ menu is a gpui-kit `PopupMenu`: hosts call `gpui_kit::init` first,
 //! as every Polygloss window does.
 
+pub mod blocks;
 mod controls;
 pub mod debug;
 pub mod document;
@@ -34,11 +37,12 @@ pub mod style;
 mod text_cache;
 mod view;
 
+pub use blocks::{BlockSpec, ESTIMATED_BLOCK_ROWS, RenderBlock};
 pub use controls::ControlAction;
 pub use debug::{ControlDebug, HeaderDebug, MenuDebug, ViewportDebug};
 pub use document::{
-    BlockId, BodyRow, Document, FileLayout, FileState, HeightIndex, Metrics, RowKey, ScrollAnchor,
-    SizeHint,
+    BlockAnchor, BlockId, BodyRow, Document, FileLayout, FileState, HeightIndex, Metrics,
+    PlacedBlock, RowKey, ScrollAnchor, SizeHint,
 };
 pub use file_flags::FileFlags;
 pub use layout::{LayoutMode, resolve_layout};

@@ -9,8 +9,8 @@ use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::{Expansions, GapId, Layout, Row, build_rows};
 use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid, Side};
 use polygloss_viewport::document::{
-    BlockId, BodyRow, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document, FileLayout,
-    FileState, HeightIndex, Metrics, RowKey, ScrollAnchor, SizeHint,
+    BlockAnchor, BlockId, BodyRow, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document,
+    FileLayout, FileState, HeightIndex, Metrics, PlacedBlock, RowKey, ScrollAnchor, SizeHint,
 };
 use polygloss_viewport::materialize::MaterializedFile;
 
@@ -307,13 +307,27 @@ fn anchor_stable_when_height_above_changes() {
     assert_eq!(screen_y(&d, 10, 25), 0.0);
     assert_eq!(snapshot(&d, &[11]), before[50..].to_vec());
 
-    // The anchor file's layout is replaced by one with more rows above the line.
-    let mut rows = vec![BodyRow::Block(BlockId(7))];
-    rows.extend(context_layout(50, 20.0).rows().iter().copied());
-    let mut heights = vec![300.0];
-    heights.extend(vec![20.0; 50]);
-    d.set_file_layout(10, FileLayout::new(rows, &heights));
+    // The anchor file gets more rows above the line: a block under its header
+    // (blocks belong to the document, T2.7), then its layout is replaced by one
+    // with different rows (the block is placed in it again).
+    d.set_blocks(
+        10,
+        vec![PlacedBlock {
+            id: BlockId(7),
+            anchor: BlockAnchor::FileTop,
+            height: 300.0,
+        }],
+    );
     assert_eq!(screen_y(&d, 10, 26), 0.0, "new 25 is body row 26 now");
+    assert_eq!(snapshot(&d, &[11]), before[50..].to_vec());
+    let mut layout = context_layout(50, 20.0);
+    layout.set_row_height(3, 120.0);
+    d.set_file_layout(10, layout);
+    assert_eq!(
+        d.file_layout(10).unwrap().rows()[0],
+        BodyRow::Block(BlockId(7))
+    );
+    assert_eq!(screen_y(&d, 10, 26), 0.0);
     assert_eq!(snapshot(&d, &[11]), before[50..].to_vec());
 
     // Growing a file below the anchor moves nothing above it.

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::file_layout::FileLayout;
 use super::metrics::SizeHint;
+use super::placement::PlacedBlock;
 use crate::materialize::MaterializedFile;
 
 /// Where a file's data is: `Estimated` (metadata only) → `Loading` →
@@ -59,6 +60,9 @@ pub(crate) struct FileEntry {
     pub(crate) collapsed: bool,
     pub(crate) hint: Option<SizeHint>,
     pub(crate) body: Body,
+    /// Host blocks, in the host's order. A layout has them as rows and an
+    /// explicit body includes them; an estimate adds them.
+    pub(crate) blocks: Vec<PlacedBlock>,
 }
 
 impl FileEntry {
@@ -68,9 +72,16 @@ impl FileEntry {
     pub(crate) fn height(&self, header: f32) -> f32 {
         if self.collapsed {
             header
+        } else if let Body::Estimated(body) = self.body {
+            header + body + self.blocks_height()
         } else {
             header + self.body.height() as f32
         }
+    }
+
+    /// Total height of the file's blocks.
+    pub(crate) fn blocks_height(&self) -> f32 {
+        self.blocks.iter().map(|b| b.height).sum()
     }
 
     pub(crate) fn layout(&self) -> Option<&FileLayout> {

@@ -1,11 +1,12 @@
 //! `DiffElement`: the GPUI element that paints a [`DiffViewport`].
 //!
 //! Prepaint asks the view for the frame's display list (visible rows only,
-//! shaped through the cache) and inserts the hitboxes of its controls,
-//! clipped to the viewport like everything it paints; paint
-//! replays it layer by layer, every row quad before any row text so GPUI
-//! batches them into few draw calls, then the file headers on top, and wires
-//! the scroll wheel and the controls. Both phases are timed and reported as
+//! shaped through the cache), renders and measures the visible host blocks
+//! ([`crate::blocks`]) and inserts the hitboxes of its controls, clipped to
+//! the viewport like everything it paints; paint replays it layer by layer,
+//! every row quad before any row text so GPUI batches them into few draw
+//! calls, then the host blocks, then the file headers on top, and wires the
+//! scroll wheel and the controls. Both phases are timed and reported as
 //! [`crate::ViewportEvent::FrameStats`].
 
 use std::rc::Rc;
@@ -17,6 +18,7 @@ use gpui_kit::{
     Pixels, ScrollWheelEvent, Style, Window, fill, px, quad, relative,
 };
 
+use crate::blocks::{self, PreparedBlock};
 use crate::controls::{self, ControlLayer, Target};
 use crate::paint_rows::{Frame, HEADERS, Layer};
 use crate::view::{DiffViewport, FrameStats};
@@ -33,6 +35,8 @@ impl DiffElement {
 
 pub(crate) struct Prepainted {
     frame: Option<Frame>,
+    /// Visible host blocks' elements, prepainted.
+    blocks: Vec<PreparedBlock>,
     hitbox: Hitbox,
     targets: Rc<[Target]>,
     prepaint: Duration,
@@ -83,9 +87,10 @@ impl Element for DiffElement {
     ) -> Prepainted {
         let started = Instant::now();
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        let frame = self
-            .view
-            .update(cx, |view, cx| view.prepare_frame(bounds, window, cx));
+        // Hitboxes go in bottom to top: the viewport's, the blocks' (above
+        // the rows), then the controls' and header strips' (a pinned header
+        // covers the blocks scrolling under it, and takes their clicks).
+        let (frame, blocks) = blocks::prepare(&self.view, bounds, window, cx);
         // A hitbox keeps the content mask it was inserted under, and hit
         // tests only its intersection with it. Rows, headers and expanders
         // cut by the viewport's edges (a header pushed up by the next one, a
@@ -96,6 +101,7 @@ impl Element for DiffElement {
         });
         Prepainted {
             frame: Some(frame),
+            blocks,
             hitbox,
             targets,
             prepaint: started.elapsed(),
@@ -123,6 +129,19 @@ impl Element for DiffElement {
                 .filter(|(_, l)| *l == layer)
                 .map(|(b, _)| (b, frame.hover))
         };
+        // The wheel handler goes first, so the handlers of the host blocks
+        // and controls painted below run before it (bubble order is reverse
+        // registration).
+        let view = self.view.clone();
+        let hitbox = prepainted.hitbox.clone();
+        let line_height = frame.line_height;
+        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
+                let delta = event.delta.pixel_delta(line_height.max(px(1.)));
+                view.update(cx, |view, cx| view.scroll_by(-delta.y.as_f32(), cx));
+                cx.stop_propagation();
+            }
+        });
         let (rows, headers) = frame.layers.split_at(HEADERS);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for layer in rows {
@@ -137,7 +156,10 @@ impl Element for DiffElement {
             for layer in rows {
                 paint_texts(layer, &frame, window, cx);
             }
-            // Headers last: the pinned one covers the rows under it.
+            // Host blocks over the rows, under the headers.
+            blocks::paint(&mut prepainted.blocks, window, cx);
+            // Headers last: the pinned one covers the rows and blocks under
+            // it.
             for layer in headers {
                 paint_quads(layer, hover(ControlLayer::Header), window);
                 paint_rounded(layer, window);
@@ -145,17 +167,6 @@ impl Element for DiffElement {
             }
         });
         controls::wire(&self.view, prepainted.targets.clone(), hovered, window);
-
-        let view = self.view.clone();
-        let hitbox = prepainted.hitbox.clone();
-        let line_height = frame.line_height;
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
-                let delta = event.delta.pixel_delta(line_height.max(px(1.)));
-                view.update(cx, |view, cx| view.scroll_by(-delta.y.as_f32(), cx));
-                cx.stop_propagation();
-            }
-        });
 
         let stats = FrameStats {
             prepaint: prepainted.prepaint,
