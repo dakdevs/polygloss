@@ -342,6 +342,17 @@ impl DiffViewport {
         self.land(found, prefer, pick, Some(dir), Reveal::Jump, cx);
     }
 
+    /// File `file_idx`'s header to the top, the cursor on its first line
+    /// (none when the file shows no code rows, e.g. collapsed). Hosts use it
+    /// to jump to a file (the next unviewed one, T3.7).
+    pub fn go_to_file(&mut self, file_idx: u32, cx: &mut Context<Self>) {
+        if file_idx >= self.doc.len() {
+            return;
+        }
+        self.selection = None;
+        self.jump_to_file(file_idx, cx);
+    }
+
     fn jump_file(&mut self, dir: Direction, cx: &mut Context<Self>) {
         self.selection = None;
         let current = self
@@ -358,6 +369,10 @@ impl DiffViewport {
         if target >= self.doc.len() {
             return;
         }
+        self.jump_to_file(target, cx);
+    }
+
+    fn jump_to_file(&mut self, target: u32, cx: &mut Context<Self>) {
         self.close_menu(cx);
         self.cursor.pending = None;
         self.doc.scroll_to(target, RowKey::Header);

@@ -276,6 +276,14 @@ impl FileTree {
         cx.notify();
     }
 
+    /// Directory `dir`'s tri-state checkbox (of the tree shown): checked when
+    /// every file below it is viewed, mixed when some are.
+    pub fn folder_check(&self, dir: &str) -> Option<row::Check> {
+        self.dir_viewed
+            .get(dir)
+            .map(|&(viewed, total)| row::Check::of(viewed, total))
+    }
+
     pub fn filters(&self) -> &TreeFilters {
         &self.filters
     }

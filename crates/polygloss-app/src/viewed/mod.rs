@@ -1,24 +1,480 @@
-//! Viewed UX (design §9).
+//! Viewed UX (design §9, ADR-0022).
 //!
-//! Owned by T3.7. Created as a stub by T3.1, which already calls
-//! [`init`] (from `features::init`), [`attach`] (for every new review tab), [`toolbar_items`] (by the review tab's toolbar).
+//! - **Toggles:** `v` in the viewport (`viewport::ToggleViewed`: the
+//!   cursor's file, else the file at the top), `v` in the tree
+//!   (`tree::ToggleViewed`: the selected file, or the selected folder), the
+//!   header checkbox (`ViewportEvent::ViewedToggled`) and the tree's
+//!   checkboxes (`FileTreeEvent`). Marking a file viewed collapses it and
+//!   brings the next unviewed file (wrapping) to the top with the cursor on
+//!   its first line; unmarking expands it again.
+//! - **Folders** (provisional): a folder's checkbox is tri-state (all, some,
+//!   none of its files viewed); clicking it or `v` on it checks every file
+//!   below it, or unchecks them all when all are viewed.
+//!   `tree::MarkFolderViewed` checks the selected folder (or the selected
+//!   file's folder). The viewport jumps only when it was showing one of them.
+//! - **State:** the tab keeps each file's [`ViewedState`] from
+//!   `Core::viewed_states` (so a path this review viewed with another blob
+//!   pair shows "changed since viewed"), loaded on the background executor
+//!   when the tab opens (viewed files then start collapsed, as on GitHub)
+//!   and again whenever another tab changes Viewed marks. Toggles update it
+//!   at once and write `Core::set_viewed` in order on the background
+//!   executor; a failed write shows a toast and reloads from the store.
+//!   Toggling never pins (the key is the blob pair, design §5.2).
+//! - **Flags:** [`update_file_flags`] pushes the same `Vec<FileFlags>` to
+//!   the viewport's headers and the tree's rows. This module sets only
+//!   `viewed` and `changed_since_viewed`; the thread fields are the
+//!   threads feature's (T3.9), which should set them through
+//!   [`update_file_flags`] too, so neither overwrites the other.
+//! - **Toolbar:** "N / M viewed" with a small progress bar
+//!   ([`toolbar_items`], selector `viewed-progress`).
+//!
+//! Owned by T3.7. T3.1 already calls [`init`] (from `features::init`),
+//! [`attach`] (for every new review tab), [`toolbar_items`] (by the review
+//! tab's toolbar).
 
-use gpui_kit::{AnyElement, App, Context, Window};
+use std::sync::Arc;
 
+use gpui_kit::component::{ActiveTheme as _, h_flex};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Global, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Task, Window, div, px, relative,
+};
+use polygloss_core::review::ViewedState;
+use polygloss_diff::FileChange;
+use polygloss_viewport::{FileFlags, ViewportEvent};
+
+use crate::app_state::AppState;
+use crate::keymap::actions::{tree as tree_actions, viewport as viewport_actions};
+use crate::keymap::handlers;
 use crate::review_tab::ReviewTab;
+use crate::tree::{FileTreeEvent, file_tree};
 
-/// Registers this feature's actions, bindings and globals.
-pub fn init(_cx: &mut App) {}
+/// Registers the Viewed actions on review tabs.
+pub fn init(cx: &mut App) {
+    handlers::on_action(
+        cx,
+        |tab: &mut ReviewTab, _: &viewport_actions::ToggleViewed, _, cx| {
+            let v = tab.viewport.read(cx);
+            let idx = v.cursor().map_or(v.anchor().file_idx, |c| c.file_idx);
+            toggle_file(tab, idx, cx);
+        },
+    );
+    handlers::on_action(
+        cx,
+        |tab: &mut ReviewTab, _: &tree_actions::ToggleViewed, _, cx| {
+            let Some(tree) = file_tree(tab).cloned() else {
+                return;
+            };
+            let tree = tree.read(cx);
+            if let Some(idx) = tree.selected_file() {
+                toggle_file(tab, idx, cx);
+            } else if let Some((_, files)) = tree.selected_dir() {
+                toggle_folder(tab, files, cx);
+            } else if let Some(idx) = tree.highlighted_file() {
+                toggle_file(tab, idx, cx);
+            }
+        },
+    );
+    handlers::on_action(
+        cx,
+        |tab: &mut ReviewTab, _: &tree_actions::MarkFolderViewed, _, cx| {
+            if let Some(files) = folder_for_action(tab, cx) {
+                set_viewed(tab, &files, true, cx);
+            }
+        },
+    );
+}
 
-/// Sets this feature up on a new review tab (subscriptions, per-tab state
-/// through [`ReviewTab::insert_extension`]).
-pub fn attach(_tab: &mut ReviewTab, _window: &mut Window, _cx: &mut Context<ReviewTab>) {}
+/// Bumped after every Viewed write, so every tab reloads its marks (the
+/// key is global: another tab may show the same file change).
+#[derive(Default)]
+struct ViewedRevision(u64);
 
-/// This feature's toolbar controls, in toolbar order (design §11.4).
+impl Global for ViewedRevision {}
+
+/// A tab's Viewed state (a [`ReviewTab`] extension).
+struct TabViewed {
+    states: Vec<ViewedState>,
+    /// The first load from the store finished.
+    loaded: bool,
+    /// Bumped by every local change: a load started before one is stale.
+    generation: u64,
+    /// The last store operation queued (loads and writes run in order).
+    queue: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// Sets Viewed up on a new review tab: handles the header and tree
+/// checkboxes and loads the marks.
+pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<ReviewTab>) {
+    if !cx.has_global::<ViewedRevision>() {
+        cx.set_global(ViewedRevision::default());
+    }
+    let mut subscriptions = vec![
+        cx.subscribe(
+            &tab.viewport,
+            |tab: &mut ReviewTab, _, event: &ViewportEvent, cx| {
+                if let ViewportEvent::ViewedToggled(idx) = *event {
+                    toggle_file(tab, idx, cx);
+                }
+            },
+        ),
+        cx.observe_global::<ViewedRevision>(|tab: &mut ReviewTab, cx| reload(tab, cx)),
+    ];
+    if let Some(tree) = file_tree(tab).cloned() {
+        subscriptions.push(cx.subscribe(
+            &tree,
+            |tab: &mut ReviewTab, _, event: &FileTreeEvent, cx| match event {
+                FileTreeEvent::ToggleViewed(idx) => toggle_file(tab, *idx, cx),
+                FileTreeEvent::ToggleFolderViewed { files, .. } => {
+                    toggle_folder(tab, files.clone(), cx)
+                }
+            },
+        ));
+    }
+    tab.insert_extension(TabViewed {
+        states: vec![ViewedState::NotViewed; tab.opened.files.len()],
+        loaded: false,
+        generation: 0,
+        queue: None,
+        _subscriptions: subscriptions,
+    });
+    reload(tab, cx);
+}
+
+/// Each file's Viewed state, in file order (`None` before [`attach`]).
+pub fn states(tab: &ReviewTab) -> Option<&[ViewedState]> {
+    tab.extension::<TabViewed>().map(|v| v.states.as_slice())
+}
+
+/// Whether the marks were loaded from the store.
+pub fn is_loaded(tab: &ReviewTab) -> bool {
+    tab.extension::<TabViewed>().is_some_and(|v| v.loaded)
+}
+
+/// `(viewed, total)` files.
+pub fn progress(tab: &ReviewTab) -> (usize, usize) {
+    let viewed = states(tab).map_or(0, |s| {
+        s.iter().filter(|&&s| s == ViewedState::Viewed).count()
+    });
+    (viewed, tab.opened.files.len())
+}
+
+/// The toolbar's text: "N / M viewed".
+pub fn progress_label(tab: &ReviewTab) -> String {
+    let (viewed, total) = progress(tab);
+    format!("{viewed} / {total} viewed")
+}
+
+/// Reloads the marks from the store (after the queued writes). Call it
+/// when the tab's files change (a refresh) or the store changed elsewhere.
+pub fn reload(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
+    let core = AppState::global(cx).core.clone();
+    let review_id = tab.review_id.clone();
+    let files: Arc<Vec<FileChange>> = tab.opened.files.clone();
+    let Some(ext) = tab.extension_mut::<TabViewed>() else {
+        return;
+    };
+    let generation = ext.generation;
+    let previous = ext.queue.take();
+    ext.queue = Some(cx.spawn(async move |this, cx| {
+        if let Some(previous) = previous {
+            previous.await;
+        }
+        let loaded = cx
+            .background_spawn(async move { core.viewed_states(Some(&review_id), &files) })
+            .await;
+        this.update(cx, |tab, cx| match loaded {
+            Ok(states) => apply_loaded(tab, generation, states, cx),
+            Err(e) => tracing::warn!("loading the Viewed marks of {}: {e}", tab.review_id),
+        })
+        .ok();
+    }));
+}
+
+/// Takes loaded marks, unless a toggle happened meanwhile (then loads
+/// again, after its write).
+fn apply_loaded(
+    tab: &mut ReviewTab,
+    generation: u64,
+    mut states: Vec<ViewedState>,
+    cx: &mut Context<ReviewTab>,
+) {
+    let files = tab.opened.files.len();
+    let Some(ext) = tab.extension_mut::<TabViewed>() else {
+        return;
+    };
+    if ext.generation != generation {
+        reload(tab, cx);
+        return;
+    }
+    states.resize(files, ViewedState::NotViewed);
+    let first = !ext.loaded;
+    ext.loaded = true;
+    if ext.states == states && !first {
+        return;
+    }
+    ext.states = states;
+    if first {
+        // Viewed files open collapsed, as on GitHub.
+        let viewed: Vec<u32> = viewed_files(tab);
+        tab.viewport.update(cx, |v, cx| {
+            for idx in viewed {
+                v.set_collapsed(idx, true, cx);
+            }
+        });
+    }
+    push_flags(tab, cx);
+    cx.notify();
+}
+
+fn viewed_files(tab: &ReviewTab) -> Vec<u32> {
+    states(tab)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| **s == ViewedState::Viewed)
+        .map(|(i, _)| i as u32)
+        .collect()
+}
+
+/// Reads the viewport's file flags, lets `f` change them, and pushes them
+/// to the viewport's headers and the tree's rows.
+pub fn update_file_flags(tab: &ReviewTab, cx: &mut App, f: impl FnOnce(&mut Vec<FileFlags>)) {
+    let mut flags = tab.viewport.read(cx).file_flags().to_vec();
+    flags.resize(tab.opened.files.len(), FileFlags::default());
+    f(&mut flags);
+    if let Some(tree) = file_tree(tab) {
+        let flags = flags.clone();
+        tree.update(cx, |t, cx| t.set_file_flags(flags, cx));
+    }
+    tab.viewport.update(cx, |v, cx| v.set_file_flags(flags, cx));
+}
+
+/// Pushes the Viewed marks into the flags.
+fn push_flags(tab: &ReviewTab, cx: &mut App) {
+    let Some(states) = states(tab) else {
+        return;
+    };
+    let states = states.to_vec();
+    update_file_flags(tab, cx, |flags| {
+        for (flag, state) in flags.iter_mut().zip(&states) {
+            flag.viewed = *state == ViewedState::Viewed;
+            flag.changed_since_viewed = *state == ViewedState::ChangedSinceViewed;
+        }
+    });
+}
+
+fn is_viewed(tab: &ReviewTab, idx: u32) -> bool {
+    states(tab)
+        .and_then(|s| s.get(idx as usize))
+        .is_some_and(|s| *s == ViewedState::Viewed)
+}
+
+/// Toggles file `idx`; marking it viewed jumps to the next unviewed file.
+pub fn toggle_file(tab: &mut ReviewTab, idx: u32, cx: &mut Context<ReviewTab>) {
+    if idx as usize >= tab.opened.files.len() {
+        return;
+    }
+    let viewed = !is_viewed(tab, idx);
+    mark(tab, &[idx], viewed, cx);
+    if viewed {
+        jump_to_next_unviewed(tab, idx, cx);
+    }
+}
+
+/// Checks every file of a folder, or unchecks them all when all are
+/// viewed.
+pub fn toggle_folder(tab: &mut ReviewTab, files: Vec<u32>, cx: &mut Context<ReviewTab>) {
+    let viewed = !files.iter().all(|&f| is_viewed(tab, f));
+    set_viewed(tab, &files, viewed, cx);
+}
+
+/// Marks `files` (a folder's) viewed or not ([`mark`]). Marking them
+/// viewed while the viewport shows one of them jumps past them.
+pub fn set_viewed(tab: &mut ReviewTab, files: &[u32], viewed: bool, cx: &mut Context<ReviewTab>) {
+    let v = tab.viewport.read(cx);
+    let current = v.cursor().map_or(v.anchor().file_idx, |c| c.file_idx);
+    mark(tab, files, viewed, cx);
+    if viewed
+        && files.contains(&current)
+        && let Some(&last) = files.iter().max()
+    {
+        jump_to_next_unviewed(tab, last, cx);
+    }
+}
+
+/// Marks `files` viewed or not: updates the state and the flags at once,
+/// collapses (or expands) them, and queues the store write.
+fn mark(tab: &mut ReviewTab, files: &[u32], viewed: bool, cx: &mut Context<ReviewTab>) {
+    let target = if viewed {
+        ViewedState::Viewed
+    } else {
+        ViewedState::NotViewed
+    };
+    let all = tab.opened.files.clone();
+    let Some(ext) = tab.extension_mut::<TabViewed>() else {
+        return;
+    };
+    let changed: Vec<u32> = files
+        .iter()
+        .copied()
+        .filter(|&f| {
+            ext.states
+                .get(f as usize)
+                .is_some_and(|s| (*s == ViewedState::Viewed) != viewed)
+        })
+        .collect();
+    if changed.is_empty() {
+        return;
+    }
+    for &f in &changed {
+        ext.states[f as usize] = target;
+    }
+    ext.generation += 1;
+    let writes: Vec<FileChange> = changed.iter().map(|&f| all[f as usize].clone()).collect();
+    queue_write(tab, writes, viewed, cx);
+    push_flags(tab, cx);
+    tab.viewport.update(cx, |v, cx| {
+        for &f in &changed {
+            v.set_collapsed(f, viewed, cx);
+        }
+    });
+    cx.notify();
+}
+
+/// Queues `Core::set_viewed` for `changes` after the previous operations.
+fn queue_write(
+    tab: &mut ReviewTab,
+    changes: Vec<FileChange>,
+    viewed: bool,
+    cx: &mut Context<ReviewTab>,
+) {
+    let core = AppState::global(cx).core.clone();
+    let review_id = tab.review_id.clone();
+    let Some(ext) = tab.extension_mut::<TabViewed>() else {
+        return;
+    };
+    let previous = ext.queue.take();
+    ext.queue = Some(cx.spawn(async move |this, cx| {
+        if let Some(previous) = previous {
+            previous.await;
+        }
+        let written = cx
+            .background_spawn(async move {
+                changes
+                    .iter()
+                    .try_for_each(|c| core.set_viewed(Some(&review_id), c, viewed))
+            })
+            .await;
+        cx.update(|cx| match written {
+            Ok(()) => cx.global_mut::<ViewedRevision>().0 += 1,
+            Err(e) => {
+                let message = format!("Could not save the Viewed mark: {e}");
+                tracing::warn!("{message}");
+                if let Some(tab) = this.upgrade() {
+                    tab.update(cx, reload);
+                }
+                toast(message, cx);
+            }
+        });
+    }));
+}
+
+/// Shows `message` as an error toast in the main window.
+fn toast(message: String, cx: &mut App) {
+    let Some((handle, main)) = crate::window::main_window(cx) else {
+        return;
+    };
+    handle
+        .update(cx, |_, window, cx| {
+            main.update(cx, |m, cx| m.toast_error(message.into(), window, cx))
+        })
+        .ok();
+}
+
+/// Brings the first unviewed file after `after` (wrapping) to the top,
+/// with the cursor on it and its row selected in the tree. Nothing when
+/// every file is viewed.
+fn jump_to_next_unviewed(tab: &mut ReviewTab, after: u32, cx: &mut Context<ReviewTab>) {
+    let Some(states) = states(tab) else {
+        return;
+    };
+    let n = states.len() as u32;
+    let next = (after + 1..n)
+        .chain(0..after.min(n))
+        .find(|&f| states[f as usize] != ViewedState::Viewed);
+    let Some(next) = next else {
+        return;
+    };
+    if let Some(tree) = file_tree(tab).cloned() {
+        tree.update(cx, |t, cx| t.select_file(next, cx));
+    }
+    tab.viewport.update(cx, |v, cx| v.go_to_file(next, cx));
+}
+
+/// The files of the folder `tree::MarkFolderViewed` acts on: the selected
+/// folder, else the folder of the selected (or highlighted) file.
+fn folder_for_action(tab: &ReviewTab, cx: &App) -> Option<Vec<u32>> {
+    let tree = file_tree(tab)?.read(cx);
+    if let Some((_, files)) = tree.selected_dir() {
+        return Some(files);
+    }
+    let idx = tree.selected_file().or(tree.highlighted_file())?;
+    let model = tree.model();
+    let dir = model.ancestors_of_file(idx).pop()?;
+    Some(model.dir(&dir)?.files.clone())
+}
+
+/// The toolbar's "N / M viewed" with a progress bar (design §11.4).
 pub fn toolbar_items(
-    _tab: &ReviewTab,
+    tab: &ReviewTab,
     _window: &mut Window,
-    _cx: &mut Context<ReviewTab>,
+    cx: &mut Context<ReviewTab>,
 ) -> Vec<AnyElement> {
-    Vec::new()
+    if tab.extension::<TabViewed>().is_none() {
+        return Vec::new();
+    }
+    let (viewed, total) = progress(tab);
+    let theme = cx.theme();
+    let fraction = if total == 0 {
+        0.
+    } else {
+        viewed as f32 / total as f32
+    };
+    let done = total > 0 && viewed == total;
+    let tooltip: SharedString = match total {
+        1 => format!("{viewed} of 1 file viewed").into(),
+        _ => format!("{viewed} of {total} files viewed").into(),
+    };
+    vec![
+        h_flex()
+            .id("viewed-progress")
+            .debug_selector(|| "viewed-progress".into())
+            .flex_none()
+            .gap_2()
+            .px_1()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(
+                div()
+                    .w(px(48.))
+                    .h(px(4.))
+                    .rounded_full()
+                    .bg(theme.muted_foreground.opacity(0.25))
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(fraction))
+                            .rounded_full()
+                            .bg(if done { theme.green } else { theme.primary }),
+                    ),
+            )
+            .child(progress_label(tab))
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+            })
+            .into_any_element(),
+    ]
 }
