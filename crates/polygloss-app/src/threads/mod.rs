@@ -612,8 +612,10 @@ impl ReviewThreads {
         let wanted = placement::by_file(
             self.threads
                 .iter()
+                // Right after `set_diff` the threads have no place in the new
+                // diff until the reload lands.
                 .filter(|t| self.shows(t))
-                .map(|t| (t.id.as_str(), self.places[&t.id])),
+                .filter_map(|t| Some((t.id.as_str(), *self.places.get(&t.id)?))),
         );
         let files: Vec<u32> = wanted
             .keys()

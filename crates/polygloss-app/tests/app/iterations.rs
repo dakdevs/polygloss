@@ -6,6 +6,7 @@
 //! comments on the new side only.
 
 use gpui_kit::Entity;
+use polygloss_app::composer::{self, ComposerKey};
 use polygloss_app::iterations::{self, Choice, Showing};
 use polygloss_app::live;
 use polygloss_app::review_tab::ReviewTab;
@@ -463,6 +464,103 @@ fn threads_carry_forward_when_switching_iterations(cx: &mut gpui_kit::TestAppCon
         place(&mut shell),
         (Some(PositionState::Moved), Some(at(1, 65)))
     );
+}
+
+/// An open line composer (T3.10) moves with its file when the tab swaps
+/// another diff in (a refresh, another iteration), next to the threads
+/// placed again (wave-5 integration of T3.10 and T3.12).
+#[gpui_kit::test]
+fn open_composer_follows_its_file_across_iterations(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    // A thread on `b.rs` too, so its block is placed again on each swap.
+    let (review_id, diff, repo_info) = tab.read_with(shell.cx, |t, _| {
+        (
+            t.review_id.clone(),
+            t.opened.diff_id.clone(),
+            t.opened.repo.clone(),
+        )
+    });
+    let blobs = BlobReader::open(&repo_info).unwrap();
+    shell
+        .core
+        .create_thread(
+            &NewThread {
+                review_id,
+                diff_id: diff,
+                subject: Subject::Line {
+                    path: "src/b.rs".into(),
+                    side: Side::New,
+                    start_line: 61,
+                    line: 61,
+                },
+                kind: ThreadKind::Comment,
+                body_md: "Why this name?".into(),
+                author: Author {
+                    kind: AuthorKind::Human,
+                    name: "you".into(),
+                    session_id: None,
+                },
+            },
+            &blobs,
+        )
+        .expect("create the thread");
+    tab.update(shell.cx, threads::reload);
+    draw(shell.cx);
+    // A composer on `c.rs` (file 1 of iteration 1) line 30.
+    tab.update_in(shell.cx, |t, window, cx| {
+        composer::open_line(t, 1, Side::New, 29, 29, window, cx)
+    });
+    draw(shell.cx);
+    let key = ComposerKey::line("src/c.rs", Side::New, 29, 29);
+    let block = key.block_id();
+    let files_with_it = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            let doc = t.viewport.read(cx).document();
+            (0..doc.files().len() as u32)
+                .filter(|&f| doc.blocks(f).iter().any(|b| b.id == block))
+                .collect::<Vec<_>>()
+        })
+    };
+    let thread_blocks = |shell: &mut Shell, f: u32| {
+        tab.read_with(shell.cx, |t, cx| {
+            t.viewport
+                .read(cx)
+                .document()
+                .blocks(f)
+                .iter()
+                .filter(|b| b.id != block)
+                .count()
+        })
+    };
+    assert_eq!(files_with_it(&mut shell), vec![1]);
+
+    // Iteration 2 adds `a.rs` first: `c.rs` is file 2 now.
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+    assert_eq!(
+        paths(&mut shell, &tab),
+        ["src/a.rs", "src/b.rs", "src/c.rs"]
+    );
+    assert_eq!(files_with_it(&mut shell), vec![2]);
+    assert_eq!(
+        thread_blocks(&mut shell, 1),
+        1,
+        "the thread is placed again"
+    );
+    let open = tab.read_with(shell.cx, |t, cx| {
+        composer::composers(t)
+            .map(|c| c.read(cx).keys())
+            .unwrap_or_default()
+    });
+    assert_eq!(open, vec![key.clone()]);
+
+    // Back to iteration 1: file 1 again.
+    show(&mut shell, &tab, Choice::Iteration(1));
+    assert_eq!(files_with_it(&mut shell), vec![1]);
+    assert_eq!(thread_blocks(&mut shell, 0), 1);
 }
 
 #[gpui_kit::test]

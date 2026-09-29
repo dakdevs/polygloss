@@ -49,6 +49,7 @@ pub use view::{Composer, ComposerEvent};
 use crate::app_state::AppState;
 use crate::keymap::actions::tab as tab_actions;
 use crate::keymap::handlers;
+use crate::live::DiffRefreshed;
 use crate::review_tab::ReviewTab;
 use crate::threads::{self, ReviewThreads, ThreadsEvent};
 use crate::window::MenuKind;
@@ -181,6 +182,14 @@ pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewT
         )
         .detach();
     }
+    // The tab shows another diff (a live refresh, another iteration):
+    // line and file composers move to their file's new place.
+    cx.subscribe_in(
+        &cx.entity(),
+        window,
+        |tab: &mut ReviewTab, _, _: &DiffRefreshed, window, cx| diff_refreshed(tab, window, cx),
+    )
+    .detach();
     tab.insert_extension(entity);
     // The view state is restored after every feature attached.
     cx.defer_in(window, restore_autosaved);
@@ -217,6 +226,39 @@ fn restore_autosaved(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<
         }
         open(tab, key, block, None, false, window, cx);
     }
+}
+
+/// The tab swapped another diff in ([`DiffRefreshed`]): line and file
+/// composers are placed in their file (by path) of the new list. Those
+/// whose file is not in it close; their text stays in the view state.
+fn diff_refreshed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
+    let Some(entity) = composers(tab).cloned() else {
+        return;
+    };
+    let mut moved: Vec<(ComposerKey, u32)> = Vec::new();
+    let mut gone: Vec<ComposerKey> = Vec::new();
+    for o in &entity.read(cx).open {
+        let (Some(_), Some(path)) = (o.block, o.key.path()) else {
+            continue;
+        };
+        match file_index(tab, path) {
+            Some(f) => moved.push((o.key.clone(), f)),
+            None => gone.push(o.key.clone()),
+        }
+    }
+    entity.update(cx, |c, _| {
+        for o in &mut c.open {
+            if let Some((_, f)) = moved.iter().find(|(k, _)| *k == o.key)
+                && let Some((file, _)) = o.block.as_mut()
+            {
+                *file = *f;
+            }
+        }
+    });
+    for key in gone {
+        close(tab, &key, window, cx);
+    }
+    push_blocks(tab, cx);
 }
 
 fn file_index(tab: &ReviewTab, path: &str) -> Option<u32> {
