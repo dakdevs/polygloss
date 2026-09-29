@@ -48,14 +48,7 @@ pub struct FileDiff {
 /// `postprocess_lines` (git's indent/slider heuristic, tab width 8), then
 /// context grouping per `opts`.
 pub fn diff_blobs(old: &[u8], new: &[u8], opts: &DiffOptions) -> FileDiff {
-    let changes = if opts.ignore_whitespace {
-        changes_ignoring_whitespace(old, new, opts.algorithm)
-    } else {
-        let input = InternedInput::new(byte_lines(old), byte_lines(new));
-        let mut diff = Diff::compute(imara_algorithm(opts.algorithm), &input);
-        diff.postprocess_lines(&input);
-        diff.hunks().map(|h| (h.before, h.after)).collect()
-    };
+    let changes = line_changes(old, new, opts);
     let old_index = LineIndex::new(old);
     let new_index = LineIndex::new(new);
     let additions = changes.iter().map(|(_, n)| n.len() as u32).sum();
@@ -68,6 +61,25 @@ pub fn diff_blobs(old: &[u8], new: &[u8], opts: &DiffOptions) -> FileDiff {
         additions,
         deletions,
     }
+}
+
+/// The changed line ranges `(old, new)` of two blobs, in order, without any
+/// context: imara over `byte_lines` with `opts.algorithm` and whitespace mode,
+/// then the indent heuristic. Everything between them is equal. Shared by
+/// [`diff_blobs`] and [`crate::line_map::LineMap::new`], so both see the same
+/// alignment; `opts.context` and `opts.inter_hunk_context` are ignored.
+pub(crate) fn line_changes(
+    old: &[u8],
+    new: &[u8],
+    opts: &DiffOptions,
+) -> Vec<(Range<u32>, Range<u32>)> {
+    if opts.ignore_whitespace {
+        return changes_ignoring_whitespace(old, new, opts.algorithm);
+    }
+    let input = InternedInput::new(byte_lines(old), byte_lines(new));
+    let mut diff = Diff::compute(imara_algorithm(opts.algorithm), &input);
+    diff.postprocess_lines(&input);
+    diff.hunks().map(|h| (h.before, h.after)).collect()
 }
 
 fn imara_algorithm(algorithm: Algorithm) -> gix_imara_diff::Algorithm {
