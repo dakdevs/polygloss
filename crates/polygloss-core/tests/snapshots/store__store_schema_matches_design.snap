@@ -1,7 +1,8 @@
--- Schema v1: design §7.2 copied exactly (T1.10). Applied by store/migrations.rs as
--- migration 1 (user_version 1). Never edit: later schema changes are new migrations.
-
--- One row per git common dir (worktrees collapse).
+---
+source: crates/polygloss-core/tests/store.rs
+expression: schema
+---
+-- table repos ON repos
 CREATE TABLE repos (
   id             INTEGER PRIMARY KEY,
   common_dir     TEXT    NOT NULL UNIQUE,        -- realpath of git common dir
@@ -12,7 +13,7 @@ CREATE TABLE repos (
   last_opened_at INTEGER NOT NULL
 );
 
--- Immutable diffs, keyed by diff_id.
+-- table diffs ON diffs
 CREATE TABLE diffs (
   id            TEXT    PRIMARY KEY,             -- diff_id, 64 hex chars
   object_format TEXT    NOT NULL,
@@ -24,7 +25,7 @@ CREATE TABLE diffs (
   created_at    INTEGER NOT NULL
 );
 
--- diff-tree output, stored once per diff so structure stays stable.
+-- table file_changes ON file_changes
 CREATE TABLE file_changes (
   diff_id    TEXT    NOT NULL REFERENCES diffs(id) ON DELETE CASCADE,
   idx        INTEGER NOT NULL,                   -- order in diff-tree output
@@ -43,9 +44,14 @@ CREATE TABLE file_changes (
   deletions  INTEGER,
   PRIMARY KEY (diff_id, idx)
 );
+
+-- index file_changes_new_path ON file_changes
 CREATE INDEX file_changes_new_path ON file_changes(diff_id, new_path);
+
+-- index file_changes_old_path ON file_changes
 CREATE INDEX file_changes_old_path ON file_changes(diff_id, old_path);
 
+-- table reviews ON reviews
 CREATE TABLE reviews (
   id               TEXT    PRIMARY KEY,          -- UUIDv7
   repo_id          INTEGER NOT NULL REFERENCES repos(id),
@@ -68,8 +74,11 @@ CREATE TABLE reviews (
   archived_at      INTEGER,
   UNIQUE (repo_id, key)
 );
+
+-- index reviews_recent ON reviews
 CREATE INDEX reviews_recent ON reviews(archived_at, updated_at DESC);
 
+-- table iterations ON iterations
 CREATE TABLE iterations (
   id           INTEGER PRIMARY KEY,
   review_id    TEXT    NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
@@ -85,8 +94,11 @@ CREATE TABLE iterations (
   created_at   INTEGER NOT NULL,
   UNIQUE (review_id, seq)
 );
+
+-- index iterations_diff ON iterations
 CREATE INDEX iterations_diff ON iterations(diff_id);
 
+-- table viewed_files ON viewed_files
 CREATE TABLE viewed_files (
   path      TEXT    NOT NULL,
   old_blob  TEXT    NOT NULL,
@@ -95,8 +107,11 @@ CREATE TABLE viewed_files (
   viewed_at INTEGER NOT NULL,
   PRIMARY KEY (path, old_blob, new_blob)
 ) WITHOUT ROWID;
+
+-- index viewed_files_review ON viewed_files
 CREATE INDEX viewed_files_review ON viewed_files(review_id, path);
 
+-- table sessions ON sessions
 CREATE TABLE sessions (
   id             TEXT    PRIMARY KEY,            -- CLAUDE_CODE_SESSION_ID or 'pg-<uuidv7>'
   canonical_id   TEXT    REFERENCES sessions(id), -- set when linked after id drift (§16.4)
@@ -109,14 +124,18 @@ CREATE TABLE sessions (
   last_seen_at   INTEGER NOT NULL
 );
 
+-- table review_assignments ON review_assignments
 CREATE TABLE review_assignments (
   review_id   TEXT    PRIMARY KEY REFERENCES reviews(id) ON DELETE CASCADE,
   session_id  TEXT    NOT NULL REFERENCES sessions(id),
   assigned_at INTEGER NOT NULL,
   assigned_by TEXT    NOT NULL CHECK (assigned_by IN ('open_diff','human','agent'))
 );
+
+-- index review_assignments_session ON review_assignments
 CREATE INDEX review_assignments_session ON review_assignments(session_id);
 
+-- table waiters ON waiters
 CREATE TABLE waiters (                           -- live `polygloss wait` processes
   session_id  TEXT    PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   pid         INTEGER NOT NULL,
@@ -124,6 +143,7 @@ CREATE TABLE waiters (                           -- live `polygloss wait` proces
   deadline_at INTEGER NOT NULL
 );
 
+-- table threads ON threads
 CREATE TABLE threads (
   id                  TEXT    PRIMARY KEY,       -- UUIDv7
   review_id           TEXT    REFERENCES reviews(id) ON DELETE CASCADE,
@@ -151,9 +171,14 @@ CREATE TABLE threads (
   CHECK (subject <> 'file' OR path IS NOT NULL),
   CHECK (kind = 'comment' OR created_by_kind = 'agent')
 );
+
+-- index threads_review ON threads
 CREATE INDEX threads_review ON threads(review_id, status);
+
+-- index threads_origin_diff ON threads
 CREATE INDEX threads_origin_diff ON threads(origin_diff_id);
 
+-- table review_submissions ON review_submissions
 CREATE TABLE review_submissions (
   id            TEXT    PRIMARY KEY,             -- UUIDv7
   review_id     TEXT    NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
@@ -163,8 +188,11 @@ CREATE TABLE review_submissions (
   comment_count INTEGER NOT NULL,                -- drafts published by this submission
   submitted_at  INTEGER NOT NULL
 );
+
+-- index review_submissions_review ON review_submissions
 CREATE INDEX review_submissions_review ON review_submissions(review_id, submitted_at);
 
+-- table comments ON comments
 CREATE TABLE comments (
   id            TEXT    PRIMARY KEY,             -- UUIDv7
   thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -179,9 +207,14 @@ CREATE TABLE comments (
   deleted_at    INTEGER,                         -- soft delete (Provisional)
   CHECK (author_kind = 'human' OR published_at IS NOT NULL)
 );
+
+-- index comments_thread ON comments
 CREATE INDEX comments_thread ON comments(thread_id, created_at);
+
+-- index comments_drafts ON comments
 CREATE INDEX comments_drafts ON comments(thread_id) WHERE published_at IS NULL;
 
+-- table review_drafts ON review_drafts
 CREATE TABLE review_drafts (                     -- autosaved Submit dialog
   review_id  TEXT    PRIMARY KEY REFERENCES reviews(id) ON DELETE CASCADE,
   summary_md TEXT    NOT NULL DEFAULT '',
@@ -189,6 +222,7 @@ CREATE TABLE review_drafts (                     -- autosaved Submit dialog
   updated_at INTEGER NOT NULL
 );
 
+-- table thread_positions ON thread_positions
 CREATE TABLE thread_positions (                  -- carry-forward cache (§8.6)
   thread_id      TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
   diff_id        TEXT    NOT NULL REFERENCES diffs(id) ON DELETE CASCADE,
@@ -201,6 +235,7 @@ CREATE TABLE thread_positions (                  -- carry-forward cache (§8.6)
   PRIMARY KEY (thread_id, diff_id)
 ) WITHOUT ROWID;
 
+-- table events ON events
 CREATE TABLE events (                            -- append-only; no FKs so it outlives rows
   seq        INTEGER PRIMARY KEY AUTOINCREMENT,
   at         INTEGER NOT NULL,
@@ -214,9 +249,17 @@ CREATE TABLE events (                            -- append-only; no FKs so it ou
   session_id TEXT,
   payload    TEXT                                -- JSON
 );
+
+-- table sqlite_sequence ON sqlite_sequence
+CREATE TABLE sqlite_sequence(name,seq);
+
+-- index events_review ON events
 CREATE INDEX events_review ON events(review_id, seq);
+
+-- index events_thread ON events
 CREATE INDEX events_thread ON events(thread_id, seq);
 
+-- table view_state ON view_state
 CREATE TABLE view_state (                        -- per diff_id (§11.12)
   diff_id    TEXT    PRIMARY KEY REFERENCES diffs(id) ON DELETE CASCADE,
   state_json TEXT    NOT NULL,                   -- versioned JSON, see below
