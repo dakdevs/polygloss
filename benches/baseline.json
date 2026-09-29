@@ -1,0 +1,4 @@
+{
+  "$comment": "Perf baselines per machine (plan T2.9/T2.10): `bun benches/run-perf.ts --compare-baseline` fails on a >10% regression (provisional) against the entry whose machine.cpu matches this machine. Entries are written with `--write-baseline` after a passing run; T2.10 records the first one.",
+  "entries": []
+}

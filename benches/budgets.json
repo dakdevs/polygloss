@@ -1,0 +1,45 @@
+{
+  "$comment": "Design §12.1 perf budgets per corpus (plan T2.9 metric definitions). A value passes only when it is strictly below its budget; a metric reported as null (not measured yet) is shown as n/a and does not fail. Checked by `bun benches/run-perf.ts --check-budgets`.",
+  "metrics": {
+    "first_paint_ms": {
+      "label": "first paint",
+      "unit": "ms",
+      "budget": { "typical": 300, "linux": 2000 }
+    },
+    "scroll_p95_ms": {
+      "label": "scroll p95",
+      "unit": "ms",
+      "budget": {
+        "typical": 8.3,
+        "synthetic": 8.3,
+        "huge-file": 8.3,
+        "linux": 8.3
+      }
+    },
+    "highlight_ms": {
+      "label": "highlight",
+      "unit": "ms",
+      "budget": {
+        "typical": 100,
+        "synthetic": 100,
+        "huge-file": 100,
+        "linux": 100
+      }
+    },
+    "comment_repaint_ms": {
+      "label": "comment",
+      "unit": "ms",
+      "budget": { "typical": 50, "synthetic": 50 }
+    },
+    "watcher_banner_ms": {
+      "label": "banner",
+      "unit": "ms",
+      "budget": { "typical": 500 }
+    },
+    "peak_rss_mb": {
+      "label": "peak RSS",
+      "unit": "MB",
+      "budget": { "linux": 1536 }
+    }
+  }
+}

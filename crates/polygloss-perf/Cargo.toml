@@ -18,3 +18,14 @@ polygloss-diff.workspace = true
 polygloss-highlight.workspace = true
 polygloss-viewport.workspace = true
 gpui-kit.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+# The private data dir every run opens its corpus in (never the real store).
+tempfile.workspace = true
+# Process start time (`proc_pidinfo`) and max RSS (`getrusage`).
+libc.workspace = true
+
+[dev-dependencies]
+# `testing::{Sandbox, FixtureRepo}` for the corpus tests.
+polygloss-core = { workspace = true, features = ["test-support"] }

@@ -455,7 +455,7 @@ Member wiring. The verification collapsed these into core, app and cli; this is 
 | `polygloss-app`       | core, diff, highlight, viewport, platform (`appkit`), gpui-kit, nucleo-matcher, notify, notify-debouncer-full, futures, anyhow, tracing-subscriber, tracing-appender, regex. Dev: `gpui-kit` with `test-support`, insta, image. |
 | `polygloss-mcp`       | core, platform (launcher), rmcp, schemars, serde, serde_json, tokio (only for `spawn_blocking`).                                                                                                                                |
 | `polygloss-cli`       | core, mcp, platform (launcher), clap, tokio, anyhow, tracing-subscriber. No GPUI, lumis or tree-sitter (`scripts/check-deps.sh`).                                                                                               |
-| `polygloss-perf`      | core, diff, highlight, viewport, gpui-kit. Dev-only, never shipped.                                                                                                                                                             |
+| `polygloss-perf`      | core, diff, highlight, viewport, gpui-kit, anyhow, futures, serde_json, tempfile, libc (plan T2.9 As built, OQ-P8). Dev: core `test-support`. Dev-only, never shipped.                                                          |
 
 Notifications (`App::show_system_notification`) and URL handling (`Application::on_open_urls`) are GPUI APIs, so the app calls them directly; `polygloss-platform` does not need gpui-kit.
 
