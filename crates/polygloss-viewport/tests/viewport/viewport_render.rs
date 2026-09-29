@@ -310,12 +310,16 @@ fn viewport_scroll_to_line_puts_it_at_top(cx: &mut TestAppContext) {
         }
     );
     assert_eq!(d.anchor.file_idx, 1);
-    // Under b.rs's pinned header (T2.5).
-    assert_eq!(
-        d.visible_rows[..2],
-        ["== b.rs".to_owned(), unified(None, Some(11), '+', "b 10")]
-    );
-    assert_eq!(d.row_bounds[1].0, 0.0);
+    // At the top of what is visible: right below b.rs's header, pinned at
+    // the viewport's top edge (T2.5), not under it.
+    assert_eq!(d.visible_rows[0], "== b.rs");
+    assert_eq!(d.row_bounds[0], (0.0, HEADER_H));
+    let line = d
+        .visible_rows
+        .iter()
+        .position(|r| *r == unified(None, Some(11), '+', "b 10"))
+        .expect("line 10 is painted");
+    assert_eq!(d.row_bounds[line], (HEADER_H, ROW_H));
 
     view.update(cx, |v, cx| v.scroll_to(ScrollTarget::File(0), cx));
     settle(cx);

@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::{
-    Entity, Hsla, Modifiers, Pixels, ScrollDelta, ScrollWheelEvent, Subscription, TestAppContext,
-    VisualTestContext, point, px, size,
+    AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
+    Modifiers, MouseButton, ParentElement as _, Pixels, Render, ScrollDelta, ScrollWheelEvent,
+    Styled as _, Subscription, TestAppContext, VisualTestContext, Window, div, point, px, size,
 };
 use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid};
 use polygloss_highlight::{Appearance, pierre_theme};
@@ -456,6 +457,96 @@ pub fn split(left: Option<(u32, char, &str)>, right: Option<(u32, char, &str)>) 
 /// opening windows; the header's ⋯ menu is a gpui-kit `PopupMenu`.
 pub fn init_kit(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
+}
+
+/// Height of [`Inset`]'s toolbar above the viewport.
+pub const TOOLBAR_H: f32 = 40.0;
+/// Width of [`Inset`]'s side panel right of the viewport.
+pub const SIDE_W: f32 = 100.0;
+
+/// A host with chrome around the viewport, like the app's review tab: a
+/// focusable toolbar [`TOOLBAR_H`] px tall above it and a side panel
+/// [`SIDE_W`] px wide right of it, each counting the left presses it gets.
+pub struct Inset {
+    pub viewport: Entity<DiffViewport>,
+    pub toolbar_focus: FocusHandle,
+    pub toolbar_presses: Rc<Cell<u32>>,
+    pub side_presses: Rc<Cell<u32>>,
+}
+
+impl Render for Inset {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let (toolbar, side) = (self.toolbar_presses.clone(), self.side_presses.clone());
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(TOOLBAR_H))
+                    .w_full()
+                    .flex_none()
+                    .track_focus(&self.toolbar_focus)
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                        toolbar.set(toolbar.get() + 1)
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(div().flex_1().h_full().child(self.viewport.clone()))
+                    .child(
+                        div()
+                            .w(px(SIDE_W))
+                            .h_full()
+                            .flex_none()
+                            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                                side.set(side.get() + 1)
+                            }),
+                    ),
+            )
+    }
+}
+
+/// Opens a `width × height` window with an [`Inset`] host around a viewport
+/// over `provider` (the viewport is `width - SIDE_W` × `height - TOOLBAR_H`,
+/// its top-left corner at `(0, TOOLBAR_H)`), focuses the toolbar, and lets
+/// every background task finish.
+pub fn open_inset(
+    cx: &mut TestAppContext,
+    provider: Arc<MemProvider>,
+    opts: ViewportOptions,
+    width: f32,
+    height: f32,
+) -> (Entity<Inset>, Entity<DiffViewport>, &mut VisualTestContext) {
+    assert_sandboxed();
+    let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
+        let viewport =
+            cx.new(|cx| DiffViewport::new(provider as Arc<dyn DiffProvider>, opts, window, cx));
+        Inset {
+            viewport,
+            toolbar_focus: cx.focus_handle(),
+            toolbar_presses: Rc::new(Cell::new(0)),
+            side_presses: Rc::new(Cell::new(0)),
+        }
+    });
+    let host = window.root(cx).expect("window has a root view");
+    let cx = VisualTestContext::from_window(*window, cx).into_mut();
+    let (viewport, focus) =
+        host.read_with(cx, |h, _| (h.viewport.clone(), h.toolbar_focus.clone()));
+    cx.update(|window, cx| window.focus(&focus, cx));
+    settle(cx);
+    (host, viewport, cx)
+}
+
+/// Clicks at window coordinates `(x, y)` and lets the result settle.
+pub fn click_window(cx: &mut VisualTestContext, x: f32, y: f32) {
+    cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
+    cx.simulate_click(point(px(x), px(y)), Modifiers::default());
+    settle(cx);
 }
 
 /// Clicks at viewport-relative `(x, y)` (the viewport fills the window) and

@@ -5,6 +5,8 @@
 //! checkbox ([`crate::ViewportEvent::ViewedToggled`]); the host updates its
 //! store and pushes the new flags back with [`DiffViewport::set_file_flags`].
 
+use std::borrow::Cow;
+
 use gpui_kit::Context;
 
 use crate::view::DiffViewport;
@@ -25,18 +27,18 @@ pub struct FileFlags {
 impl FileFlags {
     /// The header badges for this state, left to right, each with whether it
     /// is drawn in the accent color.
-    pub(crate) fn badges(&self) -> Vec<(String, bool)> {
+    pub(crate) fn badges(&self) -> Vec<(Cow<'static, str>, bool)> {
         let mut badges = Vec::new();
         if self.changed_since_viewed {
-            badges.push(("changed since viewed".to_owned(), true));
+            badges.push((Cow::Borrowed("changed since viewed"), true));
         }
         match self.open_threads {
             0 => {}
-            1 => badges.push(("1 open thread".to_owned(), false)),
-            n => badges.push((format!("{n} open threads"), false)),
+            1 => badges.push((Cow::Borrowed("1 open thread"), false)),
+            n => badges.push((Cow::Owned(format!("{n} open threads")), false)),
         }
         if self.agent_threads {
-            badges.push(("agent".to_owned(), true));
+            badges.push((Cow::Borrowed("agent"), true));
         }
         badges
     }

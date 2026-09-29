@@ -9,21 +9,22 @@
 //! the position). The ⋯ menu is a gpui-kit `PopupMenu` (the host initializes
 //! gpui-kit, as every Polygloss window does).
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{
-    Anchor, AnyElement, Bounds, ClipboardItem, Context, DismissEvent, Entity, Focusable as _,
-    IntoElement as _, ParentElement as _, Pixels, Point, Subscription, Window, anchored, deferred,
-    point, px,
+    Anchor, AnyElement, AnyWindowHandle, App, Bounds, ClipboardItem, Context, DismissEvent, Entity,
+    FocusHandle, Focusable as _, IntoElement as _, ParentElement as _, Pixels, Point, Subscription,
+    Window, anchored, deferred, point, px,
 };
 use polygloss_diff::hunks::Block;
 use polygloss_diff::{FileChange, FileKind, FileStatus, Side};
 
 use crate::controls::{ControlAction, ControlLayer};
-use crate::document::{BodyRow, FileState, RowKey, SizeHint};
-use crate::paint_rows::{HEADERS, Painter};
-use crate::text_cache::ShapedText;
+use crate::document::{BodyRow, FileState, SizeHint};
+use crate::paint_rows::{Frame, HEADERS, Painter};
+use crate::text_cache::{ShapedText, Shaper, TextKey};
 use crate::view::{DiffViewport, ViewportEvent};
 
 /// Color slots of cached labels (the same text in another color is another
@@ -38,38 +39,42 @@ pub(crate) const SLOT_ON_ACCENT: u8 = 5;
 /// Columns the title keeps before badges and counts give way.
 const MIN_TITLE_COLUMNS: f32 = 12.0;
 
-/// The header title: the path, or `old → new` for a rename.
-pub(crate) fn header_title(change: &FileChange) -> String {
+/// The header title: the path, or `old → new` for a rename. Control chars
+/// in a path (git allows newlines and tabs) are shown as Control Pictures
+/// when the title is shaped ([`crate::text_cache::Shaper::label`]).
+pub(crate) fn header_title(change: &FileChange) -> Cow<'_, str> {
     match (&change.old_path, &change.new_path) {
-        (Some(old), Some(new)) if old.text != new.text => format!("{} → {}", old.text, new.text),
-        _ => change.display_path().to_owned(),
+        (Some(old), Some(new)) if old.text != new.text => {
+            Cow::Owned(format!("{} → {}", old.text, new.text))
+        }
+        _ => Cow::Borrowed(change.display_path()),
     }
 }
 
 /// Badges describing the change itself, left to right (design §6.4).
-pub(crate) fn kind_badges(change: &FileChange, lfs: bool) -> Vec<String> {
+pub(crate) fn kind_badges(change: &FileChange, lfs: bool) -> Vec<Cow<'static, str>> {
     let mut badges = Vec::new();
     if change.status == FileStatus::Renamed
         && let Some(similarity) = change.similarity
     {
-        badges.push(format!("{similarity}% similar"));
+        badges.push(Cow::Owned(format!("{similarity}% similar")));
     }
     if let (Some(old), Some(new)) = (change.old_mode, change.new_mode)
         && old != new
     {
-        badges.push(format!("{old} → {new}"));
+        badges.push(Cow::Owned(format!("{old} → {new}")));
     }
     match change.kind {
-        FileKind::Binary => badges.push("binary".to_owned()),
-        FileKind::Symlink => badges.push("symlink".to_owned()),
-        FileKind::Submodule => badges.push("submodule".to_owned()),
+        FileKind::Binary => badges.push(Cow::Borrowed("binary")),
+        FileKind::Symlink => badges.push(Cow::Borrowed("symlink")),
+        FileKind::Submodule => badges.push(Cow::Borrowed("submodule")),
         FileKind::Text => {}
     }
     if change.generated {
-        badges.push("generated".to_owned());
+        badges.push(Cow::Borrowed("generated"));
     }
     if lfs {
-        badges.push("LFS".to_owned());
+        badges.push(Cow::Borrowed("LFS"));
     }
     badges
 }
@@ -125,50 +130,52 @@ impl Painter<'_> {
             h,
         );
 
-        // The Viewed checkbox, left of the menu.
+        // The Viewed checkbox (with its label) left of the menu, and between
+        // it and the chevron the title, counts, change badges and review
+        // flags, dropped in reverse priority until the title keeps some room.
+        // At very narrow widths the "Viewed" label gives way too, then the
+        // checkbox (when it would not fit right of the chevron).
+        let left = 3.0 * a;
+        let title_text = header_title(change);
+        let full_title = self.label(&title_text, SLOT_HEADER, theme.header_foreground);
+        let min_title = full_title.shaped.width().min(MIN_TITLE_COLUMNS * a);
         let flags = self.flags.get(f as usize).copied().unwrap_or_default();
         let box_size = (row_h * 0.7).round();
         let viewed = self.label("Viewed", SLOT_HEADER, theme.header_foreground);
-        let viewed_w = 0.5 * a + box_size + 0.5 * a + viewed.shaped.width() + 0.5 * a;
-        let viewed_x = menu_x - viewed_w;
-        let box_x = viewed_x + 0.5 * a;
-        let box_rect = (box_x, y + (h - box_size) / 2.0, box_size, box_size);
-        if flags.viewed {
-            self.rounded(HEADERS, box_rect, theme.accent, Some(theme.accent), 3.0);
-            let check = self.label("✓", SLOT_ON_ACCENT, theme.background);
-            let check_x = box_x + (box_size - check.shaped.width()) / 2.0;
-            self.text(HEADERS, check_x, ty, check);
+        let box_w = 0.5 * a + box_size + 0.5 * a;
+        let labeled_w = box_w + viewed.shaped.width() + 0.5 * a;
+        let viewed_w = if menu_x - labeled_w - a - left >= min_title {
+            Some(labeled_w)
+        } else if menu_x - box_w >= left {
+            Some(box_w)
         } else {
-            self.rounded(
-                HEADERS,
-                box_rect,
-                theme.background,
-                Some(theme.line_number),
-                3.0,
-            );
-        }
-        self.text(HEADERS, box_x + box_size + 0.5 * a, ty, viewed);
-        self.control(
-            ControlAction::Viewed(f),
-            ControlLayer::Header,
-            viewed_x,
-            y,
-            viewed_w,
-            h,
-        );
+            None
+        };
+        let right = match viewed_w {
+            Some(viewed_w) => {
+                let viewed_x = menu_x - viewed_w;
+                self.viewed_checkbox(flags.viewed, viewed_x, y, h, box_size);
+                if viewed_w == labeled_w {
+                    self.text(HEADERS, viewed_x + box_w, ty, viewed);
+                }
+                self.control(
+                    ControlAction::Viewed(f),
+                    ControlLayer::Header,
+                    viewed_x,
+                    y,
+                    viewed_w,
+                    h,
+                );
+                viewed_x - a
+            }
+            None => menu_x - a,
+        };
 
-        // Between them: the title, counts, change badges and review flags,
-        // dropped in reverse priority until the title keeps some room.
-        let left = 3.0 * a;
-        let right = viewed_x - a;
-        let title_text = header_title(change);
-        let full_title = self.label(&title_text, SLOT_HEADER, theme.header_foreground);
         let counts = self.counts(f);
         let (added, removed) = match counts {
             Some((adds, dels)) => (
-                (adds > 0).then(|| self.label(&format!("+{adds}"), SLOT_ADDED, theme.added_accent)),
-                (dels > 0)
-                    .then(|| self.label(&format!("−{dels}"), SLOT_REMOVED, theme.removed_accent)),
+                (adds > 0).then(|| self.count(adds, true)),
+                (dels > 0).then(|| self.count(dels, false)),
             ),
             None => (None, None),
         };
@@ -199,7 +206,6 @@ impl Painter<'_> {
                 + if badges.is_empty() { 0.0 } else { a }
         };
         let mut show_counts = true;
-        let min_title = full_title.shaped.width().min(MIN_TITLE_COLUMNS * a);
         loop {
             let used =
                 row_w(&kinds) + row_w(&flag_badges) + if show_counts { counts_w } else { 0.0 };
@@ -286,6 +292,49 @@ impl Painter<'_> {
         (adds + dels > 0).then_some((adds, dels))
     }
 
+    /// The Viewed checkbox at `x` (its left padding included), checked
+    /// with an accent fill and a check mark.
+    fn viewed_checkbox(&mut self, checked: bool, x: f32, y: f32, h: f32, size: f32) {
+        let theme = self.theme;
+        let box_x = x + 0.5 * self.geometry.advance;
+        let rect = (box_x, y + (h - size) / 2.0, size, size);
+        if checked {
+            self.rounded(HEADERS, rect, theme.accent, Some(theme.accent), 3.0);
+            let check = self.label("✓", SLOT_ON_ACCENT, theme.background);
+            let check_x = box_x + (size - check.shaped.width()) / 2.0;
+            let ty = y + (h - self.geometry.row_height) / 2.0;
+            self.text(HEADERS, check_x, ty, check);
+        } else {
+            self.rounded(
+                HEADERS,
+                rect,
+                theme.background,
+                Some(theme.line_number),
+                3.0,
+            );
+        }
+    }
+
+    /// `+n` (added) or `−n` (removed) in its accent color, cached by value
+    /// (no string is built unless it has to be shaped).
+    fn count(&mut self, n: u32, added: bool) -> Rc<ShapedText> {
+        let (slot, color, sign) = if added {
+            (SLOT_ADDED, self.theme.added_accent, '+')
+        } else {
+            (SLOT_REMOVED, self.theme.removed_accent, '−')
+        };
+        let shaper = Shaper {
+            theme: self.theme,
+            font: self.font,
+            geometry: self.geometry,
+            text_system: &self.text_system,
+        };
+        self.cache
+            .get_or_shape(TextKey::Count { n, color: slot }, || {
+                shaper.label(&format!("{sign}{n}"), color)
+            })
+    }
+
     fn badge(&mut self, text: &str, slot: u8, color: gpui_kit::Hsla) -> Badge {
         let text = self.label(text, slot, color);
         let width = text.shaped.width() + self.geometry.advance;
@@ -331,11 +380,31 @@ impl Painter<'_> {
 pub(crate) struct HeaderMenu {
     pub file_idx: u32,
     view: Entity<PopupMenu>,
-    /// Where the menu's top-right corner goes: the button's bottom-right.
+    /// Where the menu's top-right corner goes: the button's bottom-right
+    /// (window coordinates, as of the last frame).
     position: Point<Pixels>,
     /// Labels and whether each is enabled, for `ViewportDebug`.
+    #[cfg(feature = "debug-inspect")]
     pub items: Vec<(&'static str, bool)>,
+    /// What had focus before the menu took it (and its window): it gets it
+    /// back when the menu closes.
+    previous_focus: Option<(AnyWindowHandle, FocusHandle)>,
     _dismiss: Subscription,
+}
+
+impl HeaderMenu {
+    /// Hands focus back to what had it before the menu opened, unless
+    /// something else took it meanwhile (an item's handler focusing a
+    /// composer).
+    fn restore_focus(&self, window: &mut Window, cx: &mut App) {
+        let Some((_, previous)) = &self.previous_focus else {
+            return;
+        };
+        let menu_focus = self.view.focus_handle(cx);
+        if window.focused(cx).is_none() || menu_focus.contains_focused(window, cx) {
+            window.focus(previous, cx);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,7 +435,7 @@ impl DiffViewport {
     }
 
     /// Opens file `f`'s ⋯ menu under the button at `button` (window
-    /// coordinates).
+    /// coordinates). The menu takes focus and hands it back when it closes.
     pub(crate) fn open_menu(
         &mut self,
         f: u32,
@@ -374,6 +443,11 @@ impl DiffViewport {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Replacing an open menu keeps what had focus before it.
+        let previous_focus = match self.menu.take() {
+            Some(open) => open.previous_focus,
+            None => window.focused(cx).map(|f| (window.window_handle(), f)),
+        };
         let items = [
             (MenuItem::OpenInEditor, "Open in editor", true),
             (MenuItem::CommentOnFile, "Comment on file", true),
@@ -396,8 +470,11 @@ impl DiffViewport {
             }
             menu
         });
-        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.menu = None;
+        // Escape, a press outside the menu, a chosen item.
+        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
+            if let Some(menu) = this.menu.take() {
+                menu.restore_focus(window, cx);
+            }
             cx.notify();
         });
         window.focus(&menu.focus_handle(cx), cx);
@@ -405,10 +482,56 @@ impl DiffViewport {
             file_idx: f,
             view: menu,
             position: point(button.right(), button.bottom()),
+            #[cfg(feature = "debug-inspect")]
             items: items.iter().map(|(_, l, e)| (*l, *e)).collect(),
+            previous_focus,
             _dismiss: dismiss,
         });
         cx.notify();
+    }
+
+    /// Closes the ⋯ menu, if open, and hands focus back once the current
+    /// update is done (this has no window to focus with).
+    pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        if let Some((window, _)) = &menu.previous_focus {
+            let window = *window;
+            cx.defer(move |cx| {
+                window
+                    .update(cx, |_, window, cx| menu.restore_focus(window, cx))
+                    .ok();
+            });
+        }
+        cx.notify();
+    }
+
+    /// Keeps the open menu under its ⋯ button after the frame moved the
+    /// button (a resize, a relayout by the host), or closes the menu when
+    /// the button is no longer painted. Called in prepaint, when the menu
+    /// for this frame is already rendered, so the change shows next frame.
+    pub(crate) fn follow_menu_button(
+        &mut self,
+        frame: &Frame,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = &mut self.menu else {
+            return;
+        };
+        let button = frame
+            .controls
+            .iter()
+            .find(|c| c.action == ControlAction::Menu(menu.file_idx))
+            .map(|c| point(c.bounds.right(), c.bounds.bottom()));
+        match button {
+            Some(position) if position == menu.position => return,
+            Some(position) => menu.position = position,
+            None => self.close_menu(cx),
+        }
+        let view = cx.entity_id();
+        window.on_next_frame(move |_, cx| cx.notify(view));
     }
 
     fn menu_action(&mut self, f: u32, item: MenuItem, cx: &mut Context<Self>) {
@@ -461,9 +584,32 @@ impl DiffViewport {
             })
     }
 
+    /// The first line of `side` shown below file `f`'s pinned header (a gap
+    /// row counts as its first hidden line), or `None` unless `f`'s body is
+    /// scrolled under its header.
+    fn first_line_below_header(&self, f: u32, side: Side) -> Option<u32> {
+        // The header is pinned at the viewport's top edge, so the body pixel
+        // at its bottom edge is the viewport top's offset into the file.
+        let body_y = self.doc.scroll_top() - self.doc.file_top(f);
+        let layout = self.doc.file_layout(f)?;
+        if self.doc.is_collapsed(f) || body_y <= 0.0 || body_y >= layout.height() {
+            return None;
+        }
+        let (first, _) = layout.row_at(body_y);
+        layout.rows()[first..]
+            .iter()
+            .find_map(|row| match (*row, side) {
+                (BodyRow::Line { old, .. }, Side::Old) => old,
+                (BodyRow::Line { new, .. }, Side::New) => new,
+                (BodyRow::Gap { old_start, .. }, Side::Old) => Some(old_start),
+                (BodyRow::Gap { new_start, .. }, Side::New) => Some(new_start),
+                _ => None,
+            })
+    }
+
     /// Where "Open in editor" points: the new side (the old one for a deleted
-    /// file), at the line at the top of the viewport when it is in this file,
-    /// else at the file's first change.
+    /// file), at the first line shown below the pinned header while this
+    /// file's body scrolls under it, else at the file's first change.
     fn editor_target(&self, f: u32) -> (Side, u32) {
         let change = &self.files[f as usize];
         let side = if change.new_path.is_none() {
@@ -471,11 +617,7 @@ impl DiffViewport {
         } else {
             Side::New
         };
-        let anchor = self.doc.anchor();
-        if anchor.file_idx == f
-            && let RowKey::Line { side: s, line } = anchor.row
-            && s == side
-        {
+        if let Some(line) = self.first_line_below_header(f, side) {
             return (side, line);
         }
         if let FileState::Materialized(file) = self.doc.state(f) {

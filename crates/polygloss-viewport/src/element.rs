@@ -1,7 +1,8 @@
 //! `DiffElement`: the GPUI element that paints a [`DiffViewport`].
 //!
 //! Prepaint asks the view for the frame's display list (visible rows only,
-//! shaped through the cache) and inserts the hitboxes of its controls; paint
+//! shaped through the cache) and inserts the hitboxes of its controls,
+//! clipped to the viewport like everything it paints; paint
 //! replays it layer by layer, every row quad before any row text so GPUI
 //! batches them into few draw calls, then the file headers on top, and wires
 //! the scroll wheel and the controls. Both phases are timed and reported as
@@ -85,7 +86,14 @@ impl Element for DiffElement {
         let frame = self
             .view
             .update(cx, |view, cx| view.prepare_frame(bounds, window, cx));
-        let targets = controls::insert_hitboxes(&frame, window);
+        // A hitbox keeps the content mask it was inserted under, and hit
+        // tests only its intersection with it. Rows, headers and expanders
+        // cut by the viewport's edges (a header pushed up by the next one, a
+        // gap row half scrolled off, an expander past the right edge) must
+        // not take the pointer from the host's chrome around the viewport.
+        let targets = window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            controls::insert_hitboxes(&frame, window)
+        });
         Prepainted {
             frame: Some(frame),
             hitbox,

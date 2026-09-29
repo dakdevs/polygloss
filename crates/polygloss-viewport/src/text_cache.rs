@@ -41,6 +41,8 @@ pub(crate) enum TextKey {
     },
     /// A 1-based line number.
     Number(u32),
+    /// A header's `+n` or `−n`, by value and color slot.
+    Count { n: u32, color: u8 },
     /// Any other text (headers, gap labels, markers), by content hash and a
     /// color slot.
     Label { hash: u64, color: u8 },
@@ -193,6 +195,16 @@ pub(crate) const MAX_CHARS_UNWRAPPED: usize = 1024;
 /// line (minified code) is cut with `…`.
 pub(crate) const MAX_CHARS_WRAPPED: usize = 16 * 1024;
 
+/// The Control Picture shown for a C0 control char or DEL (`␊` for a
+/// newline, `␡` for DEL), or `None` for any other char.
+pub(crate) fn control_picture(c: char) -> Option<char> {
+    match c {
+        '\u{7f}' => Some('\u{2421}'),
+        c if (c as u32) < 0x20 => char::from_u32(0x2400 + c as u32),
+        _ => None,
+    }
+}
+
 /// A source line as it is displayed: tabs expanded to [`TAB_WIDTH`] stops,
 /// control chars as Control Pictures (`␛`), invalid UTF-8 as `U+FFFD`, a
 /// trailing `\r` hidden, and cut after `max_chars` chars with `…`.
@@ -229,12 +241,7 @@ impl DisplayLine {
                         col += n;
                         breaks.push((at as u32, text.len() as u32));
                     }
-                    c if (c as u32) < 0x20 || c == '\u{7f}' => {
-                        let picture = if c == '\u{7f}' {
-                            '\u{2421}'
-                        } else {
-                            char::from_u32(0x2400 + c as u32).unwrap_or('\u{fffd}')
-                        };
+                    c if let Some(picture) = control_picture(c) => {
                         text.push(picture);
                         col += 1;
                         breaks.push((at as u32, text.len() as u32));
@@ -379,8 +386,17 @@ impl Shaper<'_> {
         ShapedText { shaped, words }
     }
 
-    /// A single-line label in one color.
+    /// `text` on one line in `color`. Control chars (a newline or tab in a
+    /// path, in an error message) are shown as Control Pictures, so nothing
+    /// splits the label or disappears from it.
     pub fn label(&self, text: &str, color: Hsla) -> ShapedText {
+        let text: String = if text.chars().any(|c| control_picture(c).is_some()) {
+            text.chars()
+                .map(|c| control_picture(c).unwrap_or(c))
+                .collect()
+        } else {
+            text.to_owned()
+        };
         let run = TextRun {
             len: text.len(),
             font: self.font.clone(),
@@ -390,7 +406,7 @@ impl Shaper<'_> {
             strikethrough: None,
         };
         ShapedText {
-            shaped: self.shape(SharedString::from(text.to_owned()), &[run], None),
+            shaped: self.shape(SharedString::from(text), &[run], None),
             words: Vec::new(),
         }
     }

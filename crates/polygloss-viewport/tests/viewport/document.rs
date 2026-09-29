@@ -771,6 +771,36 @@ fn scroll_by_clamps_and_keeps_pending_targets_only_inside_their_file() {
 }
 
 #[test]
+fn pending_target_below_a_pinned_header_survives_scrolling_near_the_file_top() {
+    let mut d = doc(3);
+    d.set_viewport_height(100.0);
+    let line = RowKey::Line {
+        side: Side::New,
+        line: 1,
+    };
+    // Line 1 a header's height below the viewport's top edge, as the
+    // viewport puts line targets below the pinned header: the top edge is
+    // 20 px into the file, inside its header.
+    d.scroll_to_anchor(ScrollAnchor {
+        file_idx: 1,
+        row: line,
+        offset_px: -40.0,
+    });
+    assert_eq!(d.scroll_top(), d.file_top(1) + 20.0);
+    // Anywhere below the file's top edge the target is kept, so it still
+    // lands exactly once the file is laid out.
+    d.scroll_by(5.0);
+    assert_eq!(d.anchor().row, line);
+    assert_eq!(d.anchor().offset_px, -35.0);
+    d.scroll_by(-24.0);
+    assert_eq!(d.anchor().row, line);
+    // At the top edge itself it is the header.
+    d.scroll_by(-1.0);
+    assert_eq!(d.anchor().row, RowKey::Header);
+    assert_eq!(d.anchor().file_idx, 1);
+}
+
+#[test]
 fn stale_generations_are_rejected() {
     let mut d = doc(2);
     assert!(matches!(d.state(0), FileState::Estimated));

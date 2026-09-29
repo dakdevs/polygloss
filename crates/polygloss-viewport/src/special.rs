@@ -19,6 +19,7 @@ use gpui_kit::{AppContext as _, Context, SharedString, Task};
 use polygloss_diff::{FileChange, FileKind, Oid};
 
 use crate::controls::ControlAction;
+use crate::document::FileState;
 use crate::materialize::MaterializedFile;
 use crate::paint_rows::Painter;
 use crate::view::DiffViewport;
@@ -189,9 +190,25 @@ pub fn is_lfs_pointer(blob: &[u8]) -> bool {
 impl DiffViewport {
     /// Shows file `file_idx`'s diff although it is large or generated (the
     /// "Load diff" link and menu item). A generated file loads; a large one,
-    /// already loaded, gets its rows. Nothing above it moves.
+    /// already loaded, gets its rows; one not loaded yet shows its rows
+    /// however large it turns out to be. Nothing above it moves. Ignored for
+    /// files with no diff to show (binary, submodule, content unchanged) and
+    /// for a file already shown in full.
     pub fn load_diff(&mut self, file_idx: u32, cx: &mut Context<Self>) {
-        if file_idx >= self.doc.len() || !self.special.load_requested.insert(file_idx) {
+        let Some(change) = self.files.get(file_idx as usize) else {
+            return;
+        };
+        let shown_in_full = !change.generated
+            && match self.doc.state(file_idx) {
+                FileState::Materialized(file) => {
+                    file.diff.additions + file.diff.deletions <= self.opts.large_file_changed_lines
+                }
+                _ => false,
+            };
+        if !needs_blobs(change, true)
+            || shown_in_full
+            || !self.special.load_requested.insert(file_idx)
+        {
             return;
         }
         // "Loading…" until its rows are there.

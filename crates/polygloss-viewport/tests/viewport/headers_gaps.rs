@@ -194,14 +194,15 @@ fn gap_expand_up_20_keeps_anchor(cx: &mut TestAppContext) {
         200.,
     );
 
-    // The gap is above the viewport and the anchor below it: expanding the
-    // gap moves nothing on screen.
+    // The gap is above the viewport and the anchor below it (new line 89,
+    // below the two rows under the pinned header): expanding the gap moves
+    // nothing on screen.
     view.update(cx, |v, cx| {
         v.scroll_to(
             ScrollTarget::Line {
                 file_idx: 0,
                 side: Side::New,
-                line: 88,
+                line: 89,
             },
             cx,
         )
@@ -1084,4 +1085,390 @@ fn sizes_and_lfs_pointers_follow_their_rules() {
         format!("{pointer}{}", "x".repeat(1024)).as_bytes()
     ));
     assert!(!is_lfs_pointer(format!("# notes\n{pointer}").as_bytes()));
+}
+
+/// Presses on the host's toolbar and side panel so far.
+fn presses(host: &gpui_kit::Entity<Inset>, cx: &mut VisualTestContext) -> (u32, u32) {
+    host.read_with(cx, |h, _| (h.toolbar_presses.get(), h.side_presses.get()))
+}
+
+#[gpui_kit::test]
+fn pushed_header_takes_no_clicks_above_the_viewport(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // The viewport is 1000 × 400 below a 40 px toolbar.
+    let (host, view, cx) = open_inset(
+        cx,
+        two_added(),
+        options(LayoutMode::Unified),
+        1000. + SIDE_W,
+        400. + TOOLBAR_H,
+    );
+    // b.rs's header pushes a.rs's up by 10: its strip reaches 10 px into
+    // the toolbar's area, but is clipped to the viewport.
+    wheel(cx, 610.);
+    let d = debug(&view, cx);
+    assert_eq!(header(&d, 0).y, -10.0);
+    click_window(cx, 500., TOOLBAR_H - 5.);
+    let (x, _, w, _) = control(&d, ControlAction::Collapse(0));
+    click_window(cx, x + w / 2., TOOLBAR_H - 5.);
+    assert_eq!(presses(&host, cx), (2, 0));
+    assert!(view.read_with(cx, |v, _| v.collapsed()).is_empty());
+    // Inside the viewport the header still takes the click.
+    click_window(cx, x + w / 2., TOOLBAR_H + 5.);
+    assert_eq!(presses(&host, cx), (2, 0));
+    assert_eq!(view.read_with(cx, |v, _| v.collapsed()), vec![0]);
+}
+
+#[gpui_kit::test]
+fn gap_expanders_take_no_clicks_outside_the_viewport(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // A 360 px wide viewport: gap 1's "Expand all" runs past its right edge.
+    let (host, view, cx) = open_inset(
+        cx,
+        one_hundred_lines(),
+        options(LayoutMode::Unified),
+        360. + SIDE_W,
+        600. + TOOLBAR_H,
+    );
+    let all = ControlAction::Expand {
+        file_idx: 0,
+        gap: GapId(1),
+        by: ExpandBy::All,
+    };
+    let (x, y, w, h) = control(&debug(&view, cx), all);
+    assert!(x < 360. - 10. && x + w > 360. + 10., "{x} {w}");
+    click_window(cx, 365., TOOLBAR_H + y + h / 2.);
+    assert_eq!(presses(&host, cx), (0, 1));
+    assert!(view.read_with(cx, |v, _| v.expansions()).is_empty());
+
+    // Half of the gap row scrolled off the top: the expanders' part above
+    // the viewport belongs to the toolbar.
+    wheel(cx, y + 10.);
+    let (x, y, w, h) = control(&debug(&view, cx), all);
+    assert!(y < -2.0 && y + h > 0.0, "{y} {h}");
+    click_window(cx, x + w / 2. - 20., TOOLBAR_H - 1.);
+    assert_eq!(presses(&host, cx), (1, 1));
+    assert!(view.read_with(cx, |v, _| v.expansions()).is_empty());
+}
+
+#[gpui_kit::test]
+fn menu_button_toggles_and_focus_returns_when_the_menu_closes(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    init_kit(cx);
+    let (host, view, cx) = open_inset(
+        cx,
+        two_added(),
+        options(LayoutMode::Unified),
+        1000. + SIDE_W,
+        800. + TOOLBAR_H,
+    );
+    let focus = host.read_with(cx, |h, _| h.toolbar_focus.clone());
+    let toolbar_focused =
+        |cx: &mut VisualTestContext| cx.update(|window, _| focus.is_focused(window));
+    let click_dots = |cx: &mut VisualTestContext| {
+        let (x, y, w, h) = control(&debug(&view, cx), ControlAction::Menu(0));
+        click_window(cx, x + w / 2., TOOLBAR_H + y + h / 2.);
+    };
+    let menu_open = |cx: &mut VisualTestContext| debug(&view, cx).menu.is_some();
+    assert!(toolbar_focused(cx));
+
+    click_dots(cx);
+    assert!(menu_open(cx));
+    assert!(!toolbar_focused(cx), "the menu takes focus");
+    // ⋯ again closes it (and does not open it anew).
+    click_dots(cx);
+    assert!(!menu_open(cx));
+    assert!(toolbar_focused(cx));
+
+    // Escape, scrolling and choosing an item close it too, and hand focus
+    // back.
+    click_dots(cx);
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(!menu_open(cx) && toolbar_focused(cx));
+    click_dots(cx);
+    wheel(cx, 20.);
+    assert!(!menu_open(cx) && toolbar_focused(cx));
+    click_dots(cx);
+    click_menu_item(cx, "Copy path");
+    assert!(!menu_open(cx) && toolbar_focused(cx));
+}
+
+#[gpui_kit::test]
+fn menu_follows_its_button_and_closes_when_the_button_is_gone(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    let _sb = sandbox();
+    init_kit(cx);
+    let (view, cx) = open(cx, two_added(), options(LayoutMode::Unified), 800., 800.);
+    let popup_right = |cx: &mut VisualTestContext| {
+        cx.update(|window, _| window.find("popup-menu").bounds().right().as_f32())
+    };
+    // The menu's right edge lines up with its button's.
+    let button_right = |cx: &mut VisualTestContext| {
+        let (x, _, w, _) = control(&debug(&view, cx), ControlAction::Menu(0));
+        x + w
+    };
+    click_control(&view, cx, ControlAction::Menu(0));
+    assert!((popup_right(cx) - 800.).abs() <= 1.0, "{}", popup_right(cx));
+    // A wider window moves the button right; the menu goes with it.
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(800.)));
+    settle(cx);
+    assert!(debug(&view, cx).menu.is_some());
+    assert!((button_right(cx) - 1000.).abs() <= 1.0);
+    assert!(
+        (popup_right(cx) - 1000.).abs() <= 1.0,
+        "{}",
+        popup_right(cx)
+    );
+
+    // b.rs's header (at 640) leaves the window: its menu closes.
+    click_control(&view, cx, ControlAction::Menu(1));
+    assert_eq!(debug(&view, cx).menu.map(|m| m.file_idx), Some(1));
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(400.)));
+    settle(cx);
+    assert!(debug(&view, cx).menu.is_none());
+}
+
+#[gpui_kit::test]
+fn press_and_release_on_different_runs_of_a_gap_does_nothing(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton, point, px};
+    let _sb = sandbox();
+    let (view, cx) = open(
+        cx,
+        one_hundred_lines(),
+        options(LayoutMode::Unified),
+        1000.,
+        1000.,
+    );
+    // Two hidden runs of gap 1, each with its own "Expand all" (the same
+    // action).
+    view.update(cx, |v, cx| v.set_expansions(0, &[[40, 50]], cx));
+    settle(cx);
+    let all = ControlAction::Expand {
+        file_idx: 0,
+        gap: GapId(1),
+        by: ExpandBy::All,
+    };
+    let centers: Vec<_> = debug(&view, cx)
+        .controls
+        .iter()
+        .filter(|c| c.action == all)
+        .map(|c| {
+            let (x, y, w, h) = c.bounds;
+            point(px(x + w / 2.0), px(y + h / 2.0))
+        })
+        .collect();
+    assert_eq!(centers.len(), 2, "{centers:?}");
+    cx.simulate_mouse_move(centers[0], None, Modifiers::default());
+    cx.simulate_mouse_down(centers[0], MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(centers[1], MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(centers[1], MouseButton::Left, Modifiers::default());
+    settle(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.expansions()),
+        vec![(0, vec![[40, 50]])]
+    );
+}
+
+/// The row showing `text` in `d` and its `(top, height)`.
+fn row_of(d: &polygloss_viewport::ViewportDebug, text: &str) -> (f32, f32) {
+    let i = d
+        .visible_rows
+        .iter()
+        .position(|r| r == text)
+        .unwrap_or_else(|| panic!("no row {text:?} in {:?}", d.visible_rows));
+    d.row_bounds[i]
+}
+
+#[gpui_kit::test]
+fn scroll_to_lands_lines_below_the_pinned_header(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // 30 files of 60 lines, modified in two places each so that their bodies
+    // have gaps: until a file is laid out its lines are only estimated.
+    let specs = (0..30)
+        .map(|i| {
+            let old = numbered(&format!("f{i}"), 60);
+            let mut new = old.clone();
+            new[5] = format!("F{i} 5\n");
+            new[50] = format!("F{i} 50\n");
+            Spec::modified(&format!("f{i:02}.rs"), &old.concat(), &new.concat())
+        })
+        .collect();
+    let (view, cx) = open(
+        cx,
+        MemProvider::new(specs),
+        options(LayoutMode::Unified),
+        1000.,
+        400.,
+    );
+    let jump = |cx: &mut VisualTestContext, file_idx: u32, line: u32| {
+        view.update(cx, |v, cx| {
+            v.scroll_to(
+                ScrollTarget::Line {
+                    file_idx,
+                    side: Side::New,
+                    line,
+                },
+                cx,
+            )
+        });
+        settle(cx);
+        debug(&view, cx)
+    };
+
+    // A line of a laid-out file: right under its pinned header, not under
+    // the header.
+    let d = jump(cx, 0, 7);
+    let h = header(&d, 0);
+    assert!(h.sticky && h.y == 0.0, "{h:?}");
+    assert_eq!(
+        row_of(&d, &unified(Some(8), Some(8), ' ', "f0 7")),
+        (HEADER_H, ROW_H)
+    );
+
+    // A file far away, laid out only after the jump: the line lands there
+    // once it is.
+    let before = view.read_with(cx, |v, _| v.document().file_layout(25).is_none());
+    assert!(before);
+    let d = jump(cx, 25, 48);
+    assert_eq!(d.anchor.file_idx, 25);
+    assert!(header(&d, 25).sticky);
+    assert_eq!(
+        row_of(&d, &unified(Some(49), Some(49), ' ', "f25 48")),
+        (HEADER_H, ROW_H)
+    );
+
+    // A line hidden in a gap (old lines 9..47): the gap row lands there.
+    let d = jump(cx, 25, 20);
+    assert_eq!(row_of(&d, "⋯ 38 unchanged lines"), (HEADER_H, 32.0));
+
+    // The first row of a file (the gap hiding lines 0..2): its header is in
+    // place above it.
+    let d = jump(cx, 3, 0);
+    let h = header(&d, 3);
+    assert!(!h.sticky && h.y == 0.0, "{h:?}");
+    assert_eq!(row_of(&d, "⋯ 2 unchanged lines"), (HEADER_H, 32.0));
+}
+
+#[gpui_kit::test]
+fn open_in_editor_defaults_to_the_first_line_below_the_pinned_header(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    init_kit(cx);
+    let (view, cx) = open(cx, two_added(), options(LayoutMode::Unified), 1000., 400.);
+    let (events, _sub) = record_events(&view, cx);
+    let open_in_editor = |cx: &mut VisualTestContext| {
+        click_control(&view, cx, ControlAction::Menu(0));
+        click_menu_item(cx, "Open in editor");
+        events_of(&events).pop()
+    };
+    // 300 px into a.rs: lines 13 and 14 (0-based) are under the pinned
+    // header; 15 is the first one shown below it.
+    wheel(cx, 300.);
+    assert_eq!(
+        row_of(&debug(&view, cx), &unified(None, Some(16), '+', "a 15")),
+        (HEADER_H, ROW_H)
+    );
+    assert_eq!(
+        open_in_editor(cx),
+        Some(ViewportEvent::OpenInEditor {
+            file_idx: 0,
+            side: Side::New,
+            line: 15
+        })
+    );
+    // After a jump, the line jumped to.
+    view.update(cx, |v, cx| {
+        v.scroll_to(
+            ScrollTarget::Line {
+                file_idx: 0,
+                side: Side::New,
+                line: 20,
+            },
+            cx,
+        )
+    });
+    settle(cx);
+    assert_eq!(
+        open_in_editor(cx),
+        Some(ViewportEvent::OpenInEditor {
+            file_idx: 0,
+            side: Side::New,
+            line: 20
+        })
+    );
+}
+
+#[gpui_kit::test]
+fn header_keeps_its_controls_apart_at_tiny_widths(cx: &mut TestAppContext) {
+    use gpui_kit::{px, size};
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![Spec::modified("src/component_name.rs", "a\n", "b\n")]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 150., 300.);
+    // Whether the header shows the Viewed checkbox; asserts that the
+    // chevron, the checkbox and the menu button do not overlap.
+    let apart = |d: &polygloss_viewport::ViewportDebug| {
+        let (chevron_x, _, chevron_w, _) = control(d, ControlAction::Collapse(0));
+        let chevron_end = chevron_x + chevron_w;
+        let (menu_x, _, _, _) = control(d, ControlAction::Menu(0));
+        let viewed = d
+            .controls
+            .iter()
+            .find(|c| c.action == ControlAction::Viewed(0));
+        if let Some(c) = viewed {
+            let (vx, _, vw, _) = c.bounds;
+            assert!(
+                chevron_end <= vx + 1e-3 && vx + vw <= menu_x + 1e-3,
+                "{:?}",
+                d.controls
+            );
+        } else {
+            assert!(chevron_end <= menu_x + 1e-3, "{:?}", d.controls);
+        }
+        viewed.is_some()
+    };
+    // 150 px: the "Viewed" label gives way to the title; the checkbox stays.
+    let d = debug(&view, cx);
+    assert!(apart(&d));
+    assert!(!d.painted_text.iter().any(|(_, _, t)| t == "Viewed"));
+    let h = header(&d, 0);
+    assert!(h.title.chars().count() >= 5, "{h:?}");
+    // 110 px: still apart.
+    cx.simulate_resize(size(px(110.), px(300.)));
+    settle(cx);
+    assert!(apart(&debug(&view, cx)));
+    // 60 px: no room for the checkbox; the chevron and the menu remain.
+    cx.simulate_resize(size(px(60.), px(300.)));
+    settle(cx);
+    assert!(!apart(&debug(&view, cx)));
+}
+
+#[gpui_kit::test]
+fn header_title_shows_control_chars_as_pictures(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![Spec::modified("odd\nname\t.rs", "a\n", "b\n")]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 300.);
+    let d = debug(&view, cx);
+    assert_eq!(header(&d, 0).title, "odd␊name␉.rs");
+    assert_eq!(d.visible_rows[0], "== odd␊name␉.rs");
+}
+
+#[gpui_kit::test]
+fn load_diff_is_ignored_for_a_file_shown_in_full(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let old = numbered("line", 10);
+    let new = numbered("LINE", 10);
+    let provider = MemProvider::new(vec![Spec::modified(
+        "small.rs",
+        &old.concat(),
+        &new.concat(),
+    )]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 800.);
+    view.update(cx, |v, cx| v.load_diff(0, cx));
+    settle(cx);
+    // Nobody asked to see it past the threshold: a lower one hides it.
+    set_options(&view, cx, |o| o.large_file_changed_lines = 5);
+    assert_eq!(
+        debug(&view, cx).visible_rows,
+        ["== small.rs", "Large diff · 20 changed lines"]
+    );
 }

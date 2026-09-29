@@ -23,7 +23,7 @@ use polygloss_diff::word::Granularity;
 use polygloss_diff::{FileChange, FileKind, Side};
 use polygloss_highlight::{Budget, Highlighter, Tokens, guess_language};
 
-use crate::controls::ControlAction;
+use crate::controls::Pressed;
 use crate::document::{
     BlockId, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document, FileLayout,
     FileState, RowKey, ScrollAnchor, SizeHint,
@@ -90,18 +90,19 @@ impl Default for ViewportOptions {
     }
 }
 
-/// Where [`DiffViewport::scroll_to`] puts the viewport's top edge.
+/// What [`DiffViewport::scroll_to`] brings to the top of what is visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollTarget {
-    /// A file's header.
+    /// A file's header, at the viewport's top edge.
     File(u32),
-    /// The row showing `line` (0-based) of `side`, or the gap hiding it.
+    /// The row showing `line` (0-based) of `side`, or the gap hiding it,
+    /// right below its file's (pinned) header.
     Line {
         file_idx: u32,
         side: Side,
         line: u32,
     },
-    /// A host block (T2.7).
+    /// A host block (T2.7), right below its file's (pinned) header.
     Block(BlockId),
 }
 
@@ -199,7 +200,7 @@ pub struct DiffViewport {
     pub(crate) menu: Option<HeaderMenu>,
     /// The control a mouse button went down on (a click needs the release
     /// there too).
-    pub(crate) pressed: Option<ControlAction>,
+    pub(crate) pressed: Option<Pressed>,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
@@ -316,18 +317,21 @@ impl DiffViewport {
         cx.notify();
     }
 
-    /// Puts `target` at the top of the viewport (clamped to the document).
-    /// A target in a file that is not laid out yet lands exactly once it is.
-    /// Closes the ⋯ menu.
+    /// Brings `target` to the top of what is visible (clamped to the
+    /// document): a file's header to the viewport's top edge; a line (or the
+    /// gap hiding it) or a block right below its file's header, which is
+    /// pinned there while the file's body scrolls under it. A target in a
+    /// file that is not laid out yet lands exactly once it is. Closes the ⋯
+    /// menu.
     pub fn scroll_to(&mut self, target: ScrollTarget, cx: &mut Context<Self>) {
-        self.menu = None;
-        match target {
-            ScrollTarget::File(f) => self.doc.scroll_to(f, RowKey::Header),
+        self.close_menu(cx);
+        let (file_idx, row) = match target {
+            ScrollTarget::File(f) => (f, RowKey::Header),
             ScrollTarget::Line {
                 file_idx,
                 side,
                 line,
-            } => self.doc.scroll_to(file_idx, RowKey::Line { side, line }),
+            } => (file_idx, RowKey::Line { side, line }),
             ScrollTarget::Block(id) => {
                 let Some(f) = (0..self.doc.len()).find(|&f| {
                     self.doc
@@ -336,16 +340,28 @@ impl DiffViewport {
                 }) else {
                     return;
                 };
-                self.doc.scroll_to(f, RowKey::Block(id));
+                (f, RowKey::Block(id))
             }
-        }
+        };
+        // The viewport's top edge a header's height above a body row, so the
+        // pinned header does not cover it. (The first row of a body: the
+        // header is in place, at the top edge.)
+        let offset_px = match row {
+            RowKey::Header => 0.0,
+            _ => -self.doc.metrics().header_height,
+        };
+        self.doc.scroll_to_anchor(ScrollAnchor {
+            file_idx,
+            row,
+            offset_px,
+        });
         self.after_scroll(cx);
     }
 
     /// Scrolls by `dy` pixels (positive = down), clamped to the document.
     /// Closes the ⋯ menu (it would no longer sit under its button).
     pub fn scroll_by(&mut self, dy: f32, cx: &mut Context<Self>) {
-        self.menu = None;
+        self.close_menu(cx);
         self.doc.scroll_by(dy);
         self.after_scroll(cx);
     }
@@ -493,6 +509,7 @@ impl DiffViewport {
         // Every pass's cache misses: lines shaped by a pass that was then
         // rebuilt were still shaped this frame.
         frame.shaped = (self.text_cache.misses - misses) as u32;
+        self.follow_menu_button(&frame, window, cx);
         frame
     }
 

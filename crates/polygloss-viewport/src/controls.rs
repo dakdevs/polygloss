@@ -6,9 +6,10 @@
 //! element turns them into hitboxes: body controls first, then every header's
 //! whole strip (blocking the mouse but not the scroll wheel, so a pinned
 //! header takes the clicks meant for rows under it), then the header
-//! controls. Paint highlights the control under the pointer, sets the pointer
-//! cursor, and a press followed by a release on the same control activates
-//! it.
+//! controls, all clipped to the viewport. Paint highlights the control under
+//! the pointer, sets the pointer cursor, and a press followed by a release on
+//! the same control activates it (pressing ⋯ while its menu is open closes
+//! the menu).
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -62,6 +63,22 @@ pub(crate) struct Control {
     /// A gap expander's hidden run (old lines): a click acts on the run it
     /// was painted on, also when reveals split its gap into several runs.
     pub run: Option<Range<u32>>,
+}
+
+impl Control {
+    /// Whether `other` is the same control: the same action on the same
+    /// hidden run (two runs of one gap share their expanders' actions).
+    fn same_as(&self, other: &Pressed) -> bool {
+        self.action == other.action && self.run == other.run
+    }
+}
+
+/// The control a left button went down on; a release activates it only on
+/// the same control.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pressed {
+    action: ControlAction,
+    run: Option<Range<u32>>,
 }
 
 /// A control's hitbox, inserted during prepaint.
@@ -120,8 +137,21 @@ pub(crate) fn wire(
             return;
         }
         if let Some(t) = press_targets.iter().find(|t| t.hitbox.is_hovered(window)) {
-            let action = t.control.action;
-            press_view.update(cx, |v, _| v.pressed = Some(action));
+            let control = &t.control;
+            press_view.update(cx, |v, cx| {
+                // ⋯ on its own open menu closes it; the release must not
+                // open it again.
+                let open = v.menu.as_ref().map(|m| m.file_idx);
+                if matches!(control.action, ControlAction::Menu(f) if open == Some(f)) {
+                    v.close_menu(cx);
+                    v.pressed = None;
+                } else {
+                    v.pressed = Some(Pressed {
+                        action: control.action,
+                        run: control.run.clone(),
+                    });
+                }
+            });
             cx.stop_propagation();
         }
     });
@@ -134,7 +164,7 @@ pub(crate) fn wire(
         let Some(t) = release_targets.iter().find(|t| t.hitbox.is_hovered(window)) else {
             return;
         };
-        if pressed == Some(t.control.action) {
+        if pressed.is_some_and(|p| t.control.same_as(&p)) {
             let control = t.control.clone();
             release_view.update(cx, |v, cx| v.activate(&control, window, cx));
             cx.stop_propagation();
