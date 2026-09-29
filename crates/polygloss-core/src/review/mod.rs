@@ -15,6 +15,10 @@ pub mod viewed;
 
 pub use models::{IterationInfo, OpenRequest, OpenedDiff, PinnedBy};
 pub use open::Core;
+pub use sessions::{AssignedBy, SessionInfo};
+pub use summary::{ReviewFilter, ReviewSummary, SubmissionSummary, SummaryCursor};
+pub use view_state::{ScrollAnchorState, VIEW_STATE_VERSION, ViewState};
+pub use viewed::ViewedState;
 
 use crate::git::{GitError, ResolveError, SnapshotError};
 use crate::ids::IdError;
