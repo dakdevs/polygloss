@@ -15,8 +15,9 @@
 //! - [`blocks`]: host elements (threads, composers, notes) below their
 //!   anchored line, measured near the viewport, with split spacers.
 //!
-//! The ⋯ menu is a gpui-kit `PopupMenu`: hosts call `gpui_kit::init` first,
-//! as every Polygloss window does.
+//! The ⋯ menu is a gpui-kit `PopupMenu`: hosts initialize gpui-kit first, as
+//! every Polygloss window does, with [`kit::init_kit`] (`gpui_kit::init`
+//! without its startup font scan).
 
 pub mod blocks;
 mod controls;
@@ -27,6 +28,7 @@ mod file_flags;
 pub mod gap;
 mod gutter;
 mod header;
+pub mod kit;
 pub mod layout;
 pub mod materialize;
 mod paint_rows;

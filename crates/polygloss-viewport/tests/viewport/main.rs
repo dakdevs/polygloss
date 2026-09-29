@@ -5,6 +5,7 @@ mod blocks;
 mod cursor;
 mod document;
 mod headers_gaps;
+mod kit;
 mod pipeline;
 mod support;
 mod viewport_render;

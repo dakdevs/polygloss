@@ -6640,6 +6640,7 @@ dependencies = [
  "polygloss-diff",
  "polygloss-highlight",
  "polygloss-viewport",
+ "serde_json",
  "tempfile",
 ]
 

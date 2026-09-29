@@ -547,7 +547,8 @@ pub fn split(left: Option<(u32, char, &str)>, right: Option<(u32, char, &str)>) 
 /// Initializes gpui-kit (theme, key bindings) the way a host does before
 /// opening windows; the header's ⋯ menu is a gpui-kit `PopupMenu`.
 pub fn init_kit(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    let code_font = ViewportOptions::default().code_font;
+    cx.update(|cx| polygloss_viewport::kit::init_kit(&code_font, cx));
 }
 
 /// Height of [`Inset`]'s toolbar above the viewport.

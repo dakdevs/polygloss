@@ -77,6 +77,7 @@ Throwaway workspace at `/tmp/polygloss-deps-check` (sources kept; `target/` dele
 - GPUI's default HTTP client is `NullHttpClient`, so remote `img()`/URL loads fail closed. **Never call `cx.set_http_client`.** Leaving the null client in place is what keeps the app offline.
 - Copy gpui-kit's own `[profile.dev.package]` `opt-level = 3` overrides for `gpui-pre*`, `taffy`, `resvg`, `rustybuzz`, `ttf-parser`, `smol`, `ropey`, `markdown` and `tree-sitter`. Without them, debug builds scroll poorly.
 - `gpui-component` depends on `notify ^7`. We use notify 8, so there are two copies. Both are small and neither has a `links` key.
+- `gpui_kit::init` lists every installed font family (`TextSystem::all_font_names`, a CoreText scan over XPC, ≈ 440 ms on the dev machine) whenever its theme's UI family is `.SystemUIFont` or its mono family is the platform default (`Menlo`), which is the case on a fresh theme. Polygloss initializes it through `polygloss_viewport::kit::init_kit`, which names both families first (plan T2.10.2).
 
 ## 2. Async model (the "tokio bridge")
 

@@ -22,6 +22,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 use crate::git::version::GitVersion;
 
@@ -98,10 +99,83 @@ impl GitOutput {
 }
 
 /// The git binary: `$POLYGLOSS_GIT_BIN` (tests and CI only) or `git` from `PATH`.
+///
+/// On macOS a `PATH` whose `git` is the Xcode command-line-tools shim
+/// (`/usr/bin/git`) gets the git that shim runs instead: `usr/bin/git` in the
+/// selected developer directory (`xcode-select -p`, which honors
+/// `DEVELOPER_DIR` like the shim does), asked once per process. The shim looks
+/// its tool up on every call, which costs about 9 ms per git process, several
+/// times what git itself takes for the plumbing calls of an open (plan
+/// T2.10.1). It is the same system git (design §6.2), minus the trampoline.
+/// (`xcrun --find git` gives the same answer but takes ≈ 75 ms in a fresh
+/// `HOME`, where its cache is cold, as in every perf run.)
 pub fn git_binary() -> PathBuf {
-    std::env::var_os("POLYGLOSS_GIT_BIN")
-        .filter(|v| !v.is_empty())
-        .map_or_else(|| PathBuf::from("git"), PathBuf::from)
+    if let Some(bin) = std::env::var_os("POLYGLOSS_GIT_BIN").filter(|v| !v.is_empty()) {
+        return PathBuf::from(bin);
+    }
+    let path = std::env::var_os("PATH");
+    match XCODE_GIT_SHIM {
+        Some(shim) => default_git(path.as_deref(), Path::new(shim), xcode_git),
+        None => PathBuf::from("git"),
+    }
+}
+
+/// The Xcode command-line-tools shim, which runs the selected developer
+/// directory's git.
+const XCODE_GIT_SHIM: Option<&str> = if cfg!(target_os = "macos") {
+    Some("/usr/bin/git")
+} else {
+    None
+};
+
+/// The git the Xcode shim runs: `<developer dir>/usr/bin/git`, the developer
+/// dir from `xcode-select -p`; asked once per process.
+fn xcode_git() -> Option<PathBuf> {
+    static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            let out = Command::new("/usr/bin/xcode-select")
+                .arg("-p")
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .filter(|o| o.status.success())?;
+            let dir = std::str::from_utf8(&out.stdout).ok()?.trim_end();
+            Some(Path::new(dir).join("usr/bin/git"))
+        })
+        .clone()
+}
+
+/// What a bare `git` should be spawned as: the git `find_real` names when the
+/// first executable `git` on `path` is `shim` and the answer is another
+/// executable file at an absolute path; otherwise `git`, looked up on `PATH`
+/// by the spawn as before.
+fn default_git(
+    path: Option<&OsStr>,
+    shim: &Path,
+    find_real: impl FnOnce() -> Option<PathBuf>,
+) -> PathBuf {
+    let plain = || PathBuf::from("git");
+    let Some(first) = path.and_then(|p| {
+        std::env::split_paths(p)
+            .map(|d| d.join("git"))
+            .find(|g| is_executable(g))
+    }) else {
+        return plain();
+    };
+    if first != shim {
+        return plain();
+    }
+    match find_real() {
+        Some(real) if real.is_absolute() && real != shim && is_executable(&real) => real,
+        _ => plain(),
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// A git invocation context: a worktree (or git dir) for `-C` plus extra env.
@@ -171,11 +245,7 @@ impl Git {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         record_spawn(args);
-        let bin = git_binary();
-        let mut child = cmd.spawn().map_err(|source| GitError::Spawn {
-            bin: bin.clone(),
-            source,
-        })?;
+        let mut child = cmd.spawn().map_err(|source| spawn_error(&cmd, source))?;
         // Feed stdin from a thread so a large input can never deadlock against a
         // full stdout pipe.
         let writer = match (stdin, child.stdin.take()) {
@@ -221,6 +291,15 @@ pub(crate) fn base_command(dir: Option<&Path>) -> Command {
         cmd.arg("-c").arg(c);
     }
     cmd
+}
+
+/// `cmd` could not start: names the binary it ran (what [`git_binary`] chose
+/// for it, without looking it up again).
+pub(crate) fn spawn_error(cmd: &Command, source: std::io::Error) -> GitError {
+    GitError::Spawn {
+        bin: PathBuf::from(cmd.get_program()),
+        source,
+    }
 }
 
 fn check(args: &[&OsStr], out: GitOutput) -> Result<Vec<u8>, GitError> {
@@ -270,4 +349,84 @@ pub(crate) fn spawn_count(subcommand: &str) -> usize {
         .iter()
         .filter(|s| *s == subcommand)
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    /// An executable file at `dir/name`.
+    fn exe(dir: &Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn path_of(dirs: &[&Path]) -> OsString {
+        std::env::join_paths(dirs).unwrap()
+    }
+
+    #[test]
+    fn default_git_replaces_the_xcode_shim_with_the_git_it_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let shim = exe(&tmp.path().join("usr-bin"), "git");
+        let real = exe(&tmp.path().join("developer/usr/bin"), "git");
+        let path = path_of(&[&empty, shim.parent().unwrap()]);
+        let asked = Cell::new(0);
+        let found = default_git(Some(&path), &shim, || {
+            asked.set(asked.get() + 1);
+            Some(real.clone())
+        });
+        assert_eq!(found, real);
+        assert_eq!(asked.get(), 1);
+    }
+
+    #[test]
+    fn default_git_keeps_the_path_lookup_for_any_other_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = exe(&tmp.path().join("usr-bin"), "git");
+        let brew = exe(&tmp.path().join("brew/bin"), "git");
+        // Not executable: skipped by the lookup, like the OS skips it.
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("git"), "").unwrap();
+        let path = path_of(&[&plain, brew.parent().unwrap(), shim.parent().unwrap()]);
+        let never = || -> Option<PathBuf> { panic!("looked up the shim's git for another git") };
+        assert_eq!(default_git(Some(&path), &shim, never), PathBuf::from("git"));
+        // No git on PATH, or no PATH: `git` as before (the spawn reports it).
+        let none = path_of(&[&plain]);
+        assert_eq!(default_git(Some(&none), &shim, never), PathBuf::from("git"));
+        assert_eq!(default_git(None, &shim, never), PathBuf::from("git"));
+    }
+
+    #[test]
+    fn default_git_keeps_the_shim_when_the_lookup_has_no_usable_answer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = exe(&tmp.path().join("usr-bin"), "git");
+        let path = path_of(&[shim.parent().unwrap()]);
+        let missing = tmp.path().join("gone/git");
+        let not_exe = tmp.path().join("not-exe");
+        std::fs::write(&not_exe, "").unwrap();
+        for answer in [
+            None,
+            Some(PathBuf::from("git")),
+            Some(missing),
+            Some(not_exe),
+            Some(shim.clone()),
+        ] {
+            let found = default_git(Some(&path), &shim, || answer.clone());
+            assert_eq!(
+                found,
+                PathBuf::from("git"),
+                "the lookup answered {answer:?}"
+            );
+        }
+    }
 }

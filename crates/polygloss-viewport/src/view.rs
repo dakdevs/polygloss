@@ -785,13 +785,8 @@ impl Render for DiffViewport {
 /// installed family.
 fn resolve_font(opts: &ViewportOptions, window: &Window) -> (Font, Geometry) {
     let text_system = window.text_system();
-    let wanted = font(opts.code_font.clone());
-    let wanted_id = text_system.resolve_font(&wanted);
-    let installed = text_system
-        .get_font_for_id(wanted_id)
-        .is_some_and(|resolved| resolved.family == wanted.family);
-    let code = if installed {
-        wanted
+    let code = if crate::kit::is_installed(text_system, &opts.code_font) {
+        font(opts.code_font.clone())
     } else {
         font(FALLBACK_CODE_FONT)
     };

@@ -143,6 +143,19 @@ pub fn max_rss_mb() -> Option<f64> {
     }
 }
 
+/// Startup marks as milliseconds since `start` (process start), by name;
+/// a mark not reached is `null`.
+pub fn timeline_ms(start: Instant, marks: &[(&str, Option<Instant>)]) -> Value {
+    let map = marks
+        .iter()
+        .map(|(name, at)| {
+            let since = at.map(|t| ms(t.saturating_duration_since(start)));
+            ((*name).to_owned(), json!(since))
+        })
+        .collect::<Map<_, _>>();
+    Value::Object(map)
+}
+
 /// One scenario run's result: the object `polygloss-perf --json` prints and
 /// `benches/run-perf.ts` reads (`Polygloss --perf-scenario` prints the same
 /// shape). `metrics` are the named numbers (null when not measured),
@@ -287,6 +300,32 @@ mod tests {
         let mb = max_rss_mb().expect("getrusage works");
         // A test binary linking GPUI is at least a few MB and far below 64 GB.
         assert!(mb > 1.0 && mb < 65_536.0, "{mb}");
+    }
+
+    #[test]
+    fn timeline_reports_marks_from_process_start() {
+        let start = Instant::now();
+        let at = |n| Some(start + Duration::from_millis(n));
+        // The corpus opens in the background while the window opens, so its
+        // mark may come after the window's; a mark not reached is null.
+        let timeline = timeline_ms(
+            start,
+            &[
+                ("app_launched", at(40)),
+                ("window_opened", at(90)),
+                ("corpus_opened", at(120)),
+                ("first_frame", None),
+            ],
+        );
+        assert_eq!(
+            timeline,
+            json!({
+                "app_launched": 40.0,
+                "window_opened": 90.0,
+                "corpus_opened": 120.0,
+                "first_frame": null,
+            })
+        );
     }
 
     #[test]
