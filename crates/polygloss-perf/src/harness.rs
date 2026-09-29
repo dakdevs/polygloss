@@ -23,7 +23,7 @@ use futures::{FutureExt as _, StreamExt as _};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, px, size,
+    WindowHandle, WindowOptions, div, px, size,
 };
 use polygloss_viewport::{
     DiffProvider, DiffViewport, FrameStats, ScrollTarget, ViewportEvent, ViewportOptions,
@@ -48,15 +48,15 @@ impl FrameRecord {
     }
 }
 
-/// The window's root view: the viewport, filling it.
+/// The window's root view: the viewport once it is attached, filling it.
 pub struct PerfShell {
-    viewport: Entity<DiffViewport>,
-    _frames: Subscription,
+    viewport: Option<Entity<DiffViewport>>,
+    _frames: Option<Subscription>,
 }
 
 impl Render for PerfShell {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().flex().size_full().child(self.viewport.clone())
+        div().flex().size_full().children(self.viewport.clone())
     }
 }
 
@@ -71,27 +71,17 @@ struct Driver {
     done: Option<oneshot::Sender<Option<Instant>>>,
 }
 
-/// A run's window, its frame log and its scroll driver.
-pub struct Harness {
-    pub viewport: Entity<DiffViewport>,
-    window: AnyWindowHandle,
-    frames: mpsc::UnboundedReceiver<FrameRecord>,
-    /// Every frame taken from the log so far, in order.
-    pub seen: Vec<FrameRecord>,
-    driver: Rc<RefCell<Driver>>,
+/// The run's window before its viewport exists (the corpus is still
+/// opening in the background, like a review the app opens).
+pub struct PerfWindow {
+    handle: WindowHandle<PerfShell>,
     /// When the window was opened.
     pub opened_at: Instant,
 }
 
-impl Harness {
-    /// Opens the window (centered, focused, `WINDOW_SIZE`) over `provider`.
-    pub fn open(
-        cx: &mut App,
-        provider: Arc<dyn DiffProvider>,
-        options: ViewportOptions,
-        title: &str,
-    ) -> anyhow::Result<Harness> {
-        let (tx, frames) = mpsc::unbounded();
+impl PerfWindow {
+    /// Opens the window (centered, focused, `WINDOW_SIZE`), empty.
+    pub fn open(cx: &mut App, title: &str) -> anyhow::Result<PerfWindow> {
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(
                 size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1)),
@@ -107,9 +97,44 @@ impl Harness {
             ..WindowOptions::default()
         };
         let opened_at = Instant::now();
-        let handle = cx.open_window(window_options, |window, cx| {
+        let handle = cx.open_window(window_options, |_, cx| {
+            cx.new(|_| PerfShell {
+                viewport: None,
+                _frames: None,
+            })
+        })?;
+        Ok(PerfWindow { handle, opened_at })
+    }
+}
+
+/// A run's window, its frame log and its scroll driver.
+pub struct Harness {
+    pub viewport: Entity<DiffViewport>,
+    window: AnyWindowHandle,
+    frames: mpsc::UnboundedReceiver<FrameRecord>,
+    /// Every frame taken from the log so far, in order.
+    pub seen: Vec<FrameRecord>,
+    driver: Rc<RefCell<Driver>>,
+    /// When the window was opened.
+    pub opened_at: Instant,
+    /// When the viewport was put into it.
+    pub attached_at: Instant,
+}
+
+impl Harness {
+    /// Puts a [`DiffViewport`] over `provider` into `window` and starts
+    /// logging its frames.
+    pub fn attach(
+        window: PerfWindow,
+        cx: &mut AsyncApp,
+        provider: Arc<dyn DiffProvider>,
+        options: ViewportOptions,
+    ) -> anyhow::Result<Harness> {
+        let (tx, frames) = mpsc::unbounded();
+        let attached_at = Instant::now();
+        let viewport = window.handle.update(cx, |shell, window, cx| {
             let viewport = cx.new(|cx| DiffViewport::new(provider, options, window, cx));
-            let frames = cx.subscribe(&viewport, move |_, event: &ViewportEvent, _| {
+            let subscription = cx.subscribe(&viewport, move |_, _, event: &ViewportEvent, _| {
                 if let ViewportEvent::FrameStats(stats) = event {
                     let _ = tx.unbounded_send(FrameRecord {
                         at: Instant::now(),
@@ -117,19 +142,19 @@ impl Harness {
                     });
                 }
             });
-            cx.new(|_| PerfShell {
-                viewport,
-                _frames: frames,
-            })
+            shell.viewport = Some(viewport.clone());
+            shell._frames = Some(subscription);
+            cx.notify();
+            viewport
         })?;
-        let viewport = handle.update(cx, |shell, _, _| shell.viewport.clone())?;
         Ok(Harness {
             viewport,
-            window: handle.into(),
+            window: window.handle.into(),
             frames,
             seen: Vec::new(),
             driver: Rc::default(),
-            opened_at,
+            opened_at: window.opened_at,
+            attached_at,
         })
     }
 

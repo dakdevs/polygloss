@@ -20,14 +20,14 @@ mod harness;
 mod metrics;
 mod scenarios;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::Write as _;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::{App, AsyncApp};
+use gpui_kit::{App, AppContext as _, AsyncApp};
 use polygloss_diff::rows::Layout;
 use polygloss_highlight::Appearance;
 use polygloss_viewport::{LayoutMode, ViewportOptions, ViewportTheme};
@@ -35,8 +35,8 @@ use serde_json::json;
 
 use crate::args::{Args, USAGE};
 use crate::corpus::OpenedCorpus;
-use crate::harness::Harness;
-use crate::metrics::{Clock, ScenarioResult, max_rss_mb, ms};
+use crate::harness::{Harness, PerfWindow};
+use crate::metrics::{Clock, ScenarioResult, max_rss_mb, ms, timeline_ms};
 
 /// A run that takes longer than this fails (run-perf kills at 15 min).
 const WATCHDOG: Duration = Duration::from_secs(10 * 60);
@@ -72,14 +72,7 @@ fn main() -> ExitCode {
     } else {
         Duration::ZERO
     };
-    let corpus = match corpus::open_corpus(&spec) {
-        Ok(corpus) => corpus,
-        Err(err) => {
-            eprintln!("polygloss-perf: {err:#}");
-            return ExitCode::from(1);
-        }
-    };
-    run_app(args, corpus, clock, overhead)
+    run_app(args, spec, clock, overhead)
 }
 
 /// The viewport as the gate measures it: the layout pinned, Pierre Light,
@@ -109,44 +102,51 @@ struct Run {
     clock: Clock,
     /// Harness time inside the measured interval (the manifest lookup).
     overhead: Duration,
-    /// When the corpus was open, the app had launched and gpui-kit was
-    /// initialized (the timeline).
-    corpus_opened: Instant,
+    /// When the app had launched, gpui-kit was initialized and the corpus
+    /// was open (the timeline).
     app_launched: Instant,
     kit_initialized: Instant,
-    /// Taken (and its temp dir deleted) by [`finish`].
+    corpus_opened: Cell<Option<Instant>>,
+    /// Set once the corpus is open; taken (and its temp dir deleted) by
+    /// [`finish`].
     corpus: RefCell<Option<OpenedCorpus>>,
 }
 
 /// Runs the scenario in a GPUI app and exits the process when it is done.
-fn run_app(args: Args, corpus: OpenedCorpus, clock: Clock, overhead: Duration) -> ExitCode {
-    let corpus_opened = Instant::now();
+///
+/// Startup is laid out like the app's (design §6.2: git never runs on the
+/// UI thread): once the app has launched, the corpus opens on the background
+/// executor (resolve, `diff-tree`, the store) while gpui-kit initializes and
+/// the window opens, and the viewport goes into the window when the file
+/// list is there (plan T2.10.3).
+fn run_app(args: Args, spec: corpus::CorpusSpec, clock: Clock, overhead: Duration) -> ExitCode {
     gpui_kit::application().run(move |cx: &mut App| {
         let app_launched = Instant::now();
+        let opening = cx.background_spawn(async move {
+            let corpus = corpus::open_corpus(&spec);
+            (corpus, Instant::now())
+        });
+        let options = viewport_options(args.layout);
         // The header's ⋯ menu is a gpui-kit `PopupMenu` (T2.5); named fonts,
         // so gpui-kit does not scan the installed ones (T2.10.2).
-        polygloss_viewport::kit::init_kit(&viewport_options(args.layout).code_font, cx);
+        polygloss_viewport::kit::init_kit(&options.code_font, cx);
         let run = Rc::new(Run {
             args,
             clock,
             overhead,
-            corpus_opened,
             app_launched,
             kit_initialized: Instant::now(),
-            corpus: RefCell::new(Some(corpus)),
+            corpus_opened: Cell::new(None),
+            corpus: RefCell::new(None),
         });
-        let Some(provider) = run.corpus.borrow().as_ref().map(|c| c.provider.clone()) else {
-            return;
-        };
         let title = format!(
             "polygloss-perf · {} · {} · {}",
             run.args.scenario.as_str(),
             run.args.corpus,
             layout_name(run.args.layout)
         );
-        let options = viewport_options(run.args.layout);
-        let mut harness = match Harness::open(cx, provider, options, &title) {
-            Ok(h) => h,
+        let window = match PerfWindow::open(cx, &title) {
+            Ok(w) => w,
             Err(err) => finish(Err(err.context("opening the window")), &run),
         };
         cx.activate(true);
@@ -160,6 +160,18 @@ fn run_app(args: Args, corpus: OpenedCorpus, clock: Clock, overhead: Duration) -
         .detach();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
+            let (corpus, opened_at) = opening.await;
+            let corpus = match corpus {
+                Ok(corpus) => corpus,
+                Err(err) => finish(Err(err), &run),
+            };
+            let provider = corpus.provider.clone();
+            run.corpus_opened.set(Some(opened_at));
+            *run.corpus.borrow_mut() = Some(corpus);
+            let mut harness = match Harness::attach(window, cx, provider, options) {
+                Ok(h) => h,
+                Err(err) => finish(Err(err.context("opening the viewport")), &run),
+            };
             let args = &run.args;
             let mut result = ScenarioResult::new(
                 args.scenario.as_str(),
@@ -188,18 +200,22 @@ fn describe(result: &mut ScenarioResult, run: &Run, harness: &Harness, cx: &mut 
         result.info("store_ms", json!(ms(c.store_time)));
         result.info("open_ms", json!(ms(c.open_time)));
     }
-    // Where the time before first paint goes, from process start.
-    let since = |t: Instant| ms(t.saturating_duration_since(clock.process_start));
+    // Where the time before first paint goes, from process start (the
+    // corpus opens while gpui-kit initializes and the window opens).
     result.info(
         "timeline_ms",
-        json!({
-            "main": since(clock.main),
-            "corpus_opened": since(run.corpus_opened),
-            "app_launched": since(run.app_launched),
-            "kit_initialized": since(run.kit_initialized),
-            "window_opened": since(harness.opened_at),
-            "first_frame": harness.seen.first().map(|f| since(f.at)),
-        }),
+        timeline_ms(
+            clock.process_start,
+            &[
+                ("main", Some(clock.main)),
+                ("app_launched", Some(run.app_launched)),
+                ("kit_initialized", Some(run.kit_initialized)),
+                ("window_opened", Some(harness.opened_at)),
+                ("corpus_opened", run.corpus_opened.get()),
+                ("viewport_attached", Some(harness.attached_at)),
+                ("first_frame", harness.seen.first().map(|f| f.at)),
+            ],
+        ),
     );
     if let Some(spec) = &args.entry {
         result.info(
