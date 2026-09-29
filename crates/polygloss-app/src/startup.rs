@@ -180,11 +180,15 @@ pub fn main() -> ExitCode {
 }
 
 /// Everything the app sets up before its first window: [`AppState`], the
-/// settings, gpui-kit (through `polygloss_viewport::kit::init_kit`, never
-/// `gpui_kit::init`, T2.10.2), every feature and the menu bar.
+/// settings, the bundled Lilex font, gpui-kit (through
+/// `polygloss_viewport::kit::init_kit`, never `gpui_kit::init`, T2.10.2),
+/// every feature (the theme first) and the menu bar.
 pub fn init(core: Core, cx: &mut App) {
     AppState::set(core, cx);
     crate::settings::init(cx);
+    // Before gpui-kit: `init_kit` names the code font as its monospace
+    // family only when the text system has it (T3.3).
+    crate::theme::fonts::register_fonts(cx);
     let code_font = SettingsStore::global(cx)
         .settings()
         .buffer_font

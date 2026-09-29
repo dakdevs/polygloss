@@ -46,8 +46,9 @@ pub const MAX_DIFFERING_PER_MILLE: u64 = 1;
 /// Differing pixels in a `.diff.png`.
 pub const DIFF_MARK: Rgba<u8> = Rgba([255, 0, 64, 255]);
 
-/// GPUI with real text shaping and Metal rendering on the test platform.
-/// Must run on the main thread (see the module docs).
+/// GPUI with real text shaping and Metal rendering on the test platform,
+/// with the bundled Lilex registered. Must run on the main thread (see the
+/// module docs).
 pub fn headless_app() -> HeadlessAppContext {
     headless_app_with_assets(Arc::new(()))
 }
@@ -60,11 +61,15 @@ pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> Headl
         Some("main"),
         "screenshots need the main thread: run them in the `e2e` binary"
     );
-    HeadlessAppContext::with_platform(
+    let mut cx = HeadlessAppContext::with_platform(
         gpui_kit::platform::current_platform(true).text_system(),
         assets,
         gpui_kit::platform::current_headless_renderer,
-    )
+    );
+    // The app's bundled code font (T3.3): screenshots draw Lilex, as the
+    // app does, not the system's Menlo fallback.
+    cx.update(polygloss_app::theme::fonts::register_fonts);
+    cx
 }
 
 /// Where [`open_window`] parks the pointer: outside the window.

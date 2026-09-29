@@ -49,3 +49,14 @@ and syntax captures and derives the diff word-highlight colors.
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
     IN THE SOFTWARE.
+
+--------------------------------------------------------------------------------
+Lilex
+  assets/fonts/lilex/lilex-regular.ttf, lilex-bold.ttf, lilex-italic.ttf,
+  lilex-bold-italic.ttf
+
+Lilex 2.700 (https://github.com/mishamyrt/Lilex), Copyright 2019 The Lilex
+Project Authors, licensed under the SIL Open Font License, Version 1.1
+(assets/fonts/lilex/ofl.txt). The files are the release's static TrueType
+faces, renamed to kebab-case (Lilex-Regular.ttf → lilex-regular.ttf, …) and
+otherwise unmodified; the font is bundled with the app, not sold on its own.
