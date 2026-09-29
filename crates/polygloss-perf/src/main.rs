@@ -99,6 +99,21 @@ fn viewport_options(layout: Layout) -> ViewportOptions {
     }
 }
 
+/// Registers the app's bundled Lilex faces (`assets/fonts/lilex`, the
+/// same bytes `polygloss_app::theme::fonts` compiles in).
+fn register_lilex(cx: &mut App) {
+    let faces: [&'static [u8]; 4] = [
+        include_bytes!("../../../assets/fonts/lilex/lilex-regular.ttf"),
+        include_bytes!("../../../assets/fonts/lilex/lilex-bold.ttf"),
+        include_bytes!("../../../assets/fonts/lilex/lilex-italic.ttf"),
+        include_bytes!("../../../assets/fonts/lilex/lilex-bold-italic.ttf"),
+    ];
+    let faces = faces.into_iter().map(std::borrow::Cow::Borrowed).collect();
+    if let Err(e) = cx.text_system().add_fonts(faces) {
+        eprintln!("polygloss-perf: registering Lilex: {e:#}");
+    }
+}
+
 fn layout_name(layout: Layout) -> &'static str {
     match layout {
         Layout::Split => "split",
@@ -147,6 +162,9 @@ fn run_app(
             (corpus, Instant::now())
         });
         let options = viewport_options(args.layout);
+        // The app's bundled code font, registered before gpui-kit as the
+        // app does (T3.3), so the viewport shapes Lilex, not Menlo.
+        register_lilex(cx);
         // The header's ⋯ menu is a gpui-kit `PopupMenu` (T2.5); named fonts,
         // so gpui-kit does not scan the installed ones (T2.10.2).
         polygloss_viewport::kit::init_kit(&options.code_font, cx);
