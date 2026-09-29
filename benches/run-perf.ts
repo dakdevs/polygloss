@@ -6,23 +6,26 @@
 //   bun benches/run-perf.ts [--corpus all|<name>[,<name>…]] [--layouts split,unified]
 //     [--scenarios <name>[,…]] [--check-budgets] [--compare-baseline]
 //     [--write-baseline] [--baseline <path>] [--repeat <n>] [--bin <path>]
-//     [--build] [--out <path>] [--dry-run]
+//     [--app-bin <path>] [--build] [--out <path>] [--dry-run]
 //
-// Every scenario runs in its own `polygloss-perf` process (first paint is
-// measured from process start) with a fresh sandboxed HOME, data, config and
+// Every scenario runs in its own process (first paint is measured from
+// process start): `polygloss-perf` for the viewport scenarios, the app itself
+// (`Polygloss --perf-scenario <name>`, with POLYGLOSS_TEST=1, OQ-P4; `--app-bin`,
+// default target/perf/Polygloss) for the app's (`app-open`: the app's own
+// first paint, T3.1), each with a fresh sandboxed HOME, data, config and
 // cache dir and an empty git config, on the corpora its metrics are budgeted
 // for (budgets.json). Corpus paths and revisions come from
-// benches/corpora/lib.ts `corpusEntry`, passed to the harness as flags.
-// The harness is launched once (`--version`) before the matrix, so macOS's
+// benches/corpora/lib.ts `corpusEntry`, passed to the binary as flags.
+// Each binary is launched once (`--version`) before the matrix, so macOS's
 // first-launch assessment of a fresh build is not measured, and then runs one
-// unmeasured `open` window (the first planned corpus and layout), so a new
-// binary's first-window Metal shader compilation (OQ-P12) is not either; that
-// warm-up's first paint is reported (`warmup` in the results).
-// `peak_rss_mb` is the largest RSS (`ps -o rss= -p`, every 100 ms) of any run
-// of a corpus and layout. `--repeat n` runs everything n times; each metric is
-// then the p95 (nearest rank) of its n per-run values. App-level scenarios
-// (`Polygloss --perf-scenario …`, T3.10/T3.11) report null until the app has
-// them.
+// unmeasured `open` window (its runner's first planned corpus and layout), so
+// a new binary's first-window Metal shader compilation (OQ-P12) is not
+// either; those warm-ups' first paints are reported (`warmups` in the
+// results; `warmup` is the first). `peak_rss_mb` is the largest RSS
+// (`ps -o rss= -p`, every 100 ms) of any run of a corpus and layout.
+// `--repeat n` runs everything n times; each metric is then the p95 (nearest
+// rank) of its n per-run values. Disabled app scenarios (T3.10/T3.11) report
+// null until the app has them.
 //
 // Exit codes: 1 when a run fails, with --check-budgets when a budget is
 // missed, with --compare-baseline when a metric regressed by more than 10%
@@ -56,6 +59,7 @@ export const metricNames = [
   "highlight_ms",
   "comment_repaint_ms",
   "watcher_banner_ms",
+  "app_first_paint_ms",
   "peak_rss_mb",
 ] as const;
 export type MetricName = (typeof metricNames)[number];
@@ -233,6 +237,8 @@ export type Scenario = {
   name: string;
   /** `perf`: polygloss-perf; `app`: `Polygloss --perf-scenario` (OQ-P4). */
   runner: "perf" | "app";
+  /** The name the binary knows the scenario by (default `name`). */
+  binScenario?: string;
   /** The budgeted metrics it measures; it runs where they have budgets. */
   metrics: MetricName[];
   enabled: boolean;
@@ -254,6 +260,14 @@ export const scenarios: Scenario[] = [
     name: "blocks",
     runner: "perf",
     metrics: ["comment_repaint_ms"],
+    enabled: true,
+  },
+  // T3.1: first paint through the app's real startup.
+  {
+    name: "app-open",
+    runner: "app",
+    binScenario: "open",
+    metrics: ["app_first_paint_ms"],
     enabled: true,
   },
   {
@@ -310,24 +324,36 @@ export function planRuns(opts: {
   return runs;
 }
 
+/** The scenario name `run`'s binary knows (`app-open` is the app's `open`). */
+export function binScenario(scenario: string): string {
+  return scenarios.find((s) => s.name === scenario)?.binScenario ?? scenario;
+}
+
 /**
- * The unmeasured window run before the matrix: `open` on the first enabled
- * `polygloss-perf` run's corpus and layout (`null` when nothing runs).
+ * The unmeasured window run before the matrix for one runner: its `open`
+ * (`open` for `polygloss-perf`, `app-open` for the app) on the first enabled
+ * run of that runner's corpus and layout (`null` when it runs nothing).
  * gpui-kit forces runtime shaders (OQ-P12): GPUI compiles its Metal shaders
  * when it opens a window, and Metal caches the result. The first windowed
  * launch of a new binary can miss that cache (seen right after a rebuild and
  * for a copy at a new path); its window then opens ≈ 150–200 ms later than
  * on every later launch.
  */
-export function warmupRun(plan: PlannedRun[]): PlannedRun | null {
-  const first = plan.find((p) => p.enabled && p.runner === "perf");
+export function warmupRun(
+  plan: PlannedRun[],
+  runner: Scenario["runner"] = "perf",
+): PlannedRun | null {
+  const first = plan.find((p) => p.enabled && p.runner === runner);
   if (!first) return null;
+  const open =
+    runner === "perf"
+      ? { scenario: "open", metrics: ["first_paint_ms" as MetricName] }
+      : { scenario: "app-open", metrics: ["app_first_paint_ms" as MetricName] };
   return {
-    scenario: "open",
-    runner: "perf",
+    ...open,
+    runner,
     corpus: first.corpus,
     layout: first.layout,
-    metrics: ["first_paint_ms"],
     enabled: true,
   };
 }
@@ -413,20 +439,30 @@ type RunRecord = {
   note?: string;
 };
 
-/** The harness command for one run over `entry`. */
+/** The binaries of the two runners. */
+export type Bins = { perf: string; app: string };
+
+/**
+ * The command for one run over `entry`: `polygloss-perf --corpus … --scenario
+ * <name>`, or the app's `Polygloss --perf-scenario <name> --corpus …` (run
+ * with POLYGLOSS_TEST=1, see `runEnv`).
+ */
 export function harnessArgs(
-  bin: string,
+  bins: Bins,
   run: PlannedRun,
   entry: CorpusEntry,
 ): string[] {
+  const head =
+    run.runner === "app"
+      ? [bins.app, "--perf-scenario", binScenario(run.scenario)]
+      : [bins.perf];
   return [
-    bin,
+    ...head,
     "--corpus",
     run.corpus,
     "--layout",
     run.layout,
-    "--scenario",
-    run.scenario,
+    ...(run.runner === "perf" ? ["--scenario", run.scenario] : []),
     "--json",
     "--repo",
     entry.repo,
@@ -450,7 +486,7 @@ function parseResult(stdout: string, run: PlannedRun): ScenarioResult {
   if (
     typeof r !== "object" ||
     r === null ||
-    r.scenario !== run.scenario ||
+    r.scenario !== binScenario(run.scenario) ||
     r.corpus !== run.corpus ||
     r.layout !== run.layout
   )
@@ -478,8 +514,16 @@ async function rssKib(pid: number): Promise<number | null> {
   return Number.isFinite(kib) && kib > 0 ? kib : null;
 }
 
+/** Extra environment of a run: the app's scenarios are test-only (OQ-P4). */
+export function runEnv(run: PlannedRun): Record<string, string> {
+  return run.runner === "app" ? { POLYGLOSS_TEST: "1" } : {};
+}
+
 /** Runs one harness process in a fresh sandbox, sampling its RSS. */
-async function runHarness(argv: string[]): Promise<{
+async function runHarness(
+  argv: string[],
+  env: Record<string, string>,
+): Promise<{
   code: number;
   stdout: string;
   peakKib: number | null;
@@ -490,7 +534,7 @@ async function runHarness(argv: string[]): Promise<{
   const started = performance.now();
   try {
     const child = Bun.spawn(argv, {
-      env: sandbox.env,
+      env: { ...sandbox.env, ...env },
       stdout: "pipe",
       stderr: "inherit",
     });
@@ -541,7 +585,7 @@ async function measure(
   argv: string[],
 ): Promise<void> {
   record.argv = argv;
-  const out = await runHarness(argv);
+  const out = await runHarness(argv, runEnv(p));
   record.wall_ms = Math.round(out.ms);
   record.peak_rss_mb =
     out.peakKib === null ? null : Math.round((out.peakKib / 1024) * 10) / 10;
@@ -636,7 +680,7 @@ function list(value: string, what: string, allowed: readonly string[]) {
 const usage =
   "bun benches/run-perf.ts [--corpus all|<name>[,…]] [--layouts split,unified] " +
   "[--scenarios <name>[,…]] [--check-budgets] [--compare-baseline] [--write-baseline] " +
-  "[--baseline <path>] [--repeat <n>] [--bin <path>] [--build] [--out <path>] [--dry-run]";
+  "[--baseline <path>] [--repeat <n>] [--bin <path>] [--app-bin <path>] [--build] [--out <path>] [--dry-run]";
 
 async function main(argv: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -651,6 +695,7 @@ async function main(argv: string[]): Promise<number> {
       baseline: { type: "string", default: join(benchesDir, "baseline.json") },
       repeat: { type: "string", default: "1" },
       bin: { type: "string" },
+      "app-bin": { type: "string" },
       build: { type: "boolean" },
       out: { type: "string" },
       "dry-run": { type: "boolean" },
@@ -676,25 +721,27 @@ async function main(argv: string[]): Promise<number> {
     throw new CorpusError(`--repeat must be a positive integer`);
   const budgets = loadBudgets();
   const plan = planRuns({ corpora, layouts, scenarios: only, budgets });
-  const bin = resolve(
-    values.bin ??
-      join(
-        resolve(repoRoot, process.env.CARGO_TARGET_DIR || "target"),
-        "perf",
-        "polygloss-perf",
-      ),
+  const targetDir = resolve(repoRoot, process.env.CARGO_TARGET_DIR || "target");
+  const bins: Bins = {
+    perf: resolve(values.bin ?? join(targetDir, "perf", "polygloss-perf")),
+    app: resolve(values["app-bin"] ?? join(targetDir, "perf", "Polygloss")),
+  };
+  const runners = (["perf", "app"] as const).filter((r) =>
+    plan.some((p) => p.enabled && p.runner === r),
   );
   const entries = new Map(plan.map((p) => [p.corpus, corpusEntry(p.corpus)]));
 
-  const warm = warmupRun(plan);
+  const warms = runners
+    .map((r) => warmupRun(plan, r))
+    .filter((w): w is PlannedRun => w !== null);
   if (values["dry-run"]) {
-    if (warm)
+    for (const warm of warms)
       process.stdout.write(
-        `warm-up (not measured): open ${warm.corpus} ${warm.layout}: ${harnessArgs(bin, warm, entries.get(warm.corpus)!).join(" ")}\n`,
+        `warm-up (not measured): ${warm.scenario} ${warm.corpus} ${warm.layout}: ${harnessArgs(bins, warm, entries.get(warm.corpus)!).join(" ")}\n`,
       );
     for (const p of plan) {
       const how = p.enabled
-        ? harnessArgs(bin, p, entries.get(p.corpus)!).join(" ")
+        ? harnessArgs(bins, p, entries.get(p.corpus)!).join(" ")
         : `not run (${scenarios.find((s) => s.name === p.scenario)?.note})`;
       process.stdout.write(`${p.scenario} ${p.corpus} ${p.layout}: ${how}\n`);
     }
@@ -710,60 +757,69 @@ async function main(argv: string[]): Promise<number> {
       );
     }
   if (missing > 0) return 2;
-  if (values.build) {
-    const build = ["scripts/cargo.sh", "build", "--profile", "perf"];
-    const r = Bun.spawnSync([...build, "-p", "polygloss-perf"], {
-      cwd: repoRoot,
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    if (r.exitCode !== 0) return 1;
-  }
-  if (!existsSync(bin)) {
-    process.stderr.write(
-      `run-perf: no harness at ${bin}; run scripts/cargo.sh build --profile perf -p polygloss-perf (or pass --build)\n`,
-    );
-    return 2;
-  }
-
-  // The first launch of a freshly built binary pays macOS's code assessment
-  // (about 2 s); launch it once so that stays out of first_paint_ms.
-  const warmup = makeSandbox();
-  try {
-    const r = Bun.spawnSync([bin, "--version"], {
-      env: warmup.env,
-      stdout: "ignore",
-      stderr: "pipe",
-    });
-    if (r.exitCode !== 0) {
+  const packages = { perf: "polygloss-perf", app: "polygloss-app" } as const;
+  if (values.build)
+    // One package per build, so features are not unified across them.
+    for (const runner of runners) {
+      const build = ["scripts/cargo.sh", "build", "--profile", "perf"];
+      const r = Bun.spawnSync([...build, "-p", packages[runner]], {
+        cwd: repoRoot,
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      if (r.exitCode !== 0) return 1;
+    }
+  for (const runner of runners) {
+    const bin = bins[runner];
+    if (!existsSync(bin)) {
       process.stderr.write(
-        `run-perf: the harness at ${bin} does not start: ${r.stderr.toString().trim()}\n`,
+        `run-perf: no ${runner === "app" ? "app" : "harness"} at ${bin}; run scripts/cargo.sh build --profile perf -p ${packages[runner]} (or pass --build)\n`,
       );
       return 2;
     }
-  } finally {
-    warmup.cleanup();
+    // The first launch of a freshly built binary pays macOS's code
+    // assessment (about 2 s); launch it once so that stays out of first
+    // paint.
+    const warmup = makeSandbox();
+    try {
+      const r = Bun.spawnSync([bin, "--version"], {
+        env: warmup.env,
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      if (r.exitCode !== 0) {
+        process.stderr.write(
+          `run-perf: the harness at ${bin} does not start: ${r.stderr.toString().trim()}\n`,
+        );
+        return 2;
+      }
+    } finally {
+      warmup.cleanup();
+    }
   }
-  // One unmeasured window keeps a new binary's shader compilation out of
-  // the matrix (see `warmupRun`); its first paint is still reported.
-  let warmupRecord: RunRecord | null = null;
-  if (warm) {
-    warmupRecord = newRecord(warm, 0);
+  // One unmeasured window per binary keeps a new binary's shader
+  // compilation out of the matrix (see `warmupRun`; the app has its own
+  // Metal cache, OQ-P12); its first paint is still reported.
+  const warmupRecords: RunRecord[] = [];
+  for (const warm of warms) {
+    const record = newRecord(warm, 0);
+    warmupRecords.push(record);
     process.stderr.write(
-      `run-perf: warm-up (not measured): open ${warm.corpus} ${warm.layout}\n`,
+      `run-perf: warm-up (not measured): ${warm.scenario} ${warm.corpus} ${warm.layout}\n`,
     );
     await measure(
-      warmupRecord,
+      record,
       warm,
-      harnessArgs(bin, warm, entries.get(warm.corpus)!),
+      harnessArgs(bins, warm, entries.get(warm.corpus)!),
     );
-    const fp = warmupRecord.result?.metrics.first_paint_ms;
+    const fp = record.result?.metrics[warm.metrics[0]!];
     process.stderr.write(
-      warmupRecord.error === null
+      record.error === null
         ? `run-perf: warm-up first paint ${fp} ms (not counted: a new binary's first window can compile GPUI's shaders, OQ-P12)\n`
-        : `run-perf: warm-up failed: ${warmupRecord.error} (continuing)\n`,
+        : `run-perf: warm-up failed: ${record.error} (continuing)\n`,
     );
   }
+  const warmupRecord = warmupRecords[0] ?? null;
 
   const machine = currentMachine();
   const git = gitState();
@@ -783,7 +839,7 @@ async function main(argv: string[]): Promise<number> {
       process.stderr.write(
         `run-perf: [${n}/${total}] ${p.scenario} ${p.corpus} ${p.layout}\n`,
       );
-      await measure(record, p, harnessArgs(bin, p, entries.get(p.corpus)!));
+      await measure(record, p, harnessArgs(bins, p, entries.get(p.corpus)!));
       if (record.error !== null)
         process.stderr.write(
           `run-perf: ${p.scenario} ${p.corpus} ${p.layout} failed: ${record.error}\n`,
@@ -842,12 +898,14 @@ async function main(argv: string[]): Promise<number> {
         git_sha: git.sha,
         dirty: git.dirty,
         machine,
-        bin,
+        bin: bins.perf,
+        app_bin: bins.app,
         repeat,
         rows,
         budgets: checks,
         regressions,
         warmup: warmupRecord,
+        warmups: warmupRecords,
         runs: records,
       },
       null,

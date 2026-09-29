@@ -49,6 +49,12 @@ pub const DIFF_MARK: Rgba<u8> = Rgba([255, 0, 64, 255]);
 /// GPUI with real text shaping and Metal rendering on the test platform.
 /// Must run on the main thread (see the module docs).
 pub fn headless_app() -> HeadlessAppContext {
+    headless_app_with_assets(Arc::new(()))
+}
+
+/// [`headless_app`] with an asset source (gpui-kit's icons for the app
+/// shell: `Arc::new(gpui_kit::assets::Assets)`).
+pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> HeadlessAppContext {
     assert_eq!(
         std::thread::current().name(),
         Some("main"),
@@ -56,7 +62,7 @@ pub fn headless_app() -> HeadlessAppContext {
     );
     HeadlessAppContext::with_platform(
         gpui_kit::platform::current_platform(true).text_system(),
-        Arc::new(()),
+        assets,
         gpui_kit::platform::current_headless_renderer,
     )
 }
@@ -76,7 +82,13 @@ pub fn open_window<V: Render + 'static>(
     let window = cx
         .open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), build)
         .expect("open a headless window");
-    cx.update_window(*window, |_, window, cx| {
+    park_pointer(cx, *window);
+    window
+}
+
+/// Moves the pointer outside `window` (see [`POINTER_AWAY`]).
+pub fn park_pointer(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {
+    cx.update_window(window, |_, window, cx| {
         window.dispatch_event(
             PlatformInput::MouseMove(MouseMoveEvent {
                 position: point(px(POINTER_AWAY.0), px(POINTER_AWAY.1)),
@@ -92,7 +104,6 @@ pub fn open_window<V: Render + 'static>(
         );
     })
     .expect("window is open");
-    window
 }
 
 /// Runs every pending task, then draws one frame.

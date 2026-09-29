@@ -4,7 +4,10 @@
     "first_paint_ms": {
       "label": "first paint",
       "unit": "ms",
-      "budget": { "typical": 300, "linux": 2000 }
+      "budget": {
+        "typical": 300,
+        "linux": 2000
+      }
     },
     "scroll_p95_ms": {
       "label": "scroll p95",
@@ -29,17 +32,32 @@
     "comment_repaint_ms": {
       "label": "comment",
       "unit": "ms",
-      "budget": { "typical": 50, "synthetic": 50 }
+      "budget": {
+        "typical": 50,
+        "synthetic": 50
+      }
     },
     "watcher_banner_ms": {
       "label": "banner",
       "unit": "ms",
-      "budget": { "typical": 500 }
+      "budget": {
+        "typical": 500
+      }
+    },
+    "app_first_paint_ms": {
+      "label": "app first paint",
+      "unit": "ms",
+      "budget": {
+        "typical": 300,
+        "linux": 2000
+      }
     },
     "peak_rss_mb": {
       "label": "peak RSS",
       "unit": "MB",
-      "budget": { "linux": 1536 }
+      "budget": {
+        "linux": 1536
+      }
     }
   }
 }

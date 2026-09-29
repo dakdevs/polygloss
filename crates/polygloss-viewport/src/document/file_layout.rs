@@ -31,6 +31,8 @@ pub enum BodyRow {
     },
     /// `\ No newline at end of file`.
     NoNewline { side: Side, diff_row: u32 },
+    /// Split only: both sides' `\ No newline at end of file` on one row.
+    NoNewlineBoth { diff_row: u32 },
     /// A host block below the previous row (T2.7).
     Block(BlockId),
     /// A body that is a single message (special files, "Load diff").
@@ -123,6 +125,7 @@ impl FileLayout {
                     },
                     metrics.row_height,
                 ),
+                Row::NoNewlineBoth => (BodyRow::NoNewlineBoth { diff_row }, metrics.row_height),
             };
             body.push(body_row);
             heights.push(height);
@@ -251,7 +254,8 @@ impl FileLayout {
                     new: None,
                     ..
                 }
-                | BodyRow::NoNewline { .. } => return None,
+                | BodyRow::NoNewline { .. }
+                | BodyRow::NoNewlineBoth { .. } => return None,
             };
             Some((key, y - self.heights.prefix(i)))
         })

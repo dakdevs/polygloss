@@ -5,7 +5,7 @@
 //!
 //! - [`harness`]: the `e2e` binary's libtest-compatible, main-thread runner.
 //! - [`screenshot`]: the clean-room screenshot baseline runner.
-//! - fixture repos for the gate shell, the provider and the screenshots.
+//! - fixture repos for the shell, the provider and the screenshots.
 //!
 //! Every test starts with `let _sb = Sandbox::isolate();` (plan "Test
 //! hygiene"): a temp `HOME`, data, config and cache dir and an empty global

@@ -6515,6 +6515,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "insta",
+ "libc",
  "notify 8.2.0",
  "notify-debouncer-full",
  "nucleo-matcher",
@@ -6524,7 +6525,10 @@ dependencies = [
  "polygloss-platform",
  "polygloss-viewport",
  "regex",
+ "serde",
+ "serde_json",
  "tempfile",
+ "tracing",
  "tracing-appender",
  "tracing-subscriber",
 ]

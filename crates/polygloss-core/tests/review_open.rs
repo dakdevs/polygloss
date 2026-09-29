@@ -1425,3 +1425,58 @@ fn open_errors_map_to_agent_codes() {
         Err(CoreError::NotFound { .. })
     ));
 }
+
+/// T3.1: a file listed as text that turned out binary when the viewport first
+/// read it (a NUL byte, T1.3's first-read rule) is stored as binary, so the
+/// next open, the file tree and MCP see it as binary. Derived metadata like
+/// `additions`: no §7.3 event.
+#[test]
+fn mark_file_binary_writes_kind_back_once() {
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"one\n");
+    repo.write("blob.dat", b"text for now\n");
+    repo.commit("c1");
+    repo.write("a.txt", b"two\n");
+    // `diff-tree` lists it as text (only attributes mark binary there); the
+    // NUL rule applies when the viewport first reads the blob.
+    repo.write("blob.dat", b"bin\0ary\n");
+    repo.commit("c2");
+    let core = core();
+    let opened = core.open(&req(repo.path(), commit("HEAD"))).unwrap();
+    let idx = opened
+        .files
+        .iter()
+        .position(|f| f.display_path() == "blob.dat")
+        .unwrap() as u32;
+    assert_eq!(opened.files[idx as usize].kind, FileKind::Text);
+    let seq = core
+        .store
+        .read(|c| events_since(c, 0, &EventFilter::default(), 1000))
+        .unwrap();
+
+    assert!(core.mark_file_binary(&opened.diff_id, idx).unwrap());
+    // Already binary: nothing to write.
+    assert!(!core.mark_file_binary(&opened.diff_id, idx).unwrap());
+    let files = core.files_for_diff(&opened.diff_id).unwrap().unwrap();
+    assert_eq!(files[idx as usize].kind, FileKind::Binary);
+    assert_eq!(files[0].kind, FileKind::Text, "other files are untouched");
+    let reopened = core.open(&req(repo.path(), commit("HEAD"))).unwrap();
+    assert_eq!(reopened.files[idx as usize].kind, FileKind::Binary);
+    // No event for derived metadata.
+    let after = core
+        .store
+        .read(|c| events_since(c, 0, &EventFilter::default(), 1000))
+        .unwrap();
+    assert_eq!(after.len(), seq.len());
+
+    // Out-of-range indexes and diffs that are not stored (an unpinned live
+    // state) have nothing to mark.
+    assert!(!core.mark_file_binary(&opened.diff_id, 99).unwrap());
+    let unstored = diff_id(
+        ObjectFormat::Sha1,
+        &repo.oid("HEAD^{tree}"),
+        &repo.oid("HEAD~1^{tree}"),
+    );
+    assert!(!core.mark_file_binary(&unstored, 0).unwrap());
+}

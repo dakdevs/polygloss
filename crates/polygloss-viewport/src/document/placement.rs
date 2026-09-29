@@ -57,7 +57,9 @@ impl FileLayout {
                                 while end < rows.len()
                                     && matches!(
                                         rows[end],
-                                        BodyRow::NoNewline { .. } | BodyRow::Block(_)
+                                        BodyRow::NoNewline { .. }
+                                            | BodyRow::NoNewlineBoth { .. }
+                                            | BodyRow::Block(_)
                                     )
                                 {
                                     end += 1;

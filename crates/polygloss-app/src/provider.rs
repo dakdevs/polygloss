@@ -53,10 +53,22 @@ impl DiffProvider for CoreDiffProvider {
     }
 
     fn load_blob(&self, oid: &Oid) -> anyhow::Result<Arc<[u8]>> {
-        Ok(self.blobs.read(oid)?)
+        self.blobs.read(oid).map_err(blob_error)
     }
 
     fn blob_size(&self, oid: &Oid) -> anyhow::Result<u64> {
-        Ok(self.blobs.size(oid)?)
+        self.blobs.size(oid).map_err(blob_error)
+    }
+}
+
+/// A blob read error for the viewport's "Could not load this file: …"
+/// label. A missing object (design §5.3: collected history, a shallow or
+/// partial clone; never fetched) reads "objects no longer available".
+fn blob_error(err: ObjectError) -> anyhow::Error {
+    match err {
+        ObjectError::Missing(_) => {
+            anyhow::anyhow!("objects no longer available ({err})")
+        }
+        err => err.into(),
     }
 }

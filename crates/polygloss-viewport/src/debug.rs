@@ -19,6 +19,7 @@ use crate::paint_rows::{DebugContent, DebugRow};
 /// | File header  | `== <path>` (`== <old> → <new>` for a rename; the pinned header comes first) |
 /// | Unified line | `format!("{:>5} {:>5} {} {}", old, new, marker, text)`   |
 /// | Split line   | `"<cell> │ <cell>"`, a cell `format!("{:>5} {} {}", n, marker, text)` (blank for an empty side) |
+/// | Markers      | `\ No newline at end of file`, both sides' joined with ` │ ` in split |
 /// | Other        | the label shown (`⋯ 3 unchanged lines`, `Binary file`, `Loading…`) or `[block <id>]` |
 ///
 /// Numbers are 1-based; markers are `-`, `+` or a space; text is as displayed
@@ -99,6 +100,7 @@ pub(crate) fn format_rows(rows: &[DebugRow]) -> (Vec<String>, Vec<(f32, f32)>, u
         .map(|r| match &r.content {
             DebugContent::Header(t) => format!("== {}", t.text()),
             DebugContent::Label(t) => t.text().to_owned(),
+            DebugContent::Labels(ts) => ts.iter().map(|t| t.text()).collect::<Vec<_>>().join(" │ "),
             DebugContent::Unified {
                 old,
                 new,

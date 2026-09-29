@@ -123,6 +123,7 @@ fn render(rows: &[Row], fd: &FileDiff, old: &[u8], new: &[u8]) -> String {
                 writeln!(out, "{}", line.trim_end()).unwrap();
             }
             Row::NoNewline { side } => writeln!(out, "\\ no newline ({side:?})").unwrap(),
+            Row::NoNewlineBoth => writeln!(out, "\\ no newline (both)").unwrap(),
         }
     }
     out
@@ -413,15 +414,17 @@ fn rows_no_newline_marker() {
             Row::NoNewline { side: Side::New },
         ]
     );
-    // Split: the markers follow the change block, old side first.
+    // Split: one marker row after the change block, showing both sides'
+    // markers side by side (one per half, not one row per side).
     let rows = build_rows(&fd, &Expansions::default(), Layout::Split);
-    assert_eq!(
-        rows[2..],
-        [
-            Row::NoNewline { side: Side::Old },
-            Row::NoNewline { side: Side::New }
-        ]
+    assert_eq!(rows[2..], [Row::NoNewlineBoth]);
+    // Split with only the new side lacking it: that side's marker alone.
+    let rows = build_rows(
+        &diff(b"a\nb\n", b"a\nc"),
+        &Expansions::default(),
+        Layout::Split,
     );
+    assert_eq!(rows.last(), Some(&Row::NoNewline { side: Side::New }));
 
     // Only the new side lacks it (a newline was removed).
     let fd = diff(b"a\nb\n", b"a\nb");
@@ -454,13 +457,8 @@ fn rows_no_newline_marker() {
         1
     );
     let split = build_rows(&fd, &exp, Layout::Split);
-    assert_eq!(
-        split[split.len() - 2..],
-        [
-            Row::NoNewline { side: Side::Old },
-            Row::NoNewline { side: Side::New }
-        ]
-    );
+    assert_eq!(split.last(), Some(&Row::NoNewlineBoth));
+    assert!(!split.iter().any(|r| matches!(r, Row::NoNewline { .. })));
 
     // Empty blobs never get a marker.
     let rows = build_rows(&diff(b"", b"x"), &Expansions::default(), Layout::Unified);

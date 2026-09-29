@@ -66,6 +66,7 @@ fn describe(layout: &FileLayout) -> Vec<String> {
             BodyRow::Line { old, new, .. } => format!("o{} n{}", n(*old), n(*new)),
             BodyRow::Gap { old_start, len, .. } => format!("gap o{old_start}+{len}"),
             BodyRow::NoNewline { side, .. } => format!("nl {side:?}").to_lowercase(),
+            BodyRow::NoNewlineBoth { .. } => "nl both".to_owned(),
             BodyRow::Block(id) => format!("[{}]", id.0),
             BodyRow::Placeholder => "placeholder".to_owned(),
         })
@@ -274,10 +275,19 @@ fn placement_keeps_no_newline_markers_with_their_line() {
         describe(&layout),
         strs(&["o0 n0", "o1 n-", "nl old", "o- n1", "nl new"])
     );
-    let placed = layout.with_blocks(&[placed(1, old(1), 20.0), placed(2, new(1), 20.0)]);
+    let placed_unified = layout.with_blocks(&[placed(1, old(1), 20.0), placed(2, new(1), 20.0)]);
     assert_eq!(
-        describe(&placed),
+        describe(&placed_unified),
         strs(&["o0 n0", "o1 n-", "nl old", "[1]", "o- n1", "nl new", "[2]"])
+    );
+    // Split: both markers share one row, and blocks of either side's last
+    // line go below it.
+    let split = layout_of("a\nb", "a\nc", Layout::Split);
+    assert_eq!(describe(&split), strs(&["o0 n0", "o1 n1", "nl both"]));
+    let placed_split = split.with_blocks(&[placed(1, old(1), 20.0), placed(2, new(1), 20.0)]);
+    assert_eq!(
+        describe(&placed_split),
+        strs(&["o0 n0", "o1 n1", "nl both", "[1]", "[2]"])
     );
 }
 

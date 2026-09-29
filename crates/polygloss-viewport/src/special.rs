@@ -6,7 +6,8 @@
 //! | Submodule   | one row, `abc1234 → def5678`                                |
 //! | Generated   | `Generated file` with "Load diff"                           |
 //! | Large       | `Large diff · 20,125 changed lines` with "Load diff"        |
-//! | Mode only   | nothing (the header's mode badge says it all)               |
+//! | Mode only   | `File mode changed.` (GitHub's text; the header has the badge) |
+//! | Pure rename | `File renamed without changes.` (binary files too)           |
 //! | LFS pointer | the pointer as text; the header gets an `LFS` badge         |
 //! | Load error  | `Could not load this file: …`                               |
 //!
@@ -17,7 +18,7 @@
 use std::collections::HashSet;
 
 use gpui_kit::{Context, SharedString};
-use polygloss_diff::{FileChange, FileKind};
+use polygloss_diff::{FileChange, FileKind, FileStatus};
 
 use crate::controls::ControlAction;
 use crate::document::FileState;
@@ -77,9 +78,18 @@ impl Specials {
         change: &FileChange,
         sizes: Option<(u64, u64)>,
     ) -> Option<BodyLabel> {
+        // A binary file renamed without changes reads as a rename, as on
+        // GitHub, not as "Binary file".
+        if change.kind != FileKind::Submodule
+            && change.old_blob == change.new_blob
+            && let Some(label) = header_only_label(change)
+        {
+            return Some(BodyLabel::plain(label));
+        }
         match change.kind {
             FileKind::Binary => Some(BodyLabel::plain(binary_label(change, sizes))),
             FileKind::Submodule => Some(BodyLabel::plain(submodule_label(change))),
+            _ if change.old_blob == change.new_blob => None,
             _ if change.generated && !self.load_requested(f) => Some(BodyLabel {
                 text: SharedString::new_static("Generated file"),
                 load_diff: true,
@@ -96,6 +106,18 @@ pub(crate) fn needs_blobs(change: &FileChange, load_requested: bool) -> bool {
     matches!(change.kind, FileKind::Text | FileKind::Symlink)
         && (!change.generated || load_requested)
         && change.old_blob != change.new_blob
+}
+
+/// GitHub's body text for a change with no content change (header-only):
+/// a pure rename, or a mode change alone. `None` for anything else.
+fn header_only_label(change: &FileChange) -> Option<&'static str> {
+    if change.status == FileStatus::Renamed {
+        Some("File renamed without changes.")
+    } else if change.old_mode.is_some() && change.old_mode != change.new_mode {
+        Some("File mode changed.")
+    } else {
+        None
+    }
 }
 
 /// The placeholder of a diff over the "Load diff" threshold.

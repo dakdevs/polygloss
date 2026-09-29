@@ -109,6 +109,8 @@ impl Frame {
 pub(crate) enum DebugContent {
     Header(Rc<ShapedText>),
     Label(Rc<ShapedText>),
+    /// Labels painted side by side on one row (split `\ No newline` markers).
+    Labels(Vec<Rc<ShapedText>>),
     Unified {
         old: Option<u32>,
         new: Option<u32>,
@@ -296,23 +298,31 @@ impl Painter<'_> {
                 }
             }
             BodyRow::Gap { .. } => self.gap_row(f, row, y, h),
-            BodyRow::NoNewline { side, .. } => {
-                let cols = self.columns(self.materialized(f).map(|m| &**m));
-                let pane = cols.code_pane(side);
-                let text = self.label("\\ No newline at end of file", 1, self.theme.muted);
-                let layer = pane_layer(pane);
-                self.text(layer, cols.code_x(pane), y, text.clone());
-                #[cfg(feature = "debug-inspect")]
-                self.debug.push(DebugRow {
-                    y,
-                    height: h,
-                    styled: false,
-                    content: DebugContent::Label(text),
-                });
-            }
+            BodyRow::NoNewline { side, .. } => self.no_newline(f, &[side], y, h),
+            BodyRow::NoNewlineBoth { .. } => self.no_newline(f, &[Side::Old, Side::New], y, h),
             BodyRow::Block(id) => self.block(f, id, y, h),
             BodyRow::Placeholder => self.placeholder_row(f, y, h),
         }
+    }
+
+    /// `\ No newline at end of file` at the code column of each of `sides`
+    /// (one row; in split, each marker in its own half).
+    fn no_newline(&mut self, f: u32, sides: &[Side], y: f32, h: f32) {
+        let cols = self.columns(self.materialized(f).map(|m| &**m));
+        let text = self.label("\\ No newline at end of file", 1, self.theme.muted);
+        for &side in sides {
+            let pane = cols.code_pane(side);
+            self.text(pane_layer(pane), cols.code_x(pane), y, text.clone());
+        }
+        #[cfg(feature = "debug-inspect")]
+        self.debug.push(DebugRow {
+            y,
+            height: h,
+            styled: false,
+            content: DebugContent::Labels(vec![text; sides.len()]),
+        });
+        #[cfg(not(feature = "debug-inspect"))]
+        let _ = h;
     }
 
     /// A muted label row (gaps, placeholders) at the code column; returns
