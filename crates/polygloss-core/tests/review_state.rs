@@ -10,7 +10,7 @@ use std::path::Path;
 use polygloss_core::git::{CompareMode, ReviewKind, Since, Source};
 use polygloss_core::review::{
     AssignedBy, Core, CoreError, OpenRequest, OpenedDiff, ReviewFilter, ScrollAnchorState,
-    SessionInfo, ViewState, ViewedState,
+    SessionInfo, Verdict, ViewState, ViewedState,
 };
 use polygloss_core::store::events::{Actor, ActorKind, EventFilter, events_since};
 use polygloss_core::testing::{FixtureRepo, Sandbox};
@@ -1114,11 +1114,16 @@ fn summaries_filters_submission_assignment_and_mute() {
     assert_eq!(
         (
             last.submission_id.as_str(),
-            last.verdict.as_str(),
+            last.verdict,
             last.summary_md.as_str(),
             last.at
         ),
-        ("sub2", "approve", "Looks good", 20)
+        ("sub2", Verdict::Approve, "Looks good", 20)
+    );
+    assert_eq!(
+        serde_json::to_value(&last).unwrap()["verdict"],
+        "approve",
+        "the verdict serializes as its snake_case name"
     );
 
     // Repo, status and assignment filters.

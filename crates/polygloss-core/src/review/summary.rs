@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::ReviewKind;
 use crate::ids::DiffId;
 use crate::review::models::{AWAITING_YOU_SQL, path_from_db, path_to_db};
+use crate::review::submit::Verdict;
 use crate::review::{Core, CoreError};
 use crate::store::StoreError;
 
@@ -77,8 +78,8 @@ impl ReviewSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmissionSummary {
     pub submission_id: String,
-    /// `request_changes`, `comment` or `approve`.
-    pub verdict: String,
+    /// Serialized as `request_changes`, `comment` or `approve`.
+    pub verdict: Verdict,
     pub summary_md: String,
     /// `submitted_at`, Unix ms.
     pub at: i64,
@@ -214,7 +215,11 @@ fn read_summary(r: &Row) -> Result<ReviewSummary, StoreError> {
     let submission = match r.get::<_, Option<String>>(14)? {
         Some(submission_id) => Some(SubmissionSummary {
             submission_id,
-            verdict: r.get(15)?,
+            verdict: {
+                let verdict: String = r.get(15)?;
+                Verdict::parse(&verdict)
+                    .ok_or_else(|| StoreError::Integrity(format!("verdict {verdict:?}")))?
+            },
             summary_md: r.get(16)?,
             at: r.get(17)?,
         }),
