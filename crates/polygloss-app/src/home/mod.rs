@@ -73,14 +73,10 @@ gpui_kit::actions!(
     ]
 );
 
-gpui_kit::actions!(
-    tab,
-    [
-        /// "Assign to session…" (OQ-32): reassign the selected review to
-        /// another agent session seen in the last 7 days.
-        AssignToSession,
-    ]
-);
+/// "Assign to session…" (OQ-32): reassign the selected review to another
+/// agent session seen in the last 7 days. Declared once, in the action
+/// registry (T3.2), since GPUI panics when two `actions!` register one name.
+pub use crate::keymap::actions::tab::AssignToSession;
 
 /// Home's key bindings and the automatic prune.
 pub fn init(cx: &mut App) {

@@ -63,6 +63,7 @@ pub fn stack(context: &str) -> Vec<KeyContext> {
     let names: &[&str] = match context {
         "" | "Window" => &["Window"],
         "Tab" => &["Window", "Tab"],
+        "Home" => &["Window", "Home"],
         "Viewport" => &["Window", "Tab", "Viewport"],
         "Tree" => &["Window", "Tab", "Tree"],
         "Composer" => &["Window", "Tab", "Viewport", "Composer"],
@@ -182,6 +183,39 @@ fn default_bindings_match_design_11_9(cx: &mut TestAppContext) {
             "tab::Refresh"
         ]
     );
+}
+
+/// Home (T3.4) and the registry (T3.2) share `tab::AssignToSession`: one
+/// declaration (GPUI panics on two), bound to `a` on Home, while Home's own
+/// keys and the window-wide defaults resolve side by side.
+#[gpui_kit::test]
+fn home_keys_and_registry_share_assign_to_session(cx: &mut TestAppContext) {
+    use std::any::TypeId;
+
+    assert_eq!(
+        TypeId::of::<polygloss_app::home::AssignToSession>(),
+        TypeId::of::<actions::tab::AssignToSession>()
+    );
+    let info = actions::find("tab::AssignToSession").expect("registered");
+    assert!((info.build)().partial_eq(&polygloss_app::home::AssignToSession));
+
+    let _sb = Sandbox::isolate();
+    let shell = start(cx);
+    for (keys, action) in [
+        ("a", "tab::AssignToSession"),
+        ("j", "home::SelectNext"),
+        ("k", "home::SelectPrev"),
+        ("e", "home::Archive"),
+        ("m", "home::ToggleMute"),
+        ("?", "window::CheatSheet"),
+        ("cmd-k", "window::CommandPalette"),
+    ] {
+        assert_eq!(
+            action_for(shell.cx, keys, "Home").as_deref(),
+            Some(action),
+            "{keys} on Home"
+        );
+    }
 }
 
 #[gpui_kit::test]
