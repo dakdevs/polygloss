@@ -145,6 +145,10 @@ fn git_runner_sets_offline_env_and_flags() {
     set_env("LC_ALL", "en_US.UTF-8");
     set_env("GIT_TERMINAL_PROMPT", "1");
     set_env("GIT_DIR", "/nonexistent/.git");
+    set_env("GIT_ALLOW_PROTOCOL", "file:ssh");
+    set_env("GIT_NO_REPLACE_OBJECTS", "0");
+    set_env("GIT_CONFIG_PARAMETERS", "'protocol.allow'='always'");
+    set_env("GIT_CONFIG_COUNT", "1");
     assert_eq!(git_binary(), fake);
 
     Git::new(repo.path())
@@ -177,6 +181,8 @@ fn git_runner_sets_offline_env_and_flags() {
         "GIT_NO_LAZY_FETCH=1",
         "GIT_TERMINAL_PROMPT=0",
         "GIT_OPTIONAL_LOCKS=0",
+        "GIT_ALLOW_PROTOCOL=",
+        "GIT_NO_REPLACE_OBJECTS=1",
         "LC_ALL=C",
         "GIT_INDEX_FILE=/tmp/polygloss-test-index",
     ] {
@@ -188,12 +194,99 @@ fn git_runner_sets_offline_env_and_flags() {
         "GIT_OBJECT_DIRECTORY=",
         "GIT_COMMON_DIR=",
         "GIT_ALTERNATE_OBJECT_DIRECTORIES=",
+        "GIT_CONFIG_PARAMETERS=",
+        "GIT_CONFIG_COUNT=",
     ] {
         assert!(
             !env.iter().any(|l| l.starts_with(gone)),
             "{gone} leaked into {env:?}"
         );
     }
+}
+
+#[test]
+fn sandbox_keeps_caller_git_bin() {
+    // S13: `POLYGLOSS_GIT_BIN=<old git> nextest run` must reach the runner, so the
+    // suite really runs against that git. Set before `isolate()`, like a caller does.
+    let chosen = std::env::temp_dir().join("polygloss-chosen-git");
+    set_env("POLYGLOSS_GIT_BIN", &chosen);
+    let _sb = Sandbox::isolate();
+    assert_eq!(git_binary(), chosen);
+    assert_eq!(
+        std::env::var_os("POLYGLOSS_GIT_BIN").as_deref(),
+        Some(chosen.as_os_str())
+    );
+}
+
+#[test]
+fn git_runner_stays_offline_despite_inherited_overrides() {
+    let sb = Sandbox::isolate();
+    let (repo, _) = one_commit(ObjectFormat::Sha1);
+    let url = format!("file://{}", repo.path().display());
+
+    // The user's global config may allow a transport outright ...
+    std::fs::write(
+        sb.git_config_global(),
+        "[protocol \"file\"]\n\tallow = always\n",
+    )
+    .unwrap();
+    // ... and agents, hooks and `git -c` parents export config and protocol env.
+    set_env("GIT_ALLOW_PROTOCOL", "file");
+    set_env(
+        "GIT_CONFIG_PARAMETERS",
+        "'protocol.allow'='always' 'polygloss.fromparams'='yes'",
+    );
+    set_env("GIT_CONFIG_COUNT", "2");
+    set_env("GIT_CONFIG_KEY_0", "protocol.file.allow");
+    set_env("GIT_CONFIG_VALUE_0", "always");
+    set_env("GIT_CONFIG_KEY_1", "polygloss.fromcount");
+    set_env("GIT_CONFIG_VALUE_1", "yes");
+
+    let git = Git::new(repo.path());
+    match git.output(&os(&["ls-remote", &url])) {
+        Err(GitError::Failed { stderr, .. }) => {
+            assert!(stderr.contains("not allowed"), "{stderr}");
+        }
+        other => panic!("expected a refused transport, got {other:?}"),
+    }
+    // Inherited per-invocation config never reaches git ...
+    for key in ["polygloss.fromparams", "polygloss.fromcount"] {
+        assert_eq!(
+            git.status(&os(&["config", "--get", key])).unwrap(),
+            1,
+            "{key}"
+        );
+    }
+    // ... while the user's global config stays enabled (design §6.2).
+    let global = git
+        .output(&os(&["config", "--get", "protocol.file.allow"]))
+        .unwrap();
+    assert_eq!(text(global), "always");
+}
+
+#[test]
+fn git_runner_ignores_replace_refs() {
+    let _sb = Sandbox::isolate();
+    let (repo, c1) = one_commit(ObjectFormat::Sha1);
+    repo.write("a.txt", b"two\n");
+    let c2 = repo.commit("c2");
+    let c2_tree = tree(&repo, "HEAD");
+    let c1_tree = tree(&repo, "HEAD~1");
+    // `refs/replace/<c2>` swaps in c1's content: every replace-aware git command
+    // would now report c1's tree for c2.
+    repo.git(&["replace", c2.as_str(), c1.as_str()]);
+    assert_eq!(tree(&repo, c2.as_str()), c1_tree, "fixture git honours it");
+
+    let r = resolve_in(
+        &repo,
+        Source::Commit {
+            rev: c2.to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(head_side(&r.head).tree, c2_tree);
+    assert_eq!(r.base.tree, c1_tree);
+    assert_eq!(r.base.commit.as_ref(), Some(&c1));
 }
 
 #[test]
@@ -373,6 +466,39 @@ fn discover_linked_worktree_shares_common_dir() {
     let bare = discover(&main.common_dir).unwrap();
     assert_eq!(bare.common_dir, main.common_dir);
     assert_eq!(bare.toplevel, None);
+}
+
+#[test]
+fn discover_repo_path_with_newline() {
+    let sb = Sandbox::isolate();
+    let dir = sb.home().join("line one\nline two\n");
+    Git::new(sb.home())
+        .output(&[
+            OsStr::new("init"),
+            OsStr::new("-q"),
+            OsStr::new("-b"),
+            OsStr::new("main"),
+            dir.as_os_str(),
+        ])
+        .unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+
+    let info = discover(&dir.join("sub")).unwrap();
+    assert_eq!(info.common_dir, dir.join(".git"));
+    assert_eq!(info.git_dir, dir.join(".git"));
+    assert_eq!(info.toplevel.as_deref(), Some(dir.as_path()));
+    assert_eq!(info.object_format, ObjectFormat::Sha1);
+
+    let r = resolve(
+        &info,
+        &dir.join("sub"),
+        &Source::Live { since: Since::Head },
+    )
+    .unwrap();
+    assert_eq!(
+        r.review_key,
+        format!("worktree:{}@main#since=HEAD", dir.display())
+    );
 }
 
 // ---------------------------------------------------------------- commit sources
@@ -806,20 +932,137 @@ fn resolve_shallow_missing_objects_errors() {
         Err(ResolveError::ObjectsMissing(_)) => {}
         other => panic!("expected ObjectsMissing, got {other:?}"),
     }
-    // An object the clone does not have is not fetched either.
-    let err = resolve_in(
-        &shallow,
+    // A full commit id the clone does not have is missing history, not a typo, and
+    // it is not fetched either.
+    for source in [
         Source::Commit {
             rev: c1.to_string(),
         },
-    )
-    .unwrap_err();
-    assert!(matches!(err, ResolveError::BadRevision(_)), "{err:?}");
+        compare(c1.as_str(), "main", CompareMode::Direct),
+        live(Since::Commit(c1.to_string())),
+    ] {
+        match resolve_in(&shallow, source.clone()) {
+            Err(ResolveError::ObjectsMissing(msg)) => {
+                assert!(msg.contains(c1.as_str()), "{msg}");
+            }
+            other => panic!("{source:?}: expected ObjectsMissing, got {other:?}"),
+        }
+    }
+    // Names that do not resolve, and ids of present non-commits, stay BadRevision.
+    let blob = shallow.oid("HEAD:a.txt");
+    for rev in ["no-such-branch", c1.short(), blob.as_str()] {
+        let err = resolve_in(&shallow, Source::Commit { rev: rev.into() }).unwrap_err();
+        assert!(
+            matches!(err, ResolveError::BadRevision(_)),
+            "{rev}: {err:?}"
+        );
+    }
 
     assert_eq!(shallow.git(&["count-objects", "-v"]), objects_before);
 
     // Direct compare between present commits still works.
     resolve_in(&shallow, compare("main", "feature", CompareMode::Direct)).unwrap();
+}
+
+#[test]
+fn resolve_live_in_shallow_clone_blames_missing_history() {
+    let _sb = Sandbox::isolate();
+    let (source, _c1) = one_commit(ObjectFormat::Sha1);
+    source.branch("feature");
+    source.write("a.txt", b"two\n");
+    source.commit("c2");
+    source.checkout("feature");
+    source.write("f.txt", b"feature\n");
+    let c3 = source.commit("c3");
+    source.checkout("main");
+
+    // A depth-1 clone of main plus a depth-1 fetch of feature: the real merge base
+    // (c1) is outside the clone, so git finds none.
+    let shallow = source.clone_shallow();
+    shallow.git(&["fetch", "-q", "--depth", "1", "origin", "feature"]);
+    shallow.git(&["checkout", "-q", "-b", "feature", "FETCH_HEAD"]);
+    assert_eq!(shallow.oid("HEAD"), c3);
+
+    let r = resolve_in(&shallow, live(Since::MergeBase)).unwrap();
+    assert_eq!(r.base.commit.as_ref(), Some(&c3));
+    assert_eq!(
+        r.review_key,
+        format!(
+            "worktree:{}@feature#since=merge-base",
+            shallow.path().display()
+        )
+    );
+    assert_eq!(
+        r.warnings,
+        [ResolveWarning::MergeBaseBeyondShallow {
+            default_branch: "refs/remotes/origin/main".into()
+        }]
+    );
+    let notice = r.warnings[0].to_string();
+    assert!(
+        notice.contains("shallow") && notice.contains("HEAD"),
+        "{notice}"
+    );
+}
+
+/// Objects git reports missing in `repo`, listed without fetching anything.
+fn missing_objects(repo: &FixtureRepo) -> Vec<String> {
+    let out = repo.git(&["rev-list", "--objects", "--all", "--missing=print"]);
+    out.lines()
+        .filter_map(|l| l.strip_prefix('?'))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn resolve_blobless_clone_never_fetches() {
+    let sb = Sandbox::isolate();
+    let (source, c1) = one_commit(ObjectFormat::Sha1);
+    let old_blob = source.oid("HEAD:a.txt");
+    source.write("a.txt", b"two\n");
+    let c2 = source.commit("c2");
+
+    let partial = source.clone_blobless();
+    assert_eq!(
+        partial.git(&["config", "--get", "remote.origin.promisor"]),
+        "true"
+    );
+    let missing = missing_objects(&partial);
+    assert_eq!(missing, [old_blob.to_string()]);
+
+    // Even with the transport re-enabled by the user's config and inherited env.
+    std::fs::write(
+        sb.git_config_global(),
+        "[protocol]\n\tallow = always\n[protocol \"file\"]\n\tallow = always\n",
+    )
+    .unwrap();
+    set_env("GIT_ALLOW_PROTOCOL", "file");
+
+    // Commits and trees are all there: resolving HEAD~1 works.
+    let r = resolve_in(&partial, Source::Commit { rev: "HEAD".into() }).unwrap();
+    assert_eq!(r.base.commit.as_ref(), Some(&c1));
+    assert_eq!(head_side(&r.head).commit.as_ref(), Some(&c2));
+
+    // Reading the missing blob through the runner fails instead of fetching it.
+    let git = Git::new(partial.path());
+    let out = git
+        .run(&os(&["cat-file", "-p", old_blob.as_str()]))
+        .unwrap();
+    assert!(!out.success(), "{out:?}");
+
+    // A commit made upstream after the clone is missing history, not a bad name.
+    source.write("a.txt", b"three\n");
+    let c3 = source.commit("c3");
+    let err = resolve_in(
+        &partial,
+        Source::Commit {
+            rev: c3.to_string(),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, ResolveError::ObjectsMissing(_)), "{err:?}");
+
+    assert_eq!(missing_objects(&partial), missing);
 }
 
 #[test]

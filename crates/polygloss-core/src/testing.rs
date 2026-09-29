@@ -4,6 +4,11 @@
 //! `XDG_CACHE_HOME` and git's global config at a temp dir, so tests never read or
 //! write the real `~/Library` or `~/.config`. It sets **process** env, which is only
 //! sound because nextest runs every test in its own process (plan M1 conventions).
+//! It leaves a caller-set `POLYGLOSS_GIT_BIN` alone, so
+//! `POLYGLOSS_GIT_BIN=<older git> scripts/cargo.sh nextest run -p polygloss-core`
+//! runs the runner under test against that git (plan risk S13). Fixtures always use
+//! `git` from `PATH`, so tests that point the runner at a fake git can still build
+//! repos.
 //!
 //! `FixtureRepo` builds small git repos with a hermetic git: no system config, the
 //! sandbox's (or an empty) global config, fixed identity and per-commit dates.
@@ -20,7 +25,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use polygloss_diff::{ObjectFormat, Oid};
 use tempfile::TempDir;
 
-/// Inherited repo-redirecting env that fixtures and the runner always clear.
+/// Inherited repo-redirecting env that `isolate()` and fixtures clear (the runner
+/// clears these too, plus inherited per-invocation config).
 const SCRUBBED_GIT_ENV: [&str; 6] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -68,7 +74,6 @@ impl Sandbox {
             std::env::set_var("XDG_CACHE_HOME", &cache_dir);
             std::env::set_var("GIT_CONFIG_GLOBAL", &git_config_global);
             std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
-            std::env::remove_var("POLYGLOSS_GIT_BIN");
             for var in SCRUBBED_GIT_ENV {
                 std::env::remove_var(var);
             }

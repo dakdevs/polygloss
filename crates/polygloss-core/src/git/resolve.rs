@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use polygloss_diff::{ObjectFormat, Oid};
 use serde::{Deserialize, Serialize};
 
-use crate::git::repo::RepoInfo;
+use crate::git::repo::{RepoInfo, path_output};
 use crate::git::runner::{Git, GitError};
 use crate::ids::review_key;
 
@@ -104,6 +104,10 @@ pub enum ResolveWarning {
     /// Live `since=merge-base`: HEAD shares no history with the default branch
     /// (OQ-P5); the base is HEAD.
     NoMergeBase { default_branch: String },
+    /// Live `since=merge-base` in a shallow clone: no merge base within the fetched
+    /// history (the real one is most likely beyond the shallow boundary); the base
+    /// is HEAD.
+    MergeBaseBeyondShallow { default_branch: String },
     /// Several merge bases; git's first one is used (design §3, provisional).
     MultipleMergeBases { count: usize, used: Oid },
 }
@@ -120,6 +124,10 @@ impl fmt::Display for ResolveWarning {
             ResolveWarning::NoMergeBase { default_branch } => write!(
                 f,
                 "HEAD shares no history with {default_branch}; showing changes since HEAD"
+            ),
+            ResolveWarning::MergeBaseBeyondShallow { default_branch } => write!(
+                f,
+                "no merge base with {default_branch} within this shallow clone's history; showing changes since HEAD (fetch more history to diff against the merge base)"
             ),
             ResolveWarning::MultipleMergeBases { count, used } => {
                 write!(f, "{count} merge bases found; using {}", used.short())
@@ -421,6 +429,13 @@ impl Cx {
                     ref_name: Some(default),
                 })
             }
+            // In a shallow clone the likelier cause is history beyond the boundary.
+            MergeBase::None if self.shallow => {
+                warnings.push(ResolveWarning::MergeBaseBeyondShallow {
+                    default_branch: default,
+                });
+                head_side(head)
+            }
             MergeBase::None => {
                 warnings.push(ResolveWarning::NoMergeBase {
                     default_branch: default,
@@ -438,8 +453,9 @@ impl Cx {
         }
     }
 
-    /// `rev-parse --verify --end-of-options <rev>^{commit}`; any failure to resolve
-    /// is `BadRevision`.
+    /// `rev-parse --verify --end-of-options <rev>^{commit}`; a failure to resolve is
+    /// `BadRevision`, or `ObjectsMissing` for an absent full id in a shallow or
+    /// partial clone (`unresolved`).
     fn commit(&self, rev: &str) -> Result<Oid, ResolveError> {
         let peeled = format!("{rev}^{{commit}}");
         let out = self.git.run(&args(&[
@@ -450,9 +466,63 @@ impl Cx {
             &peeled,
         ]))?;
         if !out.success() {
-            return Err(ResolveError::BadRevision(rev.to_owned()));
+            return Err(self.unresolved(rev)?);
         }
         self.parse_oid(&out.stdout)
+    }
+
+    /// Why `rev` did not resolve to a commit. In a shallow or partial clone, a
+    /// full-length object id whose object is absent is missing history
+    /// (`ObjectsMissing`, RF2); anything else is `BadRevision`.
+    fn unresolved(&self, rev: &str) -> Result<ResolveError, ResolveError> {
+        let bad = || Ok(ResolveError::BadRevision(rev.to_owned()));
+        let full_hex =
+            rev.len() == self.fmt.hex_len() && rev.bytes().all(|b| b.is_ascii_hexdigit());
+        if !full_hex {
+            return bad();
+        }
+        let clone = if self.shallow {
+            "shallow clone"
+        } else if self.is_partial()? {
+            "partial clone"
+        } else {
+            return bad();
+        };
+        // `cat-file -e` never fetches here (see `runner`).
+        if self.git.status(&args(&["cat-file", "-e", rev]))? == 0 {
+            // Present but not a commit (a blob or tree id).
+            return bad();
+        }
+        Ok(ResolveError::ObjectsMissing(format!(
+            "commit {} is not in this {clone}",
+            rev.to_ascii_lowercase()
+        )))
+    }
+
+    /// Whether the repo is a partial clone: it has a promisor remote
+    /// (`remote.<name>.promisor`, what current git writes) or the older
+    /// `extensions.partialClone`.
+    fn is_partial(&self) -> Result<bool, ResolveError> {
+        let out = self.git.run(&args(&[
+            "config",
+            "--get-regexp",
+            r"^remote\..*\.promisor$|^extensions\.partialclone$",
+        ]))?;
+        if !out.success() {
+            // Exit 1: no such key.
+            return Ok(false);
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+            match line.split_once(' ') {
+                Some(("extensions.partialclone", _)) => true,
+                Some((_, value)) => matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "true" | "yes" | "on" | "1"
+                ),
+                // A bare `promisor` key is boolean true.
+                None => true,
+            }
+        }))
     }
 
     /// The full ref name `rev` denotes (`refs/heads/…`, `refs/remotes/…`,
@@ -566,9 +636,7 @@ impl Cx {
     /// The canonical root of the worktree `self.git` runs in.
     fn toplevel(&self) -> Result<PathBuf, ResolveError> {
         let out = self.git.output(&args(&["rev-parse", "--show-toplevel"]))?;
-        let text = String::from_utf8(out)
-            .map_err(|_| GitError::Parse("rev-parse printed a non-UTF-8 toplevel".into()))?;
-        Ok(std::fs::canonicalize(text.trim_end_matches('\n')).map_err(GitError::Io)?)
+        Ok(std::fs::canonicalize(path_output(&out)?).map_err(GitError::Io)?)
     }
 
     /// `refs/heads/<branch>` HEAD points at (possibly unborn), or `None` when detached.

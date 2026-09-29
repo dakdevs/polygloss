@@ -1,6 +1,7 @@
 //! Repo discovery: common dir, git dir, toplevel and object format (T1.2, design §4.3).
 
 use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use polygloss_diff::ObjectFormat;
@@ -33,13 +34,14 @@ pub fn discover(path: &Path) -> Result<RepoInfo, GitError> {
             .ok_or_else(not_a_repo)?
     };
     let git = Git::new(&dir);
+    // Fixed-token answers first and at most one path per call, so a path containing
+    // a newline is never split (paths are git's output minus its one trailing `\n`).
     let out = git.run(&[
         OsStr::new("rev-parse"),
-        OsStr::new("--path-format=absolute"),
-        OsStr::new("--git-common-dir"),
-        OsStr::new("--git-dir"),
         OsStr::new("--show-object-format"),
         OsStr::new("--is-inside-work-tree"),
+        OsStr::new("--path-format=absolute"),
+        OsStr::new("--git-dir"),
     ])?;
     if !out.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -47,26 +49,31 @@ pub fn discover(path: &Path) -> Result<RepoInfo, GitError> {
             return Err(not_a_repo());
         }
         return Err(GitError::Failed {
-            args: "rev-parse --git-common-dir".into(),
+            args: "rev-parse --git-dir".into(),
             code: out.code,
             stderr: stderr.into_owned(),
         });
     }
-    let text = String::from_utf8(out.stdout)
-        .map_err(|_| GitError::Parse("rev-parse printed a non-UTF-8 repo path".into()))?;
-    let lines: Vec<&str> = text.lines().collect();
-    let [common_dir, git_dir, format, inside] = lines[..] else {
+    let mut fields = out.stdout.splitn(3, |&b| b == b'\n');
+    let (Some(format), Some(inside), Some(git_dir)) = (fields.next(), fields.next(), fields.next())
+    else {
         return Err(GitError::Parse(format!(
-            "rev-parse discovery output: {text:?}"
+            "rev-parse discovery output: {:?}",
+            String::from_utf8_lossy(&out.stdout)
         )));
     };
-    let object_format = ObjectFormat::from_name(format)
+    let format = String::from_utf8_lossy(format);
+    let object_format = ObjectFormat::from_name(&format)
         .ok_or_else(|| GitError::Parse(format!("unknown object format {format:?}")))?;
-    let toplevel = if inside == "true" {
+    let git_dir = path_output(git_dir)?;
+    let common_dir = path_output(&git.output(&[
+        OsStr::new("rev-parse"),
+        OsStr::new("--path-format=absolute"),
+        OsStr::new("--git-common-dir"),
+    ])?)?;
+    let toplevel = if inside == b"true" {
         let top = git.output(&[OsStr::new("rev-parse"), OsStr::new("--show-toplevel")])?;
-        let top = String::from_utf8(top)
-            .map_err(|_| GitError::Parse("rev-parse printed a non-UTF-8 toplevel".into()))?;
-        Some(std::fs::canonicalize(top.trim_end_matches('\n'))?)
+        Some(std::fs::canonicalize(path_output(&top)?)?)
     } else {
         None
     };
@@ -76,4 +83,14 @@ pub fn discover(path: &Path) -> Result<RepoInfo, GitError> {
         toplevel,
         object_format,
     })
+}
+
+/// One path printed by git on its own line: the bytes minus exactly one trailing
+/// `\n` (a path may itself end in, or contain, newlines; non-UTF-8 bytes are kept).
+pub(crate) fn path_output(bytes: &[u8]) -> Result<PathBuf, GitError> {
+    let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if bytes.is_empty() {
+        return Err(GitError::Parse("git printed an empty path".into()));
+    }
+    Ok(PathBuf::from(OsStr::from_bytes(bytes)))
 }

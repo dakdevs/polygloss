@@ -101,7 +101,7 @@ Run it through `std::process::Command` in core with these on every call:
 - Pass `-C <worktree>`.
 - Clear inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` and `GIT_COMMON_DIR`. Agents and hooks often set them.
 - Set `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0` (or pass `--no-optional-locks`, so we never take `index.lock` from under the user) and `LC_ALL=C`.
-- Stay offline with `GIT_NO_LAZY_FETCH=1` and `-c protocol.allow=never`, per design.md §19. `GIT_NO_LAZY_FETCH` is ignored by older gits; `protocol.allow=never` covers them.
+- Stay offline with `GIT_NO_LAZY_FETCH=1`, an empty `GIT_ALLOW_PROTOCOL` and `-c protocol.allow=never`, per design.md §6.2 and §19. `GIT_NO_LAZY_FETCH` is ignored by gits before 2.44. `protocol.allow=never` alone does not cover them, because `protocol.<name>.allow` (user config or inherited `GIT_CONFIG_*`) and an inherited `GIT_ALLOW_PROTOCOL` override it; an empty `GIT_ALLOW_PROTOCOL` allows no transport whatever the config says (checked with git 2.50 and 2.54).
 - Use `-z` everywhere, so paths are never quoted or escaped.
 
 | Purpose                              | Command (verified on git 2.54.0)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |

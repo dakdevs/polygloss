@@ -3,9 +3,20 @@
 //! Every git process Polygloss starts goes through here (design §6.2, plan Global
 //! constraints "Offline"): `git -C <worktree> -c protocol.allow=never
 //! -c core.quotePath=false <args>` with `GIT_NO_LAZY_FETCH=1`, `GIT_TERMINAL_PROMPT=0`,
-//! `GIT_OPTIONAL_LOCKS=0` and `LC_ALL=C`, and with the inherited repo-redirecting
-//! variables cleared. `with_env` may set those variables again on purpose (snapshots).
-//! The user's global and system config stay enabled (design §6.2).
+//! `GIT_OPTIONAL_LOCKS=0`, `GIT_ALLOW_PROTOCOL=` (empty), `GIT_NO_REPLACE_OBJECTS=1`
+//! and `LC_ALL=C`, and with the inherited repo-redirecting variables and inherited
+//! per-invocation config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`) cleared.
+//! `with_env` may set those variables again on purpose (snapshots). The user's
+//! global and system config stay enabled (design §6.2).
+//!
+//! Why the extra pins: `protocol.<name>.allow` (user config, `git -c` parents, or
+//! `GIT_CONFIG_COUNT`/`GIT_CONFIG_PARAMETERS` from agents and hooks) overrides
+//! `protocol.allow=never`, and an inherited `GIT_ALLOW_PROTOCOL` overrides both. An
+//! empty `GIT_ALLOW_PROTOCOL` allows no transport whatever the config says, which is
+//! what keeps git 2.39–2.43 (no `GIT_NO_LAZY_FETCH`) from lazily fetching in a
+//! partial clone. `GIT_NO_REPLACE_OBJECTS=1` makes revisions, trees and therefore
+//! `diff_id` come from the real objects, never from `refs/replace/*`, which clones do
+//! not share.
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -14,21 +25,28 @@ use std::process::{Command, Stdio};
 
 use crate::git::version::GitVersion;
 
-/// Inherited variables that would point git at another repo, index or object store.
-const SCRUBBED_ENV: [&str; 6] = [
+/// Inherited variables that would point git at another repo, index or object
+/// store, or inject per-invocation config (`GIT_CONFIG_KEY_<n>`/`VALUE_<n>` are
+/// ignored without `GIT_CONFIG_COUNT`).
+const SCRUBBED_ENV: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY",
     "GIT_COMMON_DIR",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
 ];
 
 /// Offline and deterministic-output env set on every call.
-const PINNED_ENV: [(&str, &str); 4] = [
+const PINNED_ENV: [(&str, &str); 6] = [
     ("GIT_NO_LAZY_FETCH", "1"),
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_OPTIONAL_LOCKS", "0"),
+    // Empty list: no transport is allowed, overriding every `protocol.*` setting.
+    ("GIT_ALLOW_PROTOCOL", ""),
+    ("GIT_NO_REPLACE_OBJECTS", "1"),
     ("LC_ALL", "C"),
 ];
 
