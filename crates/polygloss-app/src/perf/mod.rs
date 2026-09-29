@@ -17,10 +17,11 @@
 //! ([`private_paths`]), removed on exit, so a run by hand never writes the
 //! corpus review into the real store.
 //!
-//! Scenarios: `open` ([`open`], `app_first_paint_ms`) and
-//! `watcher-banner` ([`watcher_banner`], `watcher_banner_ms`). T3.10 adds
-//! `comment-roundtrip`.
+//! Scenarios: `open` ([`open`], `app_first_paint_ms`), `watcher-banner`
+//! ([`watcher_banner`], `watcher_banner_ms`) and `comment-roundtrip`
+//! ([`comment_roundtrip`], `comment_repaint_ms`).
 
+pub mod comment_roundtrip;
 pub mod open;
 pub mod watcher_banner;
 
@@ -34,7 +35,7 @@ use polygloss_diff::rows::Layout;
 use serde_json::{Map, Value, json};
 
 /// Printed with every usage error.
-pub const USAGE: &str = "usage: POLYGLOSS_TEST=1 Polygloss --perf-scenario open|watcher-banner --corpus <name> \
+pub const USAGE: &str = "usage: POLYGLOSS_TEST=1 Polygloss --perf-scenario open|watcher-banner|comment-roundtrip --corpus <name> \
     [--layout split|unified] [--json] [--repo <path> --base <rev> --head <rev> [--direct]]";
 
 /// The environment variable that enables test-only surfaces (OQ-P4).
@@ -47,6 +48,8 @@ pub enum Scenario {
     Open,
     /// `watcher_banner_ms` (T3.11).
     WatcherBanner,
+    /// `comment_repaint_ms` with real thread blocks (T3.10).
+    CommentRoundtrip,
 }
 
 impl Scenario {
@@ -54,6 +57,7 @@ impl Scenario {
         match self {
             Scenario::Open => "open",
             Scenario::WatcherBanner => "watcher-banner",
+            Scenario::CommentRoundtrip => "comment-roundtrip",
         }
     }
 
@@ -61,6 +65,7 @@ impl Scenario {
         match s {
             "open" => Some(Scenario::Open),
             "watcher-banner" => Some(Scenario::WatcherBanner),
+            "comment-roundtrip" => Some(Scenario::CommentRoundtrip),
             _ => None,
         }
     }
@@ -169,6 +174,7 @@ pub fn main(args: &[String], clock: Clock) -> ExitCode {
     match args.scenario {
         Scenario::Open => open::run(args, spec, clock),
         Scenario::WatcherBanner => watcher_banner::run(args, spec, clock),
+        Scenario::CommentRoundtrip => comment_roundtrip::run(args, spec, clock),
     }
 }
 

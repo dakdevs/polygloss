@@ -14,6 +14,7 @@
 //! diff cannot show count here but have no file badge. `.` / `,` visit
 //! every open thread the diff shows, notes included.
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
@@ -128,14 +129,16 @@ pub fn render(
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
-    let (rows, loaded, notes) = {
+    let (rows, loaded, notes, composer) = {
         let m = model.read(cx);
         let rows = rows(m, cx);
         let notes = rows
             .iter()
             .filter(|(id, open)| *open && m.thread(id).is_some_and(|t| t.kind == ThreadKind::Note))
             .count();
-        (rows, m.is_loaded(), notes)
+        // The review-level composer (T3.10) sits at the top.
+        let composer = crate::composer::review_composer(m, cx);
+        (rows, m.is_loaded(), notes, composer)
     };
     let listed_open = rows.iter().filter(|(_, open)| *open).count();
     let open = listed_open - notes;
@@ -174,8 +177,23 @@ pub fn render(
                     .font_normal()
                     .child(text),
             )
-        });
-    let body = if rows.is_empty() {
+        })
+        .child(div().flex_1())
+        .child(
+            Button::new("comment-on-review")
+                .debug_selector(|| "comment-on-review".into())
+                .xsmall()
+                .ghost()
+                .icon(IconName::Plus)
+                .label("Comment on review")
+                .tooltip("Start a review-level comment (a draft until you submit)")
+                .on_click(cx.listener(|tab, _, window, cx| {
+                    crate::composer::open_review_composer(tab, window, cx)
+                })),
+        );
+    let body = if rows.is_empty() && composer.is_some() {
+        div().flex_1().into_any_element()
+    } else if rows.is_empty() {
         v_flex()
             .flex_1()
             .items_center()
@@ -204,6 +222,7 @@ pub fn render(
         .size_full()
         .bg(theme.sidebar)
         .child(header)
+        .when_some(composer, |el, c| el.child(c))
         .child(body)
         .into_any_element()
 }

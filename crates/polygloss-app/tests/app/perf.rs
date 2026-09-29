@@ -34,6 +34,10 @@ fn perf_args_parse_the_run_perf_command_line() {
             }),
         }
     );
+    // T3.10's scenario.
+    let roundtrip = parse(&["comment-roundtrip", "--corpus", "synthetic", "--json"]).unwrap();
+    assert_eq!(roundtrip.scenario, Scenario::CommentRoundtrip);
+    assert_eq!(Scenario::CommentRoundtrip.as_str(), "comment-roundtrip");
     let lookup = parse(&["open", "--corpus", "typical"]).unwrap();
     assert_eq!(
         (lookup.layout, lookup.json, lookup.entry),

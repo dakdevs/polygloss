@@ -577,7 +577,7 @@ fn load(core: &Core, known: &[(PathBuf, String)]) -> Result<Loaded, CoreError> {
 }
 
 /// The subject line of `commit` in the repo at `repo`, if git can read it.
-fn commit_subject(repo: &std::path::Path, commit: &str) -> Option<String> {
+pub(crate) fn commit_subject(repo: &std::path::Path, commit: &str) -> Option<String> {
     if !repo.is_dir() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }

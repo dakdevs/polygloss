@@ -24,8 +24,7 @@
 // results; `warmup` is the first). `peak_rss_mb` is the largest RSS
 // (`ps -o rss= -p`, every 100 ms) of any run of a corpus and layout.
 // `--repeat n` runs everything n times; each metric is then the p95 (nearest
-// rank) of its n per-run values. Disabled app scenarios (T3.10/T3.11) report
-// null until the app has them.
+// rank) of its n per-run values. A disabled app scenario reports null.
 //
 // Exit codes: 1 when a run fails, with --check-budgets when a budget is
 // missed, with --compare-baseline when a metric regressed by more than 10%
@@ -254,14 +253,6 @@ export const scenarios: Scenario[] = [
     metrics: ["highlight_ms"],
     enabled: true,
   },
-  // M2's comment_repaint_ms; T3.10 replaces it with the app's
-  // `comment-roundtrip` scenario.
-  {
-    name: "blocks",
-    runner: "perf",
-    metrics: ["comment_repaint_ms"],
-    enabled: true,
-  },
   // T3.1: first paint through the app's real startup.
   {
     name: "app-open",
@@ -275,6 +266,15 @@ export const scenarios: Scenario[] = [
     name: "watcher-banner",
     runner: "app",
     metrics: ["watcher_banner_ms"],
+    enabled: true,
+  },
+  // T3.10: a draft saved and a thread resolved through the app → the frame
+  // that shows it (real thread blocks). It replaces M2's `blocks` scenario
+  // of polygloss-perf (still there to run by hand, unbudgeted).
+  {
+    name: "comment-roundtrip",
+    runner: "app",
+    metrics: ["comment_repaint_ms"],
     enabled: true,
   },
 ];

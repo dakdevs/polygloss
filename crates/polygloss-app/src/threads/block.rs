@@ -230,8 +230,10 @@ pub(crate) fn card(
         .comments
         .iter()
         .enumerate()
-        .map(|(i, c)| comment(c, i > 0, ctx.clone(), window, cx).into_any_element())
+        .map(|(i, c)| comment(model, c, i > 0, ctx.clone(), window, cx).into_any_element())
         .collect();
+    // Reply box and Resolve (T3.10), when the tab has composers.
+    let footer = crate::composer::card_footer(model.read(cx), thread, cx);
     let theme = cx.theme();
     v_flex()
         .id(SharedString::from(format!("thread-{id}")))
@@ -246,6 +248,7 @@ pub(crate) fn card(
         .when_some(header, |el, h| el.child(h))
         .when_some(snippet, |el, s| el.child(s))
         .children(comments)
+        .when_some(footer, |el, f| el.child(f))
         .into_any_element()
 }
 
@@ -386,8 +389,10 @@ fn snippet(thread: &ThreadView, cx: &App) -> impl IntoElement + use<> {
         }))
 }
 
-/// One comment: avatar, author, badges, time, then the body.
+/// One comment: avatar, author, badges, time, Edit and Delete for one's
+/// own (T3.10), then the body (or its edit composer).
 fn comment(
+    model: &Entity<ReviewThreads>,
     c: &CommentView,
     reply: bool,
     ctx: Option<suggestion::SuggestionContext>,
@@ -395,7 +400,11 @@ fn comment(
     cx: &mut App,
 ) -> impl IntoElement + use<> {
     let agent = c.author.kind == AuthorKind::Agent;
-    let body: AnyElement = if c.deleted {
+    let tools = crate::composer::comment_tools(model.read(cx), c, cx);
+    let editor = crate::composer::comment_editor(model.read(cx), c, cx);
+    let body: AnyElement = if let Some(editor) = editor {
+        editor
+    } else if c.deleted {
         div()
             .italic()
             .text_color(cx.theme().muted_foreground)
@@ -431,6 +440,7 @@ fn comment(
         .when(reply, |el| el.border_t_1().border_color(theme.border))
         .child(
             h_flex()
+                .w_full()
                 .gap_2()
                 .items_center()
                 .child(avatar(c.author.kind, cx))
@@ -458,7 +468,8 @@ fn comment(
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(when),
-                ),
+                )
+                .when_some(tools, |el, tools| el.child(div().flex_1()).child(tools)),
         )
         .child(
             div()

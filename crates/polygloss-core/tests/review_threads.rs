@@ -10,7 +10,8 @@ use polygloss_core::git::{CompareMode, Since, Source};
 use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{
     Author, AuthorKind, Core, CoreError, NewThread, OpenRequest, OpenedDiff, PinnedBy, Subject,
-    ThreadFilter, ThreadKind, ThreadScope, ThreadStatus, Verdict, Viewer, parse_suggestions,
+    SubmitDraft, ThreadFilter, ThreadKind, ThreadScope, ThreadStatus, Verdict, Viewer,
+    parse_suggestions,
 };
 use polygloss_core::store::events::{Actor, ActorKind, EventFilter, events_since};
 use polygloss_core::testing::{FixtureRepo, Sandbox};
@@ -1307,9 +1308,17 @@ fn create_thread_needs_a_known_review_and_stored_diff_and_a_body() {
 fn save_submit_draft_upserts_and_is_consumed_by_submit() {
     let e = env();
     let before = max_seq(&e.core);
+    assert_eq!(e.core.submit_draft(&e.opened.review_id).unwrap(), None);
     e.core
         .save_submit_draft(&e.opened.review_id, "first", None)
         .unwrap();
+    assert_eq!(
+        e.core.submit_draft(&e.opened.review_id).unwrap(),
+        Some(SubmitDraft {
+            summary_md: "first".into(),
+            verdict: None
+        })
+    );
     e.core
         .save_submit_draft(&e.opened.review_id, "second", Some(Verdict::Approve))
         .unwrap();
@@ -1319,6 +1328,13 @@ fn save_submit_draft_upserts_and_is_consumed_by_submit() {
         Some("second:approve")
     );
     assert_eq!(
+        e.core.submit_draft(&e.opened.review_id).unwrap(),
+        Some(SubmitDraft {
+            summary_md: "second".into(),
+            verdict: Some(Verdict::Approve)
+        })
+    );
+    assert_eq!(
         kinds(&events_after(&e.core, before)),
         ["draft.changed", "draft.changed"]
     );
@@ -1326,10 +1342,15 @@ fn save_submit_draft_upserts_and_is_consumed_by_submit() {
         e.core.save_submit_draft("no-such-review", "", None),
         Err(CoreError::NotFound { .. })
     ));
+    assert!(matches!(
+        e.core.submit_draft("no-such-review"),
+        Err(CoreError::NotFound { .. })
+    ));
     e.core
         .submit_review(&e.opened.review_id, Verdict::Approve, "second", None)
         .unwrap();
     assert_eq!(e.count("SELECT count(*) FROM review_drafts"), 0);
+    assert_eq!(e.core.submit_draft(&e.opened.review_id).unwrap(), None);
 }
 
 #[test]
