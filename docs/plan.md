@@ -877,9 +877,9 @@ bun scripts/git-parity.ts --repo /tmp/polygloss-parity --range parity-base..pari
 scripts/cargo.sh bench -p polygloss-diff --no-run
 ```
 
-- [ ] Golden `diff_id` vectors pass in Rust and TypeScript.
-- [ ] RF1–RF3 tests pass; `store_concurrent_first_open_migrates_once` passes 20 runs in a row (`scripts/cargo.sh nextest run -p polygloss-core -E 'test(store_concurrent)' --retries 0` in a loop).
-- [ ] Spike S3 numbers recorded in the T1.5 report.
+- [x] Golden `diff_id` vectors pass in Rust and TypeScript.
+- [x] RF1–RF3 tests pass; `store_concurrent_first_open_migrates_once` passes 20 runs in a row (`scripts/cargo.sh nextest run -p polygloss-core -E 'test(store_concurrent)' --retries 0` in a loop).
+- [x] Spike S3 numbers recorded in the T1.5 report (the **As built (T1.5)** note above).
 
 ---
 
