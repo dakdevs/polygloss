@@ -796,8 +796,23 @@ fn set_blocks_relayouts_only_that_file(cx: &mut TestAppContext) {
         strs(&["o0 n0", "o1 n-", "o- n1", "[1]", "o2 n2"])
     );
 
+    let sets = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| {
+            (0..v.document().len())
+                .map(|f| v.document().block_sets(f))
+                .collect::<Vec<_>>()
+        })
+    };
+    let mut expected = vec![0; 40];
+    expected[1] = 1;
+    assert_eq!(sets(cx), expected, "block_sets counts per file");
+
     // An id reused in another file moves the block there.
     set_blocks(&view, cx, 2, vec![boxed(1, new(0), 40.0, color(0.1))]);
+    // Both files were laid out again: the block left file 1.
+    expected[1] = 2;
+    expected[2] = 1;
+    assert_eq!(sets(cx), expected);
     assert_eq!(
         layout_rows(&view, cx, 1),
         strs(&["o0 n0", "o1 n-", "o- n1", "o2 n2"])

@@ -225,7 +225,7 @@ pub(crate) fn card(
     let collapsible = thread.status == ThreadStatus::Resolved || thread.kind == ThreadKind::Note;
     let header = header(model, thread, outdated, collapsible, cx);
     let snippet = outdated.then(|| snippet(thread, cx));
-    let ctx = suggestion::context_for(&thread.anchor);
+    let ctx = suggestion::context_for(&thread.anchor, position);
     let comments: Vec<AnyElement> = thread
         .comments
         .iter()

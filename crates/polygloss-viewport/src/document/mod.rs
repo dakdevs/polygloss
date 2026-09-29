@@ -63,6 +63,7 @@ impl Document {
                 hint: None,
                 body: Body::Estimated(metrics.estimate_body(change, None)),
                 blocks: Vec::new(),
+                block_sets: 0,
             })
             .collect();
         let heights: Vec<f32> = entries
@@ -302,6 +303,7 @@ impl Document {
         let entry = &mut self.entries[idx as usize];
         let old = entry.blocks_height();
         entry.blocks = blocks;
+        entry.block_sets += 1;
         let new = entry.blocks_height();
         match &mut entry.body {
             Body::Laid(layout) => *layout = layout.with_blocks(&entry.blocks),
@@ -309,6 +311,13 @@ impl Document {
             Body::Estimated(_) => {}
         }
         self.refresh(idx);
+    }
+
+    /// How many times file `idx`'s blocks were replaced
+    /// ([`Document::set_blocks`], which lays that file out again): hosts'
+    /// tests check that an update re-lays out only the files it should.
+    pub fn block_sets(&self, idx: u32) -> u32 {
+        self.entries.get(idx as usize).map_or(0, |e| e.block_sets)
     }
 
     /// File `idx`'s host blocks with their current heights, in the host's

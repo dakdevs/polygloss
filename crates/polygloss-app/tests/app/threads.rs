@@ -9,15 +9,15 @@ use gpui_kit::{Entity, VisualTestContext};
 use polygloss_app::keymap::actions::{tab as tab_actions, viewport as viewport_actions};
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::threads::placement::{self, ThreadPlace};
-use polygloss_app::threads::{self, ReviewThreads};
+use polygloss_app::threads::{self, ReviewThreads, panel};
 use polygloss_core::git::{CompareMode, Source};
 use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{
     Author, AuthorKind, NewThread, OpenRequest, PositionState, Subject, ThreadKind,
 };
 use polygloss_core::store::events::Actor;
-use polygloss_diff::Side;
 use polygloss_diff::rows::Layout;
+use polygloss_diff::{ObjectFormat, Side};
 use polygloss_viewport::{BlockAnchor, CursorPos};
 
 use crate::shell::{Shell, compare_req, draw, start};
@@ -513,6 +513,16 @@ fn thread_update_invalidates_one_file_only(cx: &mut gpui_kit::TestAppContext) {
     reload(&mut shell, &tab);
     let m = model(&mut shell, &tab);
     let stats = |shell: &mut Shell| m.read_with(shell.cx, |m, _| m.stats().clone());
+    // What the viewport itself did: how often each file's blocks were
+    // replaced (each re-lays that file out), whoever asked.
+    let relayouts = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            let doc = t.viewport.read(cx).document();
+            (0..doc.len())
+                .map(|f| doc.block_sets(f))
+                .collect::<Vec<_>>()
+        })
+    };
     assert_eq!(
         stats(&mut shell)
             .set_blocks
@@ -521,6 +531,7 @@ fn thread_update_invalidates_one_file_only(cx: &mut gpui_kit::TestAppContext) {
             .collect::<Vec<_>>(),
         [0, 2]
     );
+    assert_eq!(relayouts(&mut shell), [1, 0, 1]);
 
     // A reply changes A's content only: its block is re-measured, no file
     // is re-laid out.
@@ -530,6 +541,7 @@ fn thread_update_invalidates_one_file_only(cx: &mut gpui_kit::TestAppContext) {
     let s = stats(&mut shell);
     assert!(s.set_blocks.is_empty(), "{s:?}");
     assert_eq!(s.invalidated, [placement::block_id(&a)]);
+    assert_eq!(relayouts(&mut shell), [1, 0, 1], "no file re-laid out");
 
     // A new thread in `src/config.rs` re-lays out that file only.
     m.update(shell.cx, |m, _| m.reset_stats());
@@ -549,6 +561,7 @@ fn thread_update_invalidates_one_file_only(cx: &mut gpui_kit::TestAppContext) {
         "{s:?}"
     );
     assert!(!s.invalidated.contains(&placement::block_id(&b)));
+    assert_eq!(relayouts(&mut shell), [2, 0, 1], "src/config.rs only");
 
     // Resolving a thread changes its block only.
     let c = create(
@@ -569,6 +582,11 @@ fn thread_update_invalidates_one_file_only(cx: &mut gpui_kit::TestAppContext) {
     let s = stats(&mut shell);
     assert!(s.set_blocks.is_empty(), "{s:?}");
     assert_eq!(s.invalidated, [placement::block_id(&c)]);
+    assert_eq!(
+        relayouts(&mut shell),
+        [2, 0, 2],
+        "resolving re-lays out nothing"
+    );
 }
 
 #[gpui_kit::test]
@@ -660,6 +678,162 @@ fn dot_and_comma_jump_between_open_threads_across_files(cx: &mut gpui_kit::TestA
         .simulate_click(row.center(), gpui_kit::Modifiers::none());
     draw(shell.cx);
     assert_eq!(cursor(&mut shell, &tab), Some(at_c));
+
+    mixed_sides_follow_the_diff_order(&mut shell);
+}
+
+/// `.`/`,` and the panel order threads on both sides of one file as the
+/// diff shows them, not by line number (review fix): old and new line
+/// numbers are different coordinates.
+fn mixed_sides_follow_the_diff_order(shell: &mut Shell) {
+    // `list.txt` gains 30 lines at the top and loses old line 40, which
+    // shows at about new line 70.
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    let base: String = (1..=50).map(|i| format!("b{i}\n")).collect();
+    let head: String = (1..=30)
+        .map(|i| format!("n{i}\n"))
+        .chain((1..=50).filter(|&i| i != 40).map(|i| format!("b{i}\n")))
+        .collect();
+    repo.write("list.txt", base.as_bytes());
+    repo.write("z.txt", b"z1\nz2\n");
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    repo.write("list.txt", head.as_bytes());
+    repo.write("z.txt", b"z1\nZ2\n");
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    shell.cx.dispatch_action(viewport_actions::LayoutUnified);
+    draw(shell.cx);
+    // X: removed old line 40 (row ~70). Y: new line 50 (old 20, row 50).
+    // Z: in the next file.
+    let x = create(
+        shell,
+        &tab,
+        line("list.txt", Side::Old, 40, 40),
+        ThreadKind::Comment,
+        "X",
+        human(),
+    );
+    let y = create(
+        shell,
+        &tab,
+        line("list.txt", Side::New, 50, 50),
+        ThreadKind::Comment,
+        "Y",
+        human(),
+    );
+    let z = create(
+        shell,
+        &tab,
+        line("z.txt", Side::New, 2, 2),
+        ThreadKind::Comment,
+        "Z",
+        human(),
+    );
+    reload(shell, &tab);
+    let at = |file_idx, side, line| CursorPos {
+        file_idx,
+        side,
+        line,
+        range_start: None,
+    };
+    let (at_x, at_y, at_z) = (
+        at(0, Side::Old, 39),
+        at(0, Side::New, 49),
+        at(1, Side::New, 1),
+    );
+    let put = |shell: &mut Shell, pos: CursorPos| {
+        tab.update(shell.cx, |t, cx| {
+            t.viewport.update(cx, |v, cx| v.set_cursor(Some(pos), cx))
+        });
+        draw(shell.cx);
+        assert_eq!(cursor(shell, &tab), Some(pos));
+    };
+    // The panel lists them top to bottom: Y (row 50), X (row ~70), Z.
+    let m = model(shell, &tab);
+    let rows = m.read_with(shell.cx, panel::rows);
+    let ids: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, [y.as_str(), x.as_str(), z.as_str()]);
+
+    // From the top of the file: Y, then X below it, then Z; and back.
+    put(shell, at(0, Side::New, 0));
+    keys(shell, ".");
+    assert_eq!(cursor(shell, &tab), Some(at_y));
+    keys(shell, ".");
+    assert_eq!(cursor(shell, &tab), Some(at_x));
+    keys(shell, ".");
+    assert_eq!(cursor(shell, &tab), Some(at_z));
+    keys(shell, ",");
+    assert_eq!(cursor(shell, &tab), Some(at_x));
+    keys(shell, ",");
+    assert_eq!(cursor(shell, &tab), Some(at_y));
+    // New line 66 (old 37) is above X although 66 > 40: `.` goes to X.
+    put(shell, at(0, Side::New, 65));
+    keys(shell, ".");
+    assert_eq!(cursor(shell, &tab), Some(at_x));
+    put(shell, at(0, Side::New, 65));
+    keys(shell, ",");
+    assert_eq!(cursor(shell, &tab), Some(at_y));
+
+    // Split pairs rows, and the cursor may be on the old side.
+    shell.cx.dispatch_action(viewport_actions::LayoutSplit);
+    draw(shell.cx);
+    put(shell, at(0, Side::Old, 36));
+    keys(shell, ".");
+    assert_eq!(cursor(shell, &tab), Some(at_x));
+    keys(shell, ".");
+    assert_eq!(cursor(shell, &tab), Some(at_z));
+    put(shell, at(0, Side::Old, 36));
+    keys(shell, ",");
+    assert_eq!(cursor(shell, &tab), Some(at_y));
+}
+
+#[test]
+fn diff_order_puts_both_sides_in_one_coordinate() {
+    use placement::{line_diff_order, line_order};
+    // Old 0..2 unchanged (new 0..2); old 2..4 replaced by new 2..5; old
+    // 4..6 unchanged (new 5..7); old 6 deleted; old 7.. unchanged (new 7..);
+    // 3 lines inserted before old 9 (new 9..12).
+    let changes = [(2..4, 2..5), (6..7, 7..7), (9..9, 9..12)];
+    let c = Some(&changes[..]);
+    let u = Layout::Unified;
+    // Unified: removed lines, then added ones, at the block's row.
+    assert_eq!(line_order(c, u, Side::Old, 3), (2, 0, 1));
+    assert_eq!(line_order(c, u, Side::New, 2), (2, 1, 0));
+    assert!(line_order(c, u, Side::Old, 3) < line_order(c, u, Side::New, 2));
+    // Unchanged lines share their row on both sides.
+    assert_eq!(
+        line_order(c, u, Side::Old, 5),
+        line_order(c, u, Side::New, 6)
+    );
+    assert_eq!(line_order(c, u, Side::Old, 1), (1, 1, 0));
+    // A deletion sorts between the lines around it.
+    let deleted = line_order(c, u, Side::Old, 6);
+    assert!(line_order(c, u, Side::New, 6) < deleted);
+    assert!(deleted < line_order(c, u, Side::New, 7));
+    assert!(deleted < line_order(c, u, Side::Old, 7));
+    // Lines inserted before old 9 come before it.
+    assert!(line_order(c, u, Side::New, 11) < line_order(c, u, Side::Old, 9));
+    assert_eq!(line_order(c, u, Side::Old, 9), (12, 1, 0));
+    // Split pairs a block's lines row by row, old first on a shared row.
+    let s = Layout::Split;
+    assert_eq!(
+        line_order(c, s, Side::Old, 3),
+        line_order(c, s, Side::New, 3)
+    );
+    assert!(line_diff_order(0, Side::Old, 3, c, s) < line_diff_order(0, Side::New, 3, c, s));
+    assert!(line_order(c, s, Side::New, 2) < line_order(c, s, Side::Old, 3));
+    // Without the diff, lines order by number.
+    assert_eq!(line_order(None, u, Side::Old, 40), (40, 1, 0));
+    // Header threads first, panel-only threads last.
+    assert!(
+        placement::diff_order(&ThreadPlace::File { file_idx: 0 }, c, u)
+            < line_diff_order(0, Side::Old, 0, c, u)
+    );
+    assert!(
+        line_diff_order(3, Side::New, 9, c, u) < placement::diff_order(&ThreadPlace::Panel, c, u)
+    );
 }
 
 #[gpui_kit::test]

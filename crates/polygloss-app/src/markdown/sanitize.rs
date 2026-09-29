@@ -5,7 +5,12 @@
 //!   every `mdast::Node::Html` (block and inline) and show its source
 //!   literally. gpui-kit pairs a few inline formatting tags (`<b>…</b>`,
 //!   `<em>`, `<s>`, …) among a paragraph's children *before* any plugin sees
-//!   them, so [`prepare`] backslash-escapes those tags up front.
+//!   them, so [`prepare`] backslash-escapes those tags up front. Text
+//!   between two dollar signs is inline math, which gpui-kit re-parses as
+//!   prose when no plugin claims it (its `flatten_unclaimed_math`), tags and
+//!   images included, while an escape inside math would show literally; so
+//!   [`prepare`] escapes the dollar signs of any inline math holding such
+//!   markup, making it prose, and then escapes what is in it.
 //! - **Images are links.** [`prepare`] rewrites every image (`![alt](url)`,
 //!   `![alt][ref]`) into a link to the same URL, labelled with its alt text
 //!   (the URL when there is none); an image inside a link becomes that link's
@@ -38,21 +43,61 @@ fn parse_options() -> ParseOptions {
     options
 }
 
+/// gpui-kit's options for re-parsing unclaimed inline math as prose (its
+/// `flatten_unclaimed_math`): the same, without math.
+fn prose_options() -> ParseOptions {
+    let mut options = parse_options();
+    options.constructs.math_text = false;
+    options.constructs.math_flow = false;
+    options
+}
+
 /// Rewrites `body` before gpui-kit parses it: images become links, and the
 /// inline formatting tags gpui-kit would pair (`b`, `strong`, `i`, `em`,
 /// `u`, `s`, `del`, `strike`) are backslash-escaped, so they show as text.
-/// Code, and everything else, is left as written.
+/// Inline math holding either gets its dollar signs escaped (it renders as
+/// the same prose gpui-kit would make of it). Code, and everything else, is
+/// left as written.
 pub fn prepare(body: &str) -> String {
     if !body.contains('<') && !body.contains('!') {
         return body.to_owned();
     }
-    let Ok(root) = markdown::to_mdast(body, &parse_options()) else {
-        return body.to_owned();
-    };
+    // Each pass rewrites what the parse shows; escaping inline math exposes
+    // its content to the next pass. Every pass that changes something
+    // escapes at least one tag, image or dollar sign for good, so this
+    // ends; the cap is a guard.
+    let mut out = body.to_owned();
+    for _ in 0..PREPARE_PASSES {
+        match prepare_once(&out) {
+            Some(next) => out = next,
+            None => return out,
+        }
+    }
+    escape_all(&out)
+}
+
+const PREPARE_PASSES: usize = 32;
+
+/// The last resort when [`prepare`] does not settle: every `<`, `!` and `$`
+/// backslash-escaped (code shows the backslashes; nothing renders).
+fn escape_all(body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + body.len() / 8);
+    for c in body.chars() {
+        if matches!(c, '<' | '!' | '$') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// One rewrite of `body`, or `None` when there is nothing to rewrite.
+fn prepare_once(body: &str) -> Option<String> {
+    let root = markdown::to_mdast(body, &parse_options()).ok()?;
     let mut edits = Vec::new();
-    collect(&root, body, Context::Block, &mut edits);
+    collect(&root, body, 0, Context::Block, &mut edits);
     if edits.is_empty() {
-        return body.to_owned();
+        return None;
     }
     // Edits never overlap (images are not descended into); apply them back
     // to front so earlier offsets stay valid.
@@ -66,7 +111,7 @@ pub fn prepare(body: &str) -> String {
             out.replace_range(range, &text);
         }
     }
-    out
+    (out != body).then_some(out)
 }
 
 /// Where a node sits: among blocks, in a paragraph's inline content, or
@@ -78,15 +123,27 @@ enum Context {
     Link,
 }
 
-fn span(node: &Node) -> Option<Range<usize>> {
+/// `node`'s byte range in the body, for a node parsed from the body at
+/// `base`.
+fn span(node: &Node, base: usize) -> Option<Range<usize>> {
     let p = node.position()?;
-    Some(p.start.offset..p.end.offset)
+    Some(base + p.start.offset..base + p.end.offset)
 }
 
-fn collect(node: &Node, src: &str, cx: Context, edits: &mut Vec<(Range<usize>, String)>) {
+/// Collects the edits for `node`, parsed from `src[base..]`'s start (`base`
+/// is non-zero inside re-parsed inline math); `src` is the whole body.
+fn collect(
+    node: &Node,
+    src: &str,
+    base: usize,
+    cx: Context,
+    edits: &mut Vec<(Range<usize>, String)>,
+) {
     match node {
         Node::Image(img) => {
-            let Some(range) = span(node) else { return };
+            let Some(range) = span(node, base) else {
+                return;
+            };
             let label = label(&img.alt, &img.url);
             let text = if cx == Context::Link {
                 escape(&label)
@@ -96,7 +153,9 @@ fn collect(node: &Node, src: &str, cx: Context, edits: &mut Vec<(Range<usize>, S
             edits.push((range, text));
         }
         Node::ImageReference(img) => {
-            let Some(range) = span(node) else { return };
+            let Some(range) = span(node, base) else {
+                return;
+            };
             if cx == Context::Link {
                 edits.push((range, escape(&label(&img.alt, ""))));
             } else if src[range.clone()].starts_with('!') {
@@ -106,14 +165,47 @@ fn collect(node: &Node, src: &str, cx: Context, edits: &mut Vec<(Range<usize>, S
         }
         Node::Html(html) if cx != Context::Block => {
             if is_paired_tag(&html.value)
-                && let Some(range) = span(node)
+                && let Some(range) = span(node, base)
             {
                 edits.push((range.start..range.start, "\\".to_owned()));
             }
         }
+        Node::InlineMath(_) => {
+            // gpui-kit re-parses unclaimed inline math (`$5 and <b>x</b> for
+            // $10`) as prose, `$`s included, and renders what it finds; an
+            // escape added inside would show literally when the rest is
+            // plain. So math holding something to rewrite loses its `$`s
+            // (escaped: the text reads the same) and the next pass rewrites
+            // its content as prose.
+            let Some(range) = span(node, base) else {
+                return;
+            };
+            let Some(literal) = src.get(range.clone()) else {
+                return;
+            };
+            let Ok(Node::Root(root)) = markdown::to_mdast(literal, &prose_options()) else {
+                return;
+            };
+            let mut inner = Vec::new();
+            for child in root
+                .children
+                .iter()
+                .flat_map(|c| c.children().into_iter().flatten())
+            {
+                collect(child, src, range.start, cx, &mut inner);
+            }
+            if inner.is_empty() {
+                return;
+            }
+            let open = literal.len() - literal.trim_start_matches('$').len();
+            let close = literal.len() - literal.trim_end_matches('$').len();
+            for i in (0..open).chain(literal.len() - close..literal.len()) {
+                edits.push((range.start + i..range.start + i, "\\".to_owned()));
+            }
+        }
         Node::Link(_) | Node::LinkReference(_) => {
             for child in node.children().into_iter().flatten() {
-                collect(child, src, Context::Link, edits);
+                collect(child, src, base, Context::Link, edits);
             }
         }
         Node::Root(_)
@@ -124,7 +216,7 @@ fn collect(node: &Node, src: &str, cx: Context, edits: &mut Vec<(Range<usize>, S
         | Node::Table(_)
         | Node::TableRow(_) => {
             for child in node.children().into_iter().flatten() {
-                collect(child, src, Context::Block, edits);
+                collect(child, src, base, Context::Block, edits);
             }
         }
         _ => {
@@ -134,7 +226,7 @@ fn collect(node: &Node, src: &str, cx: Context, edits: &mut Vec<(Range<usize>, S
                 Context::Inline
             };
             for child in node.children().into_iter().flatten() {
-                collect(child, src, inner, edits);
+                collect(child, src, base, inner, edits);
             }
         }
     }

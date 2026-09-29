@@ -5,7 +5,9 @@
 //! added. On old-side and file anchors ([`context_for`] is `None`) no plugin
 //! is installed and gpui-kit shows it as a plain code block. There is no
 //! Apply button in v1; MCP returns suggestions structurally
-//! (`polygloss_core::review::parse_suggestions`, same parser).
+//! (`polygloss_core::review::parse_suggestions`), and only top-level blocks
+//! count there, so the plugin claims top-level blocks only: one quoted in a
+//! blockquote or nested in a list item stays a plain code block.
 
 use std::sync::Arc;
 
@@ -16,7 +18,7 @@ use gpui_kit::{
     App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
     Window, div, px,
 };
-use polygloss_core::review::{Subject, ThreadAnchor};
+use polygloss_core::review::{Position, PositionState, Subject, ThreadAnchor};
 use polygloss_diff::Side;
 
 /// Lines of context `anchor_snippet` holds above the anchored lines (core's
@@ -33,8 +35,14 @@ pub struct SuggestionContext {
 
 /// The suggestion context of a thread anchored at `anchor`: new-side line
 /// subjects only, with the lines as they were when it was created (from its
-/// snippet; for a moved thread they are the current lines too).
-pub fn context_for(anchor: &ThreadAnchor) -> Option<SuggestionContext> {
+/// snippet; for a moved thread they are the current lines too). Numbered
+/// where the thread is now (`position`, its carry-forward position in the
+/// diff on screen) when the lines are the same there (`exact`, `moved`),
+/// else where they were written.
+pub fn context_for(
+    anchor: &ThreadAnchor,
+    position: Option<&Position>,
+) -> Option<SuggestionContext> {
     let Subject::Line {
         side: Side::New,
         start_line,
@@ -45,8 +53,16 @@ pub fn context_for(anchor: &ThreadAnchor) -> Option<SuggestionContext> {
         return None;
     };
     let lines = anchored_lines(anchor.anchor_snippet.as_deref()?, start_line, line)?;
+    let now = position.and_then(|p| match (p.state, p.side, p.start_line, p.line) {
+        (PositionState::Exact | PositionState::Moved, Some(Side::New), start, Some(end))
+            if end >= 1 =>
+        {
+            Some(start.unwrap_or(end).clamp(1, end))
+        }
+        _ => None,
+    });
     Some(SuggestionContext {
-        start_line,
+        start_line: now.unwrap_or(start_line),
         lines: lines.into(),
     })
 }
@@ -117,12 +133,16 @@ impl MarkdownPlugin for SuggestionPlugin {
     fn parse(
         &self,
         node: &markdown_ast::Node,
-        _: &MarkdownParseContext<'_>,
+        ctx: &MarkdownParseContext<'_>,
     ) -> Option<MarkdownNode> {
         let markdown_ast::Node::Code(code) = node else {
             return None;
         };
         if code.lang.as_deref() != Some("suggestion") {
+            return None;
+        }
+        let start = node.position()?.start.offset;
+        if !top_level_suggestions(ctx.source()).contains(&start) {
             return None;
         }
         Some(
@@ -142,6 +162,25 @@ impl MarkdownPlugin for SuggestionPlugin {
             .map_or("", |s| s.replacement.as_str());
         render_mini_diff(&self.ctx, replacement, cx)
     }
+}
+
+/// Where the top-level ` ```suggestion ` blocks of `source` start (byte
+/// offsets): the blocks `parse_suggestions` returns (GFM, children of the
+/// root).
+pub fn top_level_suggestions(source: &str) -> Vec<usize> {
+    let Ok(root) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
+        return Vec::new();
+    };
+    root.children()
+        .into_iter()
+        .flatten()
+        .filter_map(|node| match node {
+            markdown_ast::Node::Code(code) if code.lang.as_deref() == Some("suggestion") => {
+                node.position().map(|p| p.start.offset)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// `view` with suggestion blocks shown as mini-diffs against `ctx`; `None`

@@ -49,9 +49,10 @@ use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{
     AuthorKind, Position, ThreadFilter, ThreadKind, ThreadScope, ThreadStatus, ThreadView, Viewer,
 };
-use polygloss_diff::FileChange;
+use polygloss_diff::options::DiffOptions;
+use polygloss_diff::{FileChange, FileKind, Side};
 use polygloss_viewport::{
-    BlockAnchor, BlockId, BlockSpec, CursorPos, DiffViewport, FileFlags, ScrollTarget,
+    BlockAnchor, BlockId, BlockSpec, CursorPos, DiffViewport, FileFlags, FileState, ScrollTarget,
 };
 
 use crate::app_state::AppState;
@@ -60,7 +61,7 @@ use crate::keymap::handlers;
 use crate::review_tab::ReviewTab;
 use crate::settings::SettingsStore;
 use crate::window::MenuKind;
-use placement::{PlacedThread, ThreadPlace};
+use placement::{Changes, DiffOrder, PlacedThread, ThreadPlace};
 
 /// Registers `.` / `,`, "Hide agent notes" and their menu items.
 pub fn init(cx: &mut App) {
@@ -135,6 +136,7 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
             positions: HashMap::new(),
             places: HashMap::new(),
             digests: HashMap::new(),
+            changes: HashMap::new(),
             applied: BTreeMap::new(),
             expanded: HashSet::new(),
             hide_agent_notes: hide,
@@ -253,12 +255,12 @@ pub struct ThreadsStats {
     pub loads: u32,
 }
 
-/// The last `.`/`,` jump: where it went and the cursor it left, so the
-/// next jump continues from that thread while the cursor stays there
+/// The last `.`/`,` jump: the thread it went to and the cursor it left, so
+/// the next jump continues from that thread while the cursor stays there
 /// (file threads leave the cursor alone).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NavMark {
-    key: NavKey,
+    thread_id: String,
     cursor: Option<CursorPos>,
 }
 
@@ -280,6 +282,10 @@ pub struct ReviewThreads {
     places: HashMap<String, ThreadPlace>,
     /// A digest of what each thread's block shows.
     digests: HashMap<String, u64>,
+    /// The changed blocks of files with old-side threads, computed at load
+    /// (the diff never changes), to order threads in files the viewport has
+    /// not loaded ([`ReviewThreads::changes`]).
+    changes: HashMap<u32, Arc<Changes>>,
     /// The blocks the viewport has, per file.
     applied: BTreeMap<u32, Vec<(BlockId, BlockAnchor)>>,
     /// Collapsed threads (resolved, notes) the user opened.
@@ -296,7 +302,12 @@ pub struct ReviewThreads {
 
 impl EventEmitter<ThreadsEvent> for ReviewThreads {}
 
-type Loaded = (BlobReader, Vec<ThreadView>, HashMap<String, Position>);
+type Loaded = (
+    BlobReader,
+    Vec<ThreadView>,
+    HashMap<String, Position>,
+    HashMap<u32, Arc<Changes>>,
+);
 
 impl ReviewThreads {
     /// The first load has landed.
@@ -370,9 +381,13 @@ impl ReviewThreads {
         if !self.expanded.remove(id) {
             self.expanded.insert(id.to_owned());
         }
+        // Only a block the viewport has (a hidden note or a panel-only
+        // thread opens in the panel).
         let block = placement::block_id(id);
-        self.viewport
-            .update(cx, |v, cx| v.invalidate_block(block, cx));
+        if self.applied.values().flatten().any(|(b, _)| *b == block) {
+            self.viewport
+                .update(cx, |v, cx| v.invalidate_block(block, cx));
+        }
         cx.notify();
     }
 
@@ -398,6 +413,9 @@ impl ReviewThreads {
         let repo = self.repo.clone();
         let scratch = self.scratch.clone();
         let blobs = self.blobs.clone();
+        let file_index = self.file_index.clone();
+        let have: HashSet<u32> = self.changes.keys().copied().collect();
+        let diff_options = self.viewport.read(cx).options().diff;
         let work = cx.background_spawn(async move {
             let blobs = match blobs {
                 Some(b) => b,
@@ -416,7 +434,15 @@ impl ReviewThreads {
             )?;
             let ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
             let positions = core.positions(&diff_id, &files, &ids, &blobs)?;
-            anyhow::Ok((blobs, threads, positions))
+            let changes = old_side_changes(
+                &files,
+                &file_index,
+                &positions,
+                &have,
+                &blobs,
+                &diff_options,
+            );
+            anyhow::Ok((blobs, threads, positions, changes))
         });
         self.loading = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -435,8 +461,9 @@ impl ReviewThreads {
     }
 
     /// Takes a load in: the places, then only the blocks that changed.
-    fn apply(&mut self, (blobs, threads, positions): Loaded, cx: &mut Context<Self>) {
+    fn apply(&mut self, (blobs, threads, positions, changes): Loaded, cx: &mut Context<Self>) {
         self.blobs = Some(blobs);
+        self.changes.extend(changes);
         self.index = threads
             .iter()
             .enumerate()
@@ -560,7 +587,7 @@ impl ReviewThreads {
 
     /// The open threads `.` / `,` visit, in diff order: shown, placed in the
     /// diff, not resolved (outdated included).
-    fn nav_targets(&self) -> Vec<NavTarget> {
+    fn nav_targets(&self, order: &mut DiffOrderer<'_>) -> Vec<NavTarget> {
         let mut out: Vec<_> = self
             .threads
             .iter()
@@ -568,12 +595,112 @@ impl ReviewThreads {
             .filter(|(_, t)| t.status == ThreadStatus::Open && self.shows(t))
             .filter_map(|(i, t)| {
                 let place = self.places.get(&t.id).copied()?;
-                (place != ThreadPlace::Panel).then(|| ((place.order(), i), t.id.clone(), place))
+                (place != ThreadPlace::Panel)
+                    .then(|| ((order.place(&place), i), t.id.clone(), place))
             })
             .collect();
         out.sort_by_key(|(key, _, _)| *key);
         out
     }
+
+    /// File `f`'s changed blocks: from the viewport's loaded diff (its
+    /// current options), else as computed at load for files with old-side
+    /// threads; `None` when neither has it (then lines order by number,
+    /// which is exact for new-side lines alone).
+    fn changes(&self, viewport: &DiffViewport, f: u32) -> Option<Arc<Changes>> {
+        let doc = viewport.document();
+        if f < doc.len()
+            && let FileState::Materialized(file) = doc.state(f)
+        {
+            return Some(placement::changes_of(&file.diff).into());
+        }
+        self.changes.get(&f).cloned()
+    }
+}
+
+/// Orders places and lines of one model top to bottom as the viewport
+/// shows them ([`placement::diff_order`]), looking each file's changes up
+/// once.
+pub(crate) struct DiffOrderer<'a> {
+    model: &'a ReviewThreads,
+    viewport: &'a DiffViewport,
+    layout: polygloss_diff::rows::Layout,
+    cache: HashMap<u32, Option<Arc<Changes>>>,
+}
+
+impl<'a> DiffOrderer<'a> {
+    pub(crate) fn new(model: &'a ReviewThreads, viewport: &'a DiffViewport) -> Self {
+        DiffOrderer {
+            model,
+            viewport,
+            layout: viewport.effective_layout(),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn file_changes(&mut self, f: u32) -> Option<Arc<Changes>> {
+        let (model, viewport) = (self.model, self.viewport);
+        self.cache
+            .entry(f)
+            .or_insert_with(|| model.changes(viewport, f))
+            .clone()
+    }
+
+    pub(crate) fn place(&mut self, place: &ThreadPlace) -> DiffOrder {
+        let changes = place.file_idx().and_then(|f| self.file_changes(f));
+        placement::diff_order(place, changes.as_deref(), self.layout)
+    }
+
+    pub(crate) fn line(&mut self, file_idx: u32, side: Side, line: u32) -> DiffOrder {
+        let changes = self.file_changes(file_idx);
+        placement::line_diff_order(file_idx, side, line, changes.as_deref(), self.layout)
+    }
+}
+
+/// The changed blocks of every file with an old-side line thread that
+/// `have` lacks (a `.`/`,` or the panel may need to order its threads
+/// before the viewport loads it). Files that cannot have both sides, or
+/// whose blobs cannot be read, are skipped (their lines order by number).
+fn old_side_changes(
+    files: &[FileChange],
+    file_index: &HashMap<String, u32>,
+    positions: &HashMap<String, Position>,
+    have: &HashSet<u32>,
+    blobs: &BlobReader,
+    options: &DiffOptions,
+) -> HashMap<u32, Arc<Changes>> {
+    let wanted: std::collections::BTreeSet<u32> = positions
+        .values()
+        .filter_map(|p| match placement::place(Some(p), file_index) {
+            ThreadPlace::Line {
+                file_idx,
+                side: Side::Old,
+                ..
+            } => Some(file_idx),
+            _ => None,
+        })
+        .filter(|f| !have.contains(f))
+        .collect();
+    let mut out = HashMap::new();
+    for f in wanted {
+        let Some(file) = files.get(f as usize) else {
+            continue;
+        };
+        if file.kind != FileKind::Text || file.old_path.is_none() || file.new_path.is_none() {
+            continue;
+        }
+        let read = blobs
+            .read(&file.old_blob)
+            .and_then(|old| Ok((old, blobs.read(&file.new_blob)?)));
+        match read {
+            Ok((old, new)) => {
+                let fd = polygloss_diff::hunks::diff_blobs(&old, &new, options);
+                out.insert(f, placement::changes_of(&fd).into());
+            }
+            Err(e) => tracing::debug!("reading {} to order its threads: {e}", file.display_path()),
+        }
+    }
+    out
 }
 
 /// What a thread's block shows, hashed: a change means re-measuring it.
@@ -612,19 +739,20 @@ fn push_flags(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
             changed = true;
         }
     }
-    if !changed {
-        return;
+    if changed {
+        tab.viewport
+            .update(cx, |v, cx| v.set_file_flags(flags.clone(), cx));
     }
-    tab.viewport
-        .update(cx, |v, cx| v.set_file_flags(flags.clone(), cx));
+    // The tree too, even when the viewport already had them (the tree
+    // ignores flags it already has).
     if let Some(tree) = crate::tree::file_tree(tab).cloned() {
         tree.update(cx, |t, cx| t.set_file_flags(flags, cx));
     }
 }
 
-/// Where a thread sits for `.` / `,`: its place's order, then its index
-/// (threads on one line in creation order).
-type NavKey = ((u32, u32, u8), usize);
+/// Where a thread sits for `.` / `,`: its place in the diff, then its
+/// index (threads on one line in creation order).
+type NavKey = (DiffOrder, usize);
 
 /// A `.` / `,` target: its key, thread id and place.
 type NavTarget = (NavKey, String, ThreadPlace);
@@ -642,24 +770,31 @@ pub fn jump_to_open_thread(tab: &mut ReviewTab, step: Step, cx: &mut Context<Rev
     let Some(model) = threads(tab).cloned() else {
         return;
     };
-    let (targets, mark) = {
+    let (targets, from, top) = {
         let m = model.read(cx);
-        (m.nav_targets(), m.nav)
+        let v = tab.viewport.read(cx);
+        let mut order = DiffOrderer::new(m, v);
+        let targets = m.nav_targets(&mut order);
+        let cursor = v.cursor();
+        // From the last jump's thread while the cursor is where it left it,
+        // else from the cursor.
+        let marked = m
+            .nav
+            .as_ref()
+            .filter(|mark| mark.cursor == cursor)
+            .and_then(|mark| targets.iter().find(|t| t.1 == mark.thread_id))
+            .map(|t| t.0);
+        let from = marked.or_else(|| {
+            cursor.map(|c| {
+                let key = order.line(c.file_idx, c.side, c.line);
+                (key, if step == Step::Next { usize::MAX } else { 0 })
+            })
+        });
+        (targets, from, v.anchor().file_idx)
     };
     if targets.is_empty() {
         return;
     }
-    let (cursor, top) = {
-        let v = tab.viewport.read(cx);
-        (v.cursor(), v.anchor().file_idx)
-    };
-    let from = match mark.filter(|m| m.cursor == cursor) {
-        Some(mark) => Some(mark.key),
-        None => cursor.map(|c| {
-            let key = (c.file_idx, c.line + 1, placement::side_rank(c.side));
-            (key, if step == Step::Next { usize::MAX } else { 0 })
-        }),
-    };
     let pick = match (step, from) {
         (Step::Next, Some(k)) => targets.iter().find(|t| t.0 > k),
         (Step::Prev, Some(k)) => targets.iter().rev().find(|t| t.0 < k),
@@ -671,11 +806,16 @@ pub fn jump_to_open_thread(tab: &mut ReviewTab, step: Step, cx: &mut Context<Rev
         Step::Prev => targets.last(),
     })
     .cloned();
-    let Some((key, id, place)) = pick else {
+    let Some((_, id, place)) = pick else {
         return;
     };
     let cursor = go_to(tab, &id, place, cx);
-    model.update(cx, |m, _| m.nav = Some(NavMark { key, cursor }));
+    model.update(cx, |m, _| {
+        m.nav = Some(NavMark {
+            thread_id: id,
+            cursor,
+        })
+    });
 }
 
 /// Shows thread `id` at `place`: its file expanded, its line out of hidden
@@ -744,13 +884,14 @@ pub fn activate_thread(
     let Some(model) = threads(tab).cloned() else {
         return;
     };
-    let (place, key) = {
+    let (place, shows) = {
         let m = model.read(cx);
         let place = m.place(id).copied().unwrap_or(ThreadPlace::Panel);
-        let key = m.index.get(id).map(|&i| (place.order(), i));
-        (place, key)
+        (place, m.thread(id).is_some_and(|t| m.shows(t)))
     };
-    if place == ThreadPlace::Panel {
+    // Panel-only threads, and hidden agent notes (listed when outdated),
+    // open under their row.
+    if place == ThreadPlace::Panel || !shows {
         model.update(cx, |m, cx| m.toggle_expanded(id, cx));
         return;
     }
@@ -763,8 +904,11 @@ pub fn activate_thread(
         model.update(cx, |m, cx| m.toggle_expanded(id, cx));
     }
     let cursor = go_to(tab, id, place, cx);
-    if let Some(key) = key {
-        model.update(cx, |m, _| m.nav = Some(NavMark { key, cursor }));
-    }
+    model.update(cx, |m, _| {
+        m.nav = Some(NavMark {
+            thread_id: id.to_owned(),
+            cursor,
+        })
+    });
     window.focus(&tab.viewport_focus().clone(), cx);
 }

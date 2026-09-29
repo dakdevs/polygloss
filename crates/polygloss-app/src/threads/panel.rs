@@ -5,39 +5,51 @@
 //! this diff. A row shows where the thread is, its badges, its author and
 //! the first line of its root; clicking it jumps there (the cursor goes to
 //! the thread's line) or, for a thread only the panel shows, opens it in
-//! place. Hidden agent notes are left out.
+//! place. Hidden agent notes are left out unless outdated (then they open
+//! under their row, since the diff does not show them).
+//!
+//! Counts: the header's "n open" counts open threads that wait on someone,
+//! like the file headers' and the tree's badges (agent notes are FYI: they
+//! are counted apart, "· k notes"); review-level threads and threads this
+//! diff cannot show count here but have no file badge. `.` / `,` visit
+//! every open thread the diff shows, notes included.
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    AnyElement, App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use polygloss_core::review::{
     AuthorKind, PositionState, Subject, ThreadKind, ThreadStatus, ThreadView,
 };
+use polygloss_diff::Side;
 
 use super::block::{author_name, excerpt, pill};
 use super::placement::ThreadPlace;
-use super::{ReviewThreads, activate_thread, block};
+use super::{DiffOrderer, ReviewThreads, activate_thread, block};
 use crate::review_tab::ReviewTab;
 
-/// The panel's rows, in order: `(thread id, open)`.
-pub fn rows(model: &ReviewThreads) -> Vec<(String, bool)> {
+/// The panel's rows, in order: `(thread id, open)`. Threads in the diff
+/// are in its top-to-bottom order (old and new sides interleaved as the
+/// viewport shows them).
+pub fn rows(model: &ReviewThreads, cx: &App) -> Vec<(String, bool)> {
     let listed: Vec<&ThreadView> = model
         .threads()
         .filter(|t| model.shows(t) || outdated(model, t))
         .collect();
-    let order = |t: &ThreadView| {
+    let mut orderer = DiffOrderer::new(model, model.viewport.read(cx));
+    let mut order = |t: &ThreadView| {
         let place = model.place(&t.id).copied().unwrap_or(ThreadPlace::Panel);
+        let none = (0, 0, 0, 0, 0);
         match (place, &t.anchor.subject) {
             // Review threads first, then the diff's order, then threads
             // this diff cannot show.
-            (ThreadPlace::Panel, Subject::Review) => (0, (0, 0, 0)),
-            (ThreadPlace::Panel, _) => (2, (0, 0, 0)),
-            (p, _) => (1, p.order()),
+            (ThreadPlace::Panel, Subject::Review) => (0, none),
+            (ThreadPlace::Panel, _) => (2, none),
+            (p, _) => (1, orderer.place(&p)),
         }
     };
     let mut open: Vec<&ThreadView> = listed
@@ -50,8 +62,8 @@ pub fn rows(model: &ReviewThreads) -> Vec<(String, bool)> {
         .copied()
         .filter(|t| t.status == ThreadStatus::Resolved)
         .collect();
-    open.sort_by_key(|t| order(t));
-    resolved.sort_by_key(|t| order(t));
+    open.sort_by_cached_key(|t| order(t));
+    resolved.sort_by_cached_key(|t| order(t));
     open.into_iter()
         .map(|t| (t.id.clone(), true))
         .chain(resolved.into_iter().map(|t| (t.id.clone(), false)))
@@ -66,7 +78,8 @@ fn outdated(model: &ReviewThreads, t: &ThreadView) -> bool {
 
 /// Where a thread is, for its row: `config.rs:12`, `config.rs:12–14`,
 /// `greet.ts`, "Review", or the path it was written on when this diff does
-/// not show it.
+/// not show it. Old-side lines read GitHub's way, `config.rs:L12` (left),
+/// so they never look like the new line with the same number.
 fn location(model: &ReviewThreads, t: &ThreadView) -> (String, Option<String>) {
     let file = |idx: u32| {
         model
@@ -82,15 +95,19 @@ fn location(model: &ReviewThreads, t: &ThreadView) -> (String, Option<String>) {
     match model.place(&t.id).copied().unwrap_or(ThreadPlace::Panel) {
         ThreadPlace::Line {
             file_idx,
+            side,
             start_line,
             line,
-            ..
         } => {
             let (name, dir) = split(&file(file_idx));
+            let l = match side {
+                Side::Old => "L",
+                Side::New => "",
+            };
             let lines = if start_line < line {
-                format!("{}–{}", start_line + 1, line + 1)
+                format!("{l}{}–{l}{}", start_line + 1, line + 1)
             } else {
-                (line + 1).to_string()
+                format!("{l}{}", line + 1)
             };
             (format!("{name}:{lines}"), dir)
         }
@@ -111,12 +128,18 @@ pub fn render(
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
-    let (rows, loaded) = {
+    let (rows, loaded, notes) = {
         let m = model.read(cx);
-        (rows(m), m.is_loaded())
+        let rows = rows(m, cx);
+        let notes = rows
+            .iter()
+            .filter(|(id, open)| *open && m.thread(id).is_some_and(|t| t.kind == ThreadKind::Note))
+            .count();
+        (rows, m.is_loaded(), notes)
     };
-    let open = rows.iter().filter(|(_, open)| *open).count();
-    let resolved = rows.len() - open;
+    let listed_open = rows.iter().filter(|(_, open)| *open).count();
+    let open = listed_open - notes;
+    let resolved = rows.len() - listed_open;
     let mut list: Vec<AnyElement> = Vec::new();
     let mut resolved_title = false;
     for (id, is_open) in &rows {
@@ -139,10 +162,18 @@ pub fn render(
         .text_color(theme.muted_foreground)
         .child("THREADS")
         .when(!rows.is_empty(), |el| {
-            el.child(div().font_normal().child(match open {
-                1 => "1 open".to_owned(),
-                n => format!("{n} open"),
-            }))
+            let mut text = format!("{open} open");
+            match notes {
+                0 => {}
+                1 => text.push_str(" · 1 note"),
+                n => text.push_str(&format!(" · {n} notes")),
+            }
+            el.child(
+                div()
+                    .debug_selector(|| "threads-panel-count".into())
+                    .font_normal()
+                    .child(text),
+            )
         });
     let body = if rows.is_empty() {
         v_flex()
@@ -203,7 +234,9 @@ fn row(
     };
     let (name, dir) = location(m, &thread);
     let outdated = outdated(m, &thread);
-    let panel_only = m.place(id).copied().unwrap_or(ThreadPlace::Panel) == ThreadPlace::Panel;
+    // Threads the diff does not show (panel-only, hidden notes) open here.
+    let panel_only = m.place(id).copied().unwrap_or(ThreadPlace::Panel) == ThreadPlace::Panel
+        || !m.shows(&thread);
     let expanded = panel_only && m.is_expanded(id);
     let position = m.position(id).cloned();
     let resolved = thread.status == ThreadStatus::Resolved;

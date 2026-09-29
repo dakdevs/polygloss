@@ -60,19 +60,49 @@ fn rendered(shell: &mut Shell, state: &Entity<TextViewState>) -> String {
     state.read_with(shell.cx, |s, _| s.rendered_text().as_str().to_owned())
 }
 
-/// Every node of `md` parsed as GFM (the same parser and options as
-/// gpui-kit's), depth first.
+/// Every node of `md` the way gpui-kit's text view parses it, depth
+/// first: GFM with math, then every inline math span re-parsed as prose
+/// without math (its `flatten_unclaimed_math`, since no plugin claims
+/// math).
 fn nodes(md: &str) -> Vec<::markdown::mdast::Node> {
-    fn walk(n: &::markdown::mdast::Node, out: &mut Vec<::markdown::mdast::Node>) {
+    use ::markdown::ParseOptions;
+    use ::markdown::mdast::Node;
+    fn options(math: bool) -> ParseOptions {
+        let mut o = ParseOptions::gfm();
+        o.constructs.math_text = math;
+        o.constructs.math_flow = math;
+        o
+    }
+    fn walk(n: &Node, src: &str, out: &mut Vec<Node>) {
         out.push(n.clone());
+        if let Node::InlineMath(_) = n {
+            let p = n.position().expect("position");
+            let literal = &src[p.start.offset..p.end.offset];
+            let prose = ::markdown::to_mdast(literal, &options(false)).expect("parse");
+            walk(&prose, literal, out);
+        }
         for c in n.children().into_iter().flatten() {
-            walk(c, out);
+            walk(c, src, out);
         }
     }
-    let root = ::markdown::to_mdast(md, &::markdown::ParseOptions::gfm()).expect("parse");
+    let root = ::markdown::to_mdast(md, &options(true)).expect("parse");
     let mut out = Vec::new();
-    walk(&root, &mut out);
+    walk(&root, md, &mut out);
     out
+}
+
+/// Whether `md`, as gpui-kit parses it, holds an inline formatting tag
+/// (which gpui-kit would pair into formatting).
+fn has_paired_tag(md: &str) -> bool {
+    nodes(md).iter().any(|n| match n {
+        ::markdown::mdast::Node::Html(h) => {
+            let v = h.value.to_ascii_lowercase();
+            ["b", "strong", "em", "i", "u", "s", "del", "strike"]
+                .iter()
+                .any(|t| v.starts_with(&format!("<{t}>")) || v.starts_with(&format!("</{t}>")))
+        }
+        _ => false,
+    })
 }
 
 #[gpui_kit::test]
@@ -103,6 +133,36 @@ fn sanitizer_renders_raw_html_as_text(cx: &mut gpui_kit::TestAppContext) {
         "a \\<b>x\\</b> `<b>` \\<em>y\\</em>"
     );
     assert_eq!(sanitize::prepare("no html here"), "no html here");
+
+    // Text between two dollar signs parses as inline math, which gpui-kit
+    // re-parses as prose when no plugin claims it: the tags inside are
+    // escaped too (review fix).
+    for body in [
+        "costs $5 and <b>x</b> for $10",
+        "$1 <em>y</em> and <s>z</s> $2 and <strong>w</strong>",
+        "a [link $ <b>x</b> $](https://example.com)",
+        "- item $5 <i>x</i> $6\n\n> quote $1 <u>x</u> $2",
+    ] {
+        assert!(has_paired_tag(body), "the case is live: {body:?}");
+        let prepared = sanitize::prepare(body);
+        assert!(!has_paired_tag(&prepared), "{prepared:?} still pairs tags");
+    }
+    let body = "costs $5 and <b>x</b> for $10";
+    let (state, _) = probe(&mut shell, body, None);
+    let text = rendered(&mut shell, &state);
+    assert!(text.contains("costs $5 and <b>x</b> for $10"), "{text:?}");
+    assert!(!text.contains('\\'), "no escape shows: {text:?}");
+    // Math holding tags becomes prose (its `$`s escaped, so an escape
+    // never shows literally inside it); code spans in it stay code, and
+    // plain math is left alone.
+    assert_eq!(
+        sanitize::prepare("$1 `<b>` <b>x</b> $2"),
+        "\\$1 `<b>` \\<b>x\\</b> \\$2"
+    );
+    assert_eq!(
+        sanitize::prepare("<b>a</b> costs $5 and $10"),
+        "\\<b>a\\</b> costs $5 and $10"
+    );
 }
 
 #[gpui_kit::test]
@@ -143,6 +203,26 @@ fn images_become_links_and_never_load(cx: &mut gpui_kit::TestAppContext) {
         parsed.iter().any(|n| matches!(n, Node::LinkReference(_))),
         "the image reference is a link reference"
     );
+
+    // Images inside inline math (gpui-kit re-parses it as prose) become
+    // links too (review fix).
+    for math in [
+        "$1 ![logo](https://example.com/t.png) $2",
+        "costs $5 [![b](https://example.com/b.svg)](https://example.com) $6",
+    ] {
+        let has_image = |md: &str| {
+            nodes(md)
+                .iter()
+                .any(|n| matches!(n, Node::Image(_) | Node::ImageReference(_)))
+        };
+        assert!(has_image(math), "the case is live: {math:?}");
+        let prepared = sanitize::prepare(math);
+        assert!(!has_image(&prepared), "{prepared:?} still has images");
+        assert!(
+            nodes(&prepared).iter().any(|n| matches!(n, Node::Link(_))),
+            "{prepared:?} has no link"
+        );
+    }
 
     let (state, _) = probe(&mut shell, body, None);
     let text = rendered(&mut shell, &state);
@@ -294,6 +374,36 @@ fn suggestion_renders_mini_diff_on_new_side(cx: &mut gpui_kit::TestAppContext) {
         assert!(painted(&mut shell, window, selector), "{selector}");
     }
     assert!(!painted(&mut shell, window, "suggestion-added-2"));
+
+    // Only top-level blocks are suggestions, as for MCP's
+    // `parse_suggestions`: one quoted or in a list item is plain code
+    // (review fix).
+    for nested in [
+        "> ```suggestion\n> let a = 10;\n> ```\n",
+        "- item\n\n  ```suggestion\n  let a = 10;\n  ```\n",
+    ] {
+        assert!(
+            polygloss_core::review::parse_suggestions(nested).is_empty(),
+            "{nested:?}"
+        );
+        assert!(suggestion::top_level_suggestions(nested).is_empty());
+        let (state, window) = probe(&mut shell, nested, Some(ctx_for_nested()));
+        assert!(
+            !painted(&mut shell, window, "suggestion-diff"),
+            "{nested:?}"
+        );
+        let text = rendered(&mut shell, &state);
+        assert!(text.contains("let a = 10;"), "{text:?}");
+    }
+    let top = "Intro\n\n```suggestion\nx\n```\n";
+    assert_eq!(suggestion::top_level_suggestions(top), [7]);
+}
+
+fn ctx_for_nested() -> SuggestionContext {
+    SuggestionContext {
+        start_line: 1,
+        lines: vec!["let a = 1;".to_owned()].into(),
+    }
 }
 
 #[gpui_kit::test]
@@ -318,10 +428,28 @@ fn suggestion_on_old_side_renders_plain_code(cx: &mut gpui_kit::TestAppContext) 
         anchor_blob: None,
         anchor_snippet: Some("a\nb\nc".into()),
     };
-    assert!(suggestion::context_for(&anchor(Side::Old)).is_none());
-    let new = suggestion::context_for(&anchor(Side::New)).expect("new side has a context");
+    assert!(suggestion::context_for(&anchor(Side::Old), None).is_none());
+    let new = suggestion::context_for(&anchor(Side::New), None).expect("new side has a context");
     assert_eq!(new.start_line, 2);
     assert_eq!(&*new.lines, ["b".to_owned()]);
+    // A moved thread's mini-diff is numbered where the lines are now; an
+    // outdated one's where they were written (review fix).
+    use polygloss_core::review::{Position, PositionState};
+    let at = |state, line| Position {
+        state,
+        path: Some("a.rs".into()),
+        side: Some(Side::New),
+        start_line: Some(line),
+        line: Some(line),
+    };
+    let moved = suggestion::context_for(&anchor(Side::New), Some(&at(PositionState::Moved, 7)))
+        .expect("context");
+    assert_eq!(moved.start_line, 7);
+    assert_eq!(&*moved.lines, ["b".to_owned()]);
+    let outdated =
+        suggestion::context_for(&anchor(Side::New), Some(&at(PositionState::Outdated, 9)))
+            .expect("context");
+    assert_eq!(outdated.start_line, 2);
     let file = ThreadAnchor {
         subject: Subject::File {
             path: "a.rs".into(),
@@ -329,5 +457,5 @@ fn suggestion_on_old_side_renders_plain_code(cx: &mut gpui_kit::TestAppContext) 
         anchor_blob: None,
         anchor_snippet: None,
     };
-    assert!(suggestion::context_for(&file).is_none());
+    assert!(suggestion::context_for(&file, None).is_none());
 }
