@@ -1,4 +1,181 @@
 {
   "$comment": "Perf baselines per machine (plan T2.9/T2.10): `bun benches/run-perf.ts --compare-baseline` fails on a >10% regression (provisional) against the entry whose machine.cpu matches this machine. Entries are written with `--write-baseline` after a passing run; T2.10 records the first one.",
-  "entries": []
+  "entries": [
+    {
+      "machine": {
+        "cpu": "Apple M3 Max",
+        "macos": "26.6.2"
+      },
+      "git_sha": "a3adc6c2cbe6",
+      "date": "2026-09-29",
+      "rows": [
+        {
+          "corpus": "typical",
+          "layout": "split",
+          "metrics": {
+            "first_paint_ms": 234.863,
+            "scroll_p95_ms": 1.595,
+            "scroll_p99_ms": 2.618,
+            "scroll_max_ms": 6.847,
+            "frame_interval_p95_ms": 10.133,
+            "frame_interval_max_ms": 17.041,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 5,
+            "frames": 1166,
+            "highlight_ms": 15.417,
+            "highlight_max_ms": 15.917,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 55.922,
+            "comment_repaint_ms": 11.508,
+            "comment_repaint_max_ms": 13.394,
+            "watcher_banner_ms": null,
+            "peak_rss_mb": 112.7
+          }
+        },
+        {
+          "corpus": "typical",
+          "layout": "unified",
+          "metrics": {
+            "first_paint_ms": 187.299,
+            "scroll_p95_ms": 1.253,
+            "scroll_p99_ms": 2.298,
+            "scroll_max_ms": 6.468,
+            "frame_interval_p95_ms": 10.05,
+            "frame_interval_max_ms": 24.614,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 4,
+            "frames": 1169,
+            "highlight_ms": 15.475,
+            "highlight_max_ms": 15.646,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 56.552,
+            "comment_repaint_ms": 11.353,
+            "comment_repaint_max_ms": 12.153,
+            "watcher_banner_ms": null,
+            "peak_rss_mb": 111.7
+          }
+        },
+        {
+          "corpus": "synthetic",
+          "layout": "split",
+          "metrics": {
+            "scroll_p95_ms": 1.64,
+            "scroll_p99_ms": 4.158,
+            "scroll_max_ms": 6.549,
+            "frame_interval_p95_ms": 9.908,
+            "frame_interval_max_ms": 17.013,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 4,
+            "frames": 1174,
+            "highlight_ms": 15.512,
+            "highlight_max_ms": 15.7,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 140.105,
+            "comment_repaint_ms": 11.402,
+            "comment_repaint_max_ms": 12.344,
+            "peak_rss_mb": 231.3
+          }
+        },
+        {
+          "corpus": "synthetic",
+          "layout": "unified",
+          "metrics": {
+            "scroll_p95_ms": 1.714,
+            "scroll_p99_ms": 4.436,
+            "scroll_max_ms": 6.508,
+            "frame_interval_p95_ms": 10.199,
+            "frame_interval_max_ms": 17.036,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 6,
+            "frames": 1167,
+            "highlight_ms": 16.5,
+            "highlight_max_ms": 16.663,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 140.82,
+            "comment_repaint_ms": 11.642,
+            "comment_repaint_max_ms": 11.898,
+            "peak_rss_mb": 234.3
+          }
+        },
+        {
+          "corpus": "huge-file",
+          "layout": "split",
+          "metrics": {
+            "scroll_p95_ms": 1.125,
+            "scroll_p99_ms": 1.502,
+            "scroll_max_ms": 2.027,
+            "frame_interval_p95_ms": 10.142,
+            "frame_interval_max_ms": 24.783,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 2,
+            "frames": 1164,
+            "highlight_ms": 12.24,
+            "highlight_max_ms": 15.744,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 12.756,
+            "peak_rss_mb": 134
+          }
+        },
+        {
+          "corpus": "huge-file",
+          "layout": "unified",
+          "metrics": {
+            "scroll_p95_ms": 0.922,
+            "scroll_p99_ms": 1.162,
+            "scroll_max_ms": 1.477,
+            "frame_interval_p95_ms": 10.032,
+            "frame_interval_max_ms": 16.976,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 2,
+            "frames": 1173,
+            "highlight_ms": 9.822,
+            "highlight_max_ms": 15.54,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 11.67,
+            "peak_rss_mb": 133.8
+          }
+        },
+        {
+          "corpus": "linux",
+          "layout": "split",
+          "metrics": {
+            "first_paint_ms": 667.967,
+            "scroll_p95_ms": 1.788,
+            "scroll_p99_ms": 3.04,
+            "scroll_max_ms": 11.458,
+            "frame_interval_p95_ms": 9.884,
+            "frame_interval_max_ms": 17.246,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 5,
+            "frames": 1175,
+            "highlight_ms": 15.653,
+            "highlight_max_ms": 15.831,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 88.313,
+            "peak_rss_mb": 621.2
+          }
+        },
+        {
+          "corpus": "linux",
+          "layout": "unified",
+          "metrics": {
+            "first_paint_ms": 588.693,
+            "scroll_p95_ms": 1.423,
+            "scroll_p99_ms": 2.498,
+            "scroll_max_ms": 6.077,
+            "frame_interval_p95_ms": 9.877,
+            "frame_interval_max_ms": 17.089,
+            "frames_over_16_7ms": 0,
+            "intervals_over_16_7ms": 4,
+            "frames": 1178,
+            "highlight_ms": 15.375,
+            "highlight_max_ms": 16.531,
+            "highlight_timeouts": 0,
+            "highlight_after_jump_p95_ms": 79.433,
+            "peak_rss_mb": 646.4
+          }
+        }
+      ]
+    }
+  ]
 }
