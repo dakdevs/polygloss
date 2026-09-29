@@ -247,6 +247,87 @@ fn submit_dialog_autosaves_summary_and_verdict(cx: &mut gpui_kit::TestAppContext
 }
 
 #[gpui_kit::test]
+fn submit_dialog_saves_pending_edits_on_close(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let review = tab.read_with(shell.cx, |t, _| t.review_id.clone());
+    let d = open(&mut shell, &tab);
+    shell.cx.simulate_input("Needs work");
+    draw(shell.cx);
+    click(&mut shell, "submit-verdict-request-changes");
+    assert_eq!(d.read_with(shell.cx, |d, _| d.autosaves()), 0);
+    // Esc inside the debounce: closing the dialog writes what the debounce
+    // had not saved yet.
+    drop(d);
+    shell.cx.simulate_keystrokes("escape");
+    draw(shell.cx);
+    draw(shell.cx);
+    assert!(!painted(shell.cx, "submit-dialog"));
+    assert!(
+        dialog(&mut shell, &tab).is_none(),
+        "the dialog was released"
+    );
+    assert_eq!(
+        shell.core.submit_draft(&review).unwrap(),
+        Some(SubmitDraft {
+            summary_md: "Needs work".into(),
+            verdict: Some(Verdict::RequestChanges)
+        })
+    );
+    let d = open(&mut shell, &tab);
+    assert_eq!(d.read_with(shell.cx, |d, cx| d.summary(cx)), "Needs work");
+    assert_eq!(
+        d.read_with(shell.cx, |d, _| d.verdict()),
+        Verdict::RequestChanges
+    );
+    // The same through Cancel.
+    shell.cx.simulate_input(", twice");
+    draw(shell.cx);
+    drop(d);
+    click(&mut shell, "submit-cancel");
+    draw(shell.cx);
+    assert_eq!(
+        shell
+            .core
+            .submit_draft(&review)
+            .unwrap()
+            .map(|s| s.summary_md),
+        Some("Needs work, twice".into())
+    );
+}
+
+#[gpui_kit::test]
+fn submit_after_autosave_leaves_no_stale_draft(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let review = tab.read_with(shell.cx, |t, _| t.review_id.clone());
+    let d = open(&mut shell, &tab);
+    shell.cx.simulate_input("Ship it");
+    click(&mut shell, "submit-verdict-approve");
+    // The debounce fires and its write starts; submitting right away waits
+    // for it, so the submission consumes the saved draft and nothing
+    // writes it back afterwards.
+    shell
+        .cx
+        .executor()
+        .advance_clock(AUTOSAVE_DEBOUNCE + Duration::from_millis(1));
+    d.update(shell.cx, |d, cx| d.submit(cx));
+    drop(d);
+    draw(shell.cx);
+    draw(shell.cx);
+    assert!(dialog(&mut shell, &tab).is_none());
+    assert_eq!(review_status(&mut shell, &tab), "approved");
+    assert_eq!(shell.core.submit_draft(&review).unwrap(), None);
+    let d = open(&mut shell, &tab);
+    assert_eq!(d.read_with(shell.cx, |d, cx| d.summary(cx)), "");
+    assert_eq!(d.read_with(shell.cx, |d, _| d.verdict()), Verdict::Comment);
+}
+
+#[gpui_kit::test]
 fn submit_dialog_shows_waiter_state(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();

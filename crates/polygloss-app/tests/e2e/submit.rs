@@ -111,6 +111,11 @@ fn app(
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, serde_json::to_string(&settings).unwrap()).unwrap();
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
+    // gpui-component's dialog entrance animation runs on wall-clock time
+    // (`dialog::ANIMATION_DURATION`), so a capture a few frames after
+    // opening catches it mid-slide at a different offset every run. With
+    // reduced motion it draws in place on its first frame.
+    cx.update(|cx| cx.set_reduce_motion(true));
     let (handle, main) = cx.update(|cx| {
         startup::init(core, cx);
         window::open_main_window_sized(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx)
@@ -221,7 +226,7 @@ fn e2e_submit_dialog() {
         dialog.update(cx, |d, cx| d.set_verdict(Verdict::RequestChanges, cx));
     })
     .unwrap();
-    // (The dialog's entrance animation settles on its first frame.)
+    // (Reduced motion: the dialog is in place from its first frame.)
     for _ in 0..6 {
         screenshot::draw(&mut cx, handle);
     }

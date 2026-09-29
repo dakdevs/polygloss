@@ -2,11 +2,15 @@
 //! summary, the verdict (Comment, Approve or Request changes, GitHub's
 //! order), how many drafts it publishes, and whether the agent is waiting
 //! for it. The summary and verdict are autosaved (`Core::save_submit_draft`)
-//! and restored the next time the dialog opens. Submitting (the button or
+//! [`AUTOSAVE_DEBOUNCE`] after the last change and when the dialog closes
+//! (Esc, Cancel, ×), and restored the next time it opens. Submitting (the button or
 //! `⌘⏎`) runs `Core::submit_review` on the background executor, pinning a
 //! live tab's displayed state first.
 
 use std::time::Duration;
+
+use futures::FutureExt as _;
+use futures::future::Shared;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, InputEvent, Textarea, TextareaState};
@@ -120,7 +124,14 @@ pub struct SubmitDialog {
     verdict: Verdict,
     submitting: bool,
     error: Option<SharedString>,
+    /// The debounce of the next autosave.
     autosave: Option<Task<()>>,
+    /// The summary or verdict changed since the last write.
+    dirty: bool,
+    /// The last background write (an autosave or the submission); the next
+    /// one waits for it, so they land in order and an autosave never writes
+    /// the dialog back after the submission consumed it.
+    last_write: Option<Shared<Task<bool>>>,
     /// Autosaves written (tests).
     saves: u32,
     focus: FocusHandle,
@@ -148,6 +159,17 @@ impl SubmitDialog {
                 s.set_selected_range(text.len()..text.len(), cx);
             });
         }
+        // Closing the dialog (Esc, Cancel, ×) drops it, and with it the
+        // debounce: write what it had not saved yet, and let a write in
+        // flight finish.
+        cx.on_release(|this: &mut SubmitDialog, cx: &mut App| {
+            this.autosave = None;
+            this.write_draft(cx);
+            if let Some(write) = this.last_write.take() {
+                cx.background_spawn(write).detach();
+            }
+        })
+        .detach();
         let subscriptions = vec![cx.subscribe(
             &summary,
             |this: &mut SubmitDialog, _, event: &InputEvent, cx| {
@@ -171,6 +193,8 @@ impl SubmitDialog {
             submitting: false,
             error: None,
             autosave: None,
+            dirty: false,
+            last_write: None,
             saves: 0,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -228,25 +252,43 @@ impl SubmitDialog {
     /// Saves the summary and verdict [`AUTOSAVE_DEBOUNCE`] after the last
     /// change.
     fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        self.dirty = true;
         self.autosave = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
-            let Ok(work) = this.update(cx, |this, cx| {
-                let core = AppState::global(cx).core.clone();
-                let (review, summary, verdict) =
-                    (this.review_id.clone(), this.summary(cx), this.verdict);
-                cx.background_spawn(async move {
-                    core.save_submit_draft(&review, &summary, Some(verdict))
-                })
-            }) else {
+            let Ok(Some(write)) = this.update(cx, |this, cx| this.write_draft(cx)) else {
                 return;
             };
-            let result = work.await;
-            this.update(cx, |this, _| match result {
-                Ok(()) => this.saves += 1,
-                Err(e) => tracing::warn!("autosaving the submit dialog: {e}"),
-            })
-            .ok();
+            if write.await {
+                this.update(cx, |this, _| this.saves += 1).ok();
+            }
         }));
+    }
+
+    /// Writes the summary and verdict on the background executor if they
+    /// changed since the last write, after the write before it.
+    fn write_draft(&mut self, cx: &mut App) -> Option<Shared<Task<bool>>> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        let core = AppState::global(cx).core.clone();
+        let (review, summary, verdict) = (self.review_id.clone(), self.summary(cx), self.verdict);
+        let previous = self.last_write.take();
+        let write = cx
+            .background_spawn(async move {
+                if let Some(previous) = previous {
+                    previous.await;
+                }
+                match core.save_submit_draft(&review, &summary, Some(verdict)) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!("autosaving the submit dialog: {e}");
+                        false
+                    }
+                }
+            })
+            .shared();
+        self.last_write = Some(write.clone());
+        Some(write)
     }
 
     /// Submits the review (Submit review, `⌘⏎`).
@@ -256,9 +298,11 @@ impl SubmitDialog {
         }
         self.submitting = true;
         self.error = None;
-        // A pending autosave would write the dialog back after submitting
-        // consumed it.
+        // The submission consumes the autosaved draft: a pending autosave
+        // must not write it back, and one in flight lands first.
         self.autosave = None;
+        let was_dirty = std::mem::take(&mut self.dirty);
+        let previous = self.last_write.take();
         cx.notify();
         let core = AppState::global(cx).core.clone();
         let (review, summary, verdict, live) = (
@@ -268,6 +312,9 @@ impl SubmitDialog {
             self.live.clone(),
         );
         let work = cx.background_spawn(async move {
+            if let Some(previous) = previous {
+                previous.await;
+            }
             core.submit_review(
                 &review,
                 verdict,
@@ -282,6 +329,8 @@ impl SubmitDialog {
                 match result {
                     Ok(sub) => cx.emit(SubmitEvent::Submitted(Box::new(sub))),
                     Err(e) => {
+                        // Still open and unsaved: closing it writes it.
+                        this.dirty |= was_dirty;
                         tracing::warn!("submitting review {}: {e}", this.review_id);
                         this.error = Some(format!("Could not submit: {e}").into());
                     }

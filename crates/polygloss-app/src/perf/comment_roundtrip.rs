@@ -85,8 +85,12 @@ struct Run {
 /// What ends an op.
 #[derive(Debug, Clone)]
 enum Waiting {
-    /// `threads` threads, the composer `key` closed.
-    Draft { threads: usize, key: ComposerKey },
+    /// One thread beyond the `known` ones, with its block in the viewport,
+    /// and the composer `key` closed.
+    Draft {
+        known: HashSet<String>,
+        key: ComposerKey,
+    },
     /// Thread `id` resolved.
     Resolve { id: String },
 }
@@ -239,15 +243,17 @@ fn op_done(tab: &Entity<ReviewTab>, w: &Waiting, cx: &App) -> bool {
     };
     let m = model.read(cx);
     match w {
-        Waiting::Draft { threads, key } => {
+        Waiting::Draft { known, key } => {
             let closed = composer::composer(t, key, cx).is_none();
-            let newest = m.threads().last().map(|t| t.id.clone());
-            let block = newest.is_some_and(|id| {
-                let block = threads::placement::block_id(&id);
-                let doc = t.viewport.read(cx).document();
-                (0..doc.len()).any(|f| doc.blocks(f).iter().any(|b| b.id == block))
-            });
-            closed && m.threads().count() == *threads && block
+            let mut new = m.threads().filter(|t| !known.contains(&t.id));
+            let (Some(saved), None) = (new.next(), new.next()) else {
+                return false;
+            };
+            let block = threads::placement::block_id(&saved.id);
+            let doc = t.viewport.read(cx).document();
+            closed
+                && m.threads().count() == known.len() + 1
+                && (0..doc.len()).any(|f| doc.blocks(f).iter().any(|b| b.id == block))
         }
         Waiting::Resolve { id } => m
             .thread(id)
@@ -374,13 +380,15 @@ async fn drive(
             })
         })?;
         settle(tab, state, cx).await?;
-        let threads_now = cx.update(|cx| {
-            threads::threads(tab.read(cx)).map_or(0, |m| m.read(cx).threads().count())
+        let known: HashSet<String> = cx.update(|cx| {
+            threads::threads(tab.read(cx)).map_or_else(HashSet::new, |m| {
+                m.read(cx).threads().map(|t| t.id.clone()).collect()
+            })
         });
         let started = start(
             state,
             Waiting::Draft {
-                threads: threads_now + 1,
+                known,
                 key: key.clone(),
             },
         );

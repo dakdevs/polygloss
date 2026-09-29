@@ -557,7 +557,8 @@ fn saved(
 }
 
 /// The threads were loaded again: saved composers close (their thread or
-/// comment shows now), composers whose thread or comment is gone close,
+/// comment shows now), composers whose thread or comment is gone (or whose
+/// thread is another review's) close,
 /// and other reviews' threads get their review's title.
 fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     let (Some(entity), Some(model)) = (composers(tab).cloned(), threads::threads(tab).cloned())
@@ -579,7 +580,12 @@ fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Re
                 continue;
             }
             let exists = match &o.key {
-                ComposerKey::Reply { thread_id } => m.thread(thread_id).is_some(),
+                // A reply autosaved in another review's tab on the same diff
+                // (its view state is per diff) is not this review's to
+                // draft (OQ-P16).
+                ComposerKey::Reply { thread_id } => m
+                    .thread(thread_id)
+                    .is_some_and(|t| t.review_id.as_deref() == Some(tab.review_id.as_str())),
                 ComposerKey::Edit { comment_id } => find_comment(m, comment_id).is_some(),
                 _ => true,
             };

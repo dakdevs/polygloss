@@ -803,3 +803,67 @@ fn other_reviews_thread_offers_reply_in_its_review_only(cx: &mut gpui_kit::TestA
         format!("thread-reply-elsewhere-{theirs}")
     ));
 }
+
+#[gpui_kit::test]
+fn restored_reply_on_another_reviews_thread_is_dropped(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    // Review S (the head commit) and review R (base..head) share one diff,
+    // and with it one view state: a reply S's tab autosaved there must not
+    // reopen in R's tab, where the thread is not R's (OQ-P16).
+    let commit = OpenRequest {
+        worktree: repo.path().to_path_buf(),
+        source: Source::Commit {
+            rev: "refs/tags/head".into(),
+        },
+        label: None,
+        pin: None,
+        actor: Actor::human(),
+    };
+    let s = shell.core.open(&commit).unwrap();
+    let blobs = BlobReader::open(&s.repo).unwrap();
+    let theirs = shell
+        .core
+        .create_thread(
+            &NewThread {
+                review_id: s.review_id.clone(),
+                diff_id: s.diff_id.clone(),
+                subject: Subject::Line {
+                    path: "src/config.rs".into(),
+                    side: Side::New,
+                    start_line: 5,
+                    line: 5,
+                },
+                kind: ThreadKind::Question,
+                body_md: "Asked in the commit review".into(),
+                author: agent(),
+            },
+            &blobs,
+        )
+        .unwrap();
+    let mut state = shell
+        .core
+        .load_view_state(&s.diff_id)
+        .unwrap()
+        .unwrap_or_default();
+    state
+        .composer
+        .insert(format!("reply:{theirs}"), "half a reply".into());
+    shell.core.save_view_state(&s.diff_id, &state).unwrap();
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    draw(shell.cx);
+    draw(shell.cx);
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| t.opened.diff_id.clone()),
+        s.diff_id
+    );
+    let shown = tab.read_with(shell.cx, |t, cx| {
+        threads::threads(t).is_some_and(|m| m.read(cx).thread(&theirs).is_some())
+    });
+    assert!(shown, "R's tab shows S's thread");
+    assert!(
+        open_keys(&mut shell, &tab).is_empty(),
+        "no reply composer on another review's thread"
+    );
+}
