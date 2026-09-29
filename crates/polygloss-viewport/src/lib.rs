@@ -4,9 +4,11 @@
 //! - [`document`]: every file's height, the logical scroll anchor, the
 //!   materialization window and eviction (pure Rust).
 //! - [`DiffViewport`]: the GPUI view. It reads files and blobs from a
-//!   [`DiffProvider`], materializes files near the viewport in the background
-//!   and paints only visible rows, split or unified, with line numbers, change
-//!   indicators, word highlights and syntax colors.
+//!   [`DiffProvider`] and paints only visible rows, split or unified, with
+//!   line numbers, change indicators, word highlights and syntax colors.
+//! - [`pipeline`]: the prioritized, cancellable background work behind it:
+//!   loads and highlights for the files near the viewport, then sizes and
+//!   line counts of every file.
 
 pub mod debug;
 pub mod document;
@@ -15,6 +17,7 @@ mod gutter;
 pub mod layout;
 pub mod materialize;
 mod paint_rows;
+pub mod pipeline;
 pub mod provider;
 pub mod style;
 mod text_cache;
@@ -26,7 +29,8 @@ pub use document::{
     SizeHint,
 };
 pub use layout::{LayoutMode, resolve_layout};
-pub use materialize::MaterializedFile;
+pub use materialize::{LoadError, LoadOptions, Loaded, MaterializedFile};
+pub use pipeline::{FileCounts, PipelineStats};
 pub use provider::DiffProvider;
 pub use style::{DiffStyle, Indicators, ViewportTheme};
 pub use view::{DiffViewport, FrameStats, ScrollTarget, ViewportEvent, ViewportOptions};

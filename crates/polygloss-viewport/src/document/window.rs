@@ -45,6 +45,14 @@ impl Document {
     /// Evicted files keep their exact height, so nothing moves. Returns the
     /// evicted files in eviction order.
     pub fn evict_over_budget(&mut self, budget_bytes: usize) -> Vec<u32> {
+        self.evict_over_budget_keeping(budget_bytes, 0..0)
+    }
+
+    /// [`Document::evict_over_budget`] that also keeps the files in `keep`
+    /// (the materialization window: evicting them would only load them
+    /// again). The budget is soft: when the kept files alone exceed it, they
+    /// stay.
+    pub fn evict_over_budget_keeping(&mut self, budget_bytes: usize, keep: Range<u32>) -> Vec<u32> {
         let mut resident = self.resident_bytes();
         if resident <= budget_bytes {
             return Vec::new();
@@ -55,7 +63,9 @@ impl Document {
             self.scroll_top + f64::from(self.viewport_h),
         );
         let mut candidates: Vec<(f64, u32)> = (0..self.len())
-            .filter(|f| !visible.contains(f) && self.state(*f).is_materialized())
+            .filter(|f| {
+                !visible.contains(f) && !keep.contains(f) && self.state(*f).is_materialized()
+            })
             .map(|f| {
                 let start = self.file_top(f);
                 let end = start + f64::from(self.file_height(f));

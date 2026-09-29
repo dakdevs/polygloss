@@ -1,31 +1,28 @@
 //! `DiffViewport`: the GPUI view over one diff (design §11.6, §12.4).
 //!
 //! It owns the [`Document`] (every file's height and the logical scroll
-//! anchor), the shaped-line cache and the background work that turns files
-//! near the viewport into [`MaterializedFile`]s: blobs → diff → word ranges →
-//! rows (swapped in, laid out) → syntax tokens (swapped in without moving
-//! anything). T2.6 turns that loading into the prioritized, cancellable
-//! pipeline; the view only ever sees results through the document's
-//! generation-checked states.
+//! anchor), the shaped-line cache and the [`Pipeline`] that turns files near
+//! the viewport into [`MaterializedFile`]s in the background: blobs → diff →
+//! word ranges → rows (swapped in, laid out) → syntax tokens (swapped in
+//! without moving anything), prioritized and cancellable (see
+//! [`crate::pipeline`]). The view only ever sees results through the
+//! document's generation-checked states.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use gpui_kit::{
-    AppContext as _, Bounds, Context, EventEmitter, Font, IntoElement, Pixels, Render,
-    SharedString, Task, Window, font, px,
+    Bounds, Context, EventEmitter, Font, IntoElement, Pixels, Render, SharedString, Window, font,
+    px,
 };
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::Layout;
 use polygloss_diff::word::Granularity;
 use polygloss_diff::{FileChange, FileKind, Side};
-use polygloss_highlight::{Budget, Highlighter, Tokens, guess_language};
 
 use crate::document::{
     BlockId, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document, FileLayout,
-    FileState, RowKey, ScrollAnchor, SizeHint,
+    FileState, RowKey, ScrollAnchor,
 };
 use crate::element::DiffElement;
 use crate::layout::{Columns, Geometry, LayoutMode, Pane, digits, resolve_layout, wrapped_heights};
@@ -33,6 +30,7 @@ use crate::materialize::MaterializedFile;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::DebugRow;
 use crate::paint_rows::{Frame, Painter, failed_label, special_label};
+use crate::pipeline::{Applied, Done, FileCounts, Pipeline, PipelineStats, needs_blobs};
 use crate::provider::DiffProvider;
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{TEXT_CACHE_CAPACITY, TextCache};
@@ -66,6 +64,12 @@ pub struct ViewportOptions {
     /// Syntax highlighting. Plain text paints first either way; tokens swap
     /// in when they are ready.
     pub syntax: bool,
+    /// Files within this many screens above and below the viewport are
+    /// materialized (design §12.4: 2, **Provisional**).
+    pub window_screens: f32,
+    /// Materialized data above this many bytes is evicted, farthest file
+    /// first (design §12.4: 256 MiB, **Provisional**).
+    pub eviction_budget_bytes: usize,
 }
 
 impl Default for ViewportOptions {
@@ -81,6 +85,8 @@ impl Default for ViewportOptions {
             theme: Arc::new(ViewportTheme::default()),
             large_file_changed_lines: 20_000,
             syntax: true,
+            window_screens: DEFAULT_WINDOW_SCREENS,
+            eviction_budget_bytes: DEFAULT_EVICTION_BUDGET_BYTES,
         }
     }
 }
@@ -142,6 +148,10 @@ pub enum ViewportEvent {
         line: u32,
     },
     LoadDiffRequested(u32),
+    /// A file listed as text turned out binary when its blobs were first read
+    /// (a NUL byte, git's rule): the viewport now shows it as binary, and the
+    /// host may store the kind (`file_changes.kind`).
+    BinaryDetected(u32),
     /// Emitted after every painted frame.
     FrameStats(FrameStats),
 }
@@ -174,9 +184,7 @@ pub struct DiffViewport {
     /// large diffs).
     labels: Vec<Option<SharedString>>,
     text_cache: TextCache,
-    highlighter: Arc<Highlighter>,
-    loads: HashMap<u32, Task<()>>,
-    highlights: HashMap<u32, Task<()>>,
+    pipeline: Pipeline,
     frame_pool: Option<Frame>,
     top_file: u32,
     #[cfg(feature = "debug-inspect")]
@@ -214,7 +222,7 @@ impl DiffViewport {
             .map(|c| special_label(c).map(SharedString::from))
             .collect();
         DiffViewport {
-            highlighter: Arc::new(Highlighter::new(opts.theme.syntax.clone())),
+            pipeline: Pipeline::new(provider.clone(), files.clone(), opts.theme.syntax.clone()),
             layout_keys: vec![None; files.len()],
             provider,
             opts,
@@ -228,8 +236,6 @@ impl DiffViewport {
             width,
             labels,
             text_cache: TextCache::new(TEXT_CACHE_CAPACITY),
-            loads: HashMap::new(),
-            highlights: HashMap::new(),
             frame_pool: None,
             top_file: 0,
             #[cfg(feature = "debug-inspect")]
@@ -260,7 +266,11 @@ impl DiffViewport {
         let theme_changed = !Arc::ptr_eq(&old.theme, &self.opts.theme);
         let font_changed =
             old.code_font != self.opts.code_font || old.code_font_size != self.opts.code_font_size;
-        let data_changed = old.diff != self.opts.diff || old.word_diff != self.opts.word_diff;
+        // Large files get no word ranges and no rows, so a new threshold
+        // means loading again too.
+        let data_changed = old.diff != self.opts.diff
+            || old.word_diff != self.opts.word_diff
+            || old.large_file_changed_lines != self.opts.large_file_changed_lines;
         if theme_changed || font_changed || data_changed {
             self.text_cache.clear();
         }
@@ -268,19 +278,53 @@ impl DiffViewport {
             self.geometry_dirty = true;
         }
         if theme_changed {
-            self.highlighter = Arc::new(Highlighter::new(self.opts.theme.syntax.clone()));
-            self.highlights.clear();
-            if old.theme.syntax_id() != self.opts.theme.syntax_id() {
-                self.drop_tokens();
-            }
+            self.pipeline
+                .set_theme(self.opts.theme.syntax.clone(), &mut self.doc);
         }
         if data_changed {
-            self.reload_all();
+            // Files go back to unloaded (heights kept) and reload when near
+            // the viewport. Until a file's new data arrives its rows stay in
+            // place, blank, and a placeholder shows "Loading…" instead of its
+            // stale label (an error, a large-diff count).
+            for f in self.pipeline.reload_all(&mut self.doc, self.opts.diff) {
+                self.labels[f as usize] = None;
+            }
         }
-        if self.opts.syntax && (!old.syntax || theme_changed) {
-            self.highlight_materialized(cx);
+        if old.syntax != self.opts.syntax {
+            self.pipeline.set_syntax(self.opts.syntax);
         }
         cx.notify();
+    }
+
+    /// Added and removed lines of file `file_idx`, once known: from its load,
+    /// or from the background pass that counts every file after first paint
+    /// (design §6.3 "Counts").
+    pub fn file_counts(&self, file_idx: u32) -> Option<FileCounts> {
+        self.pipeline.counts(file_idx)
+    }
+
+    /// Sizes in bytes of file `file_idx`'s old and new blobs (0 for a missing
+    /// side), once the background pass has read them.
+    pub fn blob_sizes(&self, file_idx: u32) -> Option<(u64, u64)> {
+        self.pipeline.blob_sizes(file_idx)
+    }
+
+    /// Whether file `file_idx` renders without syntax because a side has more
+    /// than 100k lines (design §11.11); the host offers "Highlight anyway".
+    pub fn syntax_skipped(&self, file_idx: u32) -> bool {
+        self.pipeline.syntax_skipped(file_idx)
+    }
+
+    /// "Highlight anyway": highlights file `file_idx` despite its size, with
+    /// no line limit and a longer time budget.
+    pub fn highlight_anyway(&mut self, file_idx: u32, cx: &mut Context<Self>) {
+        self.pipeline.highlight_anyway(file_idx);
+        cx.notify();
+    }
+
+    /// The background pipeline's counters.
+    pub fn pipeline_stats(&self) -> PipelineStats {
+        self.pipeline.stats()
     }
 
     /// Puts `target` at the top of the viewport (clamped to the document).
@@ -395,7 +439,7 @@ impl DiffViewport {
                 bounds,
                 scroll_top: (self.doc.scroll_top() * scale).round() / scale,
                 cache: &mut self.text_cache,
-                highlighting: &self.highlights,
+                pipeline: &self.pipeline,
                 text_system: window.text_system().clone(),
                 frame: &mut frame,
                 corrections: Vec::new(),
@@ -431,6 +475,11 @@ impl DiffViewport {
     /// its timing.
     pub(crate) fn finish_frame(&mut self, frame: Frame, stats: FrameStats, cx: &mut Context<Self>) {
         self.frame_pool = Some(frame);
+        // First paint: every visible row is on screen. Only now do the blob
+        // sizes and line counts of every other file start (design §6.3).
+        if stats.loading_rows == 0 && !self.pipeline.background_started() {
+            self.pipeline.start_background(self.opts.diff, cx);
+        }
         cx.emit(ViewportEvent::FrameStats(stats));
     }
 
@@ -454,20 +503,15 @@ impl DiffViewport {
         }
     }
 
-    /// Lays out (synchronously) and starts loading the files within the
-    /// materialization window.
+    /// Schedules background work for the materialization window and lays
+    /// out (synchronously) the files in it whose data is there.
     fn prepare_window(&mut self, height: f32, cx: &mut Context<Self>) {
-        let range = self.doc.materialize_range(height, DEFAULT_WINDOW_SCREENS);
+        self.pipeline
+            .schedule(&mut self.doc, &self.files, &self.opts, self.layout, cx);
+        let range = self.doc.materialize_range(height, self.opts.window_screens);
         for f in range {
             if self.doc.is_collapsed(f) {
                 continue;
-            }
-            let change = &self.files[f as usize];
-            if needs_blobs(change)
-                && matches!(self.doc.state(f), FileState::Estimated | FileState::Evicted)
-                && !self.loads.contains_key(&f)
-            {
-                self.start_load(f, cx);
             }
             let key = self.layout_key(f);
             let stale =
@@ -550,158 +594,61 @@ impl DiffViewport {
         Some(FileLayout::new(layout.rows().to_vec(), &heights))
     }
 
-    fn start_load(&mut self, f: u32, cx: &mut Context<Self>) {
-        let generation = self.doc.begin_loading(f);
-        let provider = self.provider.clone();
-        let change = self.files[f as usize].clone();
-        let (diff, words, layout) = (self.opts.diff, self.opts.word_diff, self.layout);
-        let large = self.opts.large_file_changed_lines;
-        let task = cx.spawn(async move |this, cx| {
-            let built = cx
-                .background_spawn(async move {
-                    let file = MaterializedFile::load(&*provider, &change, &diff, words)?;
-                    // Build the rows it will show here, off the main thread; a
-                    // large diff shows a placeholder and needs none.
-                    if file.diff.additions + file.diff.deletions <= large {
-                        file.rows(layout);
-                    }
-                    Ok(file)
-                })
-                .await;
-            this.update(cx, |v, cx| v.finish_load(f, generation, built, cx))
-                .ok();
-        });
-        self.loads.insert(f, task);
+    /// A worker finished a job (`None`: it found nothing to do). Takes the
+    /// result in, queues what follows from it, and says whether the worker
+    /// keeps going.
+    pub(crate) fn pipeline_done(&mut self, done: Option<Done>, cx: &mut Context<Self>) -> bool {
+        let had_job = done.is_some();
+        if let Some(done) = done {
+            let h = self.doc.viewport_height();
+            let window = self.doc.materialize_range(h, self.opts.window_screens);
+            let applied = self.pipeline.apply(done, &mut self.doc, window);
+            let repaint = applied.repaint;
+            self.take_applied(applied, cx);
+            // Follow-up work (a loaded file's highlights, files that entered
+            // the window as estimates shrank) is queued at once rather than on
+            // the next frame.
+            self.pipeline
+                .schedule(&mut self.doc, &self.files, &self.opts, self.layout, cx);
+            if repaint {
+                cx.notify();
+            }
+        }
+        self.pipeline.worker_continues(had_job)
     }
 
-    fn finish_load(
-        &mut self,
-        f: u32,
-        generation: u64,
-        built: anyhow::Result<MaterializedFile>,
-        cx: &mut Context<Self>,
-    ) {
-        self.loads.remove(&f);
-        match built {
-            Ok(file) => {
-                let counts = SizeHint::Counts {
-                    additions: file.diff.additions,
-                    deletions: file.diff.deletions,
-                    hunks: Some(file.diff.hunks.len() as u32),
-                };
-                let file = Arc::new(file);
-                if !self.doc.set_materialized(f, generation, file.clone()) {
-                    return;
-                }
-                self.doc.set_size_hint(f, counts);
-                // New rows: lay the file out again on the next frame.
+    fn take_applied(&mut self, applied: Applied, cx: &mut Context<Self>) {
+        for f in applied.relayout {
+            // New rows (or an error): lay the file out on the next frame.
+            self.layout_keys[f as usize] = None;
+        }
+        for f in applied.binary {
+            self.mark_binary(f, cx);
+        }
+        if applied.grew {
+            let h = self.doc.viewport_height();
+            let keep = self.doc.materialize_range(h, self.opts.window_screens);
+            let budget = self.opts.eviction_budget_bytes;
+            for f in self.doc.evict_over_budget_keeping(budget, keep) {
                 self.layout_keys[f as usize] = None;
-                if self.opts.syntax {
-                    self.start_highlight(f, generation, file, cx);
-                }
-                for evicted in self.doc.evict_over_budget(DEFAULT_EVICTION_BUDGET_BYTES) {
-                    self.layout_keys[evicted as usize] = None;
-                }
-            }
-            Err(e) => {
-                if !self.doc.set_failed(f, generation, format!("{e:#}")) {
-                    return;
-                }
-                // Lay the error out on the next frame.
-                self.layout_keys[f as usize] = None;
-            }
-        }
-        cx.notify();
-    }
-
-    fn start_highlight(
-        &mut self,
-        f: u32,
-        generation: u64,
-        file: Arc<MaterializedFile>,
-        cx: &mut Context<Self>,
-    ) {
-        let change = self.files[f as usize].clone();
-        let highlighter = self.highlighter.clone();
-        let theme = self.opts.theme.syntax_id();
-        let task = cx.spawn(async move |this, cx| {
-            let (old, new) = cx
-                .background_spawn(async move {
-                    let never = AtomicUsize::new(0);
-                    let side = |path: Option<&polygloss_diff::GitPath>, text: &[u8]| {
-                        highlight_side(&highlighter, path, text, &never)
-                    };
-                    (
-                        side(change.old_path.as_ref(), &file.old_text),
-                        side(change.new_path.as_ref(), &file.new_text),
-                    )
-                })
-                .await;
-            this.update(cx, |v, cx| {
-                v.highlights.remove(&f);
-                if theme != v.opts.theme.syntax_id() || (old.is_none() && new.is_none()) {
-                    return;
-                }
-                let FileState::Materialized(current) = v.doc.state(f) else {
-                    return;
-                };
-                let next = Arc::new(current.with_tokens(old, new));
-                if v.doc.set_materialized(f, generation, next) {
-                    cx.notify();
-                }
-            })
-            .ok();
-        });
-        self.highlights.insert(f, task);
-    }
-
-    /// Highlights every materialized file that has no tokens yet.
-    fn highlight_materialized(&mut self, cx: &mut Context<Self>) {
-        for f in 0..self.doc.len() {
-            if self.highlights.contains_key(&f) {
-                continue;
-            }
-            if let FileState::Materialized(file) = self.doc.state(f)
-                && file.old_tokens.is_none()
-                && file.new_tokens.is_none()
-            {
-                let (generation, file) = (self.doc.generation(f), file.clone());
-                self.start_highlight(f, generation, file, cx);
+                self.pipeline.forget(f);
             }
         }
     }
 
-    /// Drops tokens computed for another theme.
-    fn drop_tokens(&mut self) {
-        for f in 0..self.doc.len() {
-            if let FileState::Materialized(file) = self.doc.state(f)
-                && (file.old_tokens.is_some() || file.new_tokens.is_some())
-            {
-                let plain = Arc::new(file.with_tokens(None, None));
-                let generation = self.doc.generation(f);
-                self.doc.set_materialized(f, generation, plain);
-            }
+    /// File `f` was listed as text but has binary content: it shows the
+    /// binary placeholder from now on, and the host hears about it.
+    fn mark_binary(&mut self, f: u32, cx: &mut Context<Self>) {
+        if self.files[f as usize].kind == FileKind::Binary {
+            return;
         }
-    }
-
-    /// Recomputes every loaded file (diff or word-diff options changed):
-    /// files go back to unloaded (keeping their heights) and reload when near
-    /// the viewport. Failed files are retried. Until a file's new data
-    /// arrives its rows stay in place, blank, and a placeholder shows
-    /// "Loading…" instead of its stale label (an error, a large-diff count).
-    fn reload_all(&mut self) {
-        self.loads.clear();
-        self.highlights.clear();
-        for f in 0..self.doc.len() {
-            if matches!(
-                self.doc.state(f),
-                FileState::Materialized(_) | FileState::Loading { .. } | FileState::Failed(_)
-            ) {
-                self.doc.begin_loading(f);
-                self.doc.cancel_loading(f);
-                self.labels[f as usize] = None;
-            }
-        }
+        // Let go of the shared list first, so the document changes its copy
+        // in place (it copies the list only the first time).
+        self.files = Arc::default();
+        self.doc.set_kind(f, FileKind::Binary);
+        self.files = self.doc.files().clone();
+        self.layout_keys[f as usize] = None;
+        cx.emit(ViewportEvent::BinaryDetected(f));
     }
 }
 
@@ -709,33 +656,6 @@ impl Render for DiffViewport {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         DiffElement::new(cx.entity())
     }
-}
-
-/// Whether a file's body comes from its blobs (text and symlinks whose
-/// content changed); binary, generated, submodule and content-equal changes
-/// are drawn from metadata alone.
-fn needs_blobs(change: &FileChange) -> bool {
-    matches!(change.kind, FileKind::Text | FileKind::Symlink)
-        && !change.generated
-        && change.old_blob != change.new_blob
-}
-
-/// Tokens for one side, or `None` (no text, no grammar, over budget, not
-/// UTF-8).
-fn highlight_side(
-    highlighter: &Highlighter,
-    path: Option<&polygloss_diff::GitPath>,
-    text: &[u8],
-    cancel: &AtomicUsize,
-) -> Option<Arc<Tokens>> {
-    if text.is_empty() {
-        return None;
-    }
-    let lang = guess_language(&path?.text, &text[..text.len().min(1024)])?;
-    highlighter
-        .highlight(text, &lang, cancel, Budget::default())
-        .ok()
-        .map(Arc::new)
 }
 
 /// The code font (the configured family, or Menlo when it is missing) and its

@@ -8,13 +8,12 @@
 //! Nothing here allocates per frame once the buffers are warm, except for
 //! lines shaped for the first time.
 
-use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{
-    Bounds, Font, Hsla, Pixels, Point, SharedString, Task, WindowTextSystem, point, px, size,
+    Bounds, Font, Hsla, Pixels, Point, SharedString, WindowTextSystem, point, px, size,
 };
 use polygloss_diff::rows::{Cell, Layout, LineKind, Row};
 use polygloss_diff::{FileChange, Side};
@@ -22,6 +21,7 @@ use polygloss_diff::{FileChange, Side};
 use crate::document::{BodyRow, Document, FileState};
 use crate::layout::{Columns, Geometry, Pane, digits};
 use crate::materialize::MaterializedFile;
+use crate::pipeline::Pipeline;
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{ShapedText, Shaper, TextCache, TextKey};
 
@@ -142,8 +142,8 @@ pub(crate) struct Painter<'a> {
     /// `scroll_top` snapped to device pixels.
     pub scroll_top: f64,
     pub cache: &'a mut TextCache,
-    /// Files whose syntax tokens are being computed.
-    pub highlighting: &'a HashMap<u32, Task<()>>,
+    /// Which sides still wait for syntax tokens.
+    pub pipeline: &'a Pipeline,
     pub text_system: Arc<WindowTextSystem>,
     pub frame: &'a mut Frame,
     /// Rows whose measured wrapped height differs from the layout:
@@ -485,11 +485,13 @@ impl Painter<'_> {
     }
 
     /// Counts a code row showing `sides` as unhighlighted when one of them has
-    /// no tokens yet and they are being computed.
+    /// no tokens yet but may still get them (not when it never will: no
+    /// grammar, over 100k lines, over its time budget).
     fn count_unhighlighted(&mut self, f: u32, file: &MaterializedFile, sides: &[Side]) {
         if self.syntax
-            && self.highlighting.contains_key(&f)
-            && sides.iter().any(|&s| file.tokens(s).is_none())
+            && sides
+                .iter()
+                .any(|&s| file.tokens(s).is_none() && self.pipeline.tokens_pending(f, s))
         {
             self.frame.unhighlighted += 1;
         }

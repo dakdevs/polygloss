@@ -1,26 +1,82 @@
 //! A materialized file: the data the viewport paints for one file (design §12.4
 //! "Materialized").
 //!
-//! T2.3 defined the struct; T2.4 added the blob bytes (painting needs the
-//! text), the pair index behind `words`, the token fields and
-//! [`MaterializedFile::load`]. T2.6 owns this module and turns the loading
-//! into the prioritized, cancellable pipeline.
+//! [`MaterializedFile::load`] is one background load of the pipeline
+//! ([`crate::pipeline`]) in stages: blobs (the old one first: a NUL byte in
+//! either side makes the file binary, git's rule) → `diff_blobs` → word
+//! ranges of paired lines (none for files over the "Load diff" threshold) →
+//! the rows of the current layout. A cancel flag is checked between stages,
+//! so a file that scrolled away stops at the next one.
 //!
 //! Everything but the tokens sits behind an `Arc`, so a new version of a file
 //! (tokens swapped in or dropped) shares the diff, rows, word ranges and
 //! blobs of the old one instead of copying them on the main thread.
 
+use std::fmt;
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use polygloss_diff::hunks::{Block, FileDiff, Hunk, diff_blobs};
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::{Expansions, Layout, Row, build_rows};
 use polygloss_diff::word::{Granularity, LinePair, WordRanges, pair_lines, word_ranges};
-use polygloss_diff::{FileChange, Side};
+use polygloss_diff::{FileChange, FileKind, Oid, Side};
 use polygloss_highlight::Tokens;
 
 use crate::provider::DiffProvider;
+
+/// How [`MaterializedFile::load`] builds a file.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadOptions {
+    pub diff: DiffOptions,
+    /// Word or char ranges on paired lines; `None` computes none.
+    pub word_diff: Option<Granularity>,
+    /// A file with more changed lines gets neither word ranges nor rows: it
+    /// shows a "Load diff" placeholder (design §12.3).
+    pub large_file_changed_lines: u32,
+    /// Also build the rows of this layout (never for a large file).
+    pub rows: Option<Layout>,
+}
+
+impl Default for LoadOptions {
+    fn default() -> LoadOptions {
+        LoadOptions {
+            diff: DiffOptions::default(),
+            word_diff: Some(Granularity::Word),
+            large_file_changed_lines: 20_000,
+            rows: None,
+        }
+    }
+}
+
+/// What [`MaterializedFile::load`] found.
+#[derive(Debug)]
+pub enum Loaded {
+    File(MaterializedFile),
+    /// A file listed as text has a NUL byte in either blob (git's rule).
+    Binary,
+}
+
+/// Why [`MaterializedFile::load`] produced nothing.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The cancel flag was raised (the file scrolled away).
+    Cancelled,
+    /// A blob could not be read.
+    Failed(anyhow::Error),
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoadError::Cancelled => f.write_str("loading was cancelled"),
+            LoadError::Failed(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
 
 /// One file's diff with both blobs, its rows (per layout, built on first use),
 /// word ranges for paired lines and, once highlighted, syntax tokens.
@@ -65,38 +121,79 @@ impl MaterializedFile {
         opts: &DiffOptions,
         word_diff: Option<Granularity>,
     ) -> MaterializedFile {
-        let diff = diff_blobs(&old, &new, opts);
-        let pairs = file_pairs(&diff);
-        let words = match word_diff {
-            Some(g) => pairs
-                .iter()
-                .map(|p| word_ranges(diff.old.line(&old, p.old), diff.new.line(&new, p.new), g))
-                .collect(),
-            None => Vec::new(),
-        };
-        MaterializedFile::assemble(diff, words, pairs, old, new)
+        let never = AtomicUsize::new(0);
+        MaterializedFile::build(old, new, opts, word_diff, u32::MAX, &never)
+            .unwrap_or_else(|_| unreachable!("the flag is never raised"))
     }
 
-    /// Reads `change`'s blobs from `provider` and builds the file (no rows
-    /// yet: the caller builds the ones it will show with
-    /// [`MaterializedFile::rows`], still in the background). Runs on the
-    /// background executor.
+    /// Reads `change`'s blobs from `provider` and builds the file in stages,
+    /// with the rows of `opts.rows`: see the module docs. Runs on the
+    /// background executor. `cancel` holding anything but zero stops the
+    /// work at the next stage with [`LoadError::Cancelled`].
     pub fn load(
         provider: &dyn DiffProvider,
         change: &FileChange,
+        opts: &LoadOptions,
+        cancel: &AtomicUsize,
+    ) -> Result<Loaded, LoadError> {
+        let sniff = change.kind == FileKind::Text;
+        let old = read_blob(provider, &change.old_blob, cancel)?;
+        if sniff && is_binary(&old) {
+            return Ok(Loaded::Binary);
+        }
+        let new = read_blob(provider, &change.new_blob, cancel)?;
+        if sniff && is_binary(&new) {
+            return Ok(Loaded::Binary);
+        }
+        let limit = opts.large_file_changed_lines;
+        let file = MaterializedFile::build(old, new, &opts.diff, opts.word_diff, limit, cancel)?;
+        if let Some(layout) = opts.rows
+            && !file.is_large(limit)
+        {
+            check(cancel)?;
+            file.rows(layout);
+        }
+        Ok(Loaded::File(file))
+    }
+
+    /// Diff → (cancel check) → word ranges unless there are more than `large`
+    /// changed lines (checking `cancel` every 256 pairs).
+    fn build(
+        old: Arc<[u8]>,
+        new: Arc<[u8]>,
         opts: &DiffOptions,
         word_diff: Option<Granularity>,
-    ) -> anyhow::Result<MaterializedFile> {
-        let read = |oid: &polygloss_diff::Oid| -> anyhow::Result<Arc<[u8]>> {
-            if oid.is_zero() {
-                Ok(Arc::from(&[][..]))
-            } else {
-                provider.load_blob(oid)
+        large: u32,
+        cancel: &AtomicUsize,
+    ) -> Result<MaterializedFile, LoadError> {
+        let diff = diff_blobs(&old, &new, opts);
+        check(cancel)?;
+        let pairs = file_pairs(&diff);
+        let mut words = Vec::new();
+        if let Some(g) = word_diff
+            && diff.additions.saturating_add(diff.deletions) <= large
+        {
+            words.reserve_exact(pairs.len());
+            for (i, p) in pairs.iter().enumerate() {
+                if i % 256 == 255 {
+                    check(cancel)?;
+                }
+                let (o, n) = (diff.old.line(&old, p.old), diff.new.line(&new, p.new));
+                words.push(word_ranges(o, n, g));
             }
-        };
-        let old = read(&change.old_blob)?;
-        let new = read(&change.new_blob)?;
-        Ok(MaterializedFile::from_blobs(old, new, opts, word_diff))
+        }
+        Ok(MaterializedFile::assemble(diff, words, pairs, old, new))
+    }
+
+    /// Added plus removed lines.
+    pub fn changed_lines(&self) -> u32 {
+        self.diff.additions.saturating_add(self.diff.deletions)
+    }
+
+    /// Whether the file has more than `limit` changed lines: it shows a
+    /// "Load diff" placeholder, and has no word ranges and no rows.
+    pub fn is_large(&self, limit: u32) -> bool {
+        self.changed_lines() > limit
     }
 
     fn assemble(
@@ -199,6 +296,41 @@ impl MaterializedFile {
             new_tokens: new,
             heap_bytes,
         }
+    }
+}
+
+/// git's binary heuristic looks for a NUL byte in this many leading bytes
+/// (`FIRST_FEW_BYTES` in git's `xdiff-interface.c`; the same rule as
+/// `polygloss_core::objects::is_binary`, which the viewport cannot depend on).
+pub const BINARY_SNIFF_LEN: usize = 8_000;
+
+/// Whether `bytes` is binary content by git's rule: a NUL in its first 8,000
+/// bytes.
+pub fn is_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(BINARY_SNIFF_LEN)].contains(&0)
+}
+
+/// Fails with [`LoadError::Cancelled`] once `cancel` is raised.
+pub(crate) fn check(cancel: &AtomicUsize) -> Result<(), LoadError> {
+    if cancel.load(Ordering::Relaxed) == 0 {
+        Ok(())
+    } else {
+        Err(LoadError::Cancelled)
+    }
+}
+
+/// A blob's bytes (empty for the all-zero id of a missing side), after a
+/// cancel check.
+pub(crate) fn read_blob(
+    provider: &dyn DiffProvider,
+    oid: &Oid,
+    cancel: &AtomicUsize,
+) -> Result<Arc<[u8]>, LoadError> {
+    check(cancel)?;
+    if oid.is_zero() {
+        Ok(Arc::from(&[][..]))
+    } else {
+        provider.load_blob(oid).map_err(LoadError::Failed)
     }
 }
 
