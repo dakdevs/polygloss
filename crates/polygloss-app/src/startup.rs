@@ -141,6 +141,9 @@ pub type LaunchHook = Box<dyn FnOnce(Launched, &mut App)>;
 /// One launch of the app.
 pub struct Launch {
     pub open: Option<OpenRequest>,
+    /// The dirs to use (store, logs, settings); `None`:
+    /// `DataPaths::resolve()` (the environment's).
+    pub paths: Option<DataPaths>,
     pub clock: Clock,
     /// Runs before the window opens (after [`init`]).
     pub before_window: Option<AppHook>,
@@ -169,6 +172,7 @@ pub fn main() -> ExitCode {
     };
     run(Launch {
         open: args.open,
+        paths: None,
         clock,
         before_window: None,
         after_launch: None,
@@ -193,7 +197,7 @@ pub fn init(core: Core, cx: &mut App) {
 
 /// Runs the app until it quits.
 pub fn run(launch: Launch) -> ExitCode {
-    let paths = match DataPaths::resolve() {
+    let paths = match launch.paths.clone().map_or_else(DataPaths::resolve, Ok) {
         Ok(paths) => paths,
         Err(err) => {
             eprintln!("Polygloss: {err}");
@@ -221,6 +225,8 @@ pub fn run(launch: Launch) -> ExitCode {
             async {}
         })
         .detach();
+        // The real platform: watcher threads may wake the app.
+        cx.set_global(crate::app_state::WatchersWakeTheApp);
         // The open runs while the window comes up.
         AppState::set(core.clone(), cx);
         let opening = launch.open.map(|req| review_tab::start_open(req, cx));

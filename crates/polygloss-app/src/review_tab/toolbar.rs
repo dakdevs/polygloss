@@ -1,5 +1,6 @@
 //! The review tab's toolbar (design §11.4). The shell draws the review's
-//! title and kind on the left and the threads panel toggle on the right;
+//! title and kind on the left and the threads panel toggle
+//! ([`crate::review_tab::panes::ToggleThreadsPanel`]) on the right;
 //! features contribute their controls in §11.4's order through their
 //! `toolbar_items` functions:
 //!
@@ -15,7 +16,6 @@ use gpui_kit::{
 };
 
 use crate::review_tab::ReviewTab;
-use crate::review_tab::panes::ToggleThreadsPanel;
 
 /// The toolbar's height.
 pub const TOOLBAR_HEIGHT: f32 = 40.0;
@@ -85,7 +85,10 @@ pub(crate) fn render(
                 } else {
                     "Show threads panel"
                 })
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleThreadsPanel), cx)),
+                .debug_selector(|| "toggle-threads-panel".into())
+                // Straight to the tab, not an action dispatched from the
+                // focused element: the click works wherever focus is.
+                .on_click(cx.listener(|tab, _, _, cx| tab.toggle_threads_panel(cx))),
         )
         .into_any_element()
 }

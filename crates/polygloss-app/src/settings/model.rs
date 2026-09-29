@@ -214,7 +214,30 @@ impl Settings {
         if json.trim().is_empty() {
             return Ok(Settings::default());
         }
-        serde_json::from_str(&json)
+        let settings: Settings = serde_json::from_str(&json)?;
+        settings
+            .check_ranges()
+            .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+        Ok(settings)
+    }
+
+    /// Values of the right type but out of range make the file invalid too,
+    /// rather than reaching the viewport.
+    fn check_ranges(&self) -> Result<(), String> {
+        let size = self.buffer_font.size;
+        if !(size.is_finite() && size > 0.0) {
+            return Err(format!("buffer_font.size must be above 0, not {size}"));
+        }
+        if self.diff.split_min_columns == 0 {
+            return Err("diff.split_min_columns must be at least 1".into());
+        }
+        if self.diff.rename_threshold > 100 {
+            return Err(format!(
+                "diff.rename_threshold is a percentage (0 to 100), not {}",
+                self.diff.rename_threshold
+            ));
+        }
+        Ok(())
     }
 
     /// The viewport options these settings ask for (the theme is the

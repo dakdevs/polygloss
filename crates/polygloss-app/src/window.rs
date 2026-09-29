@@ -336,11 +336,14 @@ impl MainWindow {
             self.tabs.close(active);
             self.focus_active(window, cx);
             cx.notify();
-        } else {
-            // Home: ⌘W closes the window, as in any Mac app; the app keeps
-            // running.
+        } else if self.tabs.len() == 1 {
+            // Home alone: ⌘W closes the window, as in any Mac app; the app
+            // keeps running.
             window.remove_window();
         }
+        // Home with reviews open: nothing. Closing the window would drop
+        // every review tab (reopening from the Dock brings back Home only);
+        // as in Safari, the window closes with its last tab.
     }
 
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {

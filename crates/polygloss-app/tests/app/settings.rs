@@ -96,6 +96,29 @@ fn settings_defaults_match_design_table() {
     ] {
         assert!(Settings::parse(bad).is_err(), "{bad}");
     }
+    // So do values out of range.
+    for (bad, names) in [
+        (r#"{ "buffer_font": { "size": 0 } }"#, "buffer_font.size"),
+        (r#"{ "buffer_font": { "size": -3 } }"#, "buffer_font.size"),
+        (
+            r#"{ "diff": { "split_min_columns": 0 } }"#,
+            "diff.split_min_columns",
+        ),
+        (
+            r#"{ "diff": { "rename_threshold": 101 } }"#,
+            "diff.rename_threshold",
+        ),
+    ] {
+        let err = Settings::parse(bad).expect_err(bad).to_string();
+        assert!(err.contains(names), "{bad}: {err}");
+    }
+    for edge in [
+        r#"{ "buffer_font": { "size": 0.5 } }"#,
+        r#"{ "diff": { "split_min_columns": 1, "rename_threshold": 100 } }"#,
+        r#"{ "diff": { "rename_threshold": 0 } }"#,
+    ] {
+        assert!(Settings::parse(edge).is_ok(), "{edge}");
+    }
 }
 
 /// Runs the app until `done` holds (the watcher reports from its own
@@ -200,4 +223,45 @@ fn jsonc_comments_and_trailing_commas_are_stripped_outside_strings() {
     assert_eq!(strip_jsonc("\"a\\\"//b\""), "\"a\\\"//b\"");
     // Line numbers survive, so serde's errors point at the right line.
     assert_eq!(strip_jsonc(text).lines().count(), text.lines().count());
+}
+
+/// The app's production path (`startup::run` sets
+/// `app_state::WatchersWakeTheApp`): a task awaiting the watcher's channel
+/// sleeps until the watcher's own thread sends, no polling. GPUI's test
+/// scheduler forbids such wakes, so this runs the receiver on a plain
+/// executor.
+#[test]
+fn settings_watcher_wakes_an_awaiting_task() {
+    use futures::StreamExt as _;
+    use polygloss_app::settings::loader;
+
+    let sb = Sandbox::isolate();
+    let dir = sb.config_dir().join("polygloss");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (watcher, mut rx) = loader::watch(&dir).expect("watch the config dir");
+    let (woke_tx, woke_rx) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let woke = futures::executor::block_on(rx.next());
+        let _ = woke_tx.send(woke);
+        rx
+    });
+    // Other files in the dir are ignored; the settings file wakes it.
+    std::fs::write(dir.join("other.json"), "{}").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(woke_rx.try_recv().is_err(), "woken by another file");
+    std::fs::write(dir.join("settings.json"), "{}").unwrap();
+    let woke = woke_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the watcher woke the task");
+    assert_eq!(woke, Some(()));
+    // Dropping the watcher closes the channel, which ends the app's task.
+    let mut rx = waiter.join().unwrap();
+    drop(watcher);
+    assert_eq!(
+        futures::executor::block_on(async {
+            while rx.next().await.is_some() {}
+            loader::take_changes(&mut rx)
+        }),
+        None
+    );
 }

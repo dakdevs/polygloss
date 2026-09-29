@@ -6,10 +6,13 @@
 //! background `Core::open` and the first loads are all inside it.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
 use gpui_kit::{App, AsyncApp};
 use polygloss_core::git::{CompareMode, Source};
 use polygloss_core::review::OpenRequest;
@@ -18,7 +21,9 @@ use polygloss_diff::rows::Layout;
 use polygloss_viewport::{FrameStats, ViewportEvent};
 use serde_json::json;
 
-use crate::perf::{Clock, CorpusSpec, PerfArgs, ScenarioResult, max_rss_mb, ms, timeline_ms};
+use crate::perf::{
+    Clock, CorpusSpec, PerfArgs, ScenarioResult, max_rss_mb, ms, private_paths, timeline_ms,
+};
 use crate::review_tab;
 use crate::settings::SettingsStore;
 use crate::settings::model::LayoutSetting;
@@ -48,7 +53,24 @@ pub fn first_paint(frames: &[(Instant, FrameStats)]) -> Option<(Instant, Instant
     Some((*at, first, i + 1))
 }
 
+/// The run's private dir ([`crate::perf::private_paths`]), removed by
+/// [`finish`] (the process exits without running destructors).
+static RUN_DIR: OnceLock<PathBuf> = OnceLock::new();
+
 pub fn run(args: PerfArgs, spec: CorpusSpec, clock: Clock) -> ExitCode {
+    let paths = tempfile::Builder::new()
+        .prefix("polygloss-app-perf-")
+        .tempdir()
+        .context("creating the run's data dir")
+        .and_then(|dir| {
+            let root = dir.keep();
+            let _ = RUN_DIR.set(root.clone());
+            private_paths(&root)
+        });
+    let paths = match paths {
+        Ok(paths) => paths,
+        Err(err) => finish(Err(err), &args),
+    };
     let req = OpenRequest {
         worktree: spec.repo.clone(),
         source: Source::Compare {
@@ -70,6 +92,7 @@ pub fn run(args: PerfArgs, spec: CorpusSpec, clock: Clock) -> ExitCode {
     let (after_args, after_state) = (args.clone(), state.clone());
     startup::run(Launch {
         open: Some(req),
+        paths: Some(paths),
         clock,
         before_window: Some(Box::new(move |cx: &mut App| {
             // The layout is pinned like `polygloss-perf`'s.
@@ -190,5 +213,8 @@ fn finish(outcome: anyhow::Result<ScenarioResult>, args: &PerfArgs) -> ! {
             1
         }
     };
+    if let Some(dir) = RUN_DIR.get() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     std::process::exit(code)
 }

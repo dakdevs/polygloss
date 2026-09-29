@@ -4,9 +4,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures::channel::mpsc::{TryRecvError, UnboundedReceiver, UnboundedSender, unbounded};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use crate::settings::model::Settings;
 
@@ -47,29 +47,26 @@ pub fn load(path: &Path) -> Result<Settings, SettingsError> {
     Settings::parse(&text).map_err(|e| error(e.to_string()))
 }
 
-/// How often the app looks for change notices. The watcher runs on its own
-/// thread, which may not wake GPUI tasks directly (GPUI's test scheduler
-/// forbids it), so the app polls a channel.
-pub const POLL: Duration = Duration::from_millis(150);
-
 /// Watches `dir` (not recursively) and sends `()` after changes to the
 /// settings file settle. Watching the directory, not the file, sees files
 /// created after startup and editors' rename-into-place saves. The watch
-/// ends when the returned debouncer is dropped.
+/// ends, and the channel closes, when the returned debouncer is dropped.
+/// The sends come from the watcher's thread and wake a task awaiting the
+/// receiver (see [`crate::app_state::WatchersWakeTheApp`]).
 pub fn watch(
     dir: &Path,
 ) -> notify::Result<(
     Debouncer<RecommendedWatcher, RecommendedCache>,
-    Receiver<()>,
+    UnboundedReceiver<()>,
 )> {
-    let (tx, rx) = channel();
+    let (tx, rx) = unbounded();
     let mut debouncer = new_debouncer(DEBOUNCE, None, SettingsEvents(tx))?;
     debouncer.watch(dir, RecursiveMode::NonRecursive)?;
     Ok((debouncer, rx))
 }
 
 /// Forwards debounced events that touch the settings file.
-struct SettingsEvents(Sender<()>);
+struct SettingsEvents(UnboundedSender<()>);
 
 impl notify_debouncer_full::DebounceEventHandler for SettingsEvents {
     fn handle_event(&mut self, result: DebounceEventResult) {
@@ -83,20 +80,21 @@ impl notify_debouncer_full::DebounceEventHandler for SettingsEvents {
             Err(_) => true,
         };
         if touches {
-            let _ = self.0.send(());
+            let _ = self.0.unbounded_send(());
         }
     }
 }
 
 /// Whether change notices arrived since the last call (all are taken);
-/// `None` once the watcher is gone.
-pub fn take_changes(rx: &Receiver<()>) -> Option<bool> {
+/// `None` once the watcher is gone. Never registers a waker, so polling
+/// with it is safe under GPUI's test scheduler.
+pub fn take_changes(rx: &mut UnboundedReceiver<()>) -> Option<bool> {
     let mut changed = false;
     loop {
         match rx.try_recv() {
             Ok(()) => changed = true,
             Err(TryRecvError::Empty) => return Some(changed),
-            Err(TryRecvError::Disconnected) => return changed.then_some(true),
+            Err(TryRecvError::Closed) => return changed.then_some(true),
         }
     }
 }

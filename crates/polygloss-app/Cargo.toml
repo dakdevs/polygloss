@@ -53,6 +53,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 regex.workspace = true
+# The perf scenarios' private data dir.
+tempfile.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
@@ -62,4 +64,3 @@ polygloss-core = { workspace = true, features = ["test-support"] }
 polygloss-viewport = { workspace = true, features = ["debug-inspect"] }
 image.workspace = true
 insta.workspace = true
-tempfile.workspace = true

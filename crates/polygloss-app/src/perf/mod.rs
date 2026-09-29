@@ -12,7 +12,10 @@
 //! usage errors (also without `POLYGLOSS_TEST=1`). Without `--repo`,
 //! `--base` and `--head` the corpus comes from `bun benches/corpora/
 //! manifest.ts --corpus <name>` in the checkout the binary was built from.
-//! `benches/run-perf.ts` runs them with every run in a fresh sandbox.
+//! `benches/run-perf.ts` runs them with every run in a fresh sandbox; the
+//! app also keeps its store, logs and settings in a private temporary dir
+//! ([`private_paths`]), removed on exit, so a run by hand never writes the
+//! corpus review into the real store.
 //!
 //! Scenarios: `open` ([`open`], `app_first_paint_ms`). T3.10 adds
 //! `comment-roundtrip`, T3.11 `watcher-banner`.
@@ -159,6 +162,22 @@ pub fn main(args: &[String], clock: Clock) -> ExitCode {
     match args.scenario {
         Scenario::Open => open::run(args, spec, clock),
     }
+}
+
+/// The data paths of a perf run: everything (store, caches, logs,
+/// settings) under `root`, nothing from the environment, like
+/// `polygloss-perf`'s private stores.
+pub fn private_paths(root: &Path) -> anyhow::Result<polygloss_core::paths::DataPaths> {
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).context("creating the run's home")?;
+    Ok(polygloss_core::paths::DataPaths::resolve_with(
+        |k| match k {
+            "HOME" => Some(home.clone().into_os_string()),
+            "POLYGLOSS_DATA_DIR" => Some(root.join("data").into_os_string()),
+            "XDG_CONFIG_HOME" => Some(home.join(".config").into_os_string()),
+            _ => None,
+        },
+    )?)
 }
 
 /// The checkout this binary was built from (for the corpus manifest).

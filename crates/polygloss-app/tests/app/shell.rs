@@ -54,12 +54,14 @@ pub fn draw(cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
+/// `refs/tags/base..refs/tags/head` of [`code_change_repo`]. Full names: on
+/// a case-insensitive disk `head` alone is `HEAD`.
 pub fn compare_req(repo: &Path) -> OpenRequest {
     OpenRequest {
         worktree: repo.to_path_buf(),
         source: Source::Compare {
-            base: "base".into(),
-            head: "head".into(),
+            base: "refs/tags/base".into(),
+            head: "refs/tags/head".into(),
             mode: CompareMode::Direct,
         },
         label: None,
@@ -131,7 +133,9 @@ fn opening_same_review_twice_focuses_existing_tab(cx: &mut TestAppContext) {
     let repo = code_change_repo();
     let mut shell = start(cx);
     let first = shell.open(compare_req(repo.path())).unwrap();
-    let other = shell.open(commit_req(repo.path(), "head")).unwrap();
+    let other = shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
     assert_eq!(shell.tabs(), (3, 2));
     assert_ne!(first, other);
 
@@ -147,17 +151,31 @@ fn close_tab_cmd_w(cx: &mut TestAppContext) {
     let repo = code_change_repo();
     let mut shell = start(cx);
     let first = shell.open(compare_req(repo.path())).unwrap();
-    shell.open(commit_req(repo.path(), "head")).unwrap();
+    shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
     assert_eq!(shell.tabs(), (3, 2));
 
     shell.cx.simulate_keystrokes("cmd-w");
     draw(shell.cx);
     assert_eq!(shell.tabs(), (2, 1));
     assert_eq!(shell.active_review(), Some(first));
+    // ⌘W on Home while a review is open does nothing: closing the window
+    // would lose the review tab.
+    shell.cx.simulate_keystrokes("cmd-{");
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (2, 0));
+    shell.cx.simulate_keystrokes("cmd-w");
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (2, 0));
+    assert_eq!(shell.cx.windows().len(), 1);
+    shell.cx.simulate_keystrokes("cmd-}");
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (2, 1));
     shell.cx.simulate_keystrokes("cmd-w");
     draw(shell.cx);
     assert_eq!(shell.tabs(), (1, 0));
-    // ⌘W on Home closes the window (the app keeps running).
+    // ⌘W on Home alone closes the window (the app keeps running).
     shell.cx.simulate_keystrokes("cmd-w");
     shell.cx.run_until_parked();
     assert!(shell.cx.windows().is_empty());
@@ -169,7 +187,9 @@ fn next_prev_tab_shortcuts(cx: &mut TestAppContext) {
     let repo = code_change_repo();
     let mut shell = start(cx);
     shell.open(compare_req(repo.path())).unwrap();
-    shell.open(commit_req(repo.path(), "head")).unwrap();
+    shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
     assert_eq!(shell.tabs(), (3, 2));
     let active = |shell: &mut Shell, keys: &str| {
         shell.cx.simulate_keystrokes(keys);
@@ -323,6 +343,43 @@ fn banner_strip_never_changes_viewport_anchor(cx: &mut TestAppContext) {
         shell.cx.debug_bounds("viewport-pane"),
     );
     assert_eq!(cleared, before);
+}
+
+#[gpui_kit::test]
+fn toolbar_and_banner_buttons_reach_the_tab_without_focus(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let visible = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| t.threads_panel_visible());
+    let click = |shell: &mut Shell, name: &'static str| {
+        // Nothing focused: an action dispatched from the focused element
+        // would never reach the tab.
+        shell.cx.update(|window, cx| window.blur(cx));
+        let at = shell
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not painted"))
+            .center();
+        shell.cx.simulate_click(at, gpui_kit::Modifiers::none());
+        draw(shell.cx);
+    };
+    assert!(visible(&mut shell));
+    click(&mut shell, "toggle-threads-panel");
+    assert!(!visible(&mut shell), "the toolbar toggle hid the panel");
+
+    let banners = tab.read_with(shell.cx, |t, _| t.banners.clone());
+    banners.update(shell.cx, |b, cx| {
+        b.set(
+            BannerKind::NewIteration,
+            "New iteration available".into(),
+            Box::new(polygloss_app::review_tab::panes::ToggleThreadsPanel),
+            cx,
+        );
+    });
+    draw(shell.cx);
+    click(&mut shell, "banner-button-0");
+    assert!(visible(&mut shell), "the banner's action reached the tab");
 }
 
 #[gpui_kit::test]
@@ -556,6 +613,46 @@ fn review_titles_name_the_repo_and_both_sides() {
     );
     let commit = core.open(&commit_req(repo.path(), "topic")).unwrap();
     assert_eq!(review_tab::title(&commit), format!("{name} · {head}"));
+
+    // Dotted refs (version tags, release branches) keep their dots: the key
+    // splits at the separator, not at the last dot.
+    repo.git(&["tag", "v1.2.0", "refs/tags/head"]);
+    repo.git(&["branch", "release-1.2", "refs/tags/head"]);
+    for (head_ref, mode, sep, shown) in [
+        ("refs/tags/v1.2.0", CompareMode::ThreeDot, "...", "v1.2.0"),
+        ("v1.2.0", CompareMode::Direct, "..", "v1.2.0"),
+        ("release-1.2", CompareMode::Direct, "..", "release-1.2"),
+    ] {
+        req.source = Source::Compare {
+            base: "trunk".into(),
+            head: head_ref.into(),
+            mode,
+        };
+        let opened = core.open(&req).unwrap();
+        assert_eq!(
+            review_tab::title(&opened),
+            format!("{name} · trunk{sep}{shown}"),
+            "{head_ref}"
+        );
+        assert_eq!(
+            review_tab::description(&opened),
+            format!("trunk ({base}) → {shown} ({head}) · 3 files changed"),
+            "{head_ref}"
+        );
+    }
+
+    // Live keys: branch names may hold `@` and `#`.
+    repo.git(&["checkout", "-q", "-b", "feat@x#1", "refs/tags/head"]);
+    let live = core
+        .open(&OpenRequest {
+            source: Source::Live { since: Since::Head },
+            ..compare_req(repo.path())
+        })
+        .unwrap();
+    assert_eq!(
+        review_tab::title(&live),
+        format!("{name} · feat@x#1 (working tree)")
+    );
     assert_eq!(review_tab::short_ref(&"a".repeat(40)), "aaaaaaa");
     assert_eq!(
         review_tab::short_ref("refs/remotes/origin/main"),

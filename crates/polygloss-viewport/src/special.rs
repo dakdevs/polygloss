@@ -7,7 +7,7 @@
 //! | Generated   | `Generated file` with "Load diff"                           |
 //! | Large       | `Large diff · 20,125 changed lines` with "Load diff"        |
 //! | Mode only   | `File mode changed.` (GitHub's text; the header has the badge) |
-//! | Pure rename | `File renamed without changes.`                             |
+//! | Pure rename | `File renamed without changes.` (binary files too)           |
 //! | LFS pointer | the pointer as text; the header gets an `LFS` badge         |
 //! | Load error  | `Could not load this file: …`                               |
 //!
@@ -78,12 +78,18 @@ impl Specials {
         change: &FileChange,
         sizes: Option<(u64, u64)>,
     ) -> Option<BodyLabel> {
+        // A binary file renamed without changes reads as a rename, as on
+        // GitHub, not as "Binary file".
+        if change.kind != FileKind::Submodule
+            && change.old_blob == change.new_blob
+            && let Some(label) = header_only_label(change)
+        {
+            return Some(BodyLabel::plain(label));
+        }
         match change.kind {
             FileKind::Binary => Some(BodyLabel::plain(binary_label(change, sizes))),
             FileKind::Submodule => Some(BodyLabel::plain(submodule_label(change))),
-            _ if change.old_blob == change.new_blob => {
-                header_only_label(change).map(BodyLabel::plain)
-            }
+            _ if change.old_blob == change.new_blob => None,
             _ if change.generated && !self.load_requested(f) => Some(BodyLabel {
                 text: SharedString::new_static("Generated file"),
                 load_diff: true,

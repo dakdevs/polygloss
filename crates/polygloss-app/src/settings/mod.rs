@@ -13,6 +13,7 @@ pub mod model;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use futures::StreamExt as _;
 use gpui_kit::{App, AsyncApp, BorrowAppContext as _, Global};
 use notify::RecommendedWatcher;
 use notify_debouncer_full::{Debouncer, RecommendedCache};
@@ -58,18 +59,32 @@ impl SettingsStore {
             }
         };
         let watcher = match loader::watch(dir) {
-            Ok((watcher, rx)) => {
-                cx.spawn(async move |cx: &mut AsyncApp| {
-                    loop {
-                        cx.background_executor().timer(loader::POLL).await;
-                        match loader::take_changes(&rx) {
-                            Some(true) => cx.update(SettingsStore::reload),
-                            Some(false) => {}
-                            None => break,
+            Ok((watcher, mut rx)) => {
+                if crate::app_state::watchers_wake_the_app(cx) {
+                    // Sleeps until the watcher's thread sends: no wake-ups
+                    // while nothing changes.
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        while rx.next().await.is_some() {
+                            // A burst of notices is one reload.
+                            loader::take_changes(&mut rx);
+                            cx.update(SettingsStore::reload);
                         }
-                    }
-                })
-                .detach();
+                    })
+                    .detach();
+                } else {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        loop {
+                            let poll = crate::app_state::WATCHER_POLL;
+                            cx.background_executor().timer(poll).await;
+                            match loader::take_changes(&mut rx) {
+                                Some(true) => cx.update(SettingsStore::reload),
+                                Some(false) => {}
+                                None => break,
+                            }
+                        }
+                    })
+                    .detach();
+                }
                 Some(watcher)
             }
             Err(e) => {

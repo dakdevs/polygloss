@@ -8,7 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Action, Context, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Window, div, px,
 };
 
@@ -39,6 +39,9 @@ pub struct BannerStrip {
     /// Shown when no banner is (the base and head of the review).
     context: SharedString,
     banners: Vec<Banner>,
+    /// Where banner actions are dispatched (the review tab); `None`: from
+    /// the focused element.
+    target: Option<FocusHandle>,
 }
 
 impl BannerStrip {
@@ -46,11 +49,20 @@ impl BannerStrip {
         BannerStrip {
             context,
             banners: Vec::new(),
+            target: None,
         }
     }
 
-    /// Shows (or replaces) the banner of `kind`; clicking it or its button
-    /// dispatches `action`.
+    /// Dispatches banner actions on the element that tracks `target` (the
+    /// review tab), so a click reaches the tab's handlers wherever focus
+    /// is.
+    pub fn with_target(mut self, target: FocusHandle) -> BannerStrip {
+        self.target = Some(target);
+        self
+    }
+
+    /// Shows (or replaces) the banner of `kind`; clicking its button
+    /// dispatches `action` (on the tab, see [`Self::with_target`]).
     pub fn set(
         &mut self,
         kind: BannerKind,
@@ -134,6 +146,7 @@ impl Render for BannerStrip {
             .bg(bg)
             .children(self.banners.iter().enumerate().map(|(i, b)| {
                 let action = b.action.boxed_clone();
+                let target = self.target.clone();
                 h_flex()
                     .gap_2()
                     .when(i > 0, |d| d.pl_3().border_l_1().border_color(theme.border))
@@ -144,8 +157,10 @@ impl Render for BannerStrip {
                             .label(button_label(b.kind))
                             .xsmall()
                             .ghost()
-                            .on_click(move |_, window, cx| {
-                                window.dispatch_action(action.boxed_clone(), cx)
+                            .debug_selector(move || format!("banner-button-{i}"))
+                            .on_click(move |_, window, cx| match &target {
+                                Some(target) => target.dispatch_action(&*action, window, cx),
+                                None => window.dispatch_action(action.boxed_clone(), cx),
                             }),
                     )
             }))

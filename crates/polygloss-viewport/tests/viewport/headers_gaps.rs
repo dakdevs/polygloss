@@ -734,6 +734,38 @@ fn pure_rename_body_says_renamed_without_changes(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn binary_pure_rename_says_renamed_not_binary(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let mut spec = Spec::modified("assets/new-logo.png", "\u{0}png", "\u{0}png");
+    spec.old_path = Some("assets/logo.png".to_owned());
+    let provider = MemProvider::new_with(
+        vec![spec, Spec::modified("next.rs", "a\n", "b\n")],
+        |files| {
+            let f = &mut files[0];
+            f.kind = FileKind::Binary;
+            f.new_blob = f.old_blob.clone();
+            f.similarity = Some(100);
+        },
+    );
+    let (view, cx) = open(
+        cx,
+        provider.clone(),
+        options(LayoutMode::Split),
+        1400.,
+        600.,
+    );
+    let d = debug(&view, cx);
+    assert_eq!(
+        d.visible_rows[..3],
+        [
+            "== assets/logo.png → assets/new-logo.png",
+            "File renamed without changes.",
+            "== next.rs"
+        ]
+    );
+}
+
+#[gpui_kit::test]
 fn rename_header_old_to_new(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let mut spec = Spec::modified("src/new_name.rs", "a\nb\nc\n", "a\nB\nc\n");

@@ -90,3 +90,26 @@ fn app_first_paint_is_the_first_frame_without_loading_rows() {
     assert!(first_paint(&frames[..2]).is_none());
     assert!(first_paint(&[]).is_none());
 }
+
+#[test]
+fn perf_runs_keep_every_path_in_their_private_dir() {
+    let sb = crate::support::Sandbox::isolate();
+    let root = tempfile::tempdir().unwrap();
+    let paths = polygloss_app::perf::private_paths(root.path()).unwrap();
+    for (name, path) in [
+        ("data_dir", &paths.data_dir),
+        ("db", &paths.db),
+        ("cache_dir", &paths.cache_dir),
+        ("scratch_dir", &paths.scratch_dir),
+        ("logs_dir", &paths.logs_dir),
+        ("config_dir", &paths.config_dir),
+    ] {
+        assert!(path.starts_with(root.path()), "{name}: {}", path.display());
+        // Not the environment's (the sandbox's) paths.
+        assert!(
+            !path.starts_with(sb.home()) && !path.starts_with(sb.data_dir()),
+            "{name}: {}",
+            path.display()
+        );
+    }
+}

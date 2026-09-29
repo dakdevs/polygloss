@@ -70,7 +70,9 @@ impl ReviewTab {
         let settings = SettingsStore::global(cx).shared();
         let opts = viewport_options(&settings, cx);
         let viewport = cx.new(|cx| DiffViewport::new(provider, opts, window, cx));
-        let banners = cx.new(|_| BannerStrip::new(description(&opened).into()));
+        let focus = cx.focus_handle();
+        let banners =
+            cx.new(|_| BannerStrip::new(description(&opened).into()).with_target(focus.clone()));
         let core = AppState::global(cx).core.clone();
         let diff_id = opened.diff_id.clone();
         let subscriptions = vec![
@@ -87,7 +89,7 @@ impl ReviewTab {
             viewport,
             banners,
             panes: panes::Panes::new(cx),
-            focus: cx.focus_handle(),
+            focus,
             applied: settings,
             extensions: HashMap::new(),
             _subscriptions: subscriptions,
@@ -201,27 +203,60 @@ pub fn short_ref(r: &str) -> &str {
     }
 }
 
+/// A compare review's `(separator, base, head)` from its key
+/// (`compare:<base>...<head>` or `compare:<base>..<head>`, design §4.2),
+/// with the refs as the key holds them. Git ref names never contain `..`,
+/// so the first `...` (else `..`) is the separator, whatever dots the refs
+/// hold (`v1.2.0`, `release-1.2`).
+fn compare_sides(key: &str) -> (&'static str, &str, &str) {
+    let spec = key.strip_prefix("compare:").unwrap_or(key);
+    match spec.split_once("...") {
+        Some((base, head)) => ("...", base, head),
+        None => match spec.split_once("..") {
+            Some((base, head)) => ("..", base, head),
+            None => ("..", spec, ""),
+        },
+    }
+}
+
+/// A live review's branch from its key
+/// (`worktree:<worktree>@<branch>#since=<since>`, design §4.2). Branch
+/// names may hold `@` and `#`, and so may the worktree path, so the
+/// worktree prefix is removed by value when known and only the `#since=`
+/// suffix (whose value is `merge-base`, `HEAD` or an OID) is cut from the
+/// end.
+fn live_branch(opened: &OpenedDiff) -> Option<&str> {
+    let rest = opened.review_key.strip_prefix("worktree:")?;
+    let rest = rest.rsplit_once("#since=").map_or(rest, |(r, _)| r);
+    let worktrees = opened
+        .live
+        .as_ref()
+        .map(|l| l.worktree.as_path())
+        .into_iter()
+        .chain(opened.repo.toplevel.as_deref());
+    for worktree in worktrees {
+        let prefix = format!("{}@", worktree.display());
+        if let Some(branch) = rest.strip_prefix(prefix.as_str()) {
+            return Some(branch);
+        }
+    }
+    rest.split_once('@').map(|(_, branch)| branch)
+}
+
 /// What the review compares, from its key (design §4.2).
 fn source_summary(opened: &OpenedDiff) -> String {
-    let key = opened.review_key.as_str();
     match opened.kind {
         ReviewKind::Compare => {
-            let spec = key.strip_prefix("compare:").unwrap_or(key);
-            let (sep, (base, head)) = match spec.split_once("...") {
-                Some(pair) => ("...", pair),
-                None => ("..", spec.split_once("..").unwrap_or((spec, ""))),
-            };
+            let (sep, base, head) = compare_sides(&opened.review_key);
             format!("{}{sep}{}", short_ref(base), short_ref(head))
         }
         ReviewKind::Commit => {
+            let key = opened.review_key.as_str();
             let oid = key.strip_prefix("commit:").unwrap_or(key);
             oid.chars().take(7).collect()
         }
         ReviewKind::Live => {
-            let branch = key
-                .rsplit_once('@')
-                .map(|(_, rest)| rest.split('#').next().unwrap_or(rest))
-                .unwrap_or("worktree");
+            let branch = live_branch(opened).unwrap_or("worktree");
             format!("{branch} (working tree)")
         }
     }
@@ -256,12 +291,9 @@ pub fn description(opened: &OpenedDiff) -> String {
     match opened.kind {
         ReviewKind::Commit => format!("{} · {files} changed against its parent", head),
         ReviewKind::Compare => {
-            let head_ref = source_summary(opened);
-            let head_name = head_ref
-                .rsplit_once('.')
-                .map(|(_, h)| h.to_owned())
-                .unwrap_or_default();
-            let head_side = if head_name == head {
+            let (_, _, head_ref) = compare_sides(&opened.review_key);
+            let head_name = short_ref(head_ref).to_owned();
+            let head_side = if head_name.is_empty() || head_name == head {
                 head
             } else {
                 format!("{head_name} ({head})")
