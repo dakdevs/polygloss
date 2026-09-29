@@ -914,7 +914,7 @@ fn upsert_review(
     Ok(id)
 }
 
-fn latest_iteration(
+pub(crate) fn latest_iteration(
     conn: &Connection,
     review_id: &str,
 ) -> Result<Option<IterationInfo>, StoreError> {
@@ -1003,7 +1003,7 @@ fn review_event(
     }
 }
 
-fn review_exists(conn: &Connection, review_id: &str) -> Result<bool, StoreError> {
+pub(crate) fn review_exists(conn: &Connection, review_id: &str) -> Result<bool, StoreError> {
     Ok(conn
         .query_row("SELECT 1 FROM reviews WHERE id = ?1", [review_id], |_| {
             Ok(())
