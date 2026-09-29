@@ -469,6 +469,8 @@ fn find_cancels_on_new_query(cx: &mut TestAppContext) {
     let stats = bar.read_with(shell.cx, |b, _| b.stats());
     assert_eq!(stats.started, 2);
     assert_eq!(stats.completed, 1);
+    // The first search's background jobs were told to stop.
+    assert_eq!(stats.cancelled, 1);
     // `f39 line 7` and `f39 line 70` … `79`, all in the last file.
     let got = found(&mut shell, &bar);
     assert_eq!(got.len(), 11, "{got:?}");
@@ -481,6 +483,193 @@ fn find_cancels_on_new_query(cx: &mut TestAppContext) {
     draw(shell.cx);
     assert!(found(&mut shell, &bar).is_empty());
     assert_eq!(bar.read_with(shell.cx, |b, _| b.status_label()), "");
+    // Nothing was running: nothing more to cancel.
+    assert_eq!(bar.read_with(shell.cx, |b, _| b.stats().cancelled), 1);
+}
+
+/// Files in [`wide_repo`]: more than one round of background jobs.
+const WIDE: usize = 300;
+
+/// `w000.txt` … `w299.txt`, one changed line each; `needle` in the first
+/// and the last.
+fn wide_repo() -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    for i in 0..WIDE {
+        repo.write(&format!("w{i:03}.txt"), b"base\n");
+    }
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    for i in 0..WIDE {
+        let text = if i == 0 || i == WIDE - 1 {
+            "needle\n"
+        } else {
+            "head\n"
+        };
+        repo.write(&format!("w{i:03}.txt"), text.as_bytes());
+    }
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    repo
+}
+
+#[gpui_kit::test]
+fn find_streams_results_before_finishing(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = wide_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let bar = bar(&mut shell, &tab);
+    // Every state the bar shows: (matches, searching, label).
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let _watch = shell.cx.update(|_, cx| {
+        let seen = seen.clone();
+        cx.observe(&bar, move |bar, cx| {
+            let b = bar.read(cx);
+            seen.borrow_mut()
+                .push((b.matches().len(), b.is_searching(), b.status_label()));
+        })
+    });
+    find_text(&mut shell, "needle");
+    let seen = seen.borrow().clone();
+    assert!(
+        seen.iter()
+            .any(|(n, searching, label)| *n == 1 && *searching && label == "1 match…"),
+        "the first file's match shows while the rest is searched: {seen:?}"
+    );
+    assert_eq!(
+        seen.last().map(|s| (s.0, s.1)),
+        Some((2, false)),
+        "{seen:?}"
+    );
+    assert_eq!(
+        found(&mut shell, &bar),
+        [(0, Side::New, 0), ((WIDE - 1) as u32, Side::New, 0)]
+    );
+}
+
+/// `a.txt` with `needle` re-indented (whitespace only) and `b` changed.
+fn reindent_repo() -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"  needle\na\n");
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    repo.write("a.txt", b"    needle\nb\n");
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    repo
+}
+
+#[gpui_kit::test]
+fn find_reruns_when_diff_options_change(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = reindent_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let bar = bar(&mut shell, &tab);
+    find_text(&mut shell, "needle");
+    // Whitespace shown: a removed and an added line.
+    assert_eq!(
+        found(&mut shell, &bar),
+        [(0, Side::Old, 0), (0, Side::New, 0)]
+    );
+    keys(&mut shell, "enter");
+    assert_eq!(bar.read_with(shell.cx, |b, _| b.current()), Some(0));
+    let started = bar.read_with(shell.cx, |b, _| b.stats().started);
+
+    // Hiding whitespace makes the line context: the search runs again, so
+    // no match points at the removed row that is gone.
+    shell.cx.update(|_, cx| {
+        let mut settings = (*SettingsStore::global(cx).settings()).clone();
+        settings.diff.hide_whitespace = true;
+        SettingsStore::set(settings, cx);
+    });
+    draw(shell.cx);
+    assert_eq!(
+        bar.read_with(shell.cx, |b, _| b.stats().started),
+        started + 1
+    );
+    assert_eq!(found(&mut shell, &bar), [(0, Side::New, 0)]);
+    let (old_line, current) =
+        bar.read_with(shell.cx, |b, _| (b.matches()[0].old_line, b.current()));
+    assert_eq!(old_line, Some(0));
+    assert_eq!(current, None);
+
+    // Anything else the viewport does (moving the cursor) searches nothing.
+    keys(&mut shell, "enter");
+    assert_eq!(
+        bar.read_with(shell.cx, |b, _| b.stats().started),
+        started + 1
+    );
+}
+
+#[gpui_kit::test]
+fn find_first_enter_starts_at_the_cursor(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = long_gap_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let bar = bar(&mut shell, &tab);
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let put_cursor = |shell: &mut Shell, at: CursorPos| {
+        shell
+            .cx
+            .update(|_, cx| viewport.update(cx, |v, cx| v.set_cursor(Some(at), cx)));
+        draw(shell.cx);
+        assert_eq!(cursor(shell, &tab), Some(at));
+    };
+    let search = |shell: &mut Shell, q: &str| {
+        shell.cx.update(|window, cx| {
+            bar.update(cx, |b, cx| {
+                b.set_query("", window, cx);
+                b.set_query(q, window, cx);
+            })
+        });
+        draw(shell.cx);
+    };
+    let current = |shell: &mut Shell| bar.read_with(shell.cx, |b, _| b.current());
+    keys(&mut shell, "cmd-f");
+
+    // `changed 10` and `changed 80`; the cursor on new line 12, between.
+    search(&mut shell, "changed");
+    assert_eq!(
+        found(&mut shell, &bar),
+        [(0, Side::New, 10), (0, Side::New, 80)]
+    );
+    put_cursor(&mut shell, pos(0, Side::New, 12));
+    keys(&mut shell, "enter");
+    assert_eq!(
+        current(&mut shell),
+        Some(1),
+        "the first match after the cursor"
+    );
+    search(&mut shell, "changed");
+    put_cursor(&mut shell, pos(0, Side::New, 12));
+    keys(&mut shell, "shift-enter");
+    assert_eq!(
+        current(&mut shell),
+        Some(0),
+        "the last match before the cursor"
+    );
+
+    // Removed `line 10` shows before `changed 10`: from the added line, the
+    // next match is the added line itself, the previous one the removed.
+    search(&mut shell, "10");
+    assert_eq!(
+        found(&mut shell, &bar),
+        [(0, Side::Old, 10), (0, Side::New, 10)]
+    );
+    put_cursor(&mut shell, pos(0, Side::New, 10));
+    keys(&mut shell, "enter");
+    assert_eq!(current(&mut shell), Some(1));
+    search(&mut shell, "10");
+    put_cursor(&mut shell, pos(0, Side::New, 10));
+    keys(&mut shell, "shift-enter");
+    assert_eq!(current(&mut shell), Some(0));
+    // Past the last match: wraps to the first.
+    search(&mut shell, "changed");
+    put_cursor(&mut shell, pos(0, Side::New, 83));
+    keys(&mut shell, "enter");
+    assert_eq!(current(&mut shell), Some(0));
 }
 
 /// The pure search over two blobs: context lines once (on the new side,
@@ -495,7 +684,7 @@ fn search_blobs_orders_by_display_and_dedupes_context() {
         .unwrap();
     /// `(side, line, old_line, hidden, preview_match)`.
     type Row = (Side, u32, Option<u32>, bool, std::ops::Range<usize>);
-    let got: Vec<Row> = search::search_blobs(7, old, new, &re, &DiffOptions::default())
+    let got: Vec<Row> = search::search_blobs(7, old, new, &re, &DiffOptions::default(), usize::MAX)
         .into_iter()
         .map(|m: FindMatch| {
             assert_eq!(m.file_idx, 7);
@@ -524,10 +713,17 @@ fn search_previews_cut_long_lines_around_the_match() {
         .unwrap();
     let indented = b"        let needle = 1;\n";
     let long = format!("{}needle{}\n", "x".repeat(300), "y".repeat(300));
-    let got = search::search_blobs(0, b"", indented, &re, &DiffOptions::default());
+    let got = search::search_blobs(0, b"", indented, &re, &DiffOptions::default(), usize::MAX);
     assert_eq!(got[0].preview.as_ref(), "let needle = 1;");
     assert_eq!(got[0].preview_match, 4..10);
-    let got = search::search_blobs(0, b"", long.as_bytes(), &re, &DiffOptions::default());
+    let got = search::search_blobs(
+        0,
+        b"",
+        long.as_bytes(),
+        &re,
+        &DiffOptions::default(),
+        usize::MAX,
+    );
     let p = got[0].preview.as_ref();
     assert!(p.starts_with('…') && p.ends_with('…'), "{p}");
     assert_eq!(&p[got[0].preview_match.clone()], "needle");
@@ -549,6 +745,75 @@ fn search_compile_handles_case_regex_and_errors() {
     let re = search::compile("a.b", opts(false, true)).unwrap().unwrap();
     assert!(re.is_match(b"AXB"));
     assert!(search::compile("a(", opts(false, true)).is_err());
+}
+
+/// `^` and `$` are a line's ends in regex mode, on lines past the first,
+/// before a final newline and before a CRLF (the whole-blob pre-check
+/// agrees with the per-line pass).
+#[test]
+fn search_regex_anchors_match_at_every_line() {
+    let re = |q: &str| {
+        search::compile(
+            q,
+            FindOptions {
+                case_sensitive: false,
+                regex: true,
+            },
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let lines = |q: &str, new: &[u8]| -> Vec<u32> {
+        search::search_blobs(0, b"", new, &re(q), &DiffOptions::default(), usize::MAX)
+            .into_iter()
+            .map(|m| m.line)
+            .collect()
+    };
+    let new = b"use x;\nfn main() {\n    let y = 1;\n}\n";
+    assert_eq!(lines("^fn", new), [1]);
+    assert_eq!(lines(";$", new), [0, 2]);
+    assert_eq!(lines(r"\{$", new), [1]);
+    assert_eq!(lines("^}$", new), [3]);
+    let crlf = b"use x;\r\nfn main() {\r\n}\r\n";
+    assert_eq!(lines("^fn", crlf), [1]);
+    assert_eq!(lines(";$", crlf), [0]);
+    assert_eq!(lines(r"\{$", crlf), [1]);
+    // Still never across lines.
+    assert_eq!(lines(r";\sfn", new), Vec::<u32>::new());
+}
+
+/// A limit keeps the first matches in display order (removed lines before
+/// the lines replacing them) and stops collecting there.
+#[test]
+fn search_blobs_stops_at_the_limit_in_display_order() {
+    let re = search::compile("e", FindOptions::default())
+        .unwrap()
+        .unwrap();
+    let old = b"keep\nold one\nold three\nctx\n";
+    let new = b"keep\nnew one\nnew two\nctx\n";
+    let at = |limit| -> Vec<(Side, u32)> {
+        search::search_blobs(0, old, new, &re, &DiffOptions::default(), limit)
+            .into_iter()
+            .map(|m| (m.side, m.line))
+            .collect()
+    };
+    let all = at(usize::MAX);
+    assert_eq!(
+        all,
+        [
+            (Side::New, 0),
+            (Side::New, 0),
+            (Side::Old, 1),
+            (Side::Old, 2),
+            (Side::Old, 2),
+            (Side::New, 1),
+            (Side::New, 1),
+            (Side::New, 2),
+        ]
+    );
+    for limit in 0..all.len() {
+        assert_eq!(at(limit), all[..limit], "limit {limit}");
+    }
 }
 
 /// An in-memory provider of one text file.
@@ -602,11 +867,105 @@ fn search_file_skips_binary_and_stops_when_cancelled() {
         .unwrap();
     let diff = DiffOptions::default();
     let go = |p: &OneFile, cancel: bool| {
-        search::search_file(&p.files[0], p, &re, &diff, &AtomicBool::new(cancel)).len()
+        search::search_file(
+            &p.files[0],
+            p,
+            &re,
+            &diff,
+            &AtomicBool::new(cancel),
+            usize::MAX,
+        )
+        .len()
     };
     assert_eq!(go(&provider(FileKind::Text, b"needle\n"), false), 1);
     assert_eq!(go(&provider(FileKind::Text, b"needle\n"), true), 0);
     assert_eq!(go(&provider(FileKind::Binary, b"needle\n"), false), 0);
     // Listed as text, but a NUL byte: binary after all.
     assert_eq!(go(&provider(FileKind::Text, b"needle\0\n"), false), 0);
+    // A limit caps the matches kept.
+    let p = provider(FileKind::Text, b"needle\nneedle\nneedle\n");
+    let limited = |limit| {
+        search::search_file(&p.files[0], &p, &re, &diff, &AtomicBool::new(false), limit).len()
+    };
+    assert_eq!(limited(usize::MAX), 3);
+    assert_eq!(limited(2), 2);
+    assert_eq!(limited(0), 0);
+}
+
+/// Many files of one provider, each `needle` twice; the cancel flag is set
+/// while the third file is read.
+struct CancelOnThird {
+    files: Arc<Vec<FileChange>>,
+    cancel: Arc<AtomicBool>,
+    loads: std::sync::atomic::AtomicUsize,
+}
+
+impl DiffProvider for CancelOnThird {
+    fn object_format(&self) -> ObjectFormat {
+        ObjectFormat::Sha1
+    }
+    fn files(&self) -> Arc<Vec<FileChange>> {
+        self.files.clone()
+    }
+    fn load_blob(&self, _: &Oid) -> anyhow::Result<Arc<[u8]>> {
+        use std::sync::atomic::Ordering;
+        // Two blobs per file.
+        if self.loads.fetch_add(1, Ordering::SeqCst) == 4 {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+        Ok(Arc::from(&b"needle\nneedle\n"[..]))
+    }
+    fn blob_size(&self, _: &Oid) -> anyhow::Result<u64> {
+        Ok(14)
+    }
+}
+
+/// One background job's work: files in order, stopping when cancelled or
+/// once `limit` matches are kept.
+#[test]
+fn search_chunk_stops_when_cancelled_or_at_the_limit() {
+    let files: Vec<FileChange> = (0..6u32)
+        .map(|i| FileChange {
+            idx: i,
+            status: FileStatus::Modified,
+            old_path: Some(GitPath::from_bytes(b"a.txt")),
+            new_path: Some(GitPath::from_bytes(b"a.txt")),
+            old_mode: None,
+            new_mode: None,
+            old_blob: Oid::parse(&format!("{:040x}", 2 * i + 1), ObjectFormat::Sha1).unwrap(),
+            new_blob: Oid::parse(&format!("{:040x}", 2 * i + 2), ObjectFormat::Sha1).unwrap(),
+            similarity: None,
+            kind: FileKind::Text,
+            generated: false,
+        })
+        .collect();
+    let re = search::compile("needle", FindOptions::default())
+        .unwrap()
+        .unwrap();
+    let diff = DiffOptions::default();
+    let provider = || {
+        let cancel = Arc::new(AtomicBool::new(false));
+        CancelOnThird {
+            files: Arc::new(files.clone()),
+            cancel,
+            loads: Default::default(),
+        }
+    };
+    let ids = |got: Vec<FindMatch>| -> Vec<u32> { got.into_iter().map(|m| m.file_idx).collect() };
+
+    // Cancelled while reading the third file: nothing from it on.
+    let p = provider();
+    let got = search::search_chunk(&files, &p, &re, &diff, &p.cancel, usize::MAX);
+    assert_eq!(ids(got), [0, 0, 1, 1]);
+
+    // Not cancelled: stops once the limit is reached, mid-file too.
+    let p = provider();
+    let never = AtomicBool::new(false);
+    let got = search::search_chunk(&files, &p, &re, &diff, &never, 5);
+    assert_eq!(ids(got), [0, 0, 1, 1, 2]);
+    assert_eq!(
+        p.loads.load(std::sync::atomic::Ordering::SeqCst),
+        6,
+        "no file read past the limit"
+    );
 }

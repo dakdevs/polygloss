@@ -2,8 +2,8 @@
 //! query, find its matches in one file's two blobs, and order them the way
 //! the diff shows them.
 //!
-//! Matching is per line (a match never spans lines), over bytes, so
-//! non-UTF-8 content is searched too. A file is read through the
+//! Matching is per line (a match never spans lines; `^` and `$` are a
+//! line's ends), over bytes, so non-UTF-8 content is searched too. A file is read through the
 //! [`DiffProvider`], the same blobs the viewport reads, whether the
 //! viewport has loaded the file or not. Only files with rows to go to are
 //! searched: text and symlinks whose content changed (binary, submodule and
@@ -81,8 +81,10 @@ pub fn compile(query: &str, opts: FindOptions) -> Result<Option<Regex>, String> 
     };
     RegexBuilder::new(&pattern)
         .case_insensitive(!opts.case_sensitive)
-        // A match never spans lines; `^`/`$` are a line's ends.
-        .multi_line(false)
+        // `^`/`$` are a line's ends, also in the whole-blob pre-check of
+        // `search_blobs` (lines are matched without their `\n` or `\r\n`).
+        .multi_line(true)
+        .crlf(true)
         .build()
         .map(Some)
         .map_err(|e| match e {
@@ -96,17 +98,18 @@ pub fn searchable(change: &FileChange) -> bool {
     matches!(change.kind, FileKind::Text | FileKind::Symlink) && change.old_blob != change.new_blob
 }
 
-/// The matches of `re` in file `change`, read through `provider`, in
-/// display order. Empty when the file has nothing to search, a blob cannot
-/// be read (logged), or `cancel` is set.
+/// The first `limit` matches of `re` in file `change`, read through
+/// `provider`, in display order. Empty when the file has nothing to search,
+/// a blob cannot be read (logged), or `cancel` is set.
 pub fn search_file(
     change: &FileChange,
     provider: &dyn DiffProvider,
     re: &Regex,
     diff: &DiffOptions,
     cancel: &AtomicBool,
+    limit: usize,
 ) -> Vec<FindMatch> {
-    if !searchable(change) || cancel.load(Ordering::Relaxed) {
+    if limit == 0 || !searchable(change) || cancel.load(Ordering::Relaxed) {
         return Vec::new();
     }
     let read = |oid: &polygloss_diff::Oid| -> Option<std::sync::Arc<[u8]>> {
@@ -131,74 +134,140 @@ pub fn search_file(
     {
         return Vec::new();
     }
-    search_blobs(change.idx, &old, &new, re, diff)
+    search_blobs(change.idx, &old, &new, re, diff, limit)
 }
 
-/// The matches of `re` in the blobs `old` and `new` of file `file_idx`, in
-/// display order (see the module docs). `diff` groups hunks as the viewport
-/// does, which decides what context is hidden.
+/// One background job of the search: the first `limit` matches in `files`,
+/// in order. Stops early once `cancel` is set (a new query) or `limit`
+/// matches are kept, so a query that matches nearly every line holds at
+/// most `limit` matches (and their previews) per job.
+pub fn search_chunk(
+    files: &[FileChange],
+    provider: &dyn DiffProvider,
+    re: &Regex,
+    diff: &DiffOptions,
+    cancel: &AtomicBool,
+    limit: usize,
+) -> Vec<FindMatch> {
+    let mut found = Vec::new();
+    for change in files {
+        if found.len() >= limit || cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let left = limit - found.len();
+        found.extend(search_file(change, provider, re, diff, cancel, left));
+    }
+    found
+}
+
+/// The first `limit` matches of `re` in the blobs `old` and `new` of file
+/// `file_idx`, in display order (see the module docs). `diff` groups hunks
+/// as the viewport does, which decides what context is hidden.
 pub fn search_blobs(
     file_idx: u32,
     old: &[u8],
     new: &[u8],
     re: &Regex,
     diff: &DiffOptions,
+    limit: usize,
 ) -> Vec<FindMatch> {
     // Most files do not match at all: skip the line diff for them.
-    if !re.is_match(old) && !re.is_match(new) {
+    if limit == 0 || (!re.is_match(old) && !re.is_match(new)) {
         return Vec::new();
     }
     let fd = diff_blobs(old, new, diff);
-    let map = LineMap::from_diff(&fd);
-    let mut out: Vec<((u32, u8, u32), FindMatch)> = Vec::new();
-    for line in 0..fd.new.len() {
+    // A match found, its preview not built yet.
+    struct Hit<'a> {
+        key: DisplayKey,
+        side: Side,
+        line: u32,
+        text: &'a [u8],
+        range: Range<usize>,
+    }
+    // Each side's matches come in display order, so the first `limit` of
+    // each side hold the file's first `limit`.
+    let mut hits: Vec<Hit> = Vec::new();
+    'new: for line in 0..fd.new.len() {
         let text = fd.new.line(new, line);
-        let old_line = match map.map_line_back(line) {
-            Mapped::Unchanged(o) => Some(o),
-            Mapped::Changed { .. } => None,
-        };
-        let hidden = old_line.is_some_and(|o| is_hidden(&fd, &[], o));
-        for m in line_matches(re, text) {
-            let (preview, preview_match) = preview(text, m);
-            out.push((
-                (line, 1, 0),
-                FindMatch {
-                    file_idx,
-                    side: Side::New,
-                    line,
-                    old_line,
-                    hidden,
-                    preview,
-                    preview_match,
-                },
-            ));
+        for range in line_matches(re, text) {
+            if hits.len() == limit {
+                break 'new;
+            }
+            let key = (line, 1, 0);
+            hits.push(Hit {
+                key,
+                side: Side::New,
+                line,
+                text,
+                range,
+            });
         }
     }
     // Removed lines: the old lines of change blocks, placed right before
     // the new lines that replace them (or the line after the removal).
-    for (old_range, new_start) in removed_blocks(&fd) {
+    let new_hits = hits.len();
+    'old: for (old_range, new_start) in removed_blocks(&fd) {
         for line in old_range {
             let text = fd.old.line(old, line);
-            for m in line_matches(re, text) {
-                let (preview, preview_match) = preview(text, m);
-                out.push((
-                    (new_start, 0, line),
-                    FindMatch {
-                        file_idx,
-                        side: Side::Old,
-                        line,
-                        old_line: None,
-                        hidden: false,
-                        preview,
-                        preview_match,
-                    },
-                ));
+            for range in line_matches(re, text) {
+                if hits.len() - new_hits == limit {
+                    break 'old;
+                }
+                hits.push(Hit {
+                    key: (new_start, 0, line),
+                    side: Side::Old,
+                    line,
+                    text,
+                    range,
+                });
             }
         }
     }
     // Stable: several matches in one line keep their order.
-    out.sort_by_key(|(key, _)| *key);
-    out.into_iter().map(|(_, m)| m).collect()
+    hits.sort_by_key(|h| h.key);
+    hits.truncate(limit);
+    let map = LineMap::from_diff(&fd);
+    hits.into_iter()
+        .map(|h| {
+            let old_line = match h.side {
+                Side::New => match map.map_line_back(h.line) {
+                    Mapped::Unchanged(o) => Some(o),
+                    Mapped::Changed { .. } => None,
+                },
+                Side::Old => None,
+            };
+            let (preview, preview_match) = preview(h.text, h.range);
+            FindMatch {
+                file_idx,
+                side: h.side,
+                line: h.line,
+                old_line,
+                hidden: old_line.is_some_and(|o| is_hidden(&fd, &[], o)),
+                preview,
+                preview_match,
+            }
+        })
+        .collect()
+}
+
+/// Where a line shows in a file's unified diff, as a sort key: a new line
+/// `n` is `(n, 1, 0)`, a removed old line `o` shows before the lines that
+/// replace it, `(start of the replacement, 0, o)`.
+pub type DisplayKey = (u32, u8, u32);
+
+/// The [`DisplayKey`] of line `line` of `side` in `fd` (an old context
+/// line sorts as its new line). The first `⏎` compares the cursor and the
+/// matches with it.
+pub fn display_key(fd: &FileDiff, side: Side, line: u32) -> DisplayKey {
+    match side {
+        Side::New => (line, 1, 0),
+        Side::Old => match removed_blocks(fd).find(|(old, _)| old.contains(&line)) {
+            Some((_, new_start)) => (new_start, 0, line),
+            None => match LineMap::from_diff(fd).map_line(line) {
+                Mapped::Unchanged(n) | Mapped::Changed { nearest: n } => (n, 1, 0),
+            },
+        },
+    }
 }
 
 /// Whether old line `old_line` is hidden: outside every hunk of `diff` and

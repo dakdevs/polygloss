@@ -7,8 +7,11 @@
 //! background executor ([`search`]): files the viewport has not loaded
 //! included, several chunks of files at once, results streamed into the bar
 //! in file order with a count and a result list. A new query (or toggle)
-//! cancels the search in flight. `⏎` / `⇧⏎` go to the next and previous
-//! match (wrapping), and so does clicking a result: the file is expanded if
+//! cancels the search in flight, and so does a change of the viewport's
+//! diff options or file list (the matches' rows would be stale): the
+//! search then runs again. `⏎` / `⇧⏎` go to the next and previous match
+//! (wrapping; the first from the diff's cursor), and so does clicking a
+//! result: the file is expanded if
 //! collapsed, a generated or large file loads its diff, hidden context
 //! around the match is revealed, and the line cursor lands on the match.
 //! `Esc` closes the bar and gives the keyboard back to the diff.
@@ -28,7 +31,8 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, IntoElement as _, KeyBinding,
     ScrollStrategy, SharedString, Subscription, Task, UniformListScrollHandle, Window,
 };
-use polygloss_diff::Side;
+use polygloss_diff::options::DiffOptions;
+use polygloss_diff::{FileChange, Side};
 use polygloss_viewport::{BodyRow, CursorPos, DiffViewport, FileState, RowKey, ScrollTarget};
 use regex::bytes::Regex;
 
@@ -112,6 +116,9 @@ pub struct FindStats {
     pub started: u64,
     /// Searches that ran to the end (or to [`MAX_MATCHES`]).
     pub completed: u64,
+    /// Searches told to stop while running (their background jobs see the
+    /// cancel flag).
+    pub cancelled: u64,
 }
 
 /// Find across all files for one review tab.
@@ -138,6 +145,9 @@ pub struct FindBar {
     capped: bool,
     /// Tells the running search's background jobs to stop.
     cancel: Arc<AtomicBool>,
+    /// The diff options and file list the results were found with (`None`
+    /// without a search): the search runs again when the viewport's change.
+    source: Option<(DiffOptions, Arc<Vec<FileChange>>)>,
     /// The running search; dropping it cancels it.
     search: Option<Task<()>>,
     /// Bumped by every new search, so a stale batch is never applied.
@@ -155,19 +165,31 @@ impl FindBar {
         cx: &mut Context<FindBar>,
     ) -> FindBar {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in all files"));
-        let subscriptions = vec![cx.subscribe_in(
-            &input,
-            window,
-            |bar: &mut FindBar, input, event: &InputEvent, _window, cx| match event {
-                InputEvent::Change => {
-                    let text = input.read(cx).value().to_string();
-                    bar.query_changed(text, cx);
-                }
-                InputEvent::PressEnter { shift: false, .. } => bar.next(cx),
-                InputEvent::PressEnter { shift: true, .. } => bar.prev(cx),
-                _ => {}
-            },
-        )];
+        let rerun = cx.observe(&viewport, |bar: &mut FindBar, viewport, cx| {
+            let stale = bar.source.as_ref().is_some_and(|(diff, files)| {
+                let v = viewport.read(cx);
+                v.options().diff != *diff || !Arc::ptr_eq(v.document().files(), files)
+            });
+            if stale {
+                bar.restart(cx);
+            }
+        });
+        let subscriptions = vec![
+            rerun,
+            cx.subscribe_in(
+                &input,
+                window,
+                |bar: &mut FindBar, input, event: &InputEvent, _window, cx| match event {
+                    InputEvent::Change => {
+                        let text = input.read(cx).value().to_string();
+                        bar.query_changed(text, cx);
+                    }
+                    InputEvent::PressEnter { shift: false, .. } => bar.next(cx),
+                    InputEvent::PressEnter { shift: true, .. } => bar.prev(cx),
+                    _ => {}
+                },
+            ),
+        ];
         FindBar {
             viewport,
             diff_focus,
@@ -185,6 +207,7 @@ impl FindBar {
             total: 0,
             capped: false,
             cancel: Arc::new(AtomicBool::new(false)),
+            source: None,
             search: None,
             generation: 0,
             stats: FindStats::default(),
@@ -317,8 +340,9 @@ impl FindBar {
         }
     }
 
-    /// `⏎`: the next match (the first at or after the cursor's file when
-    /// none was gone to yet), wrapping at the end.
+    /// `⏎`: the next match, wrapping at the end. When none was gone to
+    /// yet: the first at or after the diff's cursor (else the first in the
+    /// top file or after).
     pub fn next(&mut self, cx: &mut Context<Self>) {
         let n = self.matches.len();
         if n == 0 {
@@ -326,19 +350,14 @@ impl FindBar {
         }
         let ix = match self.current {
             Some(i) => (i + 1) % n,
-            None => {
-                let from = self.start_file(cx);
-                self.matches
-                    .iter()
-                    .position(|m| m.file_idx >= from)
-                    .unwrap_or(0)
-            }
+            None => self.first(true, cx),
         };
         self.go_to(ix, cx);
     }
 
-    /// `⇧⏎`: the previous match (the last at or before the cursor's file
-    /// when none was gone to yet), wrapping at the start.
+    /// `⇧⏎`: the previous match, wrapping at the start. When none was gone
+    /// to yet: the last before the diff's cursor (else the last in the top
+    /// file or before).
     pub fn prev(&mut self, cx: &mut Context<Self>) {
         let n = self.matches.len();
         if n == 0 {
@@ -346,13 +365,7 @@ impl FindBar {
         }
         let ix = match self.current {
             Some(i) => (i + n - 1) % n,
-            None => {
-                let from = self.start_file(cx);
-                self.matches
-                    .iter()
-                    .rposition(|m| m.file_idx <= from)
-                    .unwrap_or(n - 1)
-            }
+            None => self.first(false, cx),
         };
         self.go_to(ix, cx);
     }
@@ -371,10 +384,44 @@ impl FindBar {
         cx.notify();
     }
 
-    /// The file the cursor is in, else the one at the top.
-    fn start_file(&self, cx: &App) -> u32 {
+    /// The match the first `⏎` (`forward`) or `⇧⏎` goes to (see
+    /// [`Self::next`], [`Self::prev`]); wraps when there is none that way.
+    fn first(&self, forward: bool, cx: &App) -> usize {
+        let last = self.matches.len().saturating_sub(1);
         let v = self.viewport.read(cx);
-        v.cursor().map_or(v.anchor().file_idx, |c| c.file_idx)
+        let Some(c) = v.cursor() else {
+            let top = v.anchor().file_idx;
+            return if forward {
+                self.matches.iter().position(|m| m.file_idx >= top)
+            } else {
+                self.matches.iter().rposition(|m| m.file_idx <= top)
+            }
+            .unwrap_or(if forward { 0 } else { last });
+        };
+        // The cursor's file is laid out, so its diff is loaded (with the
+        // options the matches were found with).
+        let diff = match v.document().state(c.file_idx) {
+            FileState::Materialized(file) => Some(&file.diff),
+            _ => None,
+        };
+        let at = diff.map(|fd| search::display_key(fd, c.side, c.line));
+        let vs_cursor = |m: &FindMatch| {
+            m.file_idx.cmp(&c.file_idx).then_with(|| match (diff, at) {
+                (Some(fd), Some(at)) => search::display_key(fd, m.side, m.line).cmp(&at),
+                _ => std::cmp::Ordering::Equal,
+            })
+        };
+        if forward {
+            self.matches
+                .iter()
+                .position(|m| vs_cursor(m).is_ge())
+                .unwrap_or(0)
+        } else {
+            self.matches
+                .iter()
+                .rposition(|m| vs_cursor(m).is_lt())
+                .unwrap_or(last)
+        }
     }
 
     fn query_changed(&mut self, query: String, cx: &mut Context<Self>) {
@@ -387,8 +434,12 @@ impl FindBar {
     /// Cancels the search in flight, clears the results and searches the
     /// current query and options.
     fn restart(&mut self, cx: &mut Context<Self>) {
-        self.cancel.store(true, Ordering::Relaxed);
+        // The running jobs see the flag; the task is dropped below.
+        if !self.cancel.swap(true, Ordering::Relaxed) && self.searching {
+            self.stats.cancelled += 1;
+        }
         self.search = None;
+        self.source = None;
         self.generation += 1;
         self.matches.clear();
         self.rows.clear();
@@ -418,11 +469,15 @@ impl FindBar {
                 v.options().diff,
             )
         };
+        self.source = Some((diff, files.clone()));
         let generation = self.generation;
         self.stats.started += 1;
         self.searching = true;
         self.total = files.len();
         self.search = Some(cx.spawn(async move |this, cx| {
+            // Matches each job may keep: up to one past the cap, which tells
+            // a capped search from one with exactly `MAX_MATCHES`.
+            let mut left = MAX_MATCHES + 1;
             let mut next = 0;
             while next < files.len() {
                 let mut round = Vec::with_capacity(PARALLEL);
@@ -435,26 +490,22 @@ impl FindBar {
                     let (provider, files, re, cancel) =
                         (provider.clone(), files.clone(), re.clone(), cancel.clone());
                     round.push(cx.background_spawn(async move {
-                        let mut found = Vec::new();
-                        for change in &files[chunk] {
-                            if cancel.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            found.extend(search::search_file(
-                                change, &*provider, &re, &diff, &cancel,
-                            ));
-                        }
-                        found
+                        search::search_chunk(&files[chunk], &*provider, &re, &diff, &cancel, left)
                     }));
                 }
                 let batches = futures::future::join_all(round).await;
                 let searched = next;
-                let more = this
-                    .update(cx, |bar, cx| bar.append(generation, batches, searched, cx))
-                    .unwrap_or(false);
-                if !more {
+                let kept = this
+                    .update(cx, |bar, cx| {
+                        let more = bar.append(generation, batches, searched, cx);
+                        more.then_some(bar.matches.len())
+                    })
+                    .ok()
+                    .flatten();
+                let Some(kept) = kept else {
                     return;
-                }
+                };
+                left = (MAX_MATCHES + 1).saturating_sub(kept);
             }
             this.update(cx, |bar, cx| bar.finish(generation, cx)).ok();
         }));
