@@ -5614,6 +5614,7 @@ dependencies = [
  "polygloss-platform",
  "polygloss-viewport",
  "regex",
+ "tempfile",
  "tracing-appender",
  "tracing-subscriber",
 ]
@@ -5627,6 +5628,7 @@ dependencies = [
  "polygloss-core",
  "polygloss-mcp",
  "polygloss-platform",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
 ]

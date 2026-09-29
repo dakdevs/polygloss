@@ -1,5 +1,6 @@
 /target
 /target-shared
+/target-shared.lock
 /node_modules
 /vendor/
 /dist/

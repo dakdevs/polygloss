@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Dependency audit for the workspace's "must not contain" rules (docs/plan.md,
-# "Workspace layout and crate ownership"). Exits non-zero on any violation.
+# Dependency audit for the workspace's "Must not contain" rules (docs/plan.md,
+# "Workspace layout and crate ownership"), one copy of each `links` crate, and no
+# network-capable crates. Exits 1 on a violation, 2 if cargo cannot read the workspace.
 #
 #   scripts/check-deps.sh [--manifest-path <Cargo.toml>]
 #
@@ -55,18 +56,25 @@ forbid() {
   done <<<"$(printf '%s\n' "$names" | grep -E "$pattern" || true)"
 }
 
-# 1. The slim CLI links no GPUI, lumis or tree-sitter.
-forbid polygloss-cli '^(gpui|lumis|tree-sitter)' "slim CLI: no gpui, lumis or tree-sitter"
+# 1-3. The "Must not contain" column of the ownership table. Only the viewport,
+# app and perf crates may reach GPUI; the slim CLI also links no tree-sitter.
+# Package-name patterns (extended regex):
+gpui='^gpui'
+lumis='^lumis'
+tree_sitter='^tree-sitter'
+tokio='^tokio$'
+rmcp='^rmcp'
+git='^(gix|git2|libgit2-sys)$' # not gix-imara-diff, a standalone diff algorithm
+sqlite='^(rusqlite|libsqlite3-sys)$'
 
-# 2. Only the viewport, app and perf crates may reach GPUI.
-for crate in polygloss-diff polygloss-core polygloss-highlight polygloss-platform polygloss-mcp; do
-  forbid "$crate" '^gpui' "no GPUI outside viewport, app and perf"
-done
-
-# 3. diff and core stay runtime- and highlighter-free.
-for crate in polygloss-diff polygloss-core; do
-  forbid "$crate" '^(lumis|tokio|rmcp)' "no lumis, tokio or rmcp in diff and core"
-done
+forbid polygloss-diff "$gpui|$lumis|$tokio|$rmcp|$git|$sqlite" "polygloss-diff: no GPUI, lumis, tokio, rmcp, git or SQLite"
+forbid polygloss-core "$gpui|$lumis|$tokio|$rmcp" "polygloss-core: no GPUI, lumis, tokio or rmcp"
+forbid polygloss-highlight "$gpui|$git|$sqlite" "polygloss-highlight: no GPUI, git or SQLite"
+forbid polygloss-viewport "$git|$sqlite" "polygloss-viewport: no git or SQLite"
+forbid polygloss-platform "$gpui|$tokio" "polygloss-platform: no GPUI or tokio"
+forbid polygloss-app "$tokio|$rmcp" "polygloss-app: no tokio or rmcp"
+forbid polygloss-mcp "$gpui|$lumis" "polygloss-mcp: no GPUI or lumis"
+forbid polygloss-cli "$gpui|$lumis|$tree_sitter" "slim CLI: no GPUI, lumis or tree-sitter"
 
 # 4. One copy of each crate with a `links` key we depend on.
 if ! dups="$(tree --workspace -d --depth 0 --prefix none --format '{p}')"; then
