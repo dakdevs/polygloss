@@ -7,4 +7,32 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# T1.1 adds every dependency the ownership table allows.
+# Final for M1 (T1.1): later M1 tasks add code, never dependencies. `libc`
+# (getpeereid, OQ-P8) arrives with T4.1. Never GPUI, tokio, rmcp or lumis.
+[dependencies]
+polygloss-diff.workspace = true
+gix.workspace = true
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+markdown.workspace = true
+sha2.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+interprocess.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+# Only for `testing::{Sandbox, FixtureRepo}` behind `test-support`.
+tempfile = { workspace = true, optional = true }
+
+[features]
+# `polygloss_core::testing`: Sandbox and FixtureRepo for this crate's and other
+# crates' tests. Never enabled by shipping binaries.
+test-support = ["dep:tempfile"]
+
+[dev-dependencies]
+# Core lists itself so its own integration tests get `testing` (plan M1 conventions).
+polygloss-core = { path = ".", features = ["test-support"] }
+insta.workspace = true
+tempfile.workspace = true

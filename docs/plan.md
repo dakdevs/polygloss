@@ -396,7 +396,8 @@ scripts/cargo.sh deny check licenses bans sources
 - Create: `crates/polygloss-diff/src/{types.rs, options.rs, lines.rs, hunks.rs, whitespace.rs, word.rs, line_map.rs, rows.rs, unified_text.rs}` (all but `types.rs` as documented empty stubs), `crates/polygloss-diff/benches/{hunks.rs, word.rs, line_map.rs}` (empty criterion groups) and their `[[bench]]` entries
 - Create: `crates/polygloss-core/src/{ids.rs, paths.rs, testing.rs, objects.rs}`, `src/git/{mod.rs, runner.rs, version.rs, repo.rs, resolve.rs, diff_tree.rs, attrs.rs, snapshot.rs, listing.rs}`, `src/store/{mod.rs, migrations.rs, schema-v1.sql, events.rs}`, `src/review/{mod.rs, models.rs, open.rs, threads.rs, submit.rs, suggestions.rs, viewed.rs, view_state.rs, sessions.rs, summary.rs, carry_forward.rs}`, `src/ipc/{mod.rs, protocol.rs, client.rs, server.rs}`, `src/urls.rs` (stubs except `ids.rs`)
 - Modify: `crates/polygloss-diff/Cargo.toml`, `crates/polygloss-core/Cargo.toml` (add every dependency the ownership table allows, once, so later tasks never edit these manifests; T0.1 already added `gix-imara-diff` to `polygloss-diff` so the workspace `[profile.dev.package]` override matches)
-- Test: `crates/polygloss-diff/src/types.rs` (unit), `crates/polygloss-core/tests/ids.rs`, `tests/scripts/diff-id-vectors.test.ts`
+- Create: `fixtures/diff-id-vectors.json` (the golden vectors, read by both the Rust and the TypeScript test)
+- Test: `crates/polygloss-diff/src/types.rs` (unit), `crates/polygloss-core/tests/ids.rs`, `tests/scripts/diff-id-vectors.test.ts`, `tests/scripts/module-skeletons.test.ts`
 
 **Interfaces (produces)**
 
@@ -429,6 +430,8 @@ pub mod review_key { pub fn live(worktree: &Path, branch: Option<&str>, since: &
 **Tests:** `oid_parse_rejects_uppercase_and_wrong_length`, `oid_zero_roundtrip`, `empty_tree_constants_match_design` (both formats, §3), `git_path_non_utf8_is_escaped`, `diff_id_golden_sha1`, `diff_id_golden_sha256`, `diff_id_ignores_nothing_but_trees` (same trees, different commits → same id), `review_key_live_detached`, `review_key_compare_three_dot_and_direct`, `review_key_commit`. The bun test `diff-id-vectors.test.ts` recomputes both golden vectors with `Bun.CryptoHasher("sha256")` from the §4.1 formula, so the vectors are checked by an independent implementation.
 
 **Acceptance:** golden vectors agree in Rust and TypeScript; every module file named above exists with a `//!` doc line; manifests are final for M1.
+
+**As built (T1.1):** `polygloss-core`'s `lib.rs` uses `#![deny(unsafe_code)]` instead of `forbid`, because Rust 2024 makes `std::env::set_var` unsafe and `testing::Sandbox::isolate()` (library code behind `test-support`) must set process env; `testing.rs` opts in with `#![allow(unsafe_code)]`, nothing else may. Extra helpers beyond the contract: `ObjectFormat::from_name`, `Oid::object_format`, `Oid: Display + TryFrom<String>`, `Mode::{parse_octal, is_symlink, is_submodule}`, `GitPath::to_bytes` (unescapes), `DiffId::parse`, `DiffIdPrefix::{as_str, matches}`, `IdError`. Serde forms: `Oid`/`DiffId` as validated strings, enums lower/snake case, `Mode` as its `u32`. Non-UTF-8 `GitPath.text` is git's quoted form including the surrounding `"`. `libc` is not in core's manifest until T4.1 (OQ-P8).
 
 ### T1.2 Git runner, version check, repo discovery, source resolution
 
@@ -471,6 +474,8 @@ pub struct FixtureRepo; impl FixtureRepo { pub fn init(fmt: ObjectFormat) -> Fix
 ```
 
 **Tests:** `git_runner_scrubs_inherited_git_env` (RF3), `git_runner_sets_offline_env_and_flags`, `git_version_parses_apple_suffix` (`git version 2.54.0 (Apple Git-157)`), `git_version_too_old_is_rejected`, `discover_from_subdirectory`, `discover_linked_worktree_shares_common_dir`, `resolve_commit_uses_first_parent_tree`, `resolve_root_commit_uses_empty_tree`, `resolve_merge_commit_uses_first_parent`, `resolve_three_dot_uses_merge_base`, `resolve_direct_uses_base_tree`, `resolve_no_merge_base_suggests_direct`, `resolve_ref_inputs_store_full_names`, `resolve_oid_input_keys_by_commit`, `resolve_live_default_since_merge_base_with_origin_head`, `default_branch_fallback_chain`, `resolve_live_in_unborn_repo_uses_empty_tree` (RF2, OQ-P5), `resolve_live_without_merge_base_falls_back_to_head_with_notice` (OQ-P5), `resolve_detached_head_live_key`, `resolve_shallow_missing_objects_errors` (RF2), `rev_starting_with_dash_is_not_an_option`.
+
+`polygloss-core` denies `unsafe_code` crate-wide (T1.1); `testing.rs` starts with `#![allow(unsafe_code)]` so `isolate()` can call `std::env::set_var`.
 
 **Acceptance:** every test above passes; each §3 resolution rule has at least one of them; every test runs under `Sandbox::isolate()`, so `GIT_CONFIG_GLOBAL` is an empty temp file and `GIT_CONFIG_NOSYSTEM=1`.
 
@@ -793,6 +798,8 @@ impl Core {
 ```
 
 **Tests:** `viewed_carries_over_when_blobs_unchanged`, `viewed_clears_when_new_blob_changes`, `changed_since_viewed_rule`, `viewed_added_file_uses_zero_old_blob`, `viewed_never_creates_iteration`, `view_state_roundtrip_v1`, `view_state_unknown_version_ignored`, `session_owner_pid_links_canonical_id`, `assign_latest_opener_wins`, `human_reassign_records_assigned_by_human`, `recent_sessions_filters_by_last_seen`, `waiter_replacement_returns_previous_pid`, `live_waiter_ignores_dead_pid`, `summaries_awaiting_you_for_rereview_and_open_questions`, `summaries_viewed_counts_use_latest_iteration`, `summaries_sorted_by_updated_at_and_exclude_archived`.
+
+The M1 core manifest has no `libc` (it arrives with T4.1) and core denies `unsafe_code`, so the dead-pid check behind `live_waiter_for_review` uses a safe probe (e.g. `/bin/kill -0 <pid>` via `std::process::Command`; waiters run as the same user) rather than `libc::kill`.
 
 ### T1.15 Carry-forward positions
 
@@ -1292,7 +1299,7 @@ bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --c
 
 ### T4.1 Socket IPC and single instance
 
-**Files:** `crates/polygloss-core/src/ipc/{protocol.rs, client.rs, server.rs}`, `crates/polygloss-app/src/ipc/mod.rs`, core `Cargo.toml` adds `libc` for `getpeereid` (OQ-P8); tests `crates/polygloss-core/tests/ipc.rs`, `crates/polygloss-app/tests/ipc.rs`
+**Files:** `crates/polygloss-core/src/ipc/{protocol.rs, client.rs, server.rs}`, `crates/polygloss-app/src/ipc/mod.rs`, core `Cargo.toml` adds `libc` for `getpeereid` (OQ-P8; core denies `unsafe_code` crate-wide, so the FFI call needs a narrow `#[allow(unsafe_code)]`); tests `crates/polygloss-core/tests/ipc.rs`, `crates/polygloss-app/tests/ipc.rs`
 
 **Interfaces**
 

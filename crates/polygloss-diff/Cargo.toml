@@ -7,7 +7,29 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# T1.1 adds every other dependency the ownership table allows. gix-imara-diff is
-# here from T0.1 so the workspace `[profile.dev.package]` override matches a package.
+# Final for M1 (T1.1): later M1 tasks add code, never dependencies. Ownership:
+# gix-imara-diff, serde, thiserror. The leaf crate: no git, IO, SQLite or GPUI.
 [dependencies]
 gix-imara-diff.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+# tempfile: the git-parity tests run `git diff --no-index` under a temp HOME and an
+# empty GIT_CONFIG_GLOBAL (plan "Test hygiene").
+[dev-dependencies]
+insta.workspace = true
+criterion.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "hunks"
+harness = false
+
+[[bench]]
+name = "word"
+harness = false
+
+[[bench]]
+name = "line_map"
+harness = false
