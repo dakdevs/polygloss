@@ -13,6 +13,7 @@ pub mod threads;
 pub mod view_state;
 pub mod viewed;
 
+pub use carry_forward::{CARRY_FORWARD_ENGINE_VERSION, Position, PositionState, position_of};
 pub use models::{IterationInfo, OpenRequest, OpenedDiff, PinnedBy};
 pub use open::Core;
 pub use sessions::{AssignedBy, SessionInfo};
