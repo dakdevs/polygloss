@@ -11,7 +11,13 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod home;
 mod kit_fonts;
+mod shell;
+mod submit;
+mod theme;
+mod threads;
+mod tree;
 mod viewport_screenshots;
 
 use support::harness::Test;
@@ -27,5 +33,15 @@ fn e2e_harness_runs_tests_on_the_main_thread() {
 const HARNESS: &[Test] = &crate::tests![e2e_harness_runs_tests_on_the_main_thread];
 
 fn main() -> std::process::ExitCode {
-    support::harness::run(&[HARNESS, kit_fonts::TESTS, viewport_screenshots::TESTS])
+    support::harness::run(&[
+        HARNESS,
+        kit_fonts::TESTS,
+        viewport_screenshots::TESTS,
+        shell::TESTS,
+        home::TESTS,
+        theme::TESTS,
+        tree::TESTS,
+        threads::TESTS,
+        submit::TESTS,
+    ])
 }

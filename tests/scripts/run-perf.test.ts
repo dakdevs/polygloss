@@ -73,6 +73,11 @@ describe("budgets", () => {
       typical: 300,
       linux: 2000,
     });
+    // The same budget, measured in the app itself (T3.1).
+    expect(budgets.metrics.app_first_paint_ms.budget).toEqual({
+      typical: 300,
+      linux: 2000,
+    });
     for (const corpus of ["typical", "synthetic", "huge-file", "linux"])
       expect(budgets.metrics.scroll_p95_ms.budget).toHaveProperty(corpus, 8.3);
     for (const corpus of ["typical", "synthetic", "huge-file", "linux"])
@@ -268,6 +273,19 @@ describe("plan", () => {
       "synthetic/split",
       "synthetic/unified",
     ]);
+    // The app's own first paint runs in the app (`Polygloss --perf-scenario
+    // open`) where its budget applies.
+    expect(where("app-open")).toEqual([
+      "typical/split",
+      "typical/unified",
+      "linux/split",
+      "linux/unified",
+    ]);
+    expect(
+      runs
+        .filter((r) => r.scenario === "app-open")
+        .every((r) => r.runner === "app" && r.enabled),
+    ).toBe(true);
     // App-level scenarios are planned but not run until the app has them.
     const banner = runs.filter((r) => r.scenario === "watcher-banner");
     expect(banner.map((r) => [r.corpus, r.enabled])).toEqual([
@@ -299,6 +317,29 @@ describe("plan", () => {
       budgets,
     });
     expect(warmupRun(disabled)).toBeNull();
+    // Each runner warms up its own binary: the app has its own Metal shader
+    // cache (OQ-P12).
+    const both = planRuns({
+      corpora: ["linux"],
+      layouts: ["unified"],
+      scenarios: ["app-open", "scroll"],
+      budgets,
+    });
+    expect(warmupRun(both, "perf")).toMatchObject({
+      scenario: "open",
+      runner: "perf",
+      corpus: "linux",
+      layout: "unified",
+    });
+    expect(warmupRun(both, "app")).toEqual({
+      scenario: "app-open",
+      runner: "app",
+      corpus: "linux",
+      layout: "unified",
+      metrics: ["app_first_paint_ms"],
+      enabled: true,
+    });
+    expect(warmupRun(disabled, "app")).toBeNull();
   });
 
   test("a scenario filter and a corpus subset narrow the plan", () => {
@@ -395,6 +436,44 @@ printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"rep
 );
 chmodSync(fakeHarness, 0o755);
 
+// The app's side (`Polygloss --perf-scenario <name> …`, T3.1): it needs
+// POLYGLOSS_TEST=1 like the real app and echoes what it was given.
+const fakeApp = join(sandbox.home, "fake-app");
+const appLaunches = join(sandbox.home, "fake-app.log");
+writeFileSync(
+  fakeApp,
+  `#!/bin/sh
+[ -f "${control}" ] && . "${control}"
+echo "$*" >> "${appLaunches}"
+if [ "$1" = "--version" ]; then echo "Polygloss 0"; exit 0; fi
+if [ "$1" != "--perf-scenario" ]; then echo "fake-app: expected --perf-scenario" >&2; exit 2; fi
+if [ "$POLYGLOSS_TEST" != "1" ]; then echo "fake-app: set POLYGLOSS_TEST=1" >&2; exit 2; fi
+scenario=$2; shift 2
+corpus= layout= repo= base= head= mode=three-dot
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --corpus) corpus=$2; shift ;;
+    --layout) layout=$2; shift ;;
+    --repo) repo=$2; shift ;;
+    --base) base=$2; shift ;;
+    --head) head=$2; shift ;;
+    --direct) mode=direct ;;
+    --json) ;;
+    *) echo "fake-app: unexpected $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+sleep 0.2
+case "$scenario" in
+  open) metrics="\\"app_first_paint_ms\\": \${APP_FIRST_PAINT:-150}" ;;
+  *) echo "fake-app: unknown scenario $scenario" >&2; exit 2 ;;
+esac
+printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"repo":"%s","base":"%s","head":"%s","mode":"%s","polygloss_test":"%s"}}\\n' \\
+  "$scenario" "$corpus" "$layout" "$metrics" "$repo" "$base" "$head" "$mode" "$POLYGLOSS_TEST"
+`,
+);
+chmodSync(fakeApp, 0o755);
+
 /** Runs `run-perf.ts` against the fake; `knobs` go to its control file. */
 function runPerf(
   args: string[],
@@ -408,7 +487,15 @@ function runPerf(
       .join(""),
   );
   const r = Bun.spawnSync(
-    ["bun", "benches/run-perf.ts", "--bin", fakeHarness, ...args],
+    [
+      "bun",
+      "benches/run-perf.ts",
+      "--bin",
+      fakeHarness,
+      "--app-bin",
+      fakeApp,
+      ...args,
+    ],
     {
       cwd: repoRoot,
       env: { ...sandbox.env, POLYGLOSS_CORPORA: corporaRoot, ...extra },
@@ -470,6 +557,7 @@ describe("run-perf CLI", () => {
         highlight_ms: 40,
         comment_repaint_ms: 12,
         watcher_banner_ms: null,
+        app_first_paint_ms: 150,
       });
       expect(typical.metrics.peak_rss_mb).toBeGreaterThan(0);
       // Linux is compared directly (the manifest's mode), each run in its own
@@ -813,6 +901,69 @@ describe("run-perf CLI", () => {
       );
       expect(r.code).toBe(2);
       expect(r.stderr).toContain("bun benches/corpora/make-typical.ts");
+    },
+    cliTimeout,
+  );
+
+  test(
+    "app scenarios run the app with POLYGLOSS_TEST=1 and the corpus entry",
+    () => {
+      writeFileSync(appLaunches, "");
+      const out = join(sandbox.home, "results", "app.json");
+      const r = runPerf(
+        [
+          "--corpus",
+          "linux",
+          "--layouts",
+          "split",
+          "--scenarios",
+          "app-open",
+          "--check-budgets",
+          "--out",
+          out,
+        ],
+        { APP_FIRST_PAINT: "640" },
+      );
+      expect({ code: r.code, stderr: r.stderr }).toMatchObject({ code: 0 });
+      const results = JSON.parse(readFileSync(out, "utf8")) as Results;
+      expect(results.rows[0]!.metrics.app_first_paint_ms).toBe(640);
+      const run = results.runs.find((x) => x.scenario === "app-open")!;
+      expect(run.result?.info).toMatchObject({
+        polygloss_test: "1",
+        repo: join(corporaRoot, "linux"),
+        base: "v6.10",
+        head: "v6.11",
+        mode: "direct",
+      });
+      // A launch, one unmeasured window (the app's own shader cache), then
+      // the measured run; the app is told the scenario by its own name.
+      const lines = readFileSync(appLaunches, "utf8").trim().split("\n");
+      expect(lines[0]).toBe("--version");
+      expect(
+        lines.slice(1).map((l) => l.split(" ").slice(0, 6).join(" ")),
+      ).toEqual([
+        "--perf-scenario open --corpus linux --layout split",
+        "--perf-scenario open --corpus linux --layout split",
+      ]);
+      expect(results.warmup).toBeTruthy();
+      expect(r.stdout).toContain("640 ✓");
+      // Over budget (Linux < 2,000 ms) with --check-budgets fails.
+      const slow = runPerf(
+        [
+          "--corpus",
+          "linux",
+          "--layouts",
+          "split",
+          "--scenarios",
+          "app-open",
+          "--check-budgets",
+          "--out",
+          join(sandbox.home, "results", "app-slow.json"),
+        ],
+        { APP_FIRST_PAINT: "2100" },
+      );
+      expect(slow.code).toBe(1);
+      expect(slow.stderr).toContain("app_first_paint_ms");
     },
     cliTimeout,
   );

@@ -777,3 +777,45 @@ fn frame_stats_shaped_lines_add_up_across_wrap_passes(cx: &mut TestAppContext) {
     assert!(misses > 0);
     assert_eq!(shaped, misses, "every line shaped is reported once");
 }
+
+#[gpui_kit::test]
+fn split_no_newline_markers_of_both_sides_share_one_row(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    const MARKER: &str = "\\ No newline at end of file";
+    let provider = MemProvider::new(vec![Spec::modified("a.txt", "a\nb", "a\nc")]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Split), 1400., 400.);
+    let d = debug(&view, cx);
+    assert_eq!(
+        d.visible_rows,
+        [
+            "== a.txt".to_owned(),
+            split(Some((1, ' ', "a")), Some((1, ' ', "a"))),
+            split(Some((2, '-', "b")), Some((2, '+', "c"))),
+            format!("{MARKER} │ {MARKER}"),
+        ]
+    );
+    assert_eq!(d.row_bounds[3], (HEADER_H + 2.0 * ROW_H, ROW_H));
+    // Both halves paint the marker on that row, left one in the left half.
+    let markers: Vec<_> = d
+        .painted_text
+        .iter()
+        .filter(|(_, _, t)| t == MARKER)
+        .collect();
+    assert_eq!(markers.len(), 2, "{:?}", d.painted_text);
+    assert_eq!(markers[0].1, markers[1].1);
+    assert!(markers[0].0 < 700.0 && markers[1].0 > 700.0, "{markers:?}");
+
+    // Unified keeps one marker per side, each after its own line.
+    view.update(cx, |v, cx| v.set_options(options(LayoutMode::Unified), cx));
+    settle(cx);
+    let d = debug(&view, cx);
+    assert_eq!(
+        d.visible_rows[2..],
+        [
+            unified(Some(2), None, '-', "b"),
+            MARKER.to_owned(),
+            unified(None, Some(2), '+', "c"),
+            MARKER.to_owned(),
+        ]
+    );
+}

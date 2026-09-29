@@ -245,6 +245,21 @@ pub(crate) fn store_diff(
     Ok(true)
 }
 
+/// Stores `kind = 'binary'` for file `idx` of diff `id` when it is listed as
+/// text: T1.3's first-read rule (`diff-tree` classifies by attributes only; a
+/// NUL byte is found when the blobs are first read). Derived metadata like
+/// `additions`, so no §7.3 event: nothing about the review changed, and every
+/// reader of `file_changes` sees it on its next read. Returns whether a row
+/// changed (`false` for a diff that is not stored, an index out of range, or
+/// a file already binary, a symlink or a submodule).
+pub(crate) fn mark_binary(tx: &Transaction, id: &DiffId, idx: u32) -> Result<bool, StoreError> {
+    Ok(tx.execute(
+        "UPDATE file_changes SET kind = 'binary' \
+         WHERE diff_id = ?1 AND idx = ?2 AND kind = 'text'",
+        params![id.as_str(), idx],
+    )? == 1)
+}
+
 /// The stored file list of a diff, or `None` when the diff is not stored.
 pub(crate) fn load_files(
     conn: &Connection,

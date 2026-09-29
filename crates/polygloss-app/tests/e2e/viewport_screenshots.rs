@@ -217,6 +217,15 @@ fn e2e_viewport_special_files() {
         rows.iter().any(|r| r.contains("a1b2c3d → d4e5f60")),
         "{rows:#?}"
     );
+    // Header-only entries get GitHub's body text (M3 polish, T3.1), and the
+    // symlink's two missing newlines share one split row.
+    for row in [
+        "File renamed without changes.",
+        "File mode changed.",
+        "\\ No newline at end of file │ \\ No newline at end of file",
+    ] {
+        assert!(rows.iter().any(|r| r == row), "no {row:?} in {rows:#?}");
+    }
     // The symlink's target and the deleted file's lines are real rows.
     assert_rows(
         &shot.debug,

@@ -664,7 +664,7 @@ fn submodule_one_line(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn mode_only_change_badge_no_body(cx: &mut TestAppContext) {
+fn mode_only_change_badge_and_body_text(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let provider = MemProvider::new_with(
         vec![
@@ -685,11 +685,51 @@ fn mode_only_change_badge_no_body(cx: &mut TestAppContext) {
         600.,
     );
     let d = debug(&view, cx);
-    assert_eq!(d.visible_rows[..2], ["== run.sh", "== next.rs"]);
-    assert_eq!(d.row_bounds[1].0, HEADER_H);
+    // GitHub's body text for a header-only entry (no blobs read).
+    assert_eq!(
+        d.visible_rows[..3],
+        ["== run.sh", "File mode changed.", "== next.rs"]
+    );
+    assert_eq!(d.row_bounds[1], (HEADER_H, PLACEHOLDER_H));
+    assert_eq!(d.row_bounds[2].0, HEADER_H + PLACEHOLDER_H);
     assert_eq!(header(&d, 0).badges, ["100644 → 100755"]);
     assert_eq!(header(&d, 0).counts, None);
     assert!(header(&d, 1).badges.is_empty(), "{:?}", header(&d, 1));
+    assert_eq!(provider.load_count(), 2);
+}
+
+#[gpui_kit::test]
+fn pure_rename_body_says_renamed_without_changes(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let mut spec = Spec::modified("docs/guide.md", "# Guide\n", "# Guide\n");
+    spec.old_path = Some("docs/old-guide.md".to_owned());
+    let provider = MemProvider::new_with(
+        vec![spec, Spec::modified("next.rs", "a\n", "b\n")],
+        |files| {
+            let f = &mut files[0];
+            f.new_blob = f.old_blob.clone();
+            f.similarity = Some(100);
+        },
+    );
+    let (view, cx) = open(
+        cx,
+        provider.clone(),
+        options(LayoutMode::Split),
+        1400.,
+        600.,
+    );
+    let d = debug(&view, cx);
+    assert_eq!(
+        d.visible_rows[..3],
+        [
+            "== docs/old-guide.md → docs/guide.md",
+            "File renamed without changes.",
+            "== next.rs"
+        ]
+    );
+    assert_eq!(d.row_bounds[1], (HEADER_H, PLACEHOLDER_H));
+    assert_eq!(header(&d, 0).counts, None);
+    // Only `next.rs` was read: a content-equal rename needs no blobs.
     assert_eq!(provider.load_count(), 2);
 }
 

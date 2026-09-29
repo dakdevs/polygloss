@@ -1,13 +1,45 @@
 //! Polygloss, the GPUI app. The modules live in this library so the `app`
 //! and `e2e` integration test binaries can reach them; `main.rs` is only the
-//! entry point.
+//! entry point ([`startup::main`]).
 //!
-//! - [`provider`]: [`CoreDiffProvider`], core's opened diffs behind the
-//!   viewport's `DiffProvider` trait (kept for M3).
-//! - [`gate_shell`]: the M2 gate window (`Polygloss --gate …`); T3.1 replaces
-//!   it with the app shell.
+//! The shell (T3.1): [`startup`] (arguments, logging, the store, the GPUI
+//! app), [`app_state`], [`settings`], [`window`] (the one main window and
+//! the menu bar), [`tabs`], [`review_tab`] (toolbar, banner strip, panes),
+//! [`provider`] ([`CoreDiffProvider`]), [`logging`], [`perf`] (test-only
+//! `--perf-scenario`) and [`features`], which wires every feature module in:
+//! each exposes `init(cx)`, review-tab features `attach`, and toolbar and
+//! pane contributors their render functions (plan M3 "App module map").
 
-pub mod gate_shell;
+pub mod app_state;
+pub mod composer;
+pub mod cursor;
+pub mod editor;
+pub mod features;
+pub mod feed;
+pub mod find;
+pub mod home;
+pub mod ipc;
+pub mod iterations;
+pub mod keymap;
+pub mod live;
+pub mod logging;
+pub mod markdown;
+pub mod notify;
+pub mod open_flow;
+pub mod palette;
+pub mod perf;
 pub mod provider;
+pub mod review_tab;
+pub mod settings;
+pub mod startup;
+pub mod submit;
+pub mod tabs;
+pub mod theme;
+pub mod threads;
+pub mod tree;
+pub mod urls;
+pub mod view_state;
+pub mod viewed;
+pub mod window;
 
 pub use provider::CoreDiffProvider;

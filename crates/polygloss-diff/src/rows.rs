@@ -204,9 +204,14 @@ pub enum Row {
     /// `\ No newline at end of file` for `side`, right after the row showing
     /// that side's last line (unified) or after its change block (split). In
     /// unified, a context row whose sides both lack the newline gets one marker
-    /// with `side: New`, as git prints it; split gets one marker per side, `Old`
-    /// first. Never emitted while the last line is hidden in a gap.
+    /// with `side: New`, as git prints it; in split, markers of both sides at
+    /// the same place are one [`Row::NoNewlineBoth`]. Never emitted while the
+    /// last line is hidden in a gap.
     NoNewline { side: Side },
+    /// Split only: both sides' `\ No newline at end of file` markers on one
+    /// row (each in its own half), after a context row or change block that
+    /// holds both sides' last lines.
+    NoNewlineBoth,
 }
 
 /// The rows of `fd` in `layout`, with the gaps `exp` reveals shown as context.
@@ -330,14 +335,7 @@ impl Builder {
             match self.layout {
                 // One unified line, one marker (git prints the new side's).
                 Layout::Unified if old_marker && new_marker => self.marker(Side::New),
-                _ => {
-                    if old_marker {
-                        self.marker(Side::Old);
-                    }
-                    if new_marker {
-                        self.marker(Side::New);
-                    }
-                }
+                _ => self.split_markers(old_marker, new_marker),
             }
         }
     }
@@ -388,17 +386,23 @@ impl Builder {
                         right: cell(&new, LineKind::Added),
                     });
                 }
-                if old_marker {
-                    self.marker(Side::Old);
-                }
-                if new_marker {
-                    self.marker(Side::New);
-                }
+                self.split_markers(old_marker, new_marker);
             }
         }
     }
 
     fn marker(&mut self, side: Side) {
         self.rows.push(Row::NoNewline { side });
+    }
+
+    /// The markers after a split row or change block: both on one row, or
+    /// the one side's alone.
+    fn split_markers(&mut self, old_marker: bool, new_marker: bool) {
+        match (old_marker, new_marker) {
+            (true, true) => self.rows.push(Row::NoNewlineBoth),
+            (true, false) => self.marker(Side::Old),
+            (false, true) => self.marker(Side::New),
+            (false, false) => {}
+        }
     }
 }

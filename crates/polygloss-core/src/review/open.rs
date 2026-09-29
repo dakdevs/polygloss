@@ -51,7 +51,7 @@ use crate::paths::DataPaths;
 use crate::review::CoreError;
 use crate::review::models::{
     AWAITING_YOU_SQL, HAS_DRAFTS_SQL, IterationInfo, OpenRequest, OpenedDiff, PinnedBy, load_files,
-    path_from_db, path_to_db, read_iteration, store_diff,
+    mark_binary, path_from_db, path_to_db, read_iteration, store_diff,
 };
 use crate::store::events::{Actor, EventKind, NewEvent, append_event, now_ms};
 use crate::store::{Store, StoreError};
@@ -302,6 +302,15 @@ impl Core {
         diff_id: &DiffId,
     ) -> Result<Option<Arc<Vec<FileChange>>>, CoreError> {
         Ok(self.store.read(|c| load_files(c, diff_id))?.map(Arc::new))
+    }
+
+    /// Records that file `idx` of the stored diff `diff_id`, listed as text,
+    /// is binary (the viewport found a NUL byte when it first read the blobs,
+    /// T1.3). No event: derived metadata, like the stored line counts.
+    /// Returns whether a row changed; a diff that is not stored (an unpinned
+    /// live state) has nothing to mark, and its next open classifies again.
+    pub fn mark_file_binary(&self, diff_id: &DiffId, idx: u32) -> Result<bool, CoreError> {
+        Ok(self.store.write(|tx| mark_binary(tx, diff_id, idx))?)
     }
 
     /// Resolves a diff id or unique prefix (8+ hex chars) and finds a repo that has

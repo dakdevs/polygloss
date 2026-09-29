@@ -1,0 +1,91 @@
+//! The review tab's toolbar (design §11.4). The shell draws the review's
+//! title and kind on the left and the threads panel toggle on the right;
+//! features contribute their controls in §11.4's order through their
+//! `toolbar_items` functions:
+//!
+//! iteration picker (T3.12) · base picker and Snapshot (T3.11) · view toggles
+//! (T3.2) · "N / M viewed" (T3.7) · Hide agent notes (T3.9) · drafts +
+//! Submit review (T3.10).
+
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::{
+    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _,
+    Window, div, px,
+};
+
+use crate::review_tab::ReviewTab;
+use crate::review_tab::panes::ToggleThreadsPanel;
+
+/// The toolbar's height.
+pub const TOOLBAR_HEIGHT: f32 = 40.0;
+
+pub(crate) fn render(
+    tab: &ReviewTab,
+    window: &mut Window,
+    cx: &mut Context<ReviewTab>,
+) -> AnyElement {
+    let mut left: Vec<AnyElement> = Vec::new();
+    left.extend(crate::iterations::toolbar_items(tab, window, cx));
+    left.extend(crate::live::toolbar_items(tab, window, cx));
+    let mut right: Vec<AnyElement> = Vec::new();
+    right.extend(crate::palette::toolbar_items(tab, window, cx));
+    right.extend(crate::viewed::toolbar_items(tab, window, cx));
+    right.extend(crate::threads::toolbar_items(tab, window, cx));
+    right.extend(crate::submit::toolbar_items(tab, window, cx));
+
+    let theme = cx.theme();
+    let visible = tab.panes.threads_visible;
+    h_flex()
+        .id("review-toolbar")
+        .debug_selector(|| "review-toolbar".into())
+        .flex_none()
+        .h(px(TOOLBAR_HEIGHT))
+        .w_full()
+        .px_3()
+        .gap_2()
+        .bg(theme.background)
+        .border_b_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .flex_none()
+                .px_1p5()
+                .py_0p5()
+                .rounded(theme.radius)
+                .bg(theme.secondary)
+                .text_xs()
+                .font_medium()
+                .text_color(theme.secondary_foreground)
+                .child(tab.opened.kind.as_str().to_uppercase()),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme.foreground)
+                .child(tab.title()),
+        )
+        .children(left)
+        .child(div().flex_1())
+        .children(right)
+        .child(
+            Button::new("toggle-threads-panel")
+                .icon(if visible {
+                    IconName::PanelRightClose
+                } else {
+                    IconName::PanelRightOpen
+                })
+                .small()
+                .ghost()
+                .tooltip(if visible {
+                    "Hide threads panel"
+                } else {
+                    "Show threads panel"
+                })
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleThreadsPanel), cx)),
+        )
+        .into_any_element()
+}

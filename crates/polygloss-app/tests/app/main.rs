@@ -4,8 +4,29 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod composer;
+mod cursor;
 mod e2e_harness;
-mod gate_shell;
+mod editor;
+mod feed;
+mod find;
+mod home;
+mod iterations;
+mod keymap;
+mod live;
+mod markdown;
+mod notify;
+mod open_flow;
+mod palette;
+mod perf;
 mod provider;
 mod screenshot;
+mod settings;
+mod shell;
+mod submit;
+mod theme;
+mod threads;
+mod tree;
 mod version;
+mod view_state;
+mod viewed;
