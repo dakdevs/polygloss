@@ -221,10 +221,11 @@ fn open_window_with(
 }
 
 /// What the gate app registers before opening its window: gpui-kit (the
-/// viewport's header ⋯ menu is a gpui-kit `PopupMenu`, which needs it), ⌘Q
-/// and the app menu.
+/// viewport's header ⋯ menu is a gpui-kit `PopupMenu`, which needs it; named
+/// fonts, so it does not scan the installed ones, T2.10.2), ⌘Q and the app
+/// menu.
 pub fn init(cx: &mut App) {
-    gpui_kit::init(cx);
+    polygloss_viewport::kit::init_kit(&ViewportOptions::default().code_font, cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.set_menus([Menu {

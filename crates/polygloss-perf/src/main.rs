@@ -123,8 +123,9 @@ fn run_app(args: Args, corpus: OpenedCorpus, clock: Clock, overhead: Duration) -
     let corpus_opened = Instant::now();
     gpui_kit::application().run(move |cx: &mut App| {
         let app_launched = Instant::now();
-        // The header's ⋯ menu is a gpui-kit `PopupMenu` (T2.5).
-        gpui_kit::init(cx);
+        // The header's ⋯ menu is a gpui-kit `PopupMenu` (T2.5); named fonts,
+        // so gpui-kit does not scan the installed ones (T2.10.2).
+        polygloss_viewport::kit::init_kit(&viewport_options(args.layout).code_font, cx);
         let run = Rc::new(Run {
             args,
             clock,
