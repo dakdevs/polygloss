@@ -339,3 +339,16 @@ pub fn git_spawns(subcommand: &str) -> usize {
 pub fn pause_after_snapshot_pin(pause: std::time::Duration) {
     crate::review::open::set_pin_pause(pause);
 }
+
+/// Runs `hook` once, inside the next `Core::prune_stale` in this process, after it
+/// selected its candidates and before it deletes any, so tests can change a
+/// candidate in between the way another process could (T1.12).
+pub fn before_prune_stale_deletes(hook: impl FnOnce() + Send + 'static) {
+    crate::review::open::set_prune_stale_hook(Box::new(hook));
+}
+
+/// Makes the per-repo pin/prune guard give up after `timeout` instead of the
+/// default (T1.12). `None` restores the default.
+pub fn set_repo_guard_timeout(timeout: Option<std::time::Duration>) {
+    crate::review::open::set_guard_timeout(timeout);
+}

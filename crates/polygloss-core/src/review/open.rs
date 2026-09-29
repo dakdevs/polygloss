@@ -12,22 +12,29 @@
 //!   `pin` is set. `diffs` and `file_changes` rows are written when a diff is first
 //!   pinned or opened as commit/compare, and served from the table afterwards (no
 //!   `diff-tree`, no `check-attr`).
-//! - Every mutation appends its event in the same transaction.
+//! - Every mutation appends its event in the same transaction (except un-archiving
+//!   on reopen: §7.3 has no event kind for it).
 //! - Snapshot refs vs prune: `Snapshotter::delete_unreferenced_refs` deletes every
 //!   snapshot ref missing from the set it is given, so a pin that created its ref
 //!   but has not committed its iteration yet would lose it. Pins (from
 //!   `Snapshotter::pin` until the iteration commits) and prunes (from reading the
 //!   referenced set until the refs are deleted) therefore hold one exclusive
 //!   advisory lock per repo, `<data_dir>/locks/repo-<sha256(common_dir)[..16]>.lock`
-//!   (`File::lock`, so it works across the app, CLI and MCP processes).
+//!   (`File::lock`, so it works across the app, CLI and MCP processes; waits are
+//!   bounded by `GUARD_TIMEOUT`).
+//! - Stale prunes (OQ-34) select candidates with one read, then check the rules
+//!   again inside each delete transaction, so a review another process reopened,
+//!   drafted on or asked about in between is kept.
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use polygloss_diff::{FileChange, ObjectFormat, Oid};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -35,10 +42,11 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::git::{
-    Git, GitError, HeadSpec, LiveState, RepoInfo, Resolution, ResolvedSide, ReviewKind, Since,
-    Snapshotter, Source, classify, default_branch, discover, list_changes, resolve,
+    Git, GitError, HeadSpec, LiveState, RepoInfo, Resolution, ResolveWarning, ResolvedSide,
+    ReviewKind, Since, Snapshotter, Source, classify, default_branch, discover, list_changes,
+    resolve,
 };
-use crate::ids::{DiffId, DiffIdPrefix, diff_id, new_uuid};
+use crate::ids::{DiffId, DiffIdPrefix, diff_id, new_uuid, review_key};
 use crate::paths::DataPaths;
 use crate::review::CoreError;
 use crate::review::models::{
@@ -49,6 +57,12 @@ use crate::store::events::{Actor, EventKind, NewEvent, append_event, now_ms};
 use crate::store::{Store, StoreError};
 
 const DAY_MS: i64 = 86_400_000;
+
+/// How long a pin or prune waits for the per-repo guard before failing. A prune
+/// holds it for its delete transaction and one `update-ref`; a pin for copying the
+/// state's new objects, which takes seconds only for very large dirty states.
+const GUARD_TIMEOUT: Duration = Duration::from_secs(120);
+const GUARD_POLL: Duration = Duration::from_millis(20);
 
 /// The shared core: the store, the data paths and the snapshotter. Cheap to clone;
 /// clones share the store's writer connection.
@@ -67,6 +81,17 @@ struct ReviewRow {
     kind: String,
     since: Option<String>,
     worktree_path: Option<String>,
+}
+
+/// What a prune did to one review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pruned {
+    Yes,
+    /// No such review (anymore).
+    Gone,
+    /// It no longer qualifies for `prune_stale` (touched, drafted on, awaiting you,
+    /// or its repo is gone).
+    Kept,
 }
 
 /// Provenance and reason of a new iteration.
@@ -104,7 +129,8 @@ impl Core {
     pub fn open(&self, req: &OpenRequest) -> Result<OpenedDiff, CoreError> {
         let repo = discover(&req.worktree)?;
         let res = resolve(&repo, &req.worktree, &req.source)?;
-        let branch = self.default_branch_of(&repo);
+        let branch =
+            default_branch_from(&req.source, &res).or_else(|| self.default_branch_of(&repo));
         let fmt = res.object_format;
         match &res.head {
             HeadSpec::Tree(head) => {
@@ -207,9 +233,12 @@ impl Core {
 
     /// Pins `live` (a snapshot of the review's worktree) and records it as an
     /// iteration of the live review `review_id`, unless the latest iteration already
-    /// shows the same diff (then that one is returned). The base is resolved again
-    /// from the review's `since`; use [`Core::pin_live_on_base`] to pin against the
-    /// base a caller displayed.
+    /// shows the same diff (then that one is returned). `Conflict` when the review
+    /// is not live, `live` is from another worktree, or the worktree is no longer
+    /// on the review's branch. The base is resolved again from the review's `since`
+    /// (a `LiveState` carries no base), so for `since=merge-base` a default branch
+    /// that moved after the snapshot changes the pinned diff; callers holding the
+    /// displayed `OpenedDiff.base` should use [`Core::pin_live_on_base`].
     pub fn pin_live(
         &self,
         review_id: &str,
@@ -218,8 +247,16 @@ impl Core {
         actor: &Actor,
     ) -> Result<IterationInfo, CoreError> {
         let (repo, since) = self.live_review_repo(review_id, live)?;
-        let res = resolve(&repo, &live.worktree, &Source::Live { since })?;
-        self.pin_live_on_base(review_id, &res.base, live, by, actor)
+        let res = resolve(
+            &repo,
+            &live.worktree,
+            &Source::Live {
+                since: since.clone(),
+            },
+        )?;
+        let fixed_base = matches!(since, Since::Commit(_));
+        let (it, _) = self.pin_state(&repo, review_id, &res.base, fixed_base, live, by, actor)?;
+        Ok(it)
     }
 
     /// [`Core::pin_live`] against an explicit base side (the `OpenedDiff.base` the
@@ -331,16 +368,22 @@ impl Core {
         let head = Oid::parse(&head, fmt).map_err(|_| bad("head tree"))?;
 
         let mut seen = HashSet::new();
-        let cwd_repo = cwd.and_then(|p| discover(p).ok());
-        let known = iteration_repos
-            .iter()
-            .chain(&all_repos)
-            .filter_map(|dir| open_known_repo(&path_from_db(dir)));
-        for repo in cwd_repo.into_iter().chain(known) {
-            if !seen.insert(repo.common_dir.clone()) || repo.object_format != fmt {
+        if let Some(repo) = cwd.and_then(|p| discover(p).ok()) {
+            seen.insert(repo.common_dir.clone());
+            if repo.object_format == fmt && has_objects(&repo, &[&base, &head])? {
+                return Ok((repo, diff));
+            }
+        }
+        // Deduped before `open_known_repo`, which spawns git.
+        for dir in iteration_repos.iter().chain(&all_repos) {
+            let dir = path_from_db(dir);
+            if !seen.insert(dir.clone()) {
                 continue;
             }
-            if has_objects(&repo, &[&base, &head])? {
+            let Some(repo) = open_known_repo(&dir) else {
+                continue;
+            };
+            if repo.object_format == fmt && has_objects(&repo, &[&base, &head])? {
                 return Ok((repo, diff));
             }
         }
@@ -393,40 +436,19 @@ impl Core {
     /// review is gone for good; waiters wake as on archive, OQ-11). An orphaned
     /// review (its repo directory is gone) loses its rows only.
     pub fn prune_review(&self, review_id: &str) -> Result<(), CoreError> {
-        let row = self
-            .store
-            .read(|c| review_row(c, review_id))?
-            .ok_or_else(|| CoreError::not_found("review", review_id))?;
-        let repo = open_known_repo(&row.common_dir);
-        // Held from reading `referenced` until the refs are deleted (module docs).
-        let _guard = repo.as_ref().map(|r| self.repo_guard(r)).transpose()?;
-        let referenced = self.store.write(|tx| {
-            if !delete_review(tx, review_id)? {
-                return Ok(None);
-            }
-            append_event(
-                tx,
-                &review_event(
-                    EventKind::ReviewArchived,
-                    review_id,
-                    &Actor::system(),
-                    json!({ "key": row.key, "kind": row.kind, "pruned": true }),
-                ),
-            )?;
-            Ok(Some(referenced_refs(tx, row.repo_id)?))
-        })?;
-        let referenced = referenced.ok_or_else(|| CoreError::not_found("review", review_id))?;
-        if let Some(repo) = &repo {
-            self.snapshots.delete_unreferenced_refs(repo, &referenced)?;
+        match self.prune(review_id, None)? {
+            Pruned::Yes => Ok(()),
+            Pruned::Gone | Pruned::Kept => Err(CoreError::not_found("review", review_id)),
         }
-        Ok(())
     }
 
     /// Prunes reviews whose `updated_at` is older than `older_than_days` before
     /// `now_ms` (`storage.prune_reviews_after_days`, OQ-34), except orphaned reviews
     /// (repo directory gone), reviews with drafts (unpublished comments or a
     /// non-empty Submit dialog draft) and reviews awaiting you. Returns the pruned
-    /// ids, oldest first. A review that fails to prune is logged and skipped.
+    /// ids, oldest first. A review that fails to prune is logged and skipped. The
+    /// rules are checked again inside each review's delete transaction, so one that
+    /// was touched after the candidates were read is kept.
     pub fn prune_stale(&self, older_than_days: u32, now_ms: i64) -> Result<Vec<String>, CoreError> {
         let cutoff = now_ms.saturating_sub(i64::from(older_than_days) * DAY_MS);
         let candidates: Vec<(String, String)> = self.store.read(|c| {
@@ -440,18 +462,56 @@ impl Core {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })?;
+        after_prune_candidates();
         let mut pruned = Vec::new();
         for (id, common_dir) in candidates {
             if !path_from_db(&common_dir).exists() {
                 continue;
             }
-            match self.prune_review(&id) {
-                Ok(()) => pruned.push(id),
-                Err(CoreError::NotFound { .. }) => {}
+            // The rules are checked again when deleting: the review may have been
+            // reopened, drafted on or asked about since the candidates were read.
+            match self.prune(&id, Some(cutoff)) {
+                Ok(Pruned::Yes) => pruned.push(id),
+                Ok(Pruned::Gone | Pruned::Kept) => {}
                 Err(e) => tracing::warn!(review_id = %id, error = %e, "prune_stale: skipped"),
             }
         }
         Ok(pruned)
+    }
+
+    /// [`Core::prune_review`]. With `stale_before`, the review is deleted only when,
+    /// inside the delete transaction, it still qualifies for [`Core::prune_stale`]
+    /// (`updated_at < stale_before`, no drafts, not awaiting you, repo on disk).
+    fn prune(&self, review_id: &str, stale_before: Option<i64>) -> Result<Pruned, CoreError> {
+        let Some(row) = self.store.read(|c| review_row(c, review_id))? else {
+            return Ok(Pruned::Gone);
+        };
+        let repo = open_known_repo(&row.common_dir);
+        if repo.is_none() && stale_before.is_some() {
+            return Ok(Pruned::Kept);
+        }
+        // Held from reading `referenced` until the refs are deleted (module docs).
+        let _guard = repo.as_ref().map(|r| self.repo_guard(r)).transpose()?;
+        let (outcome, referenced) = self.store.write(|tx| {
+            let outcome = delete_review(tx, review_id, stale_before)?;
+            if outcome != Pruned::Yes {
+                return Ok((outcome, None));
+            }
+            append_event(
+                tx,
+                &review_event(
+                    EventKind::ReviewArchived,
+                    review_id,
+                    &Actor::system(),
+                    json!({ "key": row.key, "kind": row.kind, "pruned": true }),
+                ),
+            )?;
+            Ok((outcome, Some(referenced_refs(tx, row.repo_id)?)))
+        })?;
+        if let (Some(repo), Some(referenced)) = (&repo, &referenced) {
+            self.snapshots.delete_unreferenced_refs(repo, referenced)?;
+        }
+        Ok(outcome)
     }
 
     /// Pins `state` under the repo guard and records (or reuses) its iteration.
@@ -531,10 +591,26 @@ impl Core {
                 row.common_dir.display()
             )));
         }
-        let since = match row.since.as_deref() {
-            Some("merge-base") | None => Since::MergeBase,
-            Some("HEAD") => Since::Head,
-            Some(oid) => Since::Commit(oid.to_owned()),
+        let since_key = row.since.as_deref().unwrap_or("merge-base");
+        // The key names the branch; after a `git checkout` of another branch the
+        // worktree belongs to another live review (checked now, not at snapshot
+        // time: `LiveState` records no branch).
+        let branch = current_branch(&live.worktree)?;
+        let branch = branch
+            .as_deref()
+            .map(|r| r.strip_prefix("refs/heads/").unwrap_or(r));
+        if review_key::live(&live.worktree, branch, since_key) != row.key {
+            return Err(CoreError::Conflict(format!(
+                "{} is now on {}, not the branch of review {review_id} ({})",
+                live.worktree.display(),
+                branch.unwrap_or("a detached HEAD"),
+                row.key
+            )));
+        }
+        let since = match since_key {
+            "merge-base" => Since::MergeBase,
+            "HEAD" => Since::Head,
+            oid => Since::Commit(oid.to_owned()),
         };
         Ok((repo, since))
     }
@@ -568,9 +644,9 @@ impl Core {
         Ok(Arc::new(files))
     }
 
-    /// The repo's default branch for `repos.default_branch`: `Some(Some(name))` to
-    /// store, `Some(None)` when there is none, `None` (keep the stored value) when
-    /// git failed otherwise.
+    /// The repo's default branch for `repos.default_branch` (the OQ-5 chain):
+    /// `Some(Some(name))` to store, `Some(None)` when there is none, `None` (keep the
+    /// stored value) when git failed otherwise.
     fn default_branch_of(&self, repo: &RepoInfo) -> Option<Option<String>> {
         let cwd = repo
             .toplevel
@@ -602,9 +678,57 @@ impl Core {
             .write(true)
             .open(&path)
             .map_err(|e| StoreError::io("open", &path, e))?;
-        file.lock().map_err(|e| StoreError::io("lock", &path, e))?;
-        Ok(file)
+        // Bounded, so a pin or prune stuck in git cannot block the other forever.
+        let timeout = guard_timeout();
+        let deadline = Instant::now() + timeout;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(GUARD_POLL);
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let e = io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "another pin or prune of {} held this lock for over {} s",
+                            repo.common_dir.display(),
+                            timeout.as_secs()
+                        ),
+                    );
+                    return Err(StoreError::io("lock", &path, e).into());
+                }
+                Err(TryLockError::Error(e)) => return Err(StoreError::io("lock", &path, e).into()),
+            }
+        }
     }
+}
+
+/// The default branch a live `since=merge-base` resolution already looked up
+/// (same shape as [`Core::default_branch_of`]), so the open does not run the OQ-5
+/// chain twice. `None` when the resolution did not look it up.
+fn default_branch_from(source: &Source, res: &Resolution) -> Option<Option<String>> {
+    if !matches!(
+        source,
+        Source::Live {
+            since: Since::MergeBase
+        }
+    ) {
+        return None;
+    }
+    for w in &res.warnings {
+        match w {
+            ResolveWarning::UnbornHead => return None,
+            ResolveWarning::NoDefaultBranch => return Some(None),
+            ResolveWarning::NoMergeBase { default_branch }
+            | ResolveWarning::MergeBaseBeyondShallow { default_branch } => {
+                return Some(Some(default_branch.clone()));
+            }
+            ResolveWarning::MultipleMergeBases { .. } => {}
+        }
+    }
+    // A merge base was found: the base side is the default branch's.
+    res.base.ref_name.clone().map(Some)
 }
 
 /// Opens a known repo by its common dir, preferring its main worktree (so
@@ -623,6 +747,28 @@ fn open_known_repo(common_dir: &Path) -> Option<RepoInfo> {
                 .ok()
                 .filter(|r| r.common_dir == common_dir)
         })
+}
+
+/// `refs/heads/<branch>` HEAD of `worktree` points at, `None` when detached.
+fn current_branch(worktree: &Path) -> Result<Option<String>, CoreError> {
+    let args = [
+        OsStr::new("symbolic-ref"),
+        OsStr::new("-q"),
+        OsStr::new("HEAD"),
+    ];
+    let out = Git::new(worktree).run(&args)?;
+    match out.code {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&out.stdout).trim_end().to_owned(),
+        )),
+        Some(1) => Ok(None),
+        _ => Err(GitError::Failed {
+            args: "symbolic-ref -q HEAD".into(),
+            code: out.code,
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+        .into()),
+    }
 }
 
 /// Whether the repo has every object (`git cat-file -e`, never fetches).
@@ -887,17 +1033,37 @@ fn review_row(conn: &Connection, review_id: &str) -> Result<Option<ReviewRow>, S
 }
 
 /// Deletes the review (cascading per §7.4) and then its diffs that nothing
-/// references anymore. `false` when the review does not exist.
-fn delete_review(tx: &Transaction, review_id: &str) -> Result<bool, StoreError> {
+/// references anymore. With `stale_before`, only when the review still qualifies
+/// for `prune_stale` (checked in `tx`, so no other writer can change it before the
+/// delete).
+fn delete_review(
+    tx: &Transaction,
+    review_id: &str,
+    stale_before: Option<i64>,
+) -> Result<Pruned, StoreError> {
+    if !review_exists(tx, review_id)? {
+        return Ok(Pruned::Gone);
+    }
+    if let Some(cutoff) = stale_before {
+        let still_stale: bool = tx.query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM reviews r WHERE r.id = ?1 AND r.updated_at < ?2 \
+                 AND NOT {HAS_DRAFTS_SQL} AND NOT {AWAITING_YOU_SQL})"
+            ),
+            params![review_id, cutoff],
+            |r| r.get(0),
+        )?;
+        if !still_stale {
+            return Ok(Pruned::Kept);
+        }
+    }
     let diffs = strings(
         tx,
         "SELECT diff_id FROM iterations WHERE review_id = ?1 \
          UNION SELECT origin_diff_id FROM threads WHERE review_id = ?1",
         [review_id],
     )?;
-    if tx.execute("DELETE FROM reviews WHERE id = ?1", [review_id])? == 0 {
-        return Ok(false);
-    }
+    tx.execute("DELETE FROM reviews WHERE id = ?1", [review_id])?;
     for diff in diffs {
         tx.execute(
             "DELETE FROM diffs WHERE id = ?1 \
@@ -906,7 +1072,7 @@ fn delete_review(tx: &Transaction, review_id: &str) -> Result<bool, StoreError> 
             [&diff],
         )?;
     }
-    Ok(true)
+    Ok(Pruned::Yes)
 }
 
 /// Snapshot refs the repo's remaining reviews still need: every iteration's
@@ -960,6 +1126,57 @@ fn pause_after_pin() {
         let ms = PIN_PAUSE_MS.load(std::sync::atomic::Ordering::SeqCst);
         if ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+static GUARD_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Test hook (feature `test-support`): override [`GUARD_TIMEOUT`] (`None` restores it).
+#[cfg(feature = "test-support")]
+pub(crate) fn set_guard_timeout(timeout: Option<Duration>) {
+    let ms = timeout.map_or(0, |t| {
+        u64::try_from(t.as_millis()).unwrap_or(u64::MAX).max(1)
+    });
+    GUARD_TIMEOUT_MS.store(ms, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn guard_timeout() -> Duration {
+    #[cfg(feature = "test-support")]
+    {
+        let ms = GUARD_TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst);
+        if ms > 0 {
+            return Duration::from_millis(ms);
+        }
+    }
+    GUARD_TIMEOUT
+}
+
+#[cfg(feature = "test-support")]
+type PruneHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(feature = "test-support")]
+static PRUNE_STALE_HOOK: std::sync::Mutex<Option<PruneHook>> = std::sync::Mutex::new(None);
+
+/// Test hook (feature `test-support`): run `hook` once in the next `prune_stale`,
+/// between selecting its candidates and deleting them.
+#[cfg(feature = "test-support")]
+pub(crate) fn set_prune_stale_hook(hook: PruneHook) {
+    *PRUNE_STALE_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+}
+
+fn after_prune_candidates() {
+    #[cfg(feature = "test-support")]
+    {
+        let hook = PRUNE_STALE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            hook();
         }
     }
 }

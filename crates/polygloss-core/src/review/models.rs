@@ -189,8 +189,10 @@ fn parse_kind(s: &str) -> Option<FileKind> {
     })
 }
 
-/// Inserts the `diffs` row and its `file_changes` unless the diff is stored already.
-/// Returns whether it inserted.
+/// Inserts the `diffs` row and its `file_changes` unless the diff is stored already
+/// (`files_count` set). A row without `files_count` (inserted without its file list)
+/// gets `files_count` and a fresh set of `file_changes`. Returns whether it wrote
+/// the file list.
 pub(crate) fn store_diff(
     tx: &Transaction,
     id: &DiffId,
@@ -202,7 +204,9 @@ pub(crate) fn store_diff(
 ) -> Result<bool, StoreError> {
     let inserted = tx.execute(
         "INSERT INTO diffs (id, object_format, base_tree, head_tree, files_count, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (id) DO NOTHING",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT (id) DO UPDATE SET files_count = excluded.files_count \
+         WHERE diffs.files_count IS NULL",
         params![
             id.as_str(),
             fmt.as_str(),
@@ -215,6 +219,8 @@ pub(crate) fn store_diff(
     if !inserted {
         return Ok(false);
     }
+    // Rows a writer left without `files_count` are not trusted.
+    tx.execute("DELETE FROM file_changes WHERE diff_id = ?1", [id.as_str()])?;
     let mut stmt = tx.prepare_cached(
         "INSERT INTO file_changes (diff_id, idx, status, old_path, new_path, old_mode, new_mode, \
            old_blob, new_blob, similarity, kind, generated) \

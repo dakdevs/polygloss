@@ -233,12 +233,13 @@ fn open_compare_after_ref_moves_creates_iteration_2() {
         .open(&req(repo.path(), compare("main", "feature")))
         .unwrap();
 
+    // A plain reopen after the ref moved records `open`...
     repo.checkout("feature");
     repo.write("c.txt", b"sea\n");
     repo.commit("f2");
-    let mut refresh = req(repo.path(), compare("main", "feature"));
-    refresh.pin = Some(PinnedBy::Refresh);
-    let second = core.open(&refresh).unwrap();
+    let second = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
 
     assert_eq!(first.review_id, second.review_id);
     assert_ne!(first.diff_id, second.diff_id);
@@ -249,9 +250,32 @@ fn open_compare_after_ref_moves_creates_iteration_2() {
     assert_eq!(second.iteration.as_ref(), Some(&its[1]));
     assert_eq!(
         text(&core, "SELECT pinned_by FROM iterations WHERE seq = 2").as_deref(),
-        Some("refresh")
+        Some("open")
     );
     assert_eq!(second.files.len(), 3);
+
+    // ...and one from the refresh banner records `refresh`.
+    repo.write("d.txt", b"dee\n");
+    repo.commit("f3");
+    let mut refresh = req(repo.path(), compare("main", "feature"));
+    refresh.pin = Some(PinnedBy::Refresh);
+    let third = core.open(&refresh).unwrap();
+
+    assert_eq!(third.review_id, first.review_id);
+    let its = core.iterations(&third.review_id).unwrap();
+    assert_eq!(its.len(), 3);
+    assert_eq!(third.iteration.as_ref(), Some(&its[2]));
+    assert_eq!(
+        text(&core, "SELECT pinned_by FROM iterations WHERE seq = 3").as_deref(),
+        Some("refresh")
+    );
+    assert_eq!(third.files.len(), 4);
+    let pinned_by: Vec<String> = events(&core)
+        .into_iter()
+        .filter(|e| e.0 == "iteration.created")
+        .map(|e| e.2["pinned_by"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(pinned_by, ["open", "open", "refresh"]);
 }
 
 #[test]
@@ -291,6 +315,46 @@ fn open_live_unpinned_creates_review_without_iteration() {
     assert!(core.files_for_diff(&opened.diff_id).unwrap().is_none());
     let kinds: Vec<String> = events(&core).into_iter().map(|e| e.0).collect();
     assert_eq!(kinds, ["review.created"]);
+}
+
+/// `repos.default_branch` is stored on every open; a live `since=merge-base` open
+/// takes it from its resolution instead of running the OQ-5 chain again.
+#[test]
+fn open_stores_default_branch_without_a_second_lookup() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    repo.checkout("feature");
+    let core = core();
+    let found = polygloss_core::git::discover(repo.path()).unwrap();
+
+    let before = testing::git_spawns("symbolic-ref");
+    polygloss_core::git::resolve(&found, repo.path(), &live(Since::MergeBase)).unwrap();
+    let resolve_only = testing::git_spawns("symbolic-ref") - before;
+    let before = testing::git_spawns("symbolic-ref");
+    let opened = core
+        .open(&req(repo.path(), live(Since::MergeBase)))
+        .unwrap();
+    assert_eq!(testing::git_spawns("symbolic-ref") - before, resolve_only);
+    assert_eq!(opened.base.ref_name.as_deref(), Some("refs/heads/main"));
+    assert_eq!(
+        text(&core, "SELECT default_branch FROM repos").as_deref(),
+        Some("refs/heads/main")
+    );
+
+    // Other sources look it up; no default branch stores NULL.
+    repo.git(&["branch", "-m", "main", "trunk"]);
+    core.open(&req(repo.path(), commit("feature"))).unwrap();
+    assert_eq!(text(&core, "SELECT default_branch FROM repos"), None);
+    core.open(&req(repo.path(), live(Since::MergeBase)))
+        .unwrap();
+    assert_eq!(text(&core, "SELECT default_branch FROM repos"), None);
+    repo.git(&["branch", "-m", "trunk", "main"]);
+    core.open(&req(repo.path(), live(Since::MergeBase)))
+        .unwrap();
+    assert_eq!(
+        text(&core, "SELECT default_branch FROM repos").as_deref(),
+        Some("refs/heads/main")
+    );
 }
 
 #[test]
@@ -421,6 +485,52 @@ fn pin_live_rejects_a_state_from_another_worktree_or_a_non_live_review() {
 }
 
 #[test]
+fn pin_live_rejects_a_state_after_the_branch_changed() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    repo.write("untracked.txt", b"new\n");
+    let core = core();
+    let on_main = core.open(&req(repo.path(), live(Since::Head))).unwrap();
+    let state = on_main.live.clone().unwrap();
+
+    // `git checkout feature` (the untracked file carries over): the review is keyed
+    // `@main`, so a pin now would record a `feature` state under `main`.
+    repo.checkout("feature");
+    let err = core
+        .pin_live(
+            &on_main.review_id,
+            &state,
+            PinnedBy::Manual,
+            &Actor::human(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, CoreError::Conflict(_)), "{err:?}");
+    let err = core
+        .pin_live_on_base(
+            &on_main.review_id,
+            &on_main.base,
+            &state,
+            PinnedBy::Manual,
+            &Actor::human(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, CoreError::Conflict(_)), "{err:?}");
+    assert!(polygloss_refs(repo.path()).is_empty());
+    assert_eq!(count(&core, "SELECT count(*) FROM iterations"), 0);
+
+    repo.checkout("main");
+    let it = core
+        .pin_live(
+            &on_main.review_id,
+            &state,
+            PinnedBy::Manual,
+            &Actor::human(),
+        )
+        .unwrap();
+    assert_eq!(it.seq, 1);
+}
+
+#[test]
 fn linked_worktrees_share_repo_row() {
     let _sb = Sandbox::isolate();
     let repo = feature_repo();
@@ -468,6 +578,36 @@ fn file_changes_cached_by_diff_id() {
     assert_eq!(*first.files, *second.files);
     assert_eq!(count(&core, "SELECT count(*) FROM diffs"), 1);
     assert_eq!(count(&core, "SELECT count(*) FROM reviews"), 2);
+}
+
+/// A `diffs` row some other writer inserted without its file list (`files_count`
+/// NULL) is completed by the next open instead of being recomputed forever.
+#[test]
+fn open_completes_a_diffs_row_without_file_changes() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let (base, head) = (tree_of(&repo, "main"), tree_of(&repo, "feature"));
+    let id = diff_id(ObjectFormat::Sha1, &base, &head);
+    exec(
+        &core,
+        &format!(
+            "INSERT INTO diffs (id, object_format, base_tree, head_tree, created_at) \
+             VALUES ('{id}', 'sha1', '{base}', '{head}', 1)"
+        ),
+    );
+    assert!(core.files_for_diff(&id).unwrap().is_none());
+
+    let first = core.open(&req(repo.path(), commit("feature"))).unwrap();
+    assert_eq!(first.diff_id, id);
+    assert_eq!(count(&core, "SELECT files_count FROM diffs"), 2);
+    assert_eq!(count(&core, "SELECT count(*) FROM file_changes"), 2);
+    assert_eq!(*core.files_for_diff(&id).unwrap().unwrap(), *first.files);
+
+    let diff_trees = testing::git_spawns("diff-tree");
+    core.open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    assert_eq!(testing::git_spawns("diff-tree"), diff_trees);
 }
 
 #[test]
@@ -650,10 +790,25 @@ fn find_repo_for_diff_by_prefix_and_ambiguity_error() {
         }
         other => panic!("expected Ambiguous, got {other:?}"),
     }
-    // Unique but no known repo has its trees.
+    // Unique but no known repo has its trees. The repo is listed twice (its
+    // iterations use the diff, and it is a known repo) but opened once.
+    exec(
+        &core,
+        &format!(
+            "INSERT INTO iterations (review_id, seq, diff_id, pinned_by, created_at) \
+             VALUES ('{}', 2, '{}', 'open', 0)",
+            opened.review_id,
+            fake('1')
+        ),
+    );
+    let before = testing::git_spawns("rev-parse");
+    polygloss_core::git::discover(repo.path()).unwrap();
+    let one_discover = testing::git_spawns("rev-parse") - before;
+    let before = testing::git_spawns("rev-parse");
     let err = core.find_repo_for_diff("abcdef011", None).unwrap_err();
     assert!(matches!(err, CoreError::RepoNotFound(_)), "{err:?}");
     assert_eq!(err.code(), "repo_not_found");
+    assert_eq!(testing::git_spawns("rev-parse") - before, one_discover);
     // Unknown id and too-short prefix.
     let err = core.find_repo_for_diff("ffffffff", None).unwrap_err();
     assert!(matches!(err, CoreError::NotFound { .. }), "{err:?}");
@@ -963,6 +1118,52 @@ fn prune_waits_for_a_pin_in_flight() {
     assert!(!review_exists(&core, &victim.review_id));
 }
 
+/// A pin (or prune) that cannot get the per-repo guard gives up after the guard's
+/// timeout instead of blocking forever behind a stuck holder.
+#[test]
+fn repo_guard_gives_up_after_its_timeout() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    repo.write("untracked.txt", b"new\n");
+    let core = core();
+    let victim = core.open(&req(repo.path(), commit("feature"))).unwrap();
+    let opened = core.open(&req(repo.path(), live(Since::Head))).unwrap();
+    let state = opened.live.clone().unwrap();
+    core.prune_review(&victim.review_id).unwrap(); // creates the lock file
+    let locks: Vec<PathBuf> = std::fs::read_dir(core.paths.data_dir.join("locks"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(locks.len(), 1, "{locks:?}");
+    // A stuck holder (another process, as far as flock is concerned).
+    let held = std::fs::File::open(&locks[0]).unwrap();
+    held.lock().unwrap();
+    testing::set_repo_guard_timeout(Some(Duration::from_millis(300)));
+
+    let started = Instant::now();
+    let err = core
+        .pin_live(&opened.review_id, &state, PinnedBy::Manual, &Actor::human())
+        .unwrap_err();
+    let waited = started.elapsed();
+
+    match &err {
+        CoreError::Store(polygloss_core::store::StoreError::Io { source, .. }) => {
+            assert_eq!(source.kind(), std::io::ErrorKind::TimedOut, "{err}");
+        }
+        other => panic!("expected a lock timeout, got {other:?}"),
+    }
+    assert!(waited >= Duration::from_millis(300), "{waited:?}");
+    assert!(waited < Duration::from_secs(10), "{waited:?}");
+    assert!(polygloss_refs(repo.path()).is_empty());
+    assert_eq!(count(&core, "SELECT count(*) FROM iterations"), 0);
+
+    drop(held);
+    let it = core
+        .pin_live(&opened.review_id, &state, PinnedBy::Manual, &Actor::human())
+        .unwrap();
+    assert_eq!(it.seq, 1);
+}
+
 #[test]
 fn orphaned_review_after_clone_move_is_kept() {
     let _sb = Sandbox::isolate();
@@ -1044,7 +1245,7 @@ fn prune_stale_skips_orphans_drafts_and_awaiting_you() {
     let repo = feature_repo();
     repo.checkout("feature");
     let mut commits = Vec::new();
-    for i in 0..5 {
+    for i in 0..9 {
         repo.write("n.txt", format!("{i}\n").as_bytes());
         commits.push(repo.commit(&format!("n{i}")).to_string());
     }
@@ -1071,6 +1272,27 @@ fn prune_stale_skips_orphans_drafts_and_awaiting_you() {
     let answered = open_commit(4);
     let q2 = add_thread(&core, &answered.review_id, "question", "agent", true);
     add_reply(&core, &q2, "human", true); // ...a published one does.
+    let submit_draft = |i: usize, summary: &str, verdict: &str| {
+        let review = open_commit(i);
+        exec(
+            &core,
+            &format!(
+                "INSERT INTO review_drafts (review_id, summary_md, verdict, updated_at) \
+                 VALUES ('{}', '{summary}', {verdict}, 1)",
+                review.review_id
+            ),
+        );
+        review
+    };
+    let with_summary = submit_draft(5, "wip", "NULL");
+    let with_verdict = submit_draft(6, "", "'request_changes'");
+    let empty_dialog = submit_draft(7, "", "NULL"); // an empty dialog is no draft
+    let deleted_draft = open_commit(8);
+    let t = add_thread(&core, &deleted_draft.review_id, "comment", "human", false);
+    exec(
+        &core,
+        &format!("UPDATE comments SET deleted_at = 1 WHERE thread_id = '{t}'"),
+    );
     let orphan = core.open(&req(&clone, commit("HEAD"))).unwrap();
     std::fs::remove_dir_all(&clone).unwrap();
     exec(&core, "UPDATE reviews SET updated_at = 0");
@@ -1080,12 +1302,106 @@ fn prune_stale_skips_orphans_drafts_and_awaiting_you() {
         .unwrap();
     pruned.sort();
 
-    let mut expected = vec![plain.review_id.clone(), answered.review_id.clone()];
+    let mut expected = vec![
+        plain.review_id.clone(),
+        answered.review_id.clone(),
+        empty_dialog.review_id.clone(),
+        deleted_draft.review_id.clone(),
+    ];
     expected.sort();
     assert_eq!(pruned, expected);
-    for kept in [&with_draft, &rereview, &question, &orphan] {
+    for kept in [
+        &with_draft,
+        &rereview,
+        &question,
+        &with_summary,
+        &with_verdict,
+        &orphan,
+    ] {
         assert!(review_exists(&core, &kept.review_id), "{}", kept.review_key);
     }
+}
+
+/// OQ-34 must hold at the moment of deletion, not only when `prune_stale` picked
+/// its candidates: another process (a `polygloss open` launching the app, an agent
+/// question, a human draft) can touch a candidate in between.
+#[test]
+fn prune_stale_rechecks_each_candidate_when_deleting() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    repo.checkout("feature");
+    let mut commits = Vec::new();
+    for i in 0..4 {
+        repo.write("n.txt", format!("{i}\n").as_bytes());
+        commits.push(repo.commit(&format!("n{i}")).to_string());
+    }
+    let core = core();
+    let open_commit = |i: usize| core.open(&req(repo.path(), commit(&commits[i]))).unwrap();
+    let reopened = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    let drafted = open_commit(0);
+    let questioned = open_commit(1);
+    let summary = open_commit(2);
+    let untouched = open_commit(3);
+    exec(&core, "UPDATE reviews SET updated_at = 0");
+
+    let hook_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let hook_ran = hook_ran.clone();
+        let path = repo.path().to_path_buf();
+        let (reopened_id, drafted_id, questioned_id, summary_id) = (
+            reopened.review_id.clone(),
+            drafted.review_id.clone(),
+            questioned.review_id.clone(),
+            summary.review_id.clone(),
+        );
+        testing::before_prune_stale_deletes(move || {
+            // Another process: its own connection to the same store.
+            let other = Core::open_default().unwrap();
+            let again = other.open(&req(&path, compare("main", "feature"))).unwrap();
+            assert_eq!(again.review_id, reopened_id);
+            add_thread(&other, &drafted_id, "comment", "human", false);
+            add_thread(&other, &questioned_id, "question", "agent", true);
+            exec(
+                &other,
+                &format!(
+                    "INSERT INTO review_drafts (review_id, summary_md, verdict, updated_at) \
+                     VALUES ('{summary_id}', '', 'approve', 1)"
+                ),
+            );
+            hook_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    let pruned = core
+        .prune_stale(1, polygloss_core::store::events::now_ms())
+        .unwrap();
+
+    assert!(hook_ran.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(pruned, vec![untouched.review_id.clone()]);
+    for kept in [&reopened, &drafted, &questioned, &summary] {
+        assert!(review_exists(&core, &kept.review_id), "{}", kept.review_key);
+        assert_eq!(
+            count(
+                &core,
+                &format!(
+                    "SELECT count(*) FROM iterations WHERE review_id = '{}'",
+                    kept.review_id
+                )
+            ),
+            1,
+            "{}",
+            kept.review_key
+        );
+    }
+    assert!(!review_exists(&core, &untouched.review_id));
+    let pruned_events = events(&core)
+        .into_iter()
+        .filter(|e| e.0 == "review.archived")
+        .map(|e| e.1.unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(pruned_events, vec![untouched.review_id.clone()]);
 }
 
 #[test]
