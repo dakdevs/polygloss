@@ -303,6 +303,12 @@ impl Document {
         }
     }
 
+    /// The latest size hint of file `idx` (kept once the height is exact, so
+    /// headers can still show counts).
+    pub fn size_hint(&self, idx: u32) -> Option<SizeHint> {
+        self.entries.get(idx as usize)?.hint
+    }
+
     /// Whether file `idx`'s height is exact (laid out or set), not estimated.
     pub fn is_exact(&self, idx: u32) -> bool {
         !matches!(self.entries[idx as usize].body, Body::Estimated(_))

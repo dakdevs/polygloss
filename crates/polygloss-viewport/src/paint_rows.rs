@@ -5,41 +5,69 @@
 //! the first one), shapes their text through the [`TextCache`] and records
 //! quads and text in three layers (whole width, left half, right half) so
 //! paint can replay them with one clip per layer, all quads before all text.
-//! Nothing here allocates per frame once the buffers are warm, except for
-//! lines shaped for the first time.
+//! File headers go into a fourth layer painted after all of that, so the
+//! header pinned at the top (design §11.6 "Sticky header") covers the rows
+//! scrolling under it. Nothing here allocates per frame once the buffers are
+//! warm, except for lines shaped for the first time and short header and
+//! label strings.
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::{
-    Bounds, Font, Hsla, Pixels, Point, SharedString, Task, WindowTextSystem, point, px, size,
-};
+use gpui_kit::{Bounds, Font, Hsla, Pixels, Point, Task, WindowTextSystem, point, px, size};
 use polygloss_diff::rows::{Cell, Layout, LineKind, Row};
 use polygloss_diff::{FileChange, Side};
 
+use crate::controls::{Control, ControlAction, ControlLayer};
 use crate::document::{BodyRow, Document, FileState};
+use crate::file_flags::FileFlags;
+use crate::gap::Gaps;
 use crate::layout::{Columns, Geometry, Pane, digits};
 use crate::materialize::MaterializedFile;
+use crate::special::{BodyLabel, Specials};
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{ShapedText, Shaper, TextCache, TextKey};
 
-/// Quads and text drawn under one clip.
+/// A filled rectangle with rounded corners and an optional 1 px border
+/// (badges, checkboxes).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RoundedQuad {
+    pub bounds: Bounds<Pixels>,
+    pub background: Hsla,
+    pub border: Option<Hsla>,
+    pub radius: Pixels,
+}
+
+/// Quads and text drawn under one clip: plain quads, then rounded ones, then
+/// text.
 #[derive(Default)]
 pub(crate) struct Layer {
     pub clip: Option<Bounds<Pixels>>,
     pub quads: Vec<(Bounds<Pixels>, Hsla)>,
+    pub rounded: Vec<RoundedQuad>,
     pub texts: Vec<(Point<Pixels>, Rc<ShapedText>)>,
 }
 
-/// Layer indexes: the whole row, the left (old) half, the right (new) half.
+/// Layer indexes: the whole row, the left (old) half, the right (new) half,
+/// and the file headers on top of them all.
 pub(crate) const FULL: usize = 0;
+pub(crate) const HEADERS: usize = 3;
 
 /// Everything one frame paints, in window coordinates.
 #[derive(Default)]
 pub(crate) struct Frame {
-    pub layers: [Layer; 3],
+    pub layers: [Layer; 4],
+    /// The viewport's top-left corner.
+    pub origin: Point<Pixels>,
+    /// Clickable controls, in paint order.
+    pub controls: Vec<Control>,
+    /// Every painted header strip: it takes the clicks over the rows it
+    /// covers.
+    pub header_areas: Vec<Bounds<Pixels>>,
+    /// Behind the control under the pointer.
+    pub hover: Hsla,
     pub line_height: Pixels,
     /// Rows (headers included) intersecting the viewport.
     pub rows: u32,
@@ -58,8 +86,11 @@ impl Frame {
         for layer in &mut self.layers {
             layer.clip = None;
             layer.quads.clear();
+            layer.rounded.clear();
             layer.texts.clear();
         }
+        self.controls.clear();
+        self.header_areas.clear();
         self.rows = 0;
         self.shaped = 0;
         self.loading = 0;
@@ -94,43 +125,22 @@ pub(crate) struct DebugRow {
     pub content: DebugContent,
 }
 
-/// What a file's body shows when it is not code rows.
-pub(crate) fn special_label(change: &FileChange) -> Option<String> {
-    use polygloss_diff::FileKind;
-    match change.kind {
-        FileKind::Binary => Some("Binary file".to_owned()),
-        FileKind::Submodule => Some(format!(
-            "Submodule {} → {}",
-            short(&change.old_blob),
-            short(&change.new_blob)
-        )),
-        _ if change.generated => Some("Generated file".to_owned()),
-        _ => None,
-    }
-}
-
-fn short(oid: &polygloss_diff::Oid) -> &str {
-    if oid.is_zero() { "none" } else { oid.short() }
-}
-
 /// The body of a file whose data could not be loaded.
 pub(crate) fn failed_label(message: &str) -> String {
     format!("Could not load this file: {message}")
-}
-
-/// The header title: the path, or `old → new` for a rename.
-pub(crate) fn header_title(change: &FileChange) -> String {
-    match (&change.old_path, &change.new_path) {
-        (Some(old), Some(new)) if old.text != new.text => format!("{} → {}", old.text, new.text),
-        _ => change.display_path().to_owned(),
-    }
 }
 
 /// The inputs of one frame, borrowed from the viewport.
 pub(crate) struct Painter<'a> {
     pub doc: &'a Document,
     pub files: &'a [FileChange],
-    pub file_labels: &'a [Option<SharedString>],
+    pub file_labels: &'a [Option<BodyLabel>],
+    /// Host-owned review state per file (header checkbox and badges).
+    pub flags: &'a [FileFlags],
+    /// Revealed context and the rows built with it.
+    pub gaps: &'a Gaps,
+    /// Blob sizes, LFS pointers, "Load diff" requests.
+    pub special: &'a Specials,
     pub theme: &'a ViewportTheme,
     pub style: DiffStyle,
     pub syntax: bool,
@@ -151,6 +161,8 @@ pub(crate) struct Painter<'a> {
     pub corrections: Vec<(u32, u32, f32)>,
     #[cfg(feature = "debug-inspect")]
     pub debug: &'a mut Vec<DebugRow>,
+    #[cfg(feature = "debug-inspect")]
+    pub debug_headers: &'a mut Vec<crate::debug::HeaderDebug>,
     /// Every text queued, `(x, y, text)` relative to the viewport.
     #[cfg(feature = "debug-inspect")]
     pub debug_text: &'a mut Vec<(f32, f32, Rc<ShapedText>)>,
@@ -162,7 +174,10 @@ impl Painter<'_> {
         let b = self.bounds;
         let (width, height) = (b.size.width.as_f32(), b.size.height.as_f32());
         self.frame.line_height = px(self.geometry.row_height);
+        self.frame.origin = b.origin;
+        self.frame.hover = self.theme.hover;
         self.frame.layers[FULL].clip = Some(b);
+        self.frame.layers[HEADERS].clip = Some(b);
         self.quad(FULL, 0.0, 0.0, width, height, self.theme.background);
         if self.layout == Layout::Split {
             let half = (width / 2.0).floor();
@@ -173,10 +188,18 @@ impl Painter<'_> {
             ));
         }
         let header_h = self.doc.metrics().header_height;
-        for f in self.doc.visible(height) {
+        let visible = self.doc.visible(height);
+        for f in visible.clone() {
             let top = (self.doc.file_top(f) - self.scroll_top) as f32;
-            if top + header_h > 0.0 {
-                self.header(f, top, header_h);
+            // The first file's header pins at the top while its body scrolls
+            // under it, until the next file's header pushes it up.
+            let y = if f == visible.start && top < 0.0 {
+                (top + self.doc.file_height(f) - header_h).min(0.0)
+            } else {
+                top
+            };
+            if y + header_h > 0.0 {
+                self.header(f, y, header_h, y != top);
             }
             if self.doc.is_collapsed(f) {
                 continue;
@@ -217,14 +240,14 @@ impl Painter<'_> {
         }
     }
 
-    fn materialized(&self, f: u32) -> Option<&Arc<MaterializedFile>> {
+    pub(crate) fn materialized(&self, f: u32) -> Option<&Arc<MaterializedFile>> {
         match self.doc.state(f) {
             FileState::Materialized(file) => Some(file),
             _ => None,
         }
     }
 
-    fn columns(&self, file: Option<&MaterializedFile>) -> Columns {
+    pub(crate) fn columns(&self, file: Option<&MaterializedFile>) -> Columns {
         let lines = file.map_or(0, |m| m.diff.old.len().max(m.diff.new.len()));
         Columns::new(
             self.layout,
@@ -235,32 +258,8 @@ impl Painter<'_> {
         )
     }
 
-    fn header(&mut self, f: u32, y: f32, h: f32) {
-        let width = self.bounds.size.width.as_f32();
-        self.frame.rows += 1;
-        self.quad(FULL, 0.0, y, width, h, self.theme.header_background);
-        self.quad(FULL, 0.0, y, width, 1.0, self.theme.border);
-        let title = header_title(&self.files[f as usize]);
-        let text = self.label(&title, 0, self.theme.header_foreground);
-        let row_h = self.geometry.row_height;
-        self.text(
-            FULL,
-            self.geometry.advance,
-            y + (h - row_h) / 2.0,
-            text.clone(),
-        );
-        #[cfg(feature = "debug-inspect")]
-        self.debug.push(DebugRow {
-            y,
-            height: h,
-            styled: false,
-            content: DebugContent::Header(text),
-        });
-    }
-
     fn body_row(&mut self, f: u32, i: u32, row: BodyRow, y: f32, h: f32) {
         self.frame.rows += 1;
-        let width = self.bounds.size.width.as_f32();
         match row {
             BodyRow::Line { diff_row, .. } => {
                 let Some(file) = self.materialized(f).cloned() else {
@@ -272,7 +271,11 @@ impl Painter<'_> {
                     }
                     return;
                 };
-                match file.rows(self.layout).get(diff_row as usize) {
+                match self
+                    .gaps
+                    .painted_rows(f, &file, self.layout)
+                    .get(diff_row as usize)
+                {
                     Some(Row::Unified {
                         old,
                         new,
@@ -285,12 +288,7 @@ impl Painter<'_> {
                     _ => {}
                 }
             }
-            BodyRow::Gap { len, .. } => {
-                self.quad(FULL, 0.0, y, width, h, self.theme.gap_background);
-                let s = if len == 1 { "" } else { "s" };
-                let label = format!("⋯ {len} unchanged line{s}");
-                self.label_at(f, &label, y, h);
-            }
+            BodyRow::Gap { .. } => self.gap_row(f, row, y, h),
             BodyRow::NoNewline { side, .. } => {
                 let cols = self.columns(self.materialized(f).map(|m| &**m));
                 let pane = cols.code_pane(side);
@@ -314,23 +312,13 @@ impl Painter<'_> {
                     content: DebugContent::Block(_id.0),
                 });
             }
-            BodyRow::Placeholder => {
-                // No label: the file is reloading and its old one (an error,
-                // a large-diff count) is stale.
-                let label = match self.file_labels[f as usize].clone() {
-                    Some(label) => label,
-                    None => {
-                        self.count_loading();
-                        SharedString::new_static("Loading…")
-                    }
-                };
-                self.label_at(f, &label, y, h);
-            }
+            BodyRow::Placeholder => self.placeholder_row(f, y, h),
         }
     }
 
-    /// A muted label row (gaps, placeholders) at the code column.
-    fn label_at(&mut self, f: u32, label: &str, y: f32, h: f32) {
+    /// A muted label row (gaps, placeholders) at the code column; returns
+    /// the right edge of the label, for controls that follow it.
+    pub(crate) fn label_at(&mut self, f: u32, label: &str, y: f32, h: f32) -> f32 {
         let cols = self.columns(self.materialized(f).map(|m| &**m));
         let pane = match self.layout {
             Layout::Split => Pane::Half(0),
@@ -340,6 +328,7 @@ impl Painter<'_> {
         let row_h = self.geometry.row_height;
         let x = cols.indicator_x(pane);
         self.text(FULL, x, y + ((h - row_h) / 2.0).max(0.0), text.clone());
+        let right = x + text.shaped.width();
         #[cfg(feature = "debug-inspect")]
         self.debug.push(DebugRow {
             y,
@@ -347,12 +336,34 @@ impl Painter<'_> {
             styled: false,
             content: DebugContent::Label(text),
         });
+        right
     }
 
     /// A label in place of a body that has no rows yet.
     fn label_row(&mut self, f: u32, label: &str, y: f32, h: f32) {
         self.frame.rows += 1;
         self.label_at(f, label, y, h);
+    }
+
+    /// A clickable text control after a label: `text` in the accent color,
+    /// starting at `x`, centered in the row `y..y + h`. Returns its right
+    /// edge.
+    pub(crate) fn link(
+        &mut self,
+        action: ControlAction,
+        text: &str,
+        x: f32,
+        y: f32,
+        h: f32,
+    ) -> f32 {
+        let a = self.geometry.advance;
+        let row_h = self.geometry.row_height;
+        let shaped = self.label(text, crate::header::SLOT_ACCENT, self.theme.accent);
+        let w = shaped.shaped.width() + a;
+        self.text(FULL, x + 0.5 * a, y + ((h - row_h) / 2.0).max(0.0), shaped);
+        let pad = ((h - row_h) / 2.0).clamp(0.0, 4.0);
+        self.control(action, ControlLayer::Body, x, y + pad, w, h - 2.0 * pad);
+        x + w
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -469,6 +480,48 @@ impl Painter<'_> {
         let _ = cells;
     }
 
+    /// Records a clickable control at viewport-relative `(x, y)`.
+    pub(crate) fn control(
+        &mut self,
+        action: ControlAction,
+        layer: ControlLayer,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) {
+        self.frame.controls.push(Control {
+            action,
+            bounds: self.bounds_at(x, y, w, h),
+            layer,
+            run: None,
+        });
+    }
+
+    /// Viewport-relative `(x, y, w, h)` in window coordinates.
+    pub(crate) fn bounds_at(&self, x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        let o = self.bounds.origin;
+        Bounds::new(point(o.x + px(x), o.y + px(y)), size(px(w), px(h)))
+    }
+
+    /// Queues a rounded rectangle at viewport-relative coordinates.
+    pub(crate) fn rounded(
+        &mut self,
+        layer: usize,
+        (x, y, w, h): (f32, f32, f32, f32),
+        background: Hsla,
+        border: Option<Hsla>,
+        radius: f32,
+    ) {
+        let bounds = self.bounds_at(x, y, w, h);
+        self.frame.layers[layer].rounded.push(RoundedQuad {
+            bounds,
+            background,
+            border,
+            radius: px(radius),
+        });
+    }
+
     fn kind_background(&self, kind: LineKind) -> Option<Hsla> {
         match kind {
             LineKind::Removed => Some(self.theme.removed_background),
@@ -479,7 +532,7 @@ impl Painter<'_> {
 
     /// Counts a visible row whose file's data is still on its way (it is
     /// unhighlighted too).
-    fn count_loading(&mut self) {
+    pub(crate) fn count_loading(&mut self) {
         self.frame.loading += 1;
         self.frame.unhighlighted += 1;
     }
@@ -583,11 +636,8 @@ impl Painter<'_> {
 
     /// Queues a quad at viewport-relative coordinates.
     pub(crate) fn quad(&mut self, layer: usize, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
-        let o = self.bounds.origin;
-        self.frame.layers[layer].quads.push((
-            Bounds::new(point(o.x + px(x), o.y + px(y)), size(px(w), px(h))),
-            color,
-        ));
+        let bounds = self.bounds_at(x, y, w, h);
+        self.frame.layers[layer].quads.push((bounds, color));
     }
 
     /// Queues text with its top-left corner at viewport-relative `(x, y)`.

@@ -14,8 +14,8 @@ use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use gpui_kit::{
-    AppContext as _, Bounds, Context, EventEmitter, Font, IntoElement, Pixels, Render,
-    SharedString, Task, Window, font, px,
+    AppContext as _, Bounds, Context, EventEmitter, Font, IntoElement, ParentElement as _, Pixels,
+    Render, SharedString, Styled as _, Task, Window, div, font, px,
 };
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::Layout;
@@ -23,17 +23,22 @@ use polygloss_diff::word::Granularity;
 use polygloss_diff::{FileChange, FileKind, Side};
 use polygloss_highlight::{Budget, Highlighter, Tokens, guess_language};
 
+use crate::controls::ControlAction;
 use crate::document::{
     BlockId, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document, FileLayout,
     FileState, RowKey, ScrollAnchor, SizeHint,
 };
 use crate::element::DiffElement;
+use crate::file_flags::FileFlags;
+use crate::gap::Gaps;
+use crate::header::HeaderMenu;
 use crate::layout::{Columns, Geometry, LayoutMode, Pane, digits, resolve_layout, wrapped_heights};
 use crate::materialize::MaterializedFile;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::DebugRow;
-use crate::paint_rows::{Frame, Painter, failed_label, special_label};
+use crate::paint_rows::{Frame, Painter, failed_label};
 use crate::provider::DiffProvider;
+use crate::special::{BodyLabel, Specials, large_label, needs_blobs};
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{TEXT_CACHE_CAPACITY, TextCache};
 
@@ -153,36 +158,54 @@ struct LayoutKey {
     layout: Layout,
     /// Code column width in px when wrapping, 0 when not.
     wrap: u32,
+    /// Changed lines above which the file shows "Load diff" (`u32::MAX` once
+    /// the user asked to load it).
     large_file_changed_lines: u32,
+    /// The file's revealed-context version (T2.5 gaps).
+    expansions: u64,
+    load_requested: bool,
 }
 
 /// The GPUI view over one diff.
 pub struct DiffViewport {
-    provider: Arc<dyn DiffProvider>,
-    opts: ViewportOptions,
-    files: Arc<Vec<FileChange>>,
-    doc: Document,
-    geometry: Geometry,
-    code_font: Font,
-    geometry_dirty: bool,
+    pub(crate) provider: Arc<dyn DiffProvider>,
+    pub(crate) opts: ViewportOptions,
+    pub(crate) files: Arc<Vec<FileChange>>,
+    pub(crate) doc: Document,
+    pub(crate) geometry: Geometry,
+    pub(crate) code_font: Font,
+    pub(crate) geometry_dirty: bool,
     /// The effective layout; `measured` once a frame has seen the width.
-    layout: Layout,
-    measured: bool,
-    width: f32,
+    pub(crate) layout: Layout,
+    pub(crate) measured: bool,
+    pub(crate) width: f32,
     layout_keys: Vec<Option<LayoutKey>>,
     /// What a file's body shows when it has no code rows (special files,
-    /// large diffs).
-    labels: Vec<Option<SharedString>>,
-    text_cache: TextCache,
-    highlighter: Arc<Highlighter>,
-    loads: HashMap<u32, Task<()>>,
-    highlights: HashMap<u32, Task<()>>,
-    frame_pool: Option<Frame>,
-    top_file: u32,
+    /// large diffs, load errors).
+    pub(crate) labels: Vec<Option<BodyLabel>>,
+    pub(crate) text_cache: TextCache,
+    pub(crate) highlighter: Arc<Highlighter>,
+    pub(crate) loads: HashMap<u32, Task<()>>,
+    pub(crate) highlights: HashMap<u32, Task<()>>,
+    pub(crate) frame_pool: Option<Frame>,
+    pub(crate) top_file: u32,
+    /// Host-owned review state per file (headers).
+    pub(crate) flags: Vec<FileFlags>,
+    /// Revealed context per file.
+    pub(crate) gaps: Gaps,
+    /// Blob sizes, LFS pointers, "Load diff" requests.
+    pub(crate) special: Specials,
+    /// The open ⋯ menu.
+    pub(crate) menu: Option<HeaderMenu>,
+    /// The control a mouse button went down on (a click needs the release
+    /// there too).
+    pub(crate) pressed: Option<ControlAction>,
     #[cfg(feature = "debug-inspect")]
-    debug_rows: Vec<DebugRow>,
+    pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
-    debug_text: Vec<(f32, f32, std::rc::Rc<crate::text_cache::ShapedText>)>,
+    pub(crate) debug_headers: Vec<crate::debug::HeaderDebug>,
+    #[cfg(feature = "debug-inspect")]
+    pub(crate) debug_text: Vec<(f32, f32, std::rc::Rc<crate::text_cache::ShapedText>)>,
 }
 
 impl EventEmitter<ViewportEvent> for DiffViewport {}
@@ -209,9 +232,12 @@ impl DiffViewport {
             files.clone(),
             geometry.metrics(layout, opts.large_file_changed_lines),
         );
+        let special = Specials::default();
+        let file_count = files.len();
         let labels = files
             .iter()
-            .map(|c| special_label(c).map(SharedString::from))
+            .enumerate()
+            .map(|(f, c)| special.body_label(f as u32, c))
             .collect();
         DiffViewport {
             highlighter: Arc::new(Highlighter::new(opts.theme.syntax.clone())),
@@ -232,8 +258,15 @@ impl DiffViewport {
             highlights: HashMap::new(),
             frame_pool: None,
             top_file: 0,
+            flags: vec![FileFlags::default(); file_count],
+            gaps: Gaps::default(),
+            special,
+            menu: None,
+            pressed: None,
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
+            #[cfg(feature = "debug-inspect")]
+            debug_headers: Vec::new(),
             #[cfg(feature = "debug-inspect")]
             debug_text: Vec::new(),
         }
@@ -285,7 +318,9 @@ impl DiffViewport {
 
     /// Puts `target` at the top of the viewport (clamped to the document).
     /// A target in a file that is not laid out yet lands exactly once it is.
+    /// Closes the ⋯ menu.
     pub fn scroll_to(&mut self, target: ScrollTarget, cx: &mut Context<Self>) {
+        self.menu = None;
         match target {
             ScrollTarget::File(f) => self.doc.scroll_to(f, RowKey::Header),
             ScrollTarget::Line {
@@ -308,12 +343,15 @@ impl DiffViewport {
     }
 
     /// Scrolls by `dy` pixels (positive = down), clamped to the document.
+    /// Closes the ⋯ menu (it would no longer sit under its button).
     pub fn scroll_by(&mut self, dy: f32, cx: &mut Context<Self>) {
+        self.menu = None;
         self.doc.scroll_by(dy);
         self.after_scroll(cx);
     }
 
-    fn after_scroll(&mut self, cx: &mut Context<Self>) {
+    /// Reports a change of the file at the top and repaints.
+    pub(crate) fn after_scroll(&mut self, cx: &mut Context<Self>) {
         let top = self.doc.anchor().file_idx;
         if top != self.top_file {
             self.top_file = top;
@@ -348,6 +386,31 @@ impl DiffViewport {
                 .iter()
                 .map(|(x, y, t)| (*x, *y, t.text().to_owned()))
                 .collect(),
+            headers: self.debug_headers.clone(),
+            controls: self
+                .frame_pool
+                .as_ref()
+                .map(|frame| {
+                    let o = frame.origin;
+                    frame
+                        .controls
+                        .iter()
+                        .map(|c| crate::debug::ControlDebug {
+                            action: c.action,
+                            bounds: (
+                                (c.bounds.origin.x - o.x).as_f32(),
+                                (c.bounds.origin.y - o.y).as_f32(),
+                                c.bounds.size.width.as_f32(),
+                                c.bounds.size.height.as_f32(),
+                            ),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            menu: self.menu.as_ref().map(|m| crate::debug::MenuDebug {
+                file_idx: m.file_idx,
+                items: m.items.iter().map(|(l, e)| ((*l).to_owned(), *e)).collect(),
+            }),
         }
     }
 
@@ -379,12 +442,16 @@ impl DiffViewport {
             #[cfg(feature = "debug-inspect")]
             {
                 self.debug_rows.clear();
+                self.debug_headers.clear();
                 self.debug_text.clear();
             }
             let mut painter = Painter {
                 doc: &self.doc,
                 files: &self.files,
                 file_labels: &self.labels,
+                flags: &self.flags,
+                gaps: &self.gaps,
+                special: &self.special,
                 theme: &self.opts.theme,
                 style: self.opts.style,
                 syntax: self.opts.syntax,
@@ -401,6 +468,8 @@ impl DiffViewport {
                 corrections: Vec::new(),
                 #[cfg(feature = "debug-inspect")]
                 debug: &mut self.debug_rows,
+                #[cfg(feature = "debug-inspect")]
+                debug_headers: &mut self.debug_headers,
                 #[cfg(feature = "debug-inspect")]
                 debug_text: &mut self.debug_text,
             };
@@ -463,12 +532,13 @@ impl DiffViewport {
                 continue;
             }
             let change = &self.files[f as usize];
-            if needs_blobs(change)
+            if needs_blobs(change, self.special.load_requested(f))
                 && matches!(self.doc.state(f), FileState::Estimated | FileState::Evicted)
                 && !self.loads.contains_key(&f)
             {
                 self.start_load(f, cx);
             }
+            self.request_blob_sizes(f, cx);
             let key = self.layout_key(f);
             let stale =
                 self.doc.file_layout(f).is_none() || self.layout_keys[f as usize] != Some(key);
@@ -502,10 +572,28 @@ impl DiffViewport {
             }
             _ => 0,
         };
+        let load_requested = self.special.load_requested(f);
         LayoutKey {
             layout: self.layout,
             wrap,
-            large_file_changed_lines: self.opts.large_file_changed_lines,
+            large_file_changed_lines: if load_requested {
+                u32::MAX
+            } else {
+                self.opts.large_file_changed_lines
+            },
+            expansions: self.gaps.version(f),
+            load_requested,
+        }
+    }
+
+    /// Lays file `f` out again now (revealed context, "Load diff"), or on the
+    /// next frame once its data is there.
+    pub(crate) fn relayout(&mut self, f: u32) {
+        self.layout_keys[f as usize] = None;
+        let key = self.layout_key(f);
+        if let Some(layout) = self.build_layout(f, key) {
+            self.doc.set_file_layout(f, layout);
+            self.layout_keys[f as usize] = Some(key);
         }
     }
 
@@ -513,40 +601,41 @@ impl DiffViewport {
     fn build_layout(&mut self, f: u32, key: LayoutKey) -> Option<FileLayout> {
         let metrics = self.doc.metrics().clone();
         let change = &self.files[f as usize];
-        if let Some(label) = special_label(change) {
+        if let Some(label) = self.special.body_label(f, change) {
             let h = if change.kind == FileKind::Submodule {
                 metrics.row_height
             } else {
                 metrics.placeholder_height
             };
-            self.labels[f as usize] = Some(label.into());
+            self.labels[f as usize] = Some(label);
             return Some(FileLayout::placeholder(h));
         }
-        if !needs_blobs(change) {
+        if !needs_blobs(change, key.load_requested) {
             return Some(FileLayout::new(Vec::new(), &[]));
         }
         let file = match self.doc.state(f) {
-            FileState::Materialized(file) => file,
+            FileState::Materialized(file) => file.clone(),
             // The error replaces whatever the file showed before (rows kept
             // while it reloaded, or an estimate).
             FileState::Failed(msg) => {
-                self.labels[f as usize] = Some(failed_label(msg).into());
+                self.labels[f as usize] = Some(BodyLabel::plain(failed_label(msg)));
                 return Some(FileLayout::placeholder(metrics.placeholder_height));
             }
             _ => return None,
         };
+        self.special.note_lfs(f, &file);
         let changed = file.diff.additions + file.diff.deletions;
         if changed > key.large_file_changed_lines {
-            self.labels[f as usize] = Some(format!("Large diff · {changed} changed lines").into());
+            self.labels[f as usize] = Some(large_label(changed));
             return Some(FileLayout::placeholder(metrics.placeholder_height));
         }
         self.labels[f as usize] = None;
-        let rows = file.rows(key.layout);
+        let rows = self.gaps.rows(f, &file, key.layout);
         let layout = FileLayout::from_rows(rows, &metrics);
         if key.wrap == 0 {
             return Some(layout);
         }
-        let heights = wrapped_heights(&layout, rows, file, self.geometry.advance, key.wrap as f32);
+        let heights = wrapped_heights(&layout, rows, &file, self.geometry.advance, key.wrap as f32);
         Some(FileLayout::new(layout.rows().to_vec(), &heights))
     }
 
@@ -601,6 +690,7 @@ impl DiffViewport {
                 }
                 for evicted in self.doc.evict_over_budget(DEFAULT_EVICTION_BUDGET_BYTES) {
                     self.layout_keys[evicted as usize] = None;
+                    self.gaps.forget_rows(evicted);
                 }
             }
             Err(e) => {
@@ -707,17 +797,11 @@ impl DiffViewport {
 
 impl Render for DiffViewport {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        DiffElement::new(cx.entity())
+        div()
+            .size_full()
+            .child(DiffElement::new(cx.entity()))
+            .children(self.menu_element())
     }
-}
-
-/// Whether a file's body comes from its blobs (text and symlinks whose
-/// content changed); binary, generated, submodule and content-equal changes
-/// are drawn from metadata alone.
-fn needs_blobs(change: &FileChange) -> bool {
-    matches!(change.kind, FileKind::Text | FileKind::Symlink)
-        && !change.generated
-        && change.old_blob != change.new_blob
 }
 
 /// Tokens for one side, or `None` (no text, no grammar, over budget, not

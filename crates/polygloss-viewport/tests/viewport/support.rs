@@ -23,8 +23,8 @@ use gpui_kit::{
 use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid};
 use polygloss_highlight::{Appearance, pierre_theme};
 use polygloss_viewport::{
-    DiffProvider, DiffViewport, FrameStats, LayoutMode, ViewportDebug, ViewportEvent,
-    ViewportOptions, ViewportTheme,
+    ControlAction, DiffProvider, DiffViewport, FrameStats, LayoutMode, ViewportDebug,
+    ViewportEvent, ViewportOptions, ViewportTheme,
 };
 
 /// Code font size the tests use: one char is `0.6 × 13 = 7.8` px wide.
@@ -142,6 +142,13 @@ pub struct MemProvider {
 
 impl MemProvider {
     pub fn new(specs: Vec<Spec>) -> Arc<MemProvider> {
+        MemProvider::new_with(specs, |_| {})
+    }
+
+    /// Like [`MemProvider::new`], then lets `edit` adjust the file list's
+    /// metadata (generated flags, modes, submodule ids) before anything reads
+    /// it. Blobs stay keyed by the ids `new` assigned.
+    pub fn new_with(specs: Vec<Spec>, edit: impl FnOnce(&mut [FileChange])) -> Arc<MemProvider> {
         let mut blobs = HashMap::new();
         let mut next = 1u64;
         let mut blob = |text: &Option<String>| match text {
@@ -184,7 +191,9 @@ impl MemProvider {
                     generated: false,
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut files = files;
+        edit(&mut files);
         Arc::new(MemProvider {
             files: Arc::new(files),
             blobs,
@@ -441,4 +450,55 @@ pub fn split(left: Option<(u32, char, &str)>, right: Option<(u32, char, &str)>) 
         None => format!("{:>5} {} {}", "", ' ', ""),
     };
     format!("{} │ {}", cell(left), cell(right))
+}
+
+/// Initializes gpui-kit (theme, key bindings) the way a host does before
+/// opening windows; the header's ⋯ menu is a gpui-kit `PopupMenu`.
+pub fn init_kit(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+}
+
+/// Clicks at viewport-relative `(x, y)` (the viewport fills the window) and
+/// lets the result settle.
+pub fn click_at(cx: &mut VisualTestContext, x: f32, y: f32) {
+    cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
+    cx.simulate_click(point(px(x), px(y)), Modifiers::default());
+    settle(cx);
+}
+
+/// Bounds `(x, y, width, height)` of the control doing `action` in the last
+/// frame, relative to the viewport; panics when it was not painted.
+pub fn control(d: &ViewportDebug, action: ControlAction) -> (f32, f32, f32, f32) {
+    d.controls
+        .iter()
+        .find(|c| c.action == action)
+        .map(|c| c.bounds)
+        .unwrap_or_else(|| panic!("no control {action:?} in {:?}", d.controls))
+}
+
+/// Clicks the middle of the control doing `action`.
+pub fn click_control(
+    view: &Entity<DiffViewport>,
+    cx: &mut VisualTestContext,
+    action: ControlAction,
+) {
+    let (x, y, w, h) = control(&debug(view, cx), action);
+    click_at(cx, x + w / 2.0, y + h / 2.0);
+}
+
+/// Clicks the open popup menu's item labeled `label` (gpui-kit test
+/// locators: items are identified by index, named by their label).
+pub fn click_menu_item(cx: &mut VisualTestContext, label: &str) {
+    use gpui_kit::test::TestWindowExt as _;
+    let ix = cx.update(|window, _| {
+        let menu = window.within("popup-menu");
+        (0usize..32)
+            .find(|&ix| {
+                menu.try_find(ix)
+                    .is_some_and(|item| item.label() == Some(label))
+            })
+            .unwrap_or_else(|| panic!("no menu item {label:?}"))
+    });
+    cx.update(|window, cx| window.within("popup-menu").click(ix, cx));
+    settle(cx);
 }
