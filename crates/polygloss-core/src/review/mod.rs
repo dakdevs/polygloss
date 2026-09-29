@@ -15,6 +15,12 @@ pub mod viewed;
 
 pub use models::{IterationInfo, OpenRequest, OpenedDiff, PinnedBy};
 pub use open::Core;
+pub use submit::{Submission, Verdict};
+pub use suggestions::parse_suggestions;
+pub use threads::{
+    AGENT_THREAD_CAP, Author, AuthorKind, CommentView, DeletedComment, NewThread, ResolvedBy,
+    Subject, ThreadAnchor, ThreadFilter, ThreadKind, ThreadScope, ThreadStatus, ThreadView, Viewer,
+};
 
 use crate::git::{GitError, ResolveError, SnapshotError};
 use crate::ids::IdError;
@@ -22,8 +28,7 @@ use crate::objects::ObjectError;
 use crate::paths::PathsError;
 use crate::store::StoreError;
 
-/// Errors from the review domain. Later tasks add variants (T1.13: cap, anchor,
-/// ownership). [`CoreError::code`] gives the agent-facing code (design §15.1).
+/// Errors from the review domain. Later tasks may add variants. [`CoreError::code`] gives the agent-facing code (design §15.1).
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
     #[error(transparent)]
@@ -58,6 +63,22 @@ pub enum CoreError {
     /// review of another worktree, or into a commit review).
     #[error("conflict: {0}")]
     Conflict(String),
+    /// An agent already created [`AGENT_THREAD_CAP`] threads in this iteration
+    /// (design §8.4, OQ-13).
+    #[error("agents may create at most {cap} threads per iteration")]
+    CapExceeded { cap: u32 },
+    /// The anchor does not fit the diff: path not in it, lines outside the blob,
+    /// `start_line > line`, the old side of an added file, the new side of a
+    /// deleted file, or lines of a binary or submodule entry (design §8.1).
+    #[error("invalid anchor: {0}")]
+    InvalidAnchor(String),
+    /// Editing or deleting someone else's comment (design §8.2, OQ-30).
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+    /// A request the domain rules reject whatever the stored state: an empty body,
+    /// a note or question from a human, a resolve by the system actor.
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
 }
 
 impl From<rusqlite::Error> for CoreError {
@@ -68,8 +89,10 @@ impl From<rusqlite::Error> for CoreError {
 
 impl CoreError {
     /// The agent-facing error code (design §15.1 "Results"): `not_found`,
-    /// `repo_not_found`, `objects_missing`, `conflict`, or `internal` for everything
-    /// else. An ambiguous prefix is `not_found` (no single diff matches).
+    /// `repo_not_found`, `objects_missing`, `invalid_anchor`, `cap_exceeded`,
+    /// `forbidden`, `conflict` (also for [`CoreError::InvalidRequest`]), or
+    /// `internal` for everything else. An ambiguous prefix is `not_found` (no
+    /// single diff matches).
     pub fn code(&self) -> &'static str {
         match self {
             CoreError::NotFound { .. } | CoreError::Ambiguous { .. } | CoreError::Id(_) => {
@@ -80,7 +103,12 @@ impl CoreError {
             | CoreError::Objects(ObjectError::Missing(_)) => "objects_missing",
             CoreError::Resolve(ResolveError::Git(GitError::NotARepo(_))) => "repo_not_found",
             CoreError::Resolve(ResolveError::BadRevision(_)) => "not_found",
-            CoreError::Conflict(_) => "conflict",
+            // §15.1 has no dedicated code for malformed requests; `conflict` tells the
+            // caller to change the request rather than retry (`internal`).
+            CoreError::Conflict(_) | CoreError::InvalidRequest(_) => "conflict",
+            CoreError::CapExceeded { .. } => "cap_exceeded",
+            CoreError::InvalidAnchor(_) => "invalid_anchor",
+            CoreError::Forbidden(_) => "forbidden",
             _ => "internal",
         }
     }
