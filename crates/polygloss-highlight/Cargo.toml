@@ -16,3 +16,11 @@ thiserror.workspace = true
 [dev-dependencies]
 insta.workspace = true
 criterion.workspace = true
+
+# One integration test binary (`tests/highlight/main.rs`, one module per area):
+# every test binary links all lumis grammars, so fewer binaries save link time
+# and disk.
+
+[[bench]]
+name = "highlight"
+harness = false

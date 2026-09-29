@@ -1,0 +1,61 @@
+{
+  "$schema": "https://zed.dev/schema/themes/v0.2.0.json",
+  "name": "Minimal",
+  "author": "Polygloss tests",
+  "future_family_key": { "anything": [1, 2, 3] },
+  "themes": [
+    {
+      "name": "Minimal Dark",
+      "appearance": "dark",
+      "future_theme_key": true,
+      "style": {
+        "background": "#1e1e1eff",
+        "editor.background": "#1e1e1e",
+        "editor.foreground": "#d4d4d4ff",
+        "created": "#00ff00",
+        "deleted": "#f00",
+        "modified": null,
+        "border.variant": "not a color",
+        "players": [
+          {
+            "cursor": "#ffffffff",
+            "background": "#ffffffff",
+            "selection": "#ffffff3d"
+          }
+        ],
+        "accents": ["#ff0000ff", "#00ff00ff"],
+        "some.future.color": "#12345678",
+        "syntax": {
+          "keyword": {
+            "color": "#ff0000ff",
+            "font_style": null,
+            "font_weight": null
+          },
+          "keyword.function": {
+            "color": "#ff8800ff",
+            "font_weight": 700
+          },
+          "comment": {
+            "color": "#80808080",
+            "font_style": "italic",
+            "future_style_key": "ignored"
+          },
+          "string": {
+            "color": "#00ff00ff",
+            "background_color": "#00000000"
+          },
+          "punctuation": {
+            "color": "bogus",
+            "font_style": "wavy",
+            "font_weight": "heavy"
+          },
+          "not_an_object": "#ffffffff"
+        }
+      }
+    },
+    {
+      "name": "Minimal Light",
+      "appearance": "light"
+    }
+  ]
+}
