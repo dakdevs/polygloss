@@ -4,6 +4,7 @@
 //! converts them to the 1-based anchors of the store, MCP and JSON surfaces.
 #![forbid(unsafe_code)]
 
+mod git_myers;
 pub mod hunks;
 pub mod line_map;
 pub mod lines;

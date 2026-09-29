@@ -1,0 +1,51 @@
+# Nightly checks for polygloss. macOS arm64 only (ADR-0016, OQ-P9). Every cargo
+# call goes through scripts/cargo.sh, which runs rustup's cargo from ~/.cargo/bin.
+#
+# git-parity (plan T1.16, design §6.3): our hunks vs `git diff` on seeded parity
+# repos. T2.1 adds a Linux-corpus parity step and T2.9 a perf job.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  git-parity:
+    name: Git parity (seed ${{ matrix.seed }})
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v7
+      # rustup >= 1.28 no longer installs the toolchain on `rustup show`; with no
+      # argument, `toolchain install` installs the one rust-toolchain.toml pins.
+      - run: rustup toolchain install
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target-shared"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - run: scripts/cargo.sh build --release -p polygloss-cli
+      - run: bun scripts/make-parity-repo.ts --seed ${{ matrix.seed }} --files 500 --out "$RUNNER_TEMP/parity-repo"
+      - run: bun scripts/git-parity.ts --repo "$RUNNER_TEMP/parity-repo" --range parity-base..parity-head --min-rate 0.999 --mismatches-dir "$RUNNER_TEMP/parity-mismatches"
+        env:
+          POLYGLOSS_CLI_BIN: target/release/polygloss-cli
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: git-parity-mismatches-seed-${{ matrix.seed }}
+          path: ${{ runner.temp }}/parity-mismatches
+          if-no-files-found: ignore
