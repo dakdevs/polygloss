@@ -14,8 +14,11 @@
 // for (budgets.json). Corpus paths and revisions come from
 // benches/corpora/lib.ts `corpusEntry`, passed to the harness as flags.
 // The harness is launched once (`--version`) before the matrix, so macOS's
-// first-launch assessment of a fresh build is not measured. `peak_rss_mb` is
-// the largest RSS (`ps -o rss= -p`, every 100 ms) of any run
+// first-launch assessment of a fresh build is not measured, and then runs one
+// unmeasured `open` window (the first planned corpus and layout), so a fresh
+// build's one-time Metal shader compilation (OQ-P12) is not either; that
+// warm-up's first paint is reported (`warmup` in the results).
+// `peak_rss_mb` is the largest RSS (`ps -o rss= -p`, every 100 ms) of any run
 // of a corpus and layout. `--repeat n` runs everything n times; each metric is
 // then the p95 (nearest rank) of its n per-run values. App-level scenarios
 // (`Polygloss --perf-scenario …`, T3.10/T3.11) report null until the app has
@@ -307,6 +310,27 @@ export function planRuns(opts: {
   return runs;
 }
 
+/**
+ * The unmeasured window run before the matrix: `open` on the first enabled
+ * `polygloss-perf` run's corpus and layout (`null` when nothing runs). A
+ * binary's first window compiles GPUI's Metal shaders (gpui-kit forces
+ * runtime shaders, OQ-P12) and Metal caches them per binary, so the first
+ * windowed launch of a fresh build spends ≈ 150–200 ms more before its first
+ * frame than every later launch.
+ */
+export function warmupRun(plan: PlannedRun[]): PlannedRun | null {
+  const first = plan.find((p) => p.enabled && p.runner === "perf");
+  if (!first) return null;
+  return {
+    scenario: "open",
+    runner: "perf",
+    corpus: first.corpus,
+    layout: first.layout,
+    metrics: ["first_paint_ms"],
+    enabled: true,
+  };
+}
+
 // ---- table ----
 
 function fmt(value: number): string {
@@ -495,6 +519,41 @@ async function runHarness(argv: string[]): Promise<{
   }
 }
 
+function newRecord(p: PlannedRun, repeat: number): RunRecord {
+  return {
+    scenario: p.scenario,
+    corpus: p.corpus,
+    layout: p.layout,
+    repeat,
+    argv: null,
+    wall_ms: null,
+    peak_rss_mb: null,
+    result: null,
+    error: null,
+  };
+}
+
+/** Runs `argv` for `p` and fills in `record` (its result or its error). */
+async function measure(
+  record: RunRecord,
+  p: PlannedRun,
+  argv: string[],
+): Promise<void> {
+  record.argv = argv;
+  const out = await runHarness(argv);
+  record.wall_ms = Math.round(out.ms);
+  record.peak_rss_mb =
+    out.peakKib === null ? null : Math.round((out.peakKib / 1024) * 10) / 10;
+  try {
+    if (out.timedOut)
+      throw new Error(`killed after ${RUN_TIMEOUT_MS / 60_000} min`);
+    if (out.code !== 0) throw new Error(`exited with code ${out.code}`);
+    record.result = parseResult(out.stdout, p);
+  } catch (e) {
+    record.error = (e as Error).message;
+  }
+}
+
 /** Rows per corpus and layout (corpus, then layout order) from every run. */
 function buildRows(plan: PlannedRun[], records: RunRecord[]): Row[] {
   const rows: Row[] = [];
@@ -626,7 +685,12 @@ async function main(argv: string[]): Promise<number> {
   );
   const entries = new Map(plan.map((p) => [p.corpus, corpusEntry(p.corpus)]));
 
+  const warm = warmupRun(plan);
   if (values["dry-run"]) {
+    if (warm)
+      process.stdout.write(
+        `warm-up (not measured): open ${warm.corpus} ${warm.layout}: ${harnessArgs(bin, warm, entries.get(warm.corpus)!).join(" ")}\n`,
+      );
     for (const p of plan) {
       const how = p.enabled
         ? harnessArgs(bin, p, entries.get(p.corpus)!).join(" ")
@@ -679,6 +743,26 @@ async function main(argv: string[]): Promise<number> {
   } finally {
     warmup.cleanup();
   }
+  // One unmeasured window keeps a fresh build's shader compilation out of
+  // the matrix (see `warmupRun`); its first paint is still reported.
+  let warmupRecord: RunRecord | null = null;
+  if (warm) {
+    warmupRecord = newRecord(warm, 0);
+    process.stderr.write(
+      `run-perf: warm-up (not measured): open ${warm.corpus} ${warm.layout}\n`,
+    );
+    await measure(
+      warmupRecord,
+      warm,
+      harnessArgs(bin, warm, entries.get(warm.corpus)!),
+    );
+    const fp = warmupRecord.result?.metrics.first_paint_ms;
+    process.stderr.write(
+      warmupRecord.error === null
+        ? `run-perf: warm-up first paint ${fp} ms (not counted: a fresh build's first window compiles GPUI's shaders, OQ-P12)\n`
+        : `run-perf: warm-up failed: ${warmupRecord.error} (continuing)\n`,
+    );
+  }
 
   const machine = currentMachine();
   const git = gitState();
@@ -688,45 +772,21 @@ async function main(argv: string[]): Promise<number> {
   let n = 0;
   for (let i = 0; i < repeat; i++)
     for (const p of plan) {
-      const record: RunRecord = {
-        scenario: p.scenario,
-        corpus: p.corpus,
-        layout: p.layout,
-        repeat: i,
-        argv: null,
-        wall_ms: null,
-        peak_rss_mb: null,
-        result: null,
-        error: null,
-      };
+      const record = newRecord(p, i);
       records.push(record);
       if (!p.enabled) {
         record.note = scenarios.find((s) => s.name === p.scenario)?.note;
         continue;
       }
       n++;
-      const argv = harnessArgs(bin, p, entries.get(p.corpus)!);
-      record.argv = argv;
       process.stderr.write(
         `run-perf: [${n}/${total}] ${p.scenario} ${p.corpus} ${p.layout}\n`,
       );
-      const out = await runHarness(argv);
-      record.wall_ms = Math.round(out.ms);
-      record.peak_rss_mb =
-        out.peakKib === null
-          ? null
-          : Math.round((out.peakKib / 1024) * 10) / 10;
-      try {
-        if (out.timedOut)
-          throw new Error(`killed after ${RUN_TIMEOUT_MS / 60_000} min`);
-        if (out.code !== 0) throw new Error(`exited with code ${out.code}`);
-        record.result = parseResult(out.stdout, p);
-      } catch (e) {
-        record.error = (e as Error).message;
+      await measure(record, p, harnessArgs(bin, p, entries.get(p.corpus)!));
+      if (record.error !== null)
         process.stderr.write(
           `run-perf: ${p.scenario} ${p.corpus} ${p.layout} failed: ${record.error}\n`,
         );
-      }
     }
 
   const rows = buildRows(plan, records);
@@ -786,6 +846,7 @@ async function main(argv: string[]): Promise<number> {
         rows,
         budgets: checks,
         regressions,
+        warmup: warmupRecord,
         runs: records,
       },
       null,

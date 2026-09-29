@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -22,6 +23,7 @@ import {
   loadBudgets,
   percentile,
   planRuns,
+  warmupRun,
   withBaseline,
 } from "../../benches/run-perf";
 import { makeSandbox } from "../support/sandbox";
@@ -274,6 +276,31 @@ describe("plan", () => {
     ]);
   });
 
+  test("the warm-up opens the first planned corpus in the first planned layout", () => {
+    const plan = planRuns({
+      corpora: ["huge-file", "linux"],
+      layouts: ["unified"],
+      scenarios: ["highlight"],
+      budgets,
+    });
+    expect(warmupRun(plan)).toEqual({
+      scenario: "open",
+      runner: "perf",
+      corpus: "huge-file",
+      layout: "unified",
+      metrics: ["first_paint_ms"],
+      enabled: true,
+    });
+    // Nothing runs, nothing to warm up.
+    const disabled = planRuns({
+      corpora: ["typical"],
+      layouts: ["split"],
+      scenarios: ["watcher-banner"],
+      budgets,
+    });
+    expect(warmupRun(disabled)).toBeNull();
+  });
+
   test("a scenario filter and a corpus subset narrow the plan", () => {
     const runs = planRuns({
       corpora: ["huge-file"],
@@ -317,11 +344,14 @@ tinyRepo(join(corporaRoot, "linux"), "v6.10", "v6.11");
 // Prints the result its arguments ask for. The runner gives every run a
 // sandboxed environment, so the fake reads its knobs from a control file:
 // `SLOW_SCROLL` makes the scroll scenario miss its budget, `FAIL_SCENARIO`
-// makes that scenario exit 3. Arguments are echoed into `info` so the tests
-// can check what the runner passed.
+// makes that scenario exit 3, `COLD_FIRST_PAINT` is the first paint of the
+// first windowed launch while `firstWindow` does not exist (the launch
+// creates it), like a fresh build compiling GPUI's shaders once. Arguments
+// are echoed into `info` so the tests can check what the runner passed.
 const fakeHarness = join(sandbox.home, "fake-perf");
 const control = join(sandbox.home, "fake-perf.env");
 const launches = join(sandbox.home, "fake-perf.log");
+const firstWindow = join(sandbox.home, "fake-perf.shaders");
 writeFileSync(
   fakeHarness,
   `#!/bin/sh
@@ -348,8 +378,13 @@ if [ "$scenario" = "\${FAIL_SCENARIO:-}" ]; then
   echo "fake-perf: $scenario failed" >&2
   exit 3
 fi
+first_paint=120
+if [ -n "\${COLD_FIRST_PAINT:-}" ] && [ ! -f "${firstWindow}" ]; then
+  : > "${firstWindow}"
+  first_paint=$COLD_FIRST_PAINT
+fi
 case "$scenario" in
-  open) metrics='"first_paint_ms": 120' ;;
+  open) metrics="\\"first_paint_ms\\": $first_paint" ;;
   scroll) metrics="\\"scroll_p95_ms\\": \${SLOW_SCROLL:-2.5}, \\"frame_interval_p95_ms\\": 8.4, \\"frame_interval_max_ms\\": 16.9" ;;
   highlight) metrics='"highlight_ms": 40' ;;
   blocks) metrics='"comment_repaint_ms": 12' ;;
@@ -386,17 +421,23 @@ function runPerf(
   };
 }
 
+type RunResult = {
+  scenario: string;
+  corpus: string;
+  layout: string;
+  peak_rss_mb: number | null;
+  result: {
+    metrics: Record<string, number | null>;
+    info: Record<string, string>;
+  } | null;
+  error: string | null;
+};
 type Results = {
   machine: { cpu: string; macos: string };
   git_sha: string;
   rows: Row[];
-  runs: Array<{
-    scenario: string;
-    corpus: string;
-    layout: string;
-    peak_rss_mb: number | null;
-    result: { info: Record<string, string> } | null;
-  }>;
+  warmup: RunResult | null;
+  runs: RunResult[];
   budgets?: Array<{ metric: string; status: string }>;
 };
 
@@ -593,27 +634,97 @@ describe("run-perf CLI", () => {
   );
 
   test(
-    "launches the harness once before the matrix",
+    "warms the harness up before the matrix: a launch, then one unmeasured window",
     () => {
       writeFileSync(launches, "");
+      const out = join(sandbox.home, "results", "warm.json");
       const r = runPerf([
         "--corpus",
-        "typical",
+        "synthetic",
         "--layouts",
-        "split",
+        "unified",
         "--scenarios",
-        "open",
+        "scroll",
         "--out",
-        join(sandbox.home, "results", "warm.json"),
+        out,
       ]);
       expect(r.code).toBe(0);
       // The first launch of a freshly built binary pays macOS's code
-      // assessment (seconds); it must not land in a measured run.
+      // assessment (seconds) and its first window compiles GPUI's shaders
+      // (OQ-P12); neither may land in a measured run. The warm-up window is
+      // an `open` of the first planned corpus and layout.
       const lines = readFileSync(launches, "utf8").trim().split("\n");
       expect(lines[0]).toBe("--version");
       expect(
         lines.slice(1).map((l) => l.split(" ").slice(0, 6).join(" ")),
-      ).toEqual(["--corpus typical --layout split --scenario open"]);
+      ).toEqual([
+        "--corpus synthetic --layout unified --scenario open",
+        "--corpus synthetic --layout unified --scenario scroll",
+      ]);
+      const results = JSON.parse(readFileSync(out, "utf8")) as Results;
+      expect(results.runs.map((x) => x.scenario)).toEqual(["scroll"]);
+      expect(results.warmup).toMatchObject({
+        scenario: "open",
+        corpus: "synthetic",
+        layout: "unified",
+        error: null,
+      });
+    },
+    cliTimeout,
+  );
+
+  test(
+    "a fresh binary's slower first window is kept out of the matrix and reported",
+    () => {
+      rmSync(firstWindow, { force: true });
+      const out = join(sandbox.home, "results", "cold.json");
+      const r = runPerf(
+        [
+          "--corpus",
+          "typical",
+          "--layouts",
+          "split",
+          "--scenarios",
+          "open",
+          "--check-budgets",
+          "--out",
+          out,
+        ],
+        { COLD_FIRST_PAINT: "380" },
+      );
+      expect({ code: r.code, stderr: r.stderr }).toMatchObject({ code: 0 });
+      const results = JSON.parse(readFileSync(out, "utf8")) as Results;
+      expect(results.rows[0]!.metrics.first_paint_ms).toBe(120);
+      expect(results.warmup?.result?.metrics.first_paint_ms).toBe(380);
+      expect(r.stderr).toContain("warm-up");
+      expect(r.stderr).toContain("first paint 380");
+    },
+    cliTimeout,
+  );
+
+  test(
+    "a failed warm-up is reported and the matrix still runs",
+    () => {
+      const out = join(sandbox.home, "results", "warm-fail.json");
+      const r = runPerf(
+        [
+          "--corpus",
+          "typical",
+          "--layouts",
+          "split",
+          "--scenarios",
+          "scroll",
+          "--out",
+          out,
+        ],
+        { FAIL_SCENARIO: "open" },
+      );
+      expect(r.code).toBe(0);
+      expect(r.stderr).toContain("warm-up");
+      expect(r.stderr).toContain("failed");
+      const results = JSON.parse(readFileSync(out, "utf8")) as Results;
+      expect(results.warmup?.error).toContain("exited with code 3");
+      expect(results.rows[0]!.metrics.scroll_p95_ms).toBe(2.5);
     },
     cliTimeout,
   );
@@ -685,6 +796,9 @@ describe("run-perf CLI", () => {
       expect(r.stdout).toContain("open linux split");
       expect(r.stdout).toContain("--direct");
       expect(r.stdout).not.toContain("blocks");
+      expect(r.stdout.split("\n")[0]).toMatch(
+        /^warm-up \(not measured\): open linux split: .* --scenario open /,
+      );
     },
     cliTimeout,
   );
