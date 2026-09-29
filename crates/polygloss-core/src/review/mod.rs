@@ -15,12 +15,16 @@ pub mod viewed;
 
 pub use models::{IterationInfo, OpenRequest, OpenedDiff, PinnedBy};
 pub use open::Core;
+pub use sessions::{AssignedBy, SessionInfo};
 pub use submit::{Submission, Verdict};
 pub use suggestions::parse_suggestions;
+pub use summary::{ReviewFilter, ReviewSummary, SubmissionSummary, SummaryCursor};
 pub use threads::{
     AGENT_THREAD_CAP, Author, AuthorKind, CommentView, DeletedComment, NewThread, ResolvedBy,
     Subject, ThreadAnchor, ThreadFilter, ThreadKind, ThreadScope, ThreadStatus, ThreadView, Viewer,
 };
+pub use view_state::{ScrollAnchorState, VIEW_STATE_VERSION, ViewState};
+pub use viewed::ViewedState;
 
 use crate::git::{GitError, ResolveError, SnapshotError};
 use crate::ids::IdError;
