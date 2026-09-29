@@ -161,7 +161,9 @@ impl Document {
     /// re-derives the anchor from the new position. Inside a file that has no
     /// rows yet, a pending target from [`Document::scroll_to`] (a line, gap or
     /// block) is kept and only its offset moves, so the target still resolves
-    /// exactly once the file is laid out.
+    /// exactly once the file is laid out. That holds anywhere below the
+    /// file's top edge, where the viewport pins the file's header over its
+    /// body; at the top edge the anchor is the header.
     pub fn scroll_by(&mut self, dy: f32) {
         if self.entries.is_empty() || dy.is_nan() {
             return;
@@ -171,9 +173,7 @@ impl Document {
             return;
         }
         let (f, y) = self.heights.find(to);
-        let pending = f as u32 == self.anchor.file_idx
-            && self.pending_target(f)
-            && y >= f64::from(self.metrics.header_height);
+        let pending = f as u32 == self.anchor.file_idx && self.pending_target(f) && y > 0.0;
         let key_y = if pending {
             self.key_offset(f as u32, self.anchor.row)
         } else {
@@ -301,6 +301,12 @@ impl Document {
             entry.body = Body::Estimated(estimate);
             self.refresh(idx);
         }
+    }
+
+    /// The latest size hint of file `idx` (kept once the height is exact, so
+    /// headers can still show counts).
+    pub fn size_hint(&self, idx: u32) -> Option<SizeHint> {
+        self.entries.get(idx as usize)?.hint
     }
 
     /// Whether file `idx`'s height is exact (laid out or set), not estimated.

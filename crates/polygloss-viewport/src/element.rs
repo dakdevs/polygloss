@@ -1,20 +1,24 @@
 //! `DiffElement`: the GPUI element that paints a [`DiffViewport`].
 //!
 //! Prepaint asks the view for the frame's display list (visible rows only,
-//! shaped through the cache); paint replays it layer by layer, every quad
-//! before any text so GPUI batches them into few draw calls, and wires the
-//! scroll wheel. Both phases are timed and reported as
+//! shaped through the cache) and inserts the hitboxes of its controls,
+//! clipped to the viewport like everything it paints; paint
+//! replays it layer by layer, every row quad before any row text so GPUI
+//! batches them into few draw calls, then the file headers on top, and wires
+//! the scroll wheel and the controls. Both phases are timed and reported as
 //! [`crate::ViewportEvent::FrameStats`].
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    App, Bounds, ContentMask, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
-    HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Pixels, ScrollWheelEvent, Style,
-    Window, fill, px, relative,
+    App, BorderStyle, Bounds, ContentMask, DispatchPhase, Element, ElementId, Entity,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    Pixels, ScrollWheelEvent, Style, Window, fill, px, quad, relative,
 };
 
-use crate::paint_rows::Frame;
+use crate::controls::{self, ControlLayer, Target};
+use crate::paint_rows::{Frame, HEADERS, Layer};
 use crate::view::{DiffViewport, FrameStats};
 
 pub(crate) struct DiffElement {
@@ -30,6 +34,7 @@ impl DiffElement {
 pub(crate) struct Prepainted {
     frame: Option<Frame>,
     hitbox: Hitbox,
+    targets: Rc<[Target]>,
     prepaint: Duration,
 }
 
@@ -81,9 +86,18 @@ impl Element for DiffElement {
         let frame = self
             .view
             .update(cx, |view, cx| view.prepare_frame(bounds, window, cx));
+        // A hitbox keeps the content mask it was inserted under, and hit
+        // tests only its intersection with it. Rows, headers and expanders
+        // cut by the viewport's edges (a header pushed up by the next one, a
+        // gap row half scrolled off, an expander past the right edge) must
+        // not take the pointer from the host's chrome around the viewport.
+        let targets = window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            controls::insert_hitboxes(&frame, window)
+        });
         Prepainted {
             frame: Some(frame),
             hitbox,
+            targets,
             prepaint: started.elapsed(),
         }
     }
@@ -102,24 +116,35 @@ impl Element for DiffElement {
         let Some(frame) = prepainted.frame.take() else {
             return;
         };
+        let hovered = controls::hovered(&prepainted.targets, window);
+        let hover = |layer: ControlLayer| {
+            hovered
+                .map(|i| controls::target_bounds(&prepainted.targets, i))
+                .filter(|(_, l)| *l == layer)
+                .map(|(b, _)| (b, frame.hover))
+        };
+        let (rows, headers) = frame.layers.split_at(HEADERS);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            for layer in &frame.layers {
-                let clip = layer.clip.map(|bounds| ContentMask { bounds });
-                window.with_content_mask(clip, |window| {
-                    for (quad, color) in &layer.quads {
-                        window.paint_quad(fill(*quad, *color));
-                    }
-                });
+            for layer in rows {
+                paint_quads(layer, None, window);
             }
-            for layer in &frame.layers {
-                let clip = layer.clip.map(|bounds| ContentMask { bounds });
-                window.with_content_mask(clip, |window| {
-                    for (origin, text) in &layer.texts {
-                        text.shaped.paint(*origin, frame.line_height, window, cx);
-                    }
-                });
+            if let Some((b, color)) = hover(ControlLayer::Body) {
+                window.paint_quad(fill(b, color));
+            }
+            for layer in rows {
+                paint_rounded(layer, window);
+            }
+            for layer in rows {
+                paint_texts(layer, &frame, window, cx);
+            }
+            // Headers last: the pinned one covers the rows under it.
+            for layer in headers {
+                paint_quads(layer, hover(ControlLayer::Header), window);
+                paint_rounded(layer, window);
+                paint_texts(layer, &frame, window, cx);
             }
         });
+        controls::wire(&self.view, prepainted.targets.clone(), hovered, window);
 
         let view = self.view.clone();
         let hitbox = prepainted.hitbox.clone();
@@ -143,4 +168,50 @@ impl Element for DiffElement {
         self.view
             .update(cx, |view, cx| view.finish_frame(frame, stats, cx));
     }
+}
+
+/// A layer's plain quads, then `hover` (the highlighted control) on top of
+/// them.
+fn paint_quads(layer: &Layer, hover: Option<(Bounds<Pixels>, Hsla)>, window: &mut Window) {
+    let clip = layer.clip.map(|bounds| ContentMask { bounds });
+    window.with_content_mask(clip, |window| {
+        for (bounds, color) in &layer.quads {
+            window.paint_quad(fill(*bounds, *color));
+        }
+        if let Some((bounds, color)) = hover {
+            window.paint_quad(fill(bounds, color));
+        }
+    });
+}
+
+fn paint_rounded(layer: &Layer, window: &mut Window) {
+    if layer.rounded.is_empty() {
+        return;
+    }
+    let clip = layer.clip.map(|bounds| ContentMask { bounds });
+    window.with_content_mask(clip, |window| {
+        for r in &layer.rounded {
+            let (border_width, border_color) = match r.border {
+                Some(color) => (px(1.), color),
+                None => (px(0.), Hsla::transparent_black()),
+            };
+            window.paint_quad(quad(
+                r.bounds,
+                r.radius,
+                r.background,
+                border_width,
+                border_color,
+                BorderStyle::Solid,
+            ));
+        }
+    });
+}
+
+fn paint_texts(layer: &Layer, frame: &Frame, window: &mut Window, cx: &mut App) {
+    let clip = layer.clip.map(|bounds| ContentMask { bounds });
+    window.with_content_mask(clip, |window| {
+        for (origin, text) in &layer.texts {
+            text.shaped.paint(*origin, frame.line_height, window, cx);
+        }
+    });
 }

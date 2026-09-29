@@ -79,6 +79,13 @@ pub struct ViewportTheme {
     /// `+`/`-` glyphs and bars (`created` / `deleted`).
     pub added_accent: Hsla,
     pub removed_accent: Hsla,
+    /// Clickable text (gap expanders, "Load diff") and a checked Viewed box
+    /// (`text.accent`).
+    pub accent: Hsla,
+    /// Behind a control under the pointer (`ghost_element.hover`).
+    pub hover: Hsla,
+    /// Header badges: mode, binary, generated, … (`element.background`).
+    pub badge_background: Hsla,
     /// Syntax styles for the highlighter; token `StyleId`s index into it.
     pub syntax: Arc<SyntaxTheme>,
     /// Per `StyleId`: color (the foreground when the style has none), weight
@@ -117,6 +124,17 @@ impl ViewportTheme {
         );
         let added_accent = pick(&["created", "version_control.added"], 0x18a46cff);
         let removed_accent = pick(&["deleted", "version_control.deleted"], 0xd52c36ff);
+        let accent = pick(
+            &["text.accent", "link_text.hover", "icon.accent"],
+            0x009fffff,
+        );
+        let hover = t
+            .color("ghost_element.hover")
+            .or_else(|| t.color("element.hover"))
+            .map_or(accent.opacity(0.15), hsla);
+        let badge_background = t
+            .color("element.background")
+            .map_or(subheader.blend(foreground.opacity(0.06)), hsla);
         let syntax = Arc::new(SyntaxTheme::from_zed(t));
         let syntax_styles = syntax
             .styles()
@@ -159,6 +177,9 @@ impl ViewportTheme {
                 .map_or(removed_accent.opacity(0.4), hsla),
             added_accent,
             removed_accent,
+            accent,
+            hover,
+            badge_background,
             syntax,
             syntax_styles,
         }

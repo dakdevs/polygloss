@@ -5,6 +5,7 @@
 
 use polygloss_diff::rows::Layout;
 
+use crate::controls::ControlAction;
 use crate::document::ScrollAnchor;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::{DebugContent, DebugRow};
@@ -15,7 +16,7 @@ use crate::paint_rows::{DebugContent, DebugRow};
 ///
 /// | Row          | Text                                                     |
 /// | ------------ | -------------------------------------------------------- |
-/// | File header  | `== <path>` (`== <old> → <new>` for a rename)            |
+/// | File header  | `== <path>` (`== <old> → <new>` for a rename; the pinned header comes first) |
 /// | Unified line | `format!("{:>5} {:>5} {} {}", old, new, marker, text)`   |
 /// | Split line   | `"<cell> │ <cell>"`, a cell `format!("{:>5} {} {}", n, marker, text)` (blank for an empty side) |
 /// | Other        | the label shown (`⋯ 3 unchanged lines`, `Binary file`, `Loading…`) or `[block <id>]` |
@@ -41,6 +42,49 @@ pub struct ViewportDebug {
     /// paint order. Unlike `visible_rows`, which is built from row data, this
     /// is what the gutter and the panes actually drew, and where.
     pub painted_text: Vec<(f32, f32, String)>,
+    /// Every painted file header, top to bottom.
+    pub headers: Vec<HeaderDebug>,
+    /// Every clickable control painted, relative to the viewport.
+    pub controls: Vec<ControlDebug>,
+    /// The open ⋯ menu.
+    pub menu: Option<MenuDebug>,
+}
+
+/// A painted file header.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeaderDebug {
+    pub file_idx: u32,
+    /// Top edge relative to the viewport (negative while the next header
+    /// pushes a pinned one up).
+    pub y: f32,
+    /// Pinned at the top while its file's body scrolls under it.
+    pub sticky: bool,
+    /// As painted (cut with `…` when it does not fit).
+    pub title: String,
+    /// `(additions, deletions)` as shown; `None` while unknown, when both are
+    /// zero, or when the header is too narrow for them.
+    pub counts: Option<(u32, u32)>,
+    /// Badges shown, left to right: the change's (similarity, mode, binary,
+    /// symlink, submodule, generated, LFS), then the host's flags.
+    pub badges: Vec<String>,
+    pub viewed: bool,
+    pub collapsed: bool,
+}
+
+/// A clickable control of the last frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlDebug {
+    pub action: ControlAction,
+    /// `(x, y, width, height)` relative to the viewport.
+    pub bounds: (f32, f32, f32, f32),
+}
+
+/// The open ⋯ menu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuDebug {
+    pub file_idx: u32,
+    /// Item labels in order, with whether each is enabled.
+    pub items: Vec<(String, bool)>,
 }
 
 #[cfg(feature = "debug-inspect")]

@@ -239,10 +239,10 @@ fn viewport_scroll_updates_anchor(cx: &mut TestAppContext) {
             offset_px: 0.0
         }
     );
-    assert_eq!(
-        debug(&view, cx).visible_rows[0],
-        unified(None, Some(14), '+', "a 13")
-    );
+    // a.rs's header stays pinned over its rows (T2.5).
+    let rows = debug(&view, cx).visible_rows;
+    assert_eq!(rows[0], "== a.rs");
+    assert_eq!(rows[1], unified(None, Some(14), '+', "a 13"));
 
     // Past the end: clamped to 1080 - 400 = 680, the top of b.rs's body.
     wheel(cx, 400.);
@@ -310,8 +310,16 @@ fn viewport_scroll_to_line_puts_it_at_top(cx: &mut TestAppContext) {
         }
     );
     assert_eq!(d.anchor.file_idx, 1);
-    assert_eq!(d.visible_rows[0], unified(None, Some(11), '+', "b 10"));
-    assert_eq!(d.row_bounds[0].0, 0.0);
+    // At the top of what is visible: right below b.rs's header, pinned at
+    // the viewport's top edge (T2.5), not under it.
+    assert_eq!(d.visible_rows[0], "== b.rs");
+    assert_eq!(d.row_bounds[0], (0.0, HEADER_H));
+    let line = d
+        .visible_rows
+        .iter()
+        .position(|r| *r == unified(None, Some(11), '+', "b 10"))
+        .expect("line 10 is painted");
+    assert_eq!(d.row_bounds[line], (HEADER_H, ROW_H));
 
     view.update(cx, |v, cx| v.scroll_to(ScrollTarget::File(0), cx));
     settle(cx);
@@ -354,7 +362,8 @@ fn shaped_line_cache_hits_on_rescroll(cx: &mut TestAppContext) {
     wheel(cx, 400.);
     let down = debug(&view, cx);
     assert!(down.shaped_cache_misses > first.shaped_cache_misses);
-    assert_eq!(down.visible_rows[0], unified(None, Some(19), '+', "row 18"));
+    // Under the pinned header (T2.5).
+    assert_eq!(down.visible_rows[1], unified(None, Some(19), '+', "row 18"));
 
     wheel(cx, -400.);
     let back = debug(&view, cx);
@@ -529,7 +538,8 @@ fn special_files_render_without_loading_blobs(cx: &mut TestAppContext) {
     );
     let d = debug(&view, cx);
     assert_eq!(d.visible_rows[0], "== img.png");
-    assert_eq!(d.visible_rows[1], "Binary file");
+    // Sizes from `blob_size` (T2.5), not from reading the blobs.
+    assert_eq!(d.visible_rows[1], "Binary file · 4 B → 4 B");
     assert_eq!(d.visible_rows[2], "== a.rs");
     // Only the text file's two blobs were read.
     assert_eq!(provider.load_count(), 2);
