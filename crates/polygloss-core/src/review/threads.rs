@@ -882,11 +882,39 @@ pub(crate) fn side_str(side: Side) -> &'static str {
     }
 }
 
-fn parse_side(s: &str) -> Option<Side> {
+pub(crate) fn parse_side(s: &str) -> Option<Side> {
     match s {
         "old" => Some(Side::Old),
         "new" => Some(Side::New),
         _ => None,
+    }
+}
+
+/// Rebuilds a subject from its `threads` columns; `Err((column, value))` names
+/// the malformed column.
+pub(crate) fn subject_from_columns(
+    subject: &str,
+    path: Option<String>,
+    side: Option<String>,
+    start_line: Option<u32>,
+    line: Option<u32>,
+) -> Result<Subject, (&'static str, String)> {
+    let missing = |what: &'static str| (what, String::new());
+    match subject {
+        "review" => Ok(Subject::Review),
+        "file" => Ok(Subject::File {
+            path: path.ok_or_else(|| missing("path"))?,
+        }),
+        "line" => {
+            let side = side.unwrap_or_default();
+            Ok(Subject::Line {
+                path: path.ok_or_else(|| missing("path"))?,
+                side: parse_side(&side).ok_or_else(|| ("side", side.clone()))?,
+                start_line: start_line.ok_or_else(|| missing("start_line"))?,
+                line: line.ok_or_else(|| missing("line"))?,
+            })
+        }
+        other => Err(("subject", other.to_owned())),
     }
 }
 
@@ -1393,22 +1421,8 @@ fn load_thread(
         })
         .collect();
 
-    let subject = match subject.as_str() {
-        "review" => Subject::Review,
-        "file" => Subject::File {
-            path: path.ok_or_else(|| bad("path", ""))?,
-        },
-        "line" => {
-            let side = side.unwrap_or_default();
-            Subject::Line {
-                path: path.ok_or_else(|| bad("path", ""))?,
-                side: parse_side(&side).ok_or_else(|| bad("side", &side))?,
-                start_line: start_line.ok_or_else(|| bad("start_line", ""))?,
-                line: line.ok_or_else(|| bad("line", ""))?,
-            }
-        }
-        other => return Err(bad("subject", other)),
-    };
+    let subject = subject_from_columns(&subject, path, side, start_line, line)
+        .map_err(|(what, v)| bad(what, &v))?;
     let anchor_blob = anchor_blob
         .map(|b| Oid::parse(&b, fmt).map_err(|_| bad("anchor_blob", &b)))
         .transpose()?;

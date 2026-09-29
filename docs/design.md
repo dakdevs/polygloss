@@ -604,16 +604,18 @@ Which threads a review tab shows for iteration I (diff D): `threads.review_id = 
 
 ```text
 position(thread T, diff D):
-  review subject        -> review panel
+  review subject        -> review panel (exact, no path)
   file = file change in D where new_path = T.path
-         or (status R and old_path = T.path)          # follow renames
+         or (status R or D and old_path = T.path)     # follow renames; deleted files keep their old path
   file missing          -> absent   (threads panel only)
   file subject          -> exact    (on the file header)
+  T.side missing in file (old of added, new of deleted) -> absent
   cur = file.new_blob if T.side = new else file.old_blob
   cur == T.anchor_blob  -> exact    (same lines)
   map T.start_line..T.line through imara(T.anchor_blob -> cur):
     all lines in one equal region -> moved    (new line numbers)
-    otherwise                     -> outdated (original snippet; placed at nearest mapped line)
+    otherwise                     -> outdated (original snippet; placed at nearest mapped line,
+                                                 or on the file when the side has no lines)
   cache in thread_positions(T, D, engine_version)
 ```
 
