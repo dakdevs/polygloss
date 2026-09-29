@@ -1,0 +1,13 @@
+---
+source: crates/polygloss-diff/tests/hunks.rs
+expression: render(& fd)
+---
+old lines: 32 (trailing newline: true)
+new lines: 32 (trailing newline: true)
+additions: 8, deletions: 8
+hunk -0..11 +0..3
+  change -0..8 +0..0
+  equal  -8..11 +0..3
+hunk -29..32 +21..32
+  equal  -29..32 +21..24
+  change -32..32 +24..32

@@ -1,0 +1,10 @@
+def main():
+  items = [1,  2, 3]
+  for item in items:
+      print(item)   
+  total = sum(items)
+  return total + 1
+
+
+def helper(x):
+	return x * 2
