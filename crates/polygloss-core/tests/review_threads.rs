@@ -1556,3 +1556,79 @@ fn submit_pins_the_displayed_merge_base_after_main_moves() {
     assert_eq!(sub.iteration.diff_id, opened.diff_id);
     assert_eq!(sub.iteration.seq, 1);
 }
+
+#[test]
+fn review_activity_counts_agent_threads_after_last_seen() {
+    let e = env();
+    let review = e.opened.review_id.as_str();
+    // Nothing yet.
+    let a = e.core.review_activity(review).unwrap();
+    assert_eq!(a.last_seen_seq, 0);
+    assert!(a.unread.is_empty());
+    assert!(a.rereview.is_none());
+
+    // The human's own activity (drafts, a published thread) never counts.
+    let mine = e.human_thread(line("a.txt", Side::New, 1, 1), "mine");
+    e.core
+        .submit_review(review, Verdict::Comment, "", None)
+        .unwrap();
+    assert!(e.core.review_activity(review).unwrap().unread.is_empty());
+
+    // An agent note, an agent reply to the human's thread, and an agent
+    // resolve: three threads, ordered by their latest event.
+    let note = e.agent_thread(ThreadKind::Note, line("a.txt", Side::New, 5, 5), "a note");
+    let question = e.agent_thread(ThreadKind::Question, Subject::Review, "why?");
+    e.core.reply(&mine, "done", &agent()).unwrap();
+    e.core
+        .reply(&note, "and more", &agent_named("codex"))
+        .unwrap();
+    let a = e.core.review_activity(review).unwrap();
+    let ids: Vec<&str> = a.unread.iter().map(|u| u.thread_id.as_str()).collect();
+    assert_eq!(ids, [question.as_str(), mine.as_str(), note.as_str()]);
+    assert!(a.unread.windows(2).all(|w| w[0].last_seq < w[1].last_seq));
+    // The latest event's actor names the thread's agent.
+    assert_eq!(a.unread[2].actor_name.as_deref(), Some("codex"));
+    assert_eq!(a.unread[0].actor_name.as_deref(), Some("claude-code"));
+
+    // Seen up to the reply on `mine`: only the note (replied to later)
+    // stays unread.
+    let seen = a.unread[1].last_seq;
+    e.core.mark_seen(review, seen).unwrap();
+    let a = e.core.review_activity(review).unwrap();
+    assert_eq!(a.last_seen_seq, seen);
+    assert_eq!(
+        a.unread
+            .iter()
+            .map(|u| u.thread_id.as_str())
+            .collect::<Vec<_>>(),
+        [note.as_str()]
+    );
+
+    // A thread the agent deleted (its only comment) is not listed.
+    let gone = e.agent_thread(ThreadKind::Note, Subject::Review, "oops");
+    let root = e.core.thread(&gone, Viewer::Human).unwrap().comments[0]
+        .id
+        .clone();
+    e.core.delete_comment(&root, &agent()).unwrap();
+    let a = e.core.review_activity(review).unwrap();
+    assert!(a.unread.iter().all(|u| u.thread_id != gone));
+
+    // Re-review: shown while the status is `rereview_requested`, with the
+    // summary and who asked; a submission ends it.
+    e.core
+        .request_rereview(review, "Fixed both.\n\nDetails.", &agent_actor(), None)
+        .unwrap();
+    let rereview = e.core.review_activity(review).unwrap().rereview.unwrap();
+    assert_eq!(rereview.summary, "Fixed both.\n\nDetails.");
+    assert_eq!(rereview.requested_by.as_deref(), Some("claude-code"));
+    assert!(rereview.at > 0);
+    e.core
+        .submit_review(review, Verdict::Approve, "", None)
+        .unwrap();
+    assert!(e.core.review_activity(review).unwrap().rereview.is_none());
+
+    assert!(matches!(
+        e.core.review_activity("nope"),
+        Err(CoreError::NotFound { .. })
+    ));
+}

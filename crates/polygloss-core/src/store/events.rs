@@ -483,6 +483,15 @@ impl EventFeed {
         Ok(out)
     }
 
+    /// Moves the cursor to the latest event (never backwards) and returns it,
+    /// so the next polls yield only events appended from now on. A reader
+    /// that loads its state from the store when it starts (the app's store
+    /// feed) calls this instead of reading the whole backlog.
+    pub fn seek_to_latest(&mut self) -> Result<i64, StoreError> {
+        self.cursor = self.cursor.max(latest_seq(&self.conn)?);
+        Ok(self.cursor)
+    }
+
     /// The highest `seq` in `events` (0 when empty), regardless of the filter.
     pub fn latest_seq(&self) -> Result<i64, StoreError> {
         latest_seq(&self.conn)

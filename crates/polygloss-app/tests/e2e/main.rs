@@ -12,6 +12,7 @@
 mod support;
 
 mod cursor;
+mod feed;
 mod find;
 mod home;
 mod kit_fonts;
@@ -53,5 +54,6 @@ fn main() -> std::process::ExitCode {
         cursor::TESTS,
         live::TESTS,
         find::TESTS,
+        feed::TESTS,
     ])
 }
