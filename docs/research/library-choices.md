@@ -404,7 +404,7 @@ nucleo-matcher = "0.3.1"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", features = ["NSString"] }
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSBundle"] }
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSDockTile"] }
 
 # --- core, diff (no GPUI; shared by app and cli) ---

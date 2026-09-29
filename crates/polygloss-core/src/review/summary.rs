@@ -128,6 +128,22 @@ impl Core {
             .next())
     }
 
+    /// How many unarchived reviews await you (the Dock badge, design §17):
+    /// re-review requested, or an open agent question without a published
+    /// human reply. Muted reviews count (mute only silences notifications).
+    pub fn awaiting_you_count(&self) -> Result<u32, CoreError> {
+        Ok(self.store.read(|c| {
+            Ok(c.query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM reviews r \
+                     WHERE r.archived_at IS NULL AND {AWAITING_YOU_SQL}"
+                ),
+                [],
+                |r| r.get::<_, u32>(0),
+            )?)
+        })?)
+    }
+
     /// Review summaries matching `filter`, most recently active first (module docs).
     pub fn review_summaries(&self, filter: &ReviewFilter) -> Result<Vec<ReviewSummary>, CoreError> {
         let assigned = filter

@@ -19,3 +19,8 @@ objc2-app-kit = { workspace = true, optional = true }
 [dev-dependencies]
 # Temp dirs for the editor tests' fake shims, bundles and scratch files.
 tempfile.workspace = true
+
+# Bundle detection and the Dock badge need the objc2 FFI.
+[[test]]
+name = "appkit"
+required-features = ["appkit"]

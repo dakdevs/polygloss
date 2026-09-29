@@ -945,6 +945,49 @@ fn summaries_awaiting_you_for_rereview_and_open_questions() {
     assert_eq!(s.rereview, Some(("Fixed all".to_owned(), 1234)));
 }
 
+/// The Dock badge (T3.17, design §17): unarchived reviews awaiting you,
+/// muted ones included.
+#[test]
+fn awaiting_you_count_counts_rereview_and_open_questions_not_archived() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let a = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    let b = core
+        .open(&req(
+            repo.path(),
+            Source::Commit {
+                rev: "feature".into(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(core.awaiting_you_count().unwrap(), 0);
+
+    let q = agent_question(&core, &a.review_id, &a.diff_id, "q1");
+    assert_eq!(core.awaiting_you_count().unwrap(), 1);
+
+    exec(
+        &core,
+        "UPDATE reviews SET status = 'rereview_requested', rereview_summary = 'Fixed' \
+         WHERE id = ?1",
+        [b.review_id.as_str()],
+    );
+    core.set_muted(&b.review_id, true).unwrap();
+    assert_eq!(core.awaiting_you_count().unwrap(), 2, "muted still counts");
+
+    human_comment(&core, &q, "h1", true);
+    assert_eq!(core.awaiting_you_count().unwrap(), 1);
+
+    core.archive_review(&b.review_id, &Actor::human()).unwrap();
+    assert_eq!(
+        core.awaiting_you_count().unwrap(),
+        0,
+        "archived is not counted"
+    );
+}
+
 #[test]
 fn summaries_hide_draft_threads_from_counts() {
     let _sb = Sandbox::isolate();
