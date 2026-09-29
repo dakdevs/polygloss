@@ -101,11 +101,14 @@ impl GitOutput {
 /// The git binary: `$POLYGLOSS_GIT_BIN` (tests and CI only) or `git` from `PATH`.
 ///
 /// On macOS a `PATH` whose `git` is the Xcode command-line-tools shim
-/// (`/usr/bin/git`) gets the git that shim runs instead (`xcrun --find git`,
-/// asked once per process): the shim looks its tool up on every call, which
-/// costs about 9 ms per git process, several times what git itself takes for
-/// the plumbing calls of an open (plan T2.10.1). It is the same system git
-/// (design §6.2), minus the trampoline.
+/// (`/usr/bin/git`) gets the git that shim runs instead: `usr/bin/git` in the
+/// selected developer directory (`xcode-select -p`, which honors
+/// `DEVELOPER_DIR` like the shim does), asked once per process. The shim looks
+/// its tool up on every call, which costs about 9 ms per git process, several
+/// times what git itself takes for the plumbing calls of an open (plan
+/// T2.10.1). It is the same system git (design §6.2), minus the trampoline.
+/// (`xcrun --find git` gives the same answer but takes ≈ 75 ms in a fresh
+/// `HOME`, where its cache is cold, as in every perf run.)
 pub fn git_binary() -> PathBuf {
     if let Some(bin) = std::env::var_os("POLYGLOSS_GIT_BIN").filter(|v| !v.is_empty()) {
         return PathBuf::from(bin);
@@ -118,29 +121,28 @@ pub fn git_binary() -> PathBuf {
 }
 
 /// The Xcode command-line-tools shim, which runs the selected developer
-/// directory's git through `xcrun`.
+/// directory's git.
 const XCODE_GIT_SHIM: Option<&str> = if cfg!(target_os = "macos") {
     Some("/usr/bin/git")
 } else {
     None
 };
 
-/// The git the Xcode shim runs (`xcrun --find git`, which honors
-/// `DEVELOPER_DIR` and `xcode-select` like the shim does), asked once per
-/// process.
+/// The git the Xcode shim runs: `<developer dir>/usr/bin/git`, the developer
+/// dir from `xcode-select -p`; asked once per process.
 fn xcode_git() -> Option<PathBuf> {
     static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
     FOUND
         .get_or_init(|| {
-            let out = Command::new("/usr/bin/xcrun")
-                .args(["--find", "git"])
+            let out = Command::new("/usr/bin/xcode-select")
+                .arg("-p")
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
                 .output()
                 .ok()
                 .filter(|o| o.status.success())?;
-            let found = std::str::from_utf8(&out.stdout).ok()?.trim_end();
-            Some(PathBuf::from(found))
+            let dir = std::str::from_utf8(&out.stdout).ok()?.trim_end();
+            Some(Path::new(dir).join("usr/bin/git"))
         })
         .clone()
 }
@@ -391,7 +393,7 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         std::fs::write(plain.join("git"), "").unwrap();
         let path = path_of(&[&plain, brew.parent().unwrap(), shim.parent().unwrap()]);
-        let never = || -> Option<PathBuf> { panic!("xcrun asked for a non-shim git") };
+        let never = || -> Option<PathBuf> { panic!("looked up the shim's git for another git") };
         assert_eq!(default_git(Some(&path), &shim, never), PathBuf::from("git"));
         // No git on PATH, or no PATH: `git` as before (the spawn reports it).
         let none = path_of(&[&plain]);
@@ -400,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn default_git_keeps_the_shim_when_xcrun_has_no_usable_answer() {
+    fn default_git_keeps_the_shim_when_the_lookup_has_no_usable_answer() {
         let tmp = tempfile::tempdir().unwrap();
         let shim = exe(&tmp.path().join("usr-bin"), "git");
         let path = path_of(&[shim.parent().unwrap()]);
@@ -415,7 +417,11 @@ mod tests {
             Some(shim.clone()),
         ] {
             let found = default_git(Some(&path), &shim, || answer.clone());
-            assert_eq!(found, PathBuf::from("git"), "xcrun answered {answer:?}");
+            assert_eq!(
+                found,
+                PathBuf::from("git"),
+                "the lookup answered {answer:?}"
+            );
         }
     }
 }

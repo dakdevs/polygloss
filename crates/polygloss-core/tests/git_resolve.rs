@@ -212,8 +212,13 @@ fn git_binary_bypasses_the_xcode_shim() {
     let first_on_path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|d| d.join("git"))
         .find(|g| g.is_file());
+    let started = std::time::Instant::now();
     let bin = git_binary();
+    let lookup = started.elapsed();
     if cfg!(target_os = "macos") && first_on_path.as_deref() == Some(Path::new("/usr/bin/git")) {
+        // A fresh HOME (every perf run, every sandbox) must not make the
+        // lookup slow: `xcrun --find git` takes ~75 ms there.
+        assert!(lookup < std::time::Duration::from_millis(40), "{lookup:?}");
         assert_ne!(bin, PathBuf::from("git"));
         assert_ne!(bin, PathBuf::from("/usr/bin/git"));
         assert!(bin.is_absolute() && bin.is_file(), "{bin:?}");
