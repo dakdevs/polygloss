@@ -1,12 +1,18 @@
 //! The gutter: line numbers (one column per side in split, two in unified;
-//! design §11.6 "Line numbers") and change indicators (`+`/`-` glyphs or
-//! bars, design §11.6 "Styles").
+//! design §11.6 "Line numbers"), change indicators (`+`/`-` glyphs or
+//! bars, design §11.6 "Styles") and the "+" shown on the hovered line
+//! numbers (design §11.6 "Commenting": pressing there asks for a comment,
+//! dragging selects a range, see [`crate::selection`]).
 
 use std::rc::Rc;
 
 use polygloss_diff::rows::LineKind;
 
-use crate::paint_rows::Painter;
+use crate::header::SLOT_ON_ACCENT;
+use crate::layout::{Columns, Pane};
+use crate::materialize::MaterializedFile;
+use crate::paint_rows::{HEADERS, LineCell, Painter};
+use crate::selection::PlusHit;
 use crate::style::Indicators;
 use crate::text_cache::{ShapedText, Shaper, TextKey};
 
@@ -51,5 +57,63 @@ impl Painter<'_> {
             Indicators::Bars => self.quad(layer, x, y, BAR_WIDTH, h, color),
             Indicators::None => {}
         }
+    }
+}
+
+impl Painter<'_> {
+    /// Finishes a painted code cell: its selected text, the "+" when the
+    /// pointer is on its numbers, and its hit-test entry.
+    pub(crate) fn code_cell(
+        &mut self,
+        file: &MaterializedFile,
+        cols: &Columns,
+        pane: Pane,
+        cell: LineCell,
+    ) {
+        self.selection_quads(file, cols, pane, &cell);
+        self.plus_button(cols, pane, &cell);
+        self.frame.cells.push(cell);
+    }
+
+    /// The "+" over the indicator column of `cell` when the pointer is on
+    /// its gutter and no header covers the row. Drawn in the header layer,
+    /// so it covers the row's numbers and marker.
+    fn plus_button(&mut self, cols: &Columns, pane: Pane, cell: &LineCell) {
+        let Some((px, py)) = self.marks.pointer else {
+            return;
+        };
+        let line = match cell.side {
+            polygloss_diff::Side::Old => cell.old,
+            polygloss_diff::Side::New => cell.new,
+        };
+        let Some(line) = line else {
+            return;
+        };
+        if self.marks.text_drag
+            || px < cell.x
+            || px >= cell.code_x
+            || py < cell.y
+            || py >= cell.y + cell.h
+        {
+            return;
+        }
+        let row = self.bounds_at(cell.x, cell.y, cell.right - cell.x, cell.h);
+        if self.frame.header_areas.iter().any(|a| a.intersects(&row)) {
+            return;
+        }
+        let row_h = self.geometry.row_height;
+        let size = (row_h - 4.0).max(8.0);
+        let center = cols.indicator_x(pane) + cols.indicator_width / 2.0;
+        let (x, y) = (center - size / 2.0, cell.y + (row_h - size) / 2.0);
+        self.rounded(HEADERS, (x, y, size, size), self.theme.accent, None, 4.0);
+        let plus = self.label("+", SLOT_ON_ACCENT, self.theme.background);
+        let glyph_x = x + (size - plus.shaped.width()) / 2.0;
+        self.text(HEADERS, glyph_x, cell.y, plus);
+        self.frame.plus = Some(PlusHit {
+            file_idx: cell.file_idx,
+            side: cell.side,
+            line,
+            bounds: (x, y, size, size),
+        });
     }
 }

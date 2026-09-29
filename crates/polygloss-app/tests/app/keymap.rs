@@ -109,13 +109,22 @@ pub fn wait_until(
 /// Actions handled by [`record`], in order.
 pub type Log = Rc<RefCell<Vec<String>>>;
 
-/// Handles action `A` app-wide by logging its name (no feature handles
-/// these actions yet; GPUI tries the next binding when an action is left
-/// unhandled).
+/// Logs the name of action `A` whenever a key dispatches it, whether a
+/// feature handles it (T3.8's viewport actions) or not: an app-wide
+/// fallback handler takes it otherwise (GPUI tries the next binding when an
+/// action is left unhandled), and a keystroke observer logs it once.
 pub fn record<A: gpui_kit::Action>(cx: &mut VisualTestContext, log: &Log) {
     let log = log.clone();
     cx.update(|_, cx| {
-        cx.on_action(move |action: &A, _| log.borrow_mut().push(action.name().to_owned()));
+        cx.on_action(|_: &A, _| {});
+        cx.observe_keystrokes(move |event, _, _| {
+            if let Some(action) = &event.action
+                && action.name() == A::name_for_type()
+            {
+                log.borrow_mut().push(action.name().to_owned());
+            }
+        })
+        .detach();
     });
 }
 

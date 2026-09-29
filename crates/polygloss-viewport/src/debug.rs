@@ -47,8 +47,21 @@ pub struct ViewportDebug {
     pub headers: Vec<HeaderDebug>,
     /// Every clickable control painted, relative to the viewport.
     pub controls: Vec<ControlDebug>,
+    /// The "+" on the hovered line numbers.
+    pub plus_button: Option<PlusDebug>,
     /// The open ⋯ menu.
     pub menu: Option<MenuDebug>,
+}
+
+/// The "+" painted on the hovered line numbers: the line it comments on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlusDebug {
+    pub file_idx: u32,
+    pub side: polygloss_diff::Side,
+    /// 0-based.
+    pub line: u32,
+    /// `(x, y, width, height)` relative to the viewport.
+    pub bounds: (f32, f32, f32, f32),
 }
 
 /// A painted file header.

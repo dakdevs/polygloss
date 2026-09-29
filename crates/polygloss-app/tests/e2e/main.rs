@@ -11,6 +11,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod cursor;
 mod home;
 mod kit_fonts;
 mod open_flow;
@@ -47,5 +48,6 @@ fn main() -> std::process::ExitCode {
         tree::TESTS,
         threads::TESTS,
         submit::TESTS,
+        cursor::TESTS,
     ])
 }

@@ -21,12 +21,14 @@ use polygloss_diff::{FileChange, Side};
 
 use crate::blocks::{BlockSlot, Blocks};
 use crate::controls::{Control, ControlAction, ControlLayer};
+use crate::cursor::CursorPos;
 use crate::document::{BodyRow, Document, FileState};
 use crate::file_flags::FileFlags;
 use crate::gap::Gaps;
 use crate::layout::{Columns, Geometry, Pane, digits};
 use crate::materialize::MaterializedFile;
 use crate::pipeline::Pipeline;
+use crate::selection::{PlusHit, TextSelection};
 use crate::special::{BodyLabel, Specials};
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{ShapedText, Shaper, TextCache, TextKey};
@@ -83,6 +85,40 @@ pub(crate) struct Frame {
     /// Visible host blocks, top to bottom (their elements are rendered,
     /// measured and painted by the element, see [`crate::blocks`]).
     pub blocks: Vec<BlockSlot>,
+    /// Every painted code cell (a unified row, or one half of a split row),
+    /// for mouse hit tests ([`crate::selection`]).
+    pub cells: Vec<LineCell>,
+    /// The "+" painted on the hovered line numbers.
+    pub plus: Option<PlusHit>,
+}
+
+/// A painted code cell, viewport-relative: the gutter (numbers and
+/// indicator) is `x..code_x`, the code `code_x..right`.
+pub(crate) struct LineCell {
+    pub file_idx: u32,
+    /// The lines the cell shows (a unified context row shows both).
+    pub old: Option<u32>,
+    pub new: Option<u32>,
+    /// The side whose text is painted (and whose line the gutter targets).
+    pub side: Side,
+    pub x: f32,
+    pub code_x: f32,
+    pub right: f32,
+    pub y: f32,
+    pub h: f32,
+    pub text: Rc<ShapedText>,
+}
+
+/// What a frame marks on its rows: the cursor or range, the selected text
+/// and, for the "+", the pointer (viewport-relative) while over the
+/// viewport.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Marks {
+    pub cursor: Option<CursorPos>,
+    pub selection: Option<TextSelection>,
+    pub pointer: Option<(f32, f32)>,
+    /// A text drag is in progress (no "+" then).
+    pub text_drag: bool,
 }
 
 impl Frame {
@@ -96,6 +132,8 @@ impl Frame {
         self.controls.clear();
         self.header_areas.clear();
         self.blocks.clear();
+        self.cells.clear();
+        self.plus = None;
         self.rows = 0;
         self.shaped = 0;
         self.loading = 0;
@@ -164,6 +202,8 @@ pub(crate) struct Painter<'a> {
     /// Host blocks, for their columns and render functions.
     pub blocks: &'a Blocks,
     pub text_system: Arc<WindowTextSystem>,
+    /// Cursor, range, selection and pointer.
+    pub marks: Marks,
     pub frame: &'a mut Frame,
     /// Rows whose measured wrapped height differs from the layout:
     /// `(file, row, height)`.
@@ -395,6 +435,7 @@ impl Painter<'_> {
         {
             self.quad(FULL, 0.0, y, width, h, bg);
         }
+        self.cursor_tint(FULL, f, (old, new), 0.0, width, y, h);
         if let Some(o) = old {
             self.number(FULL, o + 1, cols.number_right(Pane::Full, 0), y);
         }
@@ -409,6 +450,23 @@ impl Painter<'_> {
             _ => return,
         };
         let (text, rows) = self.code(f, file, side, line, &cols, Pane::Full, y, paired);
+        self.code_cell(
+            file,
+            &cols,
+            Pane::Full,
+            LineCell {
+                file_idx: f,
+                old,
+                new,
+                side,
+                x: 0.0,
+                code_x: cols.code_x(Pane::Full),
+                right: width,
+                y,
+                h,
+                text: text.clone(),
+            },
+        );
         self.measure(f, i, h, rows);
         self.count_unhighlighted(f, file, &[side]);
         #[cfg(feature = "debug-inspect")]
@@ -454,11 +512,33 @@ impl Painter<'_> {
             {
                 self.quad(layer, x, y, w, h, bg);
             }
+            let side = if k == 0 { Side::Old } else { Side::New };
+            let lines = match side {
+                Side::Old => (Some(cell.line), None),
+                Side::New => (None, Some(cell.line)),
+            };
+            self.cursor_tint(layer, f, lines, x, w, y, h);
             self.number(layer, cell.line + 1, cols.number_right(pane, 0), y);
             self.indicator(layer, cell.kind, cols.indicator_x(pane), y, h);
-            let side = if k == 0 { Side::Old } else { Side::New };
             let paired = cell.pair.is_some();
             let (text, r) = self.code(f, file, side, cell.line, &cols, pane, y, paired);
+            self.code_cell(
+                file,
+                &cols,
+                pane,
+                LineCell {
+                    file_idx: f,
+                    old: lines.0,
+                    new: lines.1,
+                    side,
+                    x,
+                    code_x: cols.code_x(pane),
+                    right: x + w,
+                    y,
+                    h,
+                    text: text.clone(),
+                },
+            );
             rows = rows.max(r);
             cells[k] = Some((cell.line + 1, marker(cell.kind), text));
         }

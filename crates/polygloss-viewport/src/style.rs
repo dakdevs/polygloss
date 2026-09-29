@@ -86,6 +86,11 @@ pub struct ViewportTheme {
     pub hover: Hsla,
     /// Header badges: mode, binary, generated, … (`element.background`).
     pub badge_background: Hsla,
+    /// Behind the line cursor's row (`editor.active_line.background`).
+    pub cursor_line: Hsla,
+    /// Behind the lines of a range and selected text (Zed's
+    /// `players[0].selection`).
+    pub selection: Hsla,
     /// Syntax styles for the highlighter; token `StyleId`s index into it.
     pub syntax: Arc<SyntaxTheme>,
     /// Per `StyleId`: color (the foreground when the style has none), weight
@@ -135,6 +140,19 @@ impl ViewportTheme {
         let badge_background = t
             .color("element.background")
             .map_or(subheader.blend(foreground.opacity(0.06)), hsla);
+        let cursor_line = t
+            .color("editor.active_line.background")
+            .map_or(accent.opacity(0.1), hsla);
+        // The local player's selection (Zed's `players[0].selection`).
+        let selection = t
+            .style
+            .get("players")
+            .and_then(|p| p.as_array())
+            .and_then(|p| p.first())
+            .and_then(|p| p.get("selection"))
+            .and_then(|c| c.as_str())
+            .and_then(Rgba::parse)
+            .map_or(accent.opacity(0.18), hsla);
         let syntax = Arc::new(SyntaxTheme::from_zed(t));
         let syntax_styles = syntax
             .styles()
@@ -180,6 +198,8 @@ impl ViewportTheme {
             accent,
             hover,
             badge_background,
+            cursor_line,
+            selection,
             syntax,
             syntax_styles,
         }

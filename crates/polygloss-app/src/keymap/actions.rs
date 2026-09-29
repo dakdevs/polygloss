@@ -36,7 +36,8 @@ pub mod viewport {
             /// `v`: toggle Viewed, then collapse and jump to the next unviewed
             /// file (T3.7).
             ToggleViewed,
-            /// `c`: comment on the cursor line or selection (T3.10).
+            /// `c`: comment on the cursor line or selection (T3.8 asks, T3.10
+            /// opens the composer).
             Comment,
             /// `.`: the next open thread (T3.9).
             NextOpenThread,
