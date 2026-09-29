@@ -12,6 +12,16 @@ default-run = "Polygloss"
 name = "Polygloss"
 path = "src/main.rs"
 
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["e2e"]
+
+[features]
+# Gates the `e2e` integration test binary (GPUI E2E and screenshot suites,
+# tests/e2e/main.rs from T2.8); scripts/test-e2e.sh runs it.
+e2e = []
+
 [dependencies]
 polygloss-core.workspace = true
 polygloss-diff.workspace = true
