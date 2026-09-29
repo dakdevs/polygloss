@@ -48,8 +48,10 @@ pub(crate) fn render(
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
-    // Every review tab gets a file tree (`features::attach`).
-    let tree = crate::tree::render_pane(tab, window, cx)
+    // Every review tab gets a file tree (`features::attach`); find (⌘F,
+    // T3.15) takes its place while open.
+    let tree = crate::find::render_pane(tab, window, cx)
+        .or_else(|| crate::tree::render_pane(tab, window, cx))
         .unwrap_or_else(|| div().size_full().bg(cx.theme().sidebar).into_any_element());
     let threads = tab.panes.threads_visible.then(|| {
         crate::threads::render_panel(tab, window, cx)
