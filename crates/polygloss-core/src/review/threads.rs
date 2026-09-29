@@ -7,8 +7,11 @@
 //!   app-internal `draft.changed` event; `thread.created` / `comment.created` for
 //!   human comments are written by the submission.
 //! - Agent threads and replies are published at once, with their events.
-//! - Agents never see draft comments, nor threads whose root comment is a draft:
-//!   such a thread is `NotFound` for them.
+//! - Agents never see draft comments, nor threads whose root comment is a draft
+//!   or whose published comments are all deleted: such a thread is `NotFound` for
+//!   them, to read and to reply to, resolve, edit or delete in.
+//! - The human author is stored as `you` without a session, whatever name the
+//!   caller passes.
 //! - Agents create at most [`AGENT_THREAD_CAP`] threads per iteration (OQ-13);
 //!   replies do not count. The count and the insert share one `BEGIN IMMEDIATE`
 //!   transaction, so concurrent agents cannot overshoot.
@@ -21,7 +24,8 @@
 //!   agents the same `author_name` (OQ-30). Deleting a draft removes it (a draft
 //!   root takes its draft thread along); deleting a published comment soft-deletes
 //!   it, and a deleted root that still has replies shows as a placeholder
-//!   (design §8.2). A thread left without any comment is deleted.
+//!   (design §8.2). A thread left without any undeleted comment (drafts
+//!   included) is deleted, also when a draft reply was its last one.
 //! - The root comment of a thread is its first comment by `(created_at, rowid)`.
 
 use polygloss_diff::{FileChange, FileKind, FileStatus, ObjectFormat, Oid, Side};
@@ -40,6 +44,9 @@ use crate::store::events::{Actor, ActorKind, EventKind, NewEvent, append_event, 
 
 /// Agent-created threads allowed per iteration (design §8.4, OQ-13).
 pub const AGENT_THREAD_CAP: u32 = 50;
+
+/// The stored name of the (single) human author and actor.
+const HUMAN_NAME: &str = "you";
 
 /// Lines of context on each side of the anchored lines in `anchor_snippet`.
 const SNIPPET_CONTEXT: u32 = 3;
@@ -178,6 +185,19 @@ impl Author {
             },
             name: Some(self.name.clone()),
             session_id: self.session_id.clone(),
+        }
+    }
+
+    /// The author as stored: the human is always `you` without a session (the
+    /// name a caller passes is ignored); agents are kept as given.
+    fn normalized(&self) -> Author {
+        match self.kind {
+            AuthorKind::Human => Author {
+                kind: AuthorKind::Human,
+                name: HUMAN_NAME.into(),
+                session_id: None,
+            },
+            AuthorKind::Agent => self.clone(),
         }
     }
 
@@ -323,6 +343,9 @@ struct ThreadRow {
     origin_diff_id: String,
     status: String,
     root_draft: bool,
+    /// What `load_thread` shows an agent: a published root and at least one
+    /// published, undeleted comment.
+    agent_visible: bool,
 }
 
 /// The fields of a comment edit and delete need.
@@ -369,7 +392,8 @@ impl Core {
 
         let thread_id = new_uuid();
         let comment_id = new_uuid();
-        let agent = t.author.kind == AuthorKind::Agent;
+        let author = t.author.normalized();
+        let agent = author.kind == AuthorKind::Agent;
         let now = now_ms();
         self.store.write(|tx| {
             // The review may have been pruned since the read.
@@ -423,12 +447,12 @@ impl Core {
                     line,
                     anchor.blob.as_ref().map(Oid::as_str),
                     anchor.snippet,
-                    t.author.kind.as_str(),
-                    t.author.name,
+                    author.kind.as_str(),
+                    author.name,
                     now
                 ],
             )?;
-            insert_comment(tx, &comment_id, &thread_id, &t.author, &t.body_md, now)?;
+            insert_comment(tx, &comment_id, &thread_id, &author, &t.body_md, now)?;
             touch_review(tx, &t.review_id, now)?;
             let event = if agent {
                 thread_event(
@@ -437,7 +461,7 @@ impl Core {
                     t.diff_id.as_str(),
                     &thread_id,
                     Some(&comment_id),
-                    &t.author.actor(),
+                    &author.actor(),
                     json!({ "kind": t.kind.as_str(), "subject": anchor.subject.as_str() }),
                 )
             } else {
@@ -465,12 +489,13 @@ impl Core {
         author: &Author,
     ) -> Result<String, CoreError> {
         check_body(body_md)?;
+        let author = &author.normalized();
         let id = new_uuid();
         self.store.write(|tx| {
             let Some(th) = thread_row(tx, thread_id)? else {
                 return Ok(Err(CoreError::not_found("thread", thread_id)));
             };
-            if th.root_draft && author.kind == AuthorKind::Agent {
+            if author.kind == AuthorKind::Agent && !th.agent_visible {
                 return Ok(Err(CoreError::not_found("thread", thread_id)));
             }
             add_reply(tx, &th, thread_id, &id, body_md, author, now_ms())?;
@@ -538,7 +563,8 @@ impl Core {
     /// Deletes the author's own comment (`Forbidden` otherwise). A draft is removed
     /// (a draft root with its whole draft thread). A published comment is
     /// soft-deleted with `comment.deleted`; a root that still has published
-    /// replies leaves a placeholder. A thread left with no comment is deleted.
+    /// replies leaves a placeholder. A thread left with no undeleted comment
+    /// (drafts included) is deleted, whichever kind of comment went last.
     pub fn delete_comment(
         &self,
         comment_id: &str,
@@ -552,7 +578,11 @@ impl Core {
             let now = now_ms();
             let review = c.thread.review_id.as_deref();
             if !c.published {
-                let thread_removed = c.is_root;
+                // A draft root takes its draft thread along; a draft reply does too
+                // when it was the thread's last undeleted comment (e.g. under a
+                // root its agent deleted), or the thread would linger unlisted.
+                let thread_removed =
+                    c.is_root || undeleted_others(tx, &c.thread_id, comment_id)?.0 == 0;
                 if thread_removed {
                     tx.execute("DELETE FROM threads WHERE id = ?1", [&c.thread_id])?;
                 } else {
@@ -576,12 +606,7 @@ impl Core {
                     thread_removed,
                 }));
             }
-            let (others, published_others): (i64, i64) = tx.query_row(
-                "SELECT count(*), count(published_at) FROM comments \
-                 WHERE thread_id = ?1 AND id <> ?2 AND deleted_at IS NULL",
-                params![c.thread_id, comment_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
+            let (others, published_others) = undeleted_others(tx, &c.thread_id, comment_id)?;
             let thread_removed = others == 0;
             if thread_removed {
                 tx.execute("DELETE FROM threads WHERE id = ?1", [&c.thread_id])?;
@@ -641,23 +666,21 @@ impl Core {
         }
         let author = Author {
             kind,
-            name: actor.name.clone().unwrap_or_else(|| match kind {
-                AuthorKind::Human => "you".into(),
-                AuthorKind::Agent => "agent".into(),
-            }),
+            name: actor.name.clone().unwrap_or_else(|| "agent".into()),
             session_id: actor.session_id.clone(),
-        };
+        }
+        .normalized();
         self.store.write(|tx| {
             let Some(th) = thread_row(tx, thread_id)? else {
                 return Ok(Err(CoreError::not_found("thread", thread_id)));
             };
+            if kind == AuthorKind::Agent && !th.agent_visible {
+                return Ok(Err(CoreError::not_found("thread", thread_id)));
+            }
             if th.root_draft {
-                return Ok(Err(match kind {
-                    AuthorKind::Agent => CoreError::not_found("thread", thread_id),
-                    AuthorKind::Human => CoreError::Conflict(format!(
-                        "thread {thread_id} is a draft; submit or delete it instead"
-                    )),
-                }));
+                return Ok(Err(CoreError::Conflict(format!(
+                    "thread {thread_id} is a draft; submit or delete it instead"
+                ))));
             }
             let now = now_ms();
             if let Some(body) = closing_reply {
@@ -956,11 +979,7 @@ fn resolve_anchor(
             }
             let from = start_line.saturating_sub(SNIPPET_CONTEXT).max(1);
             let to = line.saturating_add(SNIPPET_CONTEXT).min(n);
-            let snippet = lines[(from - 1) as usize..to as usize]
-                .iter()
-                .map(|l| String::from_utf8_lossy(l))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let snippet = snippet(&lines, from, to);
             Ok(ResolvedAnchor {
                 subject: Subject::Line {
                     path: f.display_path().to_owned(),
@@ -993,6 +1012,16 @@ fn split_lines(bytes: &[u8]) -> Vec<&[u8]> {
         return Vec::new();
     }
     body.split(|b| *b == b'\n').collect()
+}
+
+/// Lines `from..=to` (1-based, in range) joined with `\n`, each without a final
+/// `\r` (CRLF files), invalid UTF-8 replaced.
+fn snippet(lines: &[&[u8]], from: u32, to: u32) -> String {
+    lines[(from - 1) as usize..to as usize]
+        .iter()
+        .map(|l| String::from_utf8_lossy(l.strip_suffix(b"\r").unwrap_or(l)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Inserts a comment (published at once for agents). A `session_id` that is not
@@ -1058,6 +1087,21 @@ fn add_reply(
     Ok(())
 }
 
+/// `(all, published)` counts of the thread's undeleted comments other than
+/// `comment_id` (drafts included in `all`).
+fn undeleted_others(
+    tx: &Transaction,
+    thread_id: &str,
+    comment_id: &str,
+) -> Result<(i64, i64), StoreError> {
+    Ok(tx.query_row(
+        "SELECT count(*), count(published_at) FROM comments \
+         WHERE thread_id = ?1 AND id <> ?2 AND deleted_at IS NULL",
+        params![thread_id, comment_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?)
+}
+
 fn touch_review(tx: &Transaction, review_id: &str, now: i64) -> Result<(), StoreError> {
     tx.execute(
         "UPDATE reviews SET updated_at = ?2 WHERE id = ?1",
@@ -1121,7 +1165,7 @@ pub(crate) fn draft_event(
         comment_id: comment_id.map(str::to_owned),
         actor: Actor {
             kind: ActorKind::Human,
-            name: Some("you".into()),
+            name: Some(HUMAN_NAME.into()),
             session_id: None,
         },
         payload: json!({ "op": op, "target": target }),
@@ -1137,16 +1181,20 @@ fn thread_row(conn: &Connection, thread_id: &str) -> Result<Option<ThreadRow>, S
         .query_row(
             &format!(
                 "SELECT review_id, origin_diff_id, status, \
-                   (SELECT published_at IS NULL FROM comments WHERE id = {ROOT_COMMENT_SQL}) \
+                   (SELECT published_at IS NULL FROM comments WHERE id = {ROOT_COMMENT_SQL}), \
+                   EXISTS (SELECT 1 FROM comments WHERE thread_id = ?1 \
+                     AND published_at IS NOT NULL AND deleted_at IS NULL) \
                  FROM threads WHERE id = ?1"
             ),
             [thread_id],
             |r| {
+                let root_draft = r.get::<_, Option<bool>>(3)?.unwrap_or(false);
                 Ok(ThreadRow {
                     review_id: r.get(0)?,
                     origin_diff_id: r.get(1)?,
                     status: r.get(2)?,
-                    root_draft: r.get::<_, Option<bool>>(3)?.unwrap_or(false),
+                    root_draft,
+                    agent_visible: !root_draft && r.get::<_, bool>(4)?,
                 })
             },
         )
@@ -1192,6 +1240,9 @@ fn own_comment(
     let Some(thread) = thread_row(tx, &thread_id)? else {
         return not_found();
     };
+    if author.kind == AuthorKind::Agent && !thread.agent_visible {
+        return not_found();
+    }
     if !author.owns(author_kind, &author_name) {
         return Ok(Err(CoreError::Forbidden(format!(
             "comment {comment_id} belongs to {} {author_name}",
@@ -1430,6 +1481,33 @@ mod tests {
         assert_eq!(split_lines(b"a\nb"), [&b"a"[..], b"b"]);
         assert_eq!(split_lines(b"a\nb\n"), [&b"a"[..], b"b"]);
         assert_eq!(split_lines(b"a\n\n"), [&b"a"[..], b""]);
+    }
+
+    #[test]
+    fn snippet_joins_lines_without_carriage_returns() {
+        let lines = split_lines(b"a\r\nb\r\n\xffc\r\nd");
+        assert_eq!(snippet(&lines, 1, 4), "a\nb\n\u{fffd}c\nd");
+        assert_eq!(snippet(&lines, 2, 3), "b\n\u{fffd}c");
+        // Only a final `\r` is a line ending; one inside the line stays.
+        assert_eq!(snippet(&split_lines(b"x\ry\r\r\n"), 1, 1), "x\ry\r");
+    }
+
+    #[test]
+    fn human_authors_are_normalized_to_you() {
+        let bob = Author {
+            kind: AuthorKind::Human,
+            name: "bob".into(),
+            session_id: Some("s".into()),
+        };
+        let n = bob.normalized();
+        assert_eq!(n.name, "you");
+        assert_eq!(n.session_id, None);
+        let agent = Author {
+            kind: AuthorKind::Agent,
+            name: "claude-code".into(),
+            session_id: Some("s".into()),
+        };
+        assert_eq!(agent.normalized(), agent);
     }
 
     #[test]

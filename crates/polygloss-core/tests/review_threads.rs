@@ -1331,3 +1331,228 @@ fn save_submit_draft_upserts_and_is_consumed_by_submit() {
         .unwrap();
     assert_eq!(e.count("SELECT count(*) FROM review_drafts"), 0);
 }
+
+#[test]
+fn deleting_the_last_draft_under_a_deleted_root_removes_the_thread() {
+    let e = env();
+    let review = e.opened.review_id.as_str();
+    let q = e.agent_thread(ThreadKind::Question, Subject::Review, "a or b?");
+    let root = e.core.thread(&q, Viewer::Agent).unwrap().comments[0]
+        .id
+        .clone();
+    let draft = e.core.reply(&q, "a", &human()).unwrap();
+
+    // The draft reply keeps the thread alive when the agent deletes its root.
+    let out = e.core.delete_comment(&root, &agent()).unwrap();
+    assert!(!out.thread_removed);
+    assert!(!out.placeholder, "no published reply to show under it");
+    let view = e.core.thread(&q, Viewer::Human).unwrap();
+    assert_eq!(view.comments.len(), 2);
+    assert!(view.comments[0].deleted);
+
+    // Deleting that draft leaves no undeleted comment: the thread goes too.
+    let before = max_seq(&e.core);
+    let out = e.core.delete_comment(&draft, &human()).unwrap();
+    assert!(out.thread_removed);
+    assert!(!out.placeholder);
+    assert_eq!(
+        e.count(&format!("SELECT count(*) FROM threads WHERE id = '{q}'")),
+        0
+    );
+    assert_eq!(kinds(&events_after(&e.core, before)), ["draft.changed"]);
+    assert!(matches!(
+        e.core.thread(&q, Viewer::Human),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert!(!e.core.review_awaiting_you(review).unwrap());
+    assert_eq!(e.core.drafts_count(review).unwrap(), 0);
+}
+
+#[test]
+fn agents_cannot_act_on_threads_they_cannot_see() {
+    let e = env();
+    let q = e.agent_thread(ThreadKind::Question, Subject::Review, "a or b?");
+    let root = e.core.thread(&q, Viewer::Agent).unwrap().comments[0]
+        .id
+        .clone();
+    e.core.reply(&q, "a", &human()).unwrap();
+    e.core.delete_comment(&root, &agent()).unwrap();
+
+    // Only the human's draft is left: the thread does not exist for agents.
+    assert!(matches!(
+        e.core.thread(&q, Viewer::Agent),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert!(
+        e.core
+            .threads(e.review_scope(), Viewer::Agent, &all())
+            .unwrap()
+            .is_empty()
+    );
+    let before = max_seq(&e.core);
+    assert!(matches!(
+        e.core.reply(&q, "still there?", &agent()),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert!(matches!(
+        e.core.set_resolved(&q, true, &agent_actor(), None),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert!(matches!(
+        e.core.set_resolved(&q, true, &agent_actor(), Some("done")),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert_eq!(max_seq(&e.core), before, "nothing was written");
+
+    // The human still sees it and may resolve it; once submitted, agents see it.
+    e.core.set_resolved(&q, true, &human_actor(), None).unwrap();
+    e.core
+        .submit_review(&e.opened.review_id, Verdict::Comment, "", None)
+        .unwrap();
+    let view = e.core.thread(&q, Viewer::Agent).unwrap();
+    assert_eq!(view.comments.len(), 2);
+    assert!(view.comments[0].deleted);
+    e.core.reply(&q, "thanks", &agent()).unwrap();
+}
+
+#[test]
+fn human_author_names_are_stored_as_you() {
+    let e = env();
+    let bob = Author {
+        kind: AuthorKind::Human,
+        name: "bob".into(),
+        session_id: Some("s-1".into()),
+    };
+    let t = e
+        .core
+        .create_thread(
+            &new_thread(
+                &e.opened,
+                Subject::Review,
+                ThreadKind::Comment,
+                "hi",
+                bob.clone(),
+            ),
+            &e.blobs,
+        )
+        .unwrap();
+    e.core.reply(&t, "more", &bob).unwrap();
+    let bob_actor = Actor {
+        kind: ActorKind::Human,
+        name: Some("bob".into()),
+        session_id: Some("s-1".into()),
+    };
+    e.core
+        .submit_review(&e.opened.review_id, Verdict::Comment, "", None)
+        .unwrap();
+    e.core
+        .set_resolved(&t, true, &bob_actor, Some("bye"))
+        .unwrap();
+
+    let view = e.core.thread(&t, Viewer::Human).unwrap();
+    assert_eq!(view.created_by.name, "you");
+    assert_eq!(view.created_by.session_id, None);
+    assert_eq!(view.resolved_by.unwrap().name.as_deref(), Some("you"));
+    assert_eq!(view.comments.len(), 3);
+    for c in &view.comments {
+        assert_eq!(c.author.name, "you");
+        assert_eq!(c.author.session_id, None);
+    }
+    assert_eq!(
+        e.count(
+            "SELECT count(*) FROM events WHERE actor_name IS NOT NULL AND actor_name <> 'you' \
+             AND actor_kind = 'human'"
+        ),
+        0
+    );
+}
+
+#[test]
+fn submit_rolls_back_everything_when_a_step_fails() {
+    let e = env();
+    let review = e.opened.review_id.as_str();
+    let t = e.human_thread(line("a.txt", Side::New, 5, 5), "one");
+    e.core.reply(&t, "two", &human()).unwrap();
+    e.core
+        .save_submit_draft(review, "sum", Some(Verdict::Approve))
+        .unwrap();
+    let status = e.text("SELECT status FROM reviews");
+    // Fail the very last write of the submission.
+    e.core
+        .store
+        .write(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_submit BEFORE INSERT ON events \
+                 WHEN NEW.kind = 'review.submitted' \
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let before = max_seq(&e.core);
+
+    let err = e
+        .core
+        .submit_review(review, Verdict::RequestChanges, "fix", None)
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("injected failure"), "{err:?}");
+
+    assert_eq!(max_seq(&e.core), before, "no event survives");
+    assert_eq!(e.core.drafts_count(review).unwrap(), 2);
+    assert_eq!(
+        e.count("SELECT count(*) FROM comments WHERE published_at IS NOT NULL OR submission_id IS NOT NULL"),
+        0
+    );
+    assert_eq!(e.count("SELECT count(*) FROM review_submissions"), 0);
+    assert_eq!(e.count("SELECT count(*) FROM review_drafts"), 1);
+    assert_eq!(e.text("SELECT status FROM reviews"), status);
+    assert!(e.core.thread(&t, Viewer::Human).unwrap().draft);
+
+    e.core
+        .store
+        .write(|tx| {
+            tx.execute_batch("DROP TRIGGER fail_submit;")?;
+            Ok(())
+        })
+        .unwrap();
+    let sub = e
+        .core
+        .submit_review(review, Verdict::RequestChanges, "fix", None)
+        .unwrap();
+    assert_eq!(sub.comment_count, 2);
+}
+
+#[test]
+fn submit_pins_the_displayed_merge_base_after_main_moves() {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    repo.checkout("feature");
+    let f1 = repo.oid("HEAD");
+    repo.write("b.txt", b"bee\nbuzz\nbzz\n");
+    repo.commit("f2");
+    repo.write("a.txt", b"live\n");
+    let core = core();
+    let live = || Source::Live {
+        since: Since::MergeBase,
+    };
+    let opened = core.open(&req(repo.path(), live())).unwrap();
+    assert_ne!(opened.base.commit.as_ref(), Some(&f1));
+
+    // main moves after the tab rendered: the merge-base is now f1.
+    repo.git(&["branch", "-f", "main", f1.as_str()]);
+    let refreshed = core.open(&req(repo.path(), live())).unwrap();
+    assert_eq!(refreshed.base.commit.as_ref(), Some(&f1));
+    assert_ne!(refreshed.diff_id, opened.diff_id);
+
+    // Submitting what the human saw pins the displayed base, not a re-resolved one.
+    let sub = core
+        .submit_review(
+            &opened.review_id,
+            Verdict::Approve,
+            "lgtm",
+            Some((&opened.base, opened.live.as_ref().unwrap())),
+        )
+        .unwrap();
+    assert_eq!(sub.iteration.diff_id, opened.diff_id);
+    assert_eq!(sub.iteration.seq, 1);
+}
