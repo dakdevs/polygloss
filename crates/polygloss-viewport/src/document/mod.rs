@@ -13,6 +13,7 @@ mod file_layout;
 mod file_state;
 mod height_index;
 mod metrics;
+mod placement;
 mod window;
 
 use std::sync::Arc;
@@ -24,10 +25,12 @@ pub use file_layout::{BodyRow, FileLayout};
 pub use file_state::FileState;
 pub use height_index::HeightIndex;
 pub use metrics::{Metrics, SizeHint};
+pub use placement::{BlockAnchor, PlacedBlock};
 pub use window::{DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS};
 
 use crate::materialize::MaterializedFile;
 use file_state::{Body, FileEntry};
+use placement::block_height;
 
 /// All files of one diff, their heights and the scroll position.
 #[derive(Debug, Clone)]
@@ -59,6 +62,7 @@ impl Document {
                 collapsed: false,
                 hint: None,
                 body: Body::Estimated(metrics.estimate_body(change, None)),
+                blocks: Vec::new(),
             })
             .collect();
         let heights: Vec<f32> = entries
@@ -236,11 +240,19 @@ impl Document {
             Body::Laid(layout) => layout.find(key).map(|r| header + layout.row_top(r)),
             Body::Estimated(body) | Body::Explicit(body) => {
                 let row_h = f64::from(self.metrics.row_height);
+                // Lines are spread evenly over an estimated body.
+                let line_y =
+                    |line: u32| (f64::from(line) * row_h).min((f64::from(*body) - row_h).max(0.0));
                 let y = match key {
-                    // Lines are spread evenly over an estimated body.
-                    RowKey::Line { line, .. } => {
-                        (f64::from(line) * row_h).min((f64::from(*body) - row_h).max(0.0))
-                    }
+                    RowKey::Line { line, .. } => line_y(line),
+                    // A block sits below its line.
+                    RowKey::Block(id) => match entry.blocks.iter().find(|b| b.id == id) {
+                        Some(PlacedBlock {
+                            anchor: BlockAnchor::Line { line, .. },
+                            ..
+                        }) => line_y(*line) + row_h,
+                        _ => 0.0,
+                    },
                     _ => 0.0,
                 };
                 Some(header + y)
@@ -249,22 +261,87 @@ impl Document {
     }
 
     /// Sets file `idx`'s exact height (header included) for a body that has no
-    /// rows. Content on screen does not move: the anchor stays put.
+    /// rows; the file's blocks add to it. Content on screen does not move: the
+    /// anchor stays put.
     pub fn set_file_height(&mut self, idx: u32, h: f32) {
         let body = if h.is_finite() {
             (h - self.metrics.header_height).max(0.0)
         } else {
             0.0
         };
-        self.entries[idx as usize].body = Body::Explicit(body);
+        let entry = &mut self.entries[idx as usize];
+        entry.body = Body::Explicit(body + entry.blocks_height());
         self.refresh(idx);
     }
 
-    /// Hands over file `idx`'s exact rows. The anchor stays put; if it was in
-    /// this file and its row no longer exists, the same pixel stays at the top.
+    /// Hands over file `idx`'s exact rows. The file's blocks (see
+    /// [`Document::set_blocks`]) are placed in them, replacing any block rows
+    /// `layout` has. The anchor stays put; if it was in this file and its row
+    /// no longer exists, the same pixel stays at the top.
     pub fn set_file_layout(&mut self, idx: u32, layout: FileLayout) {
-        self.entries[idx as usize].body = Body::Laid(layout);
+        let entry = &mut self.entries[idx as usize];
+        let layout = if entry.blocks.is_empty() && layout.block_rows().is_empty() {
+            layout
+        } else {
+            layout.with_blocks(&entry.blocks)
+        };
+        entry.body = Body::Laid(layout);
         self.refresh(idx);
+    }
+
+    /// Replaces file `idx`'s host blocks (design §12.4 "Blocks"). Only this
+    /// file is laid out again: a laid-out body gets them as rows, an estimated
+    /// or row-less one adds their heights. Duplicate ids keep the first. The
+    /// anchor stays put, so blocks above it never move what is on screen.
+    pub fn set_blocks(&mut self, idx: u32, mut blocks: Vec<PlacedBlock>) {
+        let mut seen = std::collections::HashSet::with_capacity(blocks.len());
+        blocks.retain(|b| seen.insert(b.id));
+        for b in &mut blocks {
+            b.height = block_height(b.height);
+        }
+        let entry = &mut self.entries[idx as usize];
+        let old = entry.blocks_height();
+        entry.blocks = blocks;
+        let new = entry.blocks_height();
+        match &mut entry.body {
+            Body::Laid(layout) => *layout = layout.with_blocks(&entry.blocks),
+            Body::Explicit(h) => *h = (*h - old + new).max(0.0),
+            Body::Estimated(_) => {}
+        }
+        self.refresh(idx);
+    }
+
+    /// File `idx`'s host blocks with their current heights, in the host's
+    /// order.
+    pub fn blocks(&self, idx: u32) -> &[PlacedBlock] {
+        self.entries
+            .get(idx as usize)
+            .map_or(&[][..], |e| &e.blocks)
+    }
+
+    /// Sets block `id`'s height in file `idx` (measured by the viewport). It
+    /// is kept by later relayouts. The anchor stays put. Returns whether the
+    /// file has that block.
+    pub fn set_block_height(&mut self, idx: u32, id: BlockId, h: f32) -> bool {
+        let h = block_height(h);
+        let Some(entry) = self.entries.get_mut(idx as usize) else {
+            return false;
+        };
+        let Some(block) = entry.blocks.iter_mut().find(|b| b.id == id) else {
+            return false;
+        };
+        let old = std::mem::replace(&mut block.height, h);
+        match &mut entry.body {
+            Body::Laid(layout) => {
+                if let Some(row) = layout.find(RowKey::Block(id)) {
+                    layout.set_row_height(row, h);
+                }
+            }
+            Body::Explicit(body) => *body = (*body - old + h).max(0.0),
+            Body::Estimated(_) => {}
+        }
+        self.refresh(idx);
+        true
     }
 
     /// File `idx`'s rows, when laid out.
@@ -273,11 +350,18 @@ impl Document {
     }
 
     /// Changes one row's height in a laid-out file (a measured block, a wrapped
-    /// line); the anchor stays put. Ignored when the file has no layout.
+    /// line); the anchor stays put. Ignored when the file has no layout. A
+    /// block row's new height is kept by later relayouts.
     pub fn set_row_height(&mut self, idx: u32, row: u32, h: f32) {
-        if let Body::Laid(layout) = &mut self.entries[idx as usize].body
+        let entry = &mut self.entries[idx as usize];
+        if let Body::Laid(layout) = &mut entry.body
             && (row as usize) < layout.len()
         {
+            if let BodyRow::Block(id) = layout.rows()[row as usize]
+                && let Some(block) = entry.blocks.iter_mut().find(|b| b.id == id)
+            {
+                block.height = block_height(h);
+            }
             layout.set_row_height(row as usize, h);
             self.refresh(idx);
         }

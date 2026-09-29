@@ -23,6 +23,7 @@ use polygloss_diff::word::Granularity;
 use polygloss_diff::{FileChange, FileKind, Side};
 use polygloss_highlight::{Budget, Highlighter, Tokens, guess_language};
 
+use crate::blocks::Blocks;
 use crate::document::{
     BlockId, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document, FileLayout,
     FileState, RowKey, ScrollAnchor, SizeHint,
@@ -161,14 +162,14 @@ pub struct DiffViewport {
     provider: Arc<dyn DiffProvider>,
     opts: ViewportOptions,
     files: Arc<Vec<FileChange>>,
-    doc: Document,
+    pub(crate) doc: Document,
     geometry: Geometry,
     code_font: Font,
     geometry_dirty: bool,
     /// The effective layout; `measured` once a frame has seen the width.
-    layout: Layout,
+    pub(crate) layout: Layout,
     measured: bool,
-    width: f32,
+    pub(crate) width: f32,
     layout_keys: Vec<Option<LayoutKey>>,
     /// What a file's body shows when it has no code rows (special files,
     /// large diffs).
@@ -177,8 +178,10 @@ pub struct DiffViewport {
     highlighter: Arc<Highlighter>,
     loads: HashMap<u32, Task<()>>,
     highlights: HashMap<u32, Task<()>>,
-    frame_pool: Option<Frame>,
+    pub(crate) frame_pool: Option<Frame>,
     top_file: u32,
+    /// Host blocks (threads, composers, notes; see [`crate::blocks`]).
+    pub(crate) blocks: Blocks,
     #[cfg(feature = "debug-inspect")]
     debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
@@ -232,6 +235,7 @@ impl DiffViewport {
             highlights: HashMap::new(),
             frame_pool: None,
             top_file: 0,
+            blocks: Blocks::default(),
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
             #[cfg(feature = "debug-inspect")]
@@ -294,11 +298,8 @@ impl DiffViewport {
                 line,
             } => self.doc.scroll_to(file_idx, RowKey::Line { side, line }),
             ScrollTarget::Block(id) => {
-                let Some(f) = (0..self.doc.len()).find(|&f| {
-                    self.doc
-                        .file_layout(f)
-                        .is_some_and(|l| l.find(RowKey::Block(id)).is_some())
-                }) else {
+                // A block of a file not laid out yet lands once it is.
+                let Some(f) = self.blocks.file_of(id) else {
                     return;
                 };
                 self.doc.scroll_to(f, RowKey::Block(id));
@@ -396,6 +397,7 @@ impl DiffViewport {
                 scroll_top: (self.doc.scroll_top() * scale).round() / scale,
                 cache: &mut self.text_cache,
                 highlighting: &self.highlights,
+                blocks: &self.blocks,
                 text_system: window.text_system().clone(),
                 frame: &mut frame,
                 corrections: Vec::new(),

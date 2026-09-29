@@ -147,6 +147,11 @@ impl FileLayout {
         &self.rows
     }
 
+    /// Indexes of the block rows, in order.
+    pub fn block_rows(&self) -> &[u32] {
+        &self.blocks
+    }
+
     /// Total body height.
     pub fn height(&self) -> f64 {
         self.heights.total()

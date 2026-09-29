@@ -19,6 +19,7 @@ use gpui_kit::{
 use polygloss_diff::rows::{Cell, Layout, LineKind, Row};
 use polygloss_diff::{FileChange, Side};
 
+use crate::blocks::{BlockSlot, Blocks};
 use crate::document::{BodyRow, Document, FileState};
 use crate::layout::{Columns, Geometry, Pane, digits};
 use crate::materialize::MaterializedFile;
@@ -51,6 +52,9 @@ pub(crate) struct Frame {
     /// Code rows painted as plain text while their tokens are being computed,
     /// plus loading rows.
     pub unhighlighted: u32,
+    /// Visible host blocks, top to bottom (their elements are rendered,
+    /// measured and painted by the element, see [`crate::blocks`]).
+    pub blocks: Vec<BlockSlot>,
 }
 
 impl Frame {
@@ -60,6 +64,7 @@ impl Frame {
             layer.quads.clear();
             layer.texts.clear();
         }
+        self.blocks.clear();
         self.rows = 0;
         self.shaped = 0;
         self.loading = 0;
@@ -144,6 +149,8 @@ pub(crate) struct Painter<'a> {
     pub cache: &'a mut TextCache,
     /// Files whose syntax tokens are being computed.
     pub highlighting: &'a HashMap<u32, Task<()>>,
+    /// Host blocks, for their columns and render functions.
+    pub blocks: &'a Blocks,
     pub text_system: Arc<WindowTextSystem>,
     pub frame: &'a mut Frame,
     /// Rows whose measured wrapped height differs from the layout:
@@ -305,15 +312,7 @@ impl Painter<'_> {
                     content: DebugContent::Label(text),
                 });
             }
-            BodyRow::Block(_id) => {
-                #[cfg(feature = "debug-inspect")]
-                self.debug.push(DebugRow {
-                    y,
-                    height: h,
-                    styled: false,
-                    content: DebugContent::Block(_id.0),
-                });
-            }
+            BodyRow::Block(id) => self.block(f, id, y, h),
             BodyRow::Placeholder => {
                 // No label: the file is reloading and its old one (an error,
                 // a large-diff count) is stale.

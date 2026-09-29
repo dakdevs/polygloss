@@ -14,6 +14,7 @@ use gpui_kit::{
     Window, fill, px, relative,
 };
 
+use crate::blocks::{self, PreparedBlock};
 use crate::paint_rows::Frame;
 use crate::view::{DiffViewport, FrameStats};
 
@@ -29,6 +30,8 @@ impl DiffElement {
 
 pub(crate) struct Prepainted {
     frame: Option<Frame>,
+    /// Visible host blocks' elements, prepainted.
+    blocks: Vec<PreparedBlock>,
     hitbox: Hitbox,
     prepaint: Duration,
 }
@@ -78,11 +81,11 @@ impl Element for DiffElement {
     ) -> Prepainted {
         let started = Instant::now();
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        let frame = self
-            .view
-            .update(cx, |view, cx| view.prepare_frame(bounds, window, cx));
+        // Blocks' hitboxes go in after the viewport's, above it.
+        let (frame, blocks) = blocks::prepare(&self.view, bounds, window, cx);
         Prepainted {
             frame: Some(frame),
+            blocks,
             hitbox,
             prepaint: started.elapsed(),
         }
@@ -130,6 +133,11 @@ impl Element for DiffElement {
                 view.update(cx, |view, cx| view.scroll_by(-delta.y.as_f32(), cx));
                 cx.stop_propagation();
             }
+        });
+        // Host blocks over the rows, after the wheel handler so theirs run
+        // first (bubble order is reverse registration).
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            blocks::paint(&mut prepainted.blocks, window, cx)
         });
 
         let stats = FrameStats {
