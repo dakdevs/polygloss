@@ -9,3 +9,11 @@ pub mod resolve;
 pub mod runner;
 pub mod snapshot;
 pub mod version;
+
+pub use repo::{RepoInfo, discover};
+pub use resolve::{
+    CompareMode, HeadSpec, Resolution, ResolveError, ResolveWarning, ResolvedSide, ReviewKind,
+    Since, Source, default_branch, resolve,
+};
+pub use runner::{Git, GitError, GitOutput, git_binary};
+pub use version::{GitVersion, check_version};

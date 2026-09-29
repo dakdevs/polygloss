@@ -21,7 +21,7 @@ It works only on repos that are already on disk.
 
 A "PR" is a branch compare between two refs that already exist locally. The user or agent runs `gh pr checkout` or `git fetch` themselves, and can attach a display label such as "PR #123". The default branch is detected offline from `refs/remotes/origin/HEAD`.
 
-Git runs with `GIT_NO_LAZY_FETCH=1`, `-c protocol.allow=never` and `GIT_TERMINAL_PROMPT=0`, so partial clones fail instead of fetching.
+Git runs with `GIT_NO_LAZY_FETCH=1`, an empty `GIT_ALLOW_PROTOCOL`, `-c protocol.allow=never` and `GIT_TERMINAL_PROMPT=0`, so partial clones fail instead of fetching (design §6.2).
 
 ## Consequences
 
