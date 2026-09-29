@@ -38,7 +38,7 @@ use crate::review_tab::ReviewTab;
 use crate::tabs::TabItem;
 use crate::window::{MainWindow, MenuKind};
 
-pub use tab::{TabFeed, activity, next_unread, replies_text, rereview_text};
+pub use tab::{TabFeed, activity, next_unread, replies_text, rereview_text, summary_line};
 
 /// How often the feed polls while the app is active (design §7.1,
 /// provisional).

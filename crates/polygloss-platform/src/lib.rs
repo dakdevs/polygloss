@@ -5,4 +5,8 @@
 //! FFI) may opt out with a module-level `#![allow(unsafe_code)]`.
 #![deny(unsafe_code)]
 
+#[cfg(feature = "appkit")]
+pub mod bundle;
+#[cfg(feature = "appkit")]
+pub mod dock;
 pub mod editor;

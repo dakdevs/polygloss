@@ -146,8 +146,8 @@ pub fn rereview_text(r: &Rereview) -> String {
 }
 
 /// The first block of a markdown summary as plain text (formatting marks
-/// dropped), cut to [`SUMMARY_CHARS`].
-fn summary_line(summary: &str) -> Option<String> {
+/// dropped), cut to [`SUMMARY_CHARS`] (the banner and T3.17's notification).
+pub fn summary_line(summary: &str) -> Option<String> {
     let plain = std::panic::catch_unwind(|| {
         let root = markdown::to_mdast(summary, &markdown::ParseOptions::gfm()).ok()?;
         root.children()?
