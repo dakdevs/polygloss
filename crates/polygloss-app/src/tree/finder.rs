@@ -128,10 +128,21 @@ impl ListDelegate for FinderDelegate {
     fn perform_search(
         &mut self,
         query: &str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Task<()> {
         self.matches = rank(&self.files, query);
+        // `ListState::start_search` picks the selection from its row cache,
+        // which still describes the previous query (it is rebuilt at
+        // render): after a query that matched nothing it clears the
+        // selection even though this one matches. Select the first match
+        // once it is done.
+        cx.defer_in(window, |state, window, cx| {
+            let first = (!state.delegate().matches.is_empty()).then(IndexPath::default);
+            if state.selected_index() != first {
+                state.set_selected_index(first, window, cx);
+            }
+        });
         cx.notify();
         Task::ready(())
     }

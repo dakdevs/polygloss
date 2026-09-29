@@ -33,11 +33,14 @@ const FILTERS_RS: &str = "/// Which files the tree shows.\n#[derive(Default)]\np
 const INTRO_MD: &str =
     "# Getting started\n\nOpen a review with ⌘O, then press `n` for the next file.\n";
 const BUILD_SH: &str = "#!/bin/sh\nset -eu\nmake all\n";
+const PREFS_RS_BASE: &str = "/// Settings read at startup.\npub struct Settings {\n    pub theme: String,\n    pub font_size: u32,\n    pub tab_width: u32,\n    pub wrap: bool,\n}\n";
+const PREFS_RS_HEAD: &str = "/// Preferences read at startup.\npub struct Settings {\n    pub theme: String,\n    pub font_size: u32,\n    pub tab_width: u32,\n    pub wrap: bool,\n}\n";
 
 /// A repo with tags `base` and `head`; the diff, in order: `README.md`
 /// (M), `crates/app/src/tree/filters.rs` (A), `crates/app/src/tree/row.rs`
 /// (M), `crates/core/src/lib.rs` (M), `docs/guide/intro.md` (A),
-/// `scripts/old-build.sh` (D), `src/config.rs` (M).
+/// `scripts/old-build.sh` (D), `src/config.rs` (M), `src/prefs.rs` (R from
+/// `src/settings.rs`, one line changed).
 fn badges_repo() -> FixtureRepo {
     let repo = FixtureRepo::init(ObjectFormat::Sha1);
     repo.write("README.md", b"# app\n\nA small app.\n");
@@ -45,6 +48,7 @@ fn badges_repo() -> FixtureRepo {
     repo.write("crates/core/src/lib.rs", LIB_RS_BASE.as_bytes());
     repo.write("scripts/old-build.sh", BUILD_SH.as_bytes());
     repo.write("src/config.rs", CONFIG_RS_BASE.as_bytes());
+    repo.write("src/settings.rs", PREFS_RS_BASE.as_bytes());
     repo.commit("base");
     repo.git(&["tag", "base"]);
     repo.write("README.md", b"# app\n\nA small app with a file tree.\n");
@@ -54,6 +58,8 @@ fn badges_repo() -> FixtureRepo {
     repo.write("docs/guide/intro.md", INTRO_MD.as_bytes());
     std::fs::remove_file(repo.path().join("scripts/old-build.sh")).unwrap();
     repo.write("src/config.rs", CONFIG_RS_HEAD.as_bytes());
+    std::fs::remove_file(repo.path().join("src/settings.rs")).unwrap();
+    repo.write("src/prefs.rs", PREFS_RS_HEAD.as_bytes());
     repo.commit("head");
     repo.git(&["tag", "head"]);
     repo
@@ -99,14 +105,20 @@ fn e2e_tree_badges() {
         }
     }
     let tab = tab.expect("the review tab opened");
-    let (tree, files) = cx.update(|cx| {
+    let (tree, statuses) = cx.update(|cx| {
         let t = tab.read(cx);
         (
             file_tree(t).cloned().expect("a file tree"),
-            t.opened.files.len(),
+            t.opened.files.iter().map(|f| f.status).collect::<Vec<_>>(),
         )
     });
-    assert_eq!(files, 7);
+    use polygloss_diff::FileStatus::{Added as A, Deleted as D, Modified as M, Renamed as R};
+    assert_eq!(
+        statuses,
+        [M, A, M, M, A, D, M, R],
+        "all four status letters"
+    );
+    let files = statuses.len();
     // README viewed; filters.rs viewed (so `app/src/tree` is partly viewed);
     // row.rs changed since viewed with two open threads, one an agent's;
     // lib.rs one open thread.
@@ -117,7 +129,14 @@ fn e2e_tree_badges() {
     flags[2].open_threads = 2;
     flags[2].agent_threads = true;
     flags[3].open_threads = 1;
-    cx.update(|cx| tree.update(cx, |t, cx| t.set_file_flags(flags, cx)));
+    // The same state in the diff's file headers (T3.7 pushes both).
+    cx.update(|cx| {
+        tab.read(cx)
+            .viewport
+            .clone()
+            .update(cx, |v, cx| v.set_file_flags(flags.clone(), cx));
+        tree.update(cx, |t, cx| t.set_file_flags(flags, cx))
+    });
 
     // Wait for the diff to paint and every file's +/− counts.
     let mut settled = false;
@@ -162,6 +181,7 @@ fn e2e_tree_badges() {
             "old-build.sh",
             "src",
             "config.rs",
+            "prefs.rs",
         ]
     );
     let image = screenshot::capture(&mut cx, handle);

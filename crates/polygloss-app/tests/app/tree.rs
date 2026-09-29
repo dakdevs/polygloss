@@ -379,6 +379,85 @@ fn tree_filters_unviewed_status_extension(cx: &mut TestAppContext) {
     assert_eq!(filters::extension("dir.d/Makefile"), "");
 }
 
+/// The tree walks files depth-first, the viewport (and the tree's "file
+/// above/below" checks) in diff order; they agree only while every
+/// directory's files are contiguous in git's output. Pin that for names
+/// that sort around `/` and for renames across directories.
+#[gpui_kit::test]
+fn tree_order_matches_diff_order(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    let body = |tag: &str| lines(tag, 20);
+    for p in [
+        "foo.rs",
+        "foo/a.rs",
+        "foo0.rs",
+        "foo-bar.rs",
+        "lib/old.rs",
+        "zeta/x.rs",
+        "a/keep.rs",
+    ] {
+        repo.write(p, body(p).as_bytes());
+    }
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    for p in ["foo.rs", "foo/a.rs", "foo0.rs", "foo-bar.rs", "a/keep.rs"] {
+        repo.write(p, (body(p) + "changed\n").as_bytes());
+    }
+    for (from, to) in [("lib/old.rs", "foo/moved.rs"), ("zeta/x.rs", "b/x.rs")] {
+        std::fs::create_dir_all(repo.path().join(to).parent().unwrap()).unwrap();
+        std::fs::rename(repo.path().join(from), repo.path().join(to)).unwrap();
+    }
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    draw(shell.cx);
+    let (renames, order, n) = tab.read_with(shell.cx, |t, cx| {
+        let files = &t.opened.files;
+        let renames = files
+            .iter()
+            .filter(|f| f.status == FileStatus::Renamed)
+            .count();
+        let tree = file_tree(t).expect("a file tree").read(cx);
+        (
+            renames,
+            tree.model().file_order().to_vec(),
+            files.len() as u32,
+        )
+    });
+    assert_eq!(renames, 2, "the fixture has two renames");
+    assert_eq!(order, (0..n).collect::<Vec<_>>());
+}
+
+#[gpui_kit::test]
+fn tree_keeps_selected_dir_across_flag_updates(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = tree_repo();
+    let mut o = open_tree(cx, &repo);
+    // "Unviewed" rebuilds the tree on every flags push.
+    o.tree.update(o.shell.cx, |t, cx| t.toggle_unviewed(cx));
+    draw(o.shell.cx);
+    click(&mut o, "tree-row-d:src");
+    assert_eq!(selected_row(&mut o), Some(ItemId::Dir("src".into())));
+
+    let mut flags = vec![FileFlags::default(); 7];
+    flags[0].viewed = true;
+    o.tree
+        .update(o.shell.cx, |t, cx| t.set_file_flags(flags, cx));
+    draw(o.shell.cx);
+    assert!(!shown_paths(&mut o).contains(&"README.md"));
+    assert_eq!(selected_row(&mut o), Some(ItemId::Dir("src".into())));
+    let dir = o.tree.read_with(o.shell.cx, |t, _| t.selected_dir());
+    assert_eq!(dir, Some(("src".to_string(), vec![3, 4, 5, 6])));
+    // The folder the user collapsed stays collapsed.
+    assert_eq!(
+        row_labels(&mut o),
+        ["config.toml", "docs/guide", "intro.md", "src"]
+    );
+}
+
 #[gpui_kit::test]
 fn tree_fuzzy_filter_uses_nucleo(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
@@ -493,6 +572,33 @@ fn viewport_scroll_highlights_tree_row(cx: &mut TestAppContext) {
     draw(o.shell.cx);
     assert_eq!(selected_row(&mut o), Some(ItemId::File(5)));
 
+    // Choosing the file already at the top (clicking the highlighted row)
+    // leaves no stale mark: scrolling up into the file above highlights it.
+    scroll(&mut o, ScrollTarget::File(3));
+    click(&mut o, "tree-row-f:3");
+    assert_eq!(top_file(&mut o), 3);
+    o.tab.update(o.shell.cx, |t, cx| {
+        t.viewport.update(cx, |v, cx| v.scroll_by(-40.0, cx))
+    });
+    draw(o.shell.cx);
+    assert_eq!(top_file(&mut o), 2);
+    assert_eq!(selected_row(&mut o), Some(ItemId::File(2)));
+    let highlighted = o.tree.read_with(o.shell.cx, |t, _| t.highlighted_file());
+    assert_eq!(highlighted, Some(2));
+
+    // Near the end the viewport cannot bring the last file (a pure rename,
+    // header only) to its top; the tree keeps marking the chosen file while
+    // it is on screen, then follows the top file again.
+    click(&mut o, "tree-row-f:6");
+    o.tab.update(o.shell.cx, |t, cx| {
+        t.viewport.update(cx, |v, cx| v.scroll_by(-40.0, cx))
+    });
+    draw(o.shell.cx);
+    assert!(top_file(&mut o) < 6);
+    assert_eq!(selected_row(&mut o), Some(ItemId::File(6)));
+    scroll(&mut o, ScrollTarget::File(2));
+    assert_eq!(selected_row(&mut o), Some(ItemId::File(2)));
+
     // A file inside a collapsed folder marks the folder.
     o.tree.update(o.shell.cx, |t, cx| {
         t.set_expanded_dirs(["docs/guide".to_string()], cx)
@@ -564,6 +670,55 @@ fn file_finder_jumps_to_file(cx: &mut TestAppContext) {
     draw(o.shell.cx);
     assert!(!o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
     assert_eq!(top_file(&mut o), 3);
+}
+
+#[gpui_kit::test]
+fn file_finder_reselects_after_no_match(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = tree_repo();
+    let mut o = open_tree(cx, &repo);
+    let open = |o: &mut Opened| {
+        o.shell.cx.simulate_keystrokes("cmd-p");
+        draw(o.shell.cx);
+        o.shell
+            .cx
+            .update(|_, cx| finder::current(cx))
+            .expect("the finder is open")
+    };
+    let selected = |o: &mut Opened, finder: &finder::Finder| {
+        finder.read_with(o.shell.cx, |s, _| {
+            (s.selected_index().is_some(), s.delegate().selected_file())
+        })
+    };
+
+    // A typo matches nothing (the list draws empty); fixing it with
+    // backspace must select the first match again, so Enter jumps.
+    let finder = open(&mut o);
+    o.shell.cx.simulate_input("buttonz");
+    draw(o.shell.cx);
+    assert!(finder.read_with(o.shell.cx, |s, _| s.delegate().matches().is_empty()));
+    o.shell.cx.simulate_keystrokes("backspace");
+    draw(o.shell.cx);
+    assert_eq!(selected(&mut o, &finder), (true, Some(3)));
+    o.shell.cx.simulate_keystrokes("enter");
+    draw(o.shell.cx);
+    assert!(!o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert_eq!(top_file(&mut o), 3);
+
+    // The same after replacing the whole query: `zzz`, then `lib`.
+    let finder = open(&mut o);
+    o.shell.cx.simulate_input("zzz");
+    draw(o.shell.cx);
+    assert_eq!(selected(&mut o, &finder).1, None);
+    o.shell.cx.simulate_keystrokes("cmd-a");
+    o.shell.cx.simulate_input("lib");
+    draw(o.shell.cx);
+    assert_eq!(selected(&mut o, &finder), (true, Some(5)));
+    o.shell.cx.simulate_keystrokes("enter");
+    draw(o.shell.cx);
+    assert!(!o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert_eq!(top_file(&mut o), 5);
+    assert_eq!(selected_row(&mut o), Some(ItemId::File(5)));
 }
 
 /// Blobs are never read: the tree only needs the file list.

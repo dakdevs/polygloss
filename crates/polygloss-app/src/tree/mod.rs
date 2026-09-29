@@ -165,6 +165,14 @@ impl FileTree {
                 .enumerate()
                 .map(|(i, f)| (i as u32, f.display_path())),
         ));
+        // The tree walks files depth-first, the viewport in diff order;
+        // `n`/`p` and the "file above/below" checks rely on them agreeing,
+        // which holds while git lists each directory's files together
+        // (`tree_order_matches_diff_order`).
+        debug_assert!(
+            full.file_order().windows(2).all(|w| w[0] < w[1]),
+            "tree order differs from diff order"
+        );
         let state = cx.new(|cx| TreeState::new(cx).items(tree_items(&full, &HashSet::new())));
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let subscriptions = vec![
@@ -443,12 +451,18 @@ impl FileTree {
         self.select_file(idx, cx);
     }
 
-    /// Scrolls the viewport to file `idx` and marks it current.
+    /// Scrolls the viewport to file `idx` and marks it current. When the
+    /// viewport cannot bring its header to the top (near the end of the
+    /// diff), the tree keeps marking it while it stays on screen
+    /// (`jumped`); when it can, the viewport's top file rules again.
     fn jump(&mut self, idx: u32, cx: &mut Context<Self>) {
         self.current = Some(idx);
-        self.jumped = Some(idx);
-        self.viewport
-            .update(cx, |v, cx| v.scroll_to(ScrollTarget::File(idx), cx));
+        let landed = self.viewport.update(cx, |v, cx| {
+            v.scroll_to(ScrollTarget::File(idx), cx);
+            let doc = v.document();
+            doc.scroll_top() + 0.5 >= doc.file_top(idx)
+        });
+        self.jumped = (!landed).then_some(idx);
         cx.notify();
     }
 
@@ -569,9 +583,21 @@ impl FileTree {
         };
         let items = tree_items(self.model(), collapsed);
         self.dir_viewed = Arc::new(self.count_viewed());
-        self.selected = None;
-        self.state.update(cx, |s, cx| s.set_items(items, cx));
-        if let Some(current) = self.current {
+        // A folder the user selected stays selected while the new tree has
+        // it (`MarkFolderViewed` acts on it); otherwise mark the current file.
+        let dir = match self.selected.take() {
+            Some(id @ ItemId::Dir(_)) => Some(SharedString::from(id.to_string())),
+            _ => None,
+        };
+        let kept = self.state.update(cx, |s, cx| {
+            s.set_items(items, cx);
+            let ix = dir.as_ref().and_then(|key| s.index_of(key))?;
+            s.set_selected_index(Some(ix), cx);
+            Some(ix)
+        });
+        if kept.is_some() {
+            self.selected = dir.as_deref().and_then(ItemId::parse);
+        } else if let Some(current) = self.current {
             self.highlight(current, cx);
         }
     }
@@ -607,7 +633,6 @@ impl FileTree {
     /// The filter menu (funnel button).
     fn filter_menu(&self, cx: &Context<Self>) -> impl IntoElement {
         let this: WeakEntity<FileTree> = cx.entity().downgrade();
-        let extensions = filters::extensions(&self.files);
         let active = self.filters.menu_active();
         Button::new("tree-filters")
             // gpui-kit bundles only its default icons (no funnel): the
@@ -623,6 +648,8 @@ impl FileTree {
                     return menu;
                 };
                 let f = tree.read(cx).filters.clone();
+                // Counted when the menu opens, not on every render.
+                let extensions = filters::extensions(&tree.read(cx).files);
                 let item = |label: &str, checked: bool, act: FilterToggle| {
                     let tree = tree.downgrade();
                     PopupMenuItem::new(label.to_owned())

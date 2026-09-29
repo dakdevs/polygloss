@@ -1,9 +1,6 @@
-//! The review tab's three resizable panes (design §11.1): file tree |
-//! diff viewport | threads panel (toggleable). The tree and the panel are
-//! T3.6's and T3.9's; until they fill them in, the tree pane lists the files
-//! and the panel shows an empty state.
-
-use std::sync::Arc;
+//! The review tab's three resizable panes (design §11.1): file tree
+//! (T3.6's `tree::render_pane`) | diff viewport | threads panel
+//! (toggleable; T3.9's, an empty state until it fills it in).
 
 use gpui_kit::component::{
     ActiveTheme as _, ResizableState, StyledExt as _, h_flex, h_resizable, resizable_panel, v_flex,
@@ -11,11 +8,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    px, uniform_list,
+    ParentElement as _, SharedString, Styled as _, Window, div, px,
 };
-use polygloss_diff::{FileChange, FileStatus};
-use polygloss_viewport::{DiffViewport, ScrollTarget};
 
 use crate::review_tab::ReviewTab;
 
@@ -54,8 +48,9 @@ pub(crate) fn render(
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
+    // Every review tab gets a file tree (`features::attach`).
     let tree = crate::tree::render_pane(tab, window, cx)
-        .unwrap_or_else(|| file_list(tab, cx).into_any_element());
+        .unwrap_or_else(|| div().size_full().bg(cx.theme().sidebar).into_any_element());
     let threads = tab.panes.threads_visible.then(|| {
         crate::threads::render_panel(tab, window, cx)
             .unwrap_or_else(|| empty_threads(cx).into_any_element())
@@ -130,79 +125,6 @@ fn pane_header(
         .text_color(theme.muted_foreground)
         .child(title)
         .when_some(detail, |row, d| row.child(div().font_normal().child(d)))
-}
-
-/// Status letter of a change, as the tree shows it.
-pub fn status_letter(status: FileStatus) -> &'static str {
-    match status {
-        FileStatus::Added => "A",
-        FileStatus::Modified => "M",
-        FileStatus::Deleted => "D",
-        FileStatus::Renamed => "R",
-        FileStatus::TypeChanged => "T",
-    }
-}
-
-/// The plain file list shown until the file tree (T3.6) exists: status
-/// letter and path per file; clicking scrolls the viewport to it.
-fn file_list(tab: &ReviewTab, cx: &Context<ReviewTab>) -> impl IntoElement {
-    let files: Arc<Vec<FileChange>> = tab.opened.files.clone();
-    let viewport: Entity<DiffViewport> = tab.viewport.clone();
-    let theme = cx.theme().clone();
-    let count = files.len();
-    v_flex()
-        .size_full()
-        .bg(theme.sidebar)
-        .child(pane_header(
-            "FILES".into(),
-            Some(count.to_string().into()),
-            cx,
-        ))
-        .child(
-            uniform_list("file-list", count, move |range, _window, _cx| {
-                range
-                    .map(|i| {
-                        let f = &files[i];
-                        let color = match f.status {
-                            FileStatus::Added => theme.green,
-                            FileStatus::Deleted => theme.red,
-                            FileStatus::Renamed => theme.blue,
-                            _ => theme.yellow,
-                        };
-                        let viewport = viewport.clone();
-                        h_flex()
-                            .id(("file", i))
-                            .h(px(26.))
-                            .px_3()
-                            .gap_2()
-                            .text_sm()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.list_hover))
-                            .child(
-                                div()
-                                    .w(px(12.))
-                                    .flex_none()
-                                    .text_xs()
-                                    .font_semibold()
-                                    .text_color(color)
-                                    .child(status_letter(f.status)),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(theme.foreground)
-                                    .child(f.display_path().to_string()),
-                            )
-                            .on_click(move |_, _, cx| {
-                                viewport.update(cx, |v, cx| {
-                                    v.scroll_to(ScrollTarget::File(i as u32), cx)
-                                });
-                            })
-                    })
-                    .collect()
-            })
-            .flex_1(),
-        )
 }
 
 /// The threads panel until T3.9 fills it.

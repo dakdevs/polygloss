@@ -113,11 +113,9 @@ pub fn render(
                 v if v == total => Check::On,
                 _ => Check::Mixed,
             };
-            let files = ctx
-                .model
-                .dir(&path)
-                .map(|n| n.files.clone())
-                .unwrap_or_default();
+            // The folder's files are read on click (a root folder of a
+            // large diff lists thousands).
+            let model = ctx.model.clone();
             let tree = ctx.tree.clone();
             let dir = path.clone();
             base.accessibility_label(item.label.clone()).child(
@@ -126,9 +124,10 @@ pub fn render(
                     .gap_1p5()
                     .child(chevron)
                     .child(checkbox(&key, check, "Mark folder viewed", cx, move |cx| {
+                        let files = model.dir(&dir).map(|n| n.files.clone());
                         let event = FileTreeEvent::ToggleFolderViewed {
                             dir: dir.clone(),
-                            files: files.clone(),
+                            files: files.unwrap_or_default(),
                         };
                         if let Some(tree) = tree.upgrade() {
                             tree.update(cx, |_, cx| cx.emit(event));
@@ -306,7 +305,10 @@ fn checkbox(
                     if filled {
                         el.bg(theme.primary).border_color(theme.primary)
                     } else {
-                        el.bg(theme.background).border_color(theme.input)
+                        // GitHub's control border: visible on light and
+                        // dark sidebars alike.
+                        el.bg(theme.background)
+                            .border_color(theme.muted_foreground.opacity(0.6))
                     }
                 })
                 .cursor_pointer()
