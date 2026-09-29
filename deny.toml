@@ -1,5 +1,5 @@
 # cargo-deny policy (ADR-0004): permissive licenses only, crates.io only.
-# Run: scripts/cargo.sh deny check licenses bans sources
+# Run: scripts/cargo.sh deny check licenses bans sources advisories (CI audit job)
 
 [graph]
 # v1 ships on macOS arm64 only (ADR-0016); audit the graph that is actually built.
@@ -30,6 +30,13 @@ confidence-threshold = 0.93
 # gpui-pre-http-client -> async-compression -> bzip2 (GPUI's null HTTP client).
 crate = "libbz2-rs-sys"
 allow = ["bzip2-1.0.6"]
+
+[advisories]
+# Vulnerabilities and unsound crates fail anywhere in the graph (cargo-deny default).
+# "Unmaintained" notices fail only for crates the workspace depends on directly:
+# the transitive ones (instant, paste, rustybuzz, ttf-parser as of 2026-09) come
+# with gpui-kit, which is the pinned UI foundation (ADR-0002) and not ours to swap.
+unmaintained = "workspace"
 
 [bans]
 multiple-versions = "warn"
