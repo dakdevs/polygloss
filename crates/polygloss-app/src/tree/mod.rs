@@ -414,6 +414,12 @@ impl FileTree {
             .collect()
     }
 
+    /// Whether every directory of the unfiltered tree is expanded (the
+    /// default; view state saves no expansion then).
+    pub fn all_dirs_expanded(&self) -> bool {
+        self.collapsed.is_empty()
+    }
+
     /// Expands exactly `dirs` of the unfiltered tree (view-state restore).
     pub fn set_expanded_dirs(
         &mut self,
