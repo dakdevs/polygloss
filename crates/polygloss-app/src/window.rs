@@ -14,9 +14,9 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Focusable, Global,
-    InteractiveElement as _, IntoElement, KeyBinding, Menu, MenuItem, OsAction, ParentElement as _,
-    Render, SharedString, Styled as _, SystemMenuType, WeakEntity, Window, WindowBounds,
-    WindowOptions, div, px, size,
+    InteractiveElement as _, IntoElement, Menu, MenuItem, OsAction, ParentElement as _, Render,
+    SharedString, Styled as _, SystemMenuType, WeakEntity, Window, WindowBounds, WindowOptions,
+    div, px, size,
 };
 
 use crate::home::HomeView;
@@ -59,12 +59,9 @@ pub struct MainWindow {
     settings_errors_seen: u64,
 }
 
-/// Key bindings and handlers of the window and its tabs.
+/// Handlers and menu items of the window and its tabs (their key bindings
+/// are in `keymap::defaults`).
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-m", Minimize, None),
-    ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
     add_menu_items(
         MenuKind::App,
@@ -414,9 +411,9 @@ impl Render for MainWindow {
             TabItem::Home(home) => home.clone().into_any_element(),
             TabItem::Review(tab) => tab.clone().into_any_element(),
         };
+        let root = crate::keymap::handlers::apply(v_flex(), cx);
         let theme = cx.theme();
-        v_flex()
-            .key_context("Window")
+        root.key_context("Window")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::next_tab))

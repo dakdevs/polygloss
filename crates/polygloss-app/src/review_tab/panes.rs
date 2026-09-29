@@ -61,6 +61,7 @@ pub(crate) fn render(
             .unwrap_or_else(|| empty_threads(cx).into_any_element())
     });
     let border = cx.theme().border;
+    let focus = tab.viewport_focus().clone();
     h_resizable("review-panes")
         .with_state(&tab.panes.state)
         .child(
@@ -81,6 +82,10 @@ pub(crate) fn render(
             resizable_panel().size_range(px(320.)..px(100_000.)).child(
                 div()
                     .debug_selector(|| "viewport-pane".into())
+                    .key_context("Viewport")
+                    .track_focus(tab.viewport_focus())
+                    // A click anywhere in the diff gives it the keyboard.
+                    .capture_any_mouse_down(move |_, window, cx| window.focus(&focus, cx))
                     .size_full()
                     .overflow_hidden()
                     .child(tab.viewport.clone()),

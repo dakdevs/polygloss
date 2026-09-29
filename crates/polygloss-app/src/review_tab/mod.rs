@@ -44,6 +44,9 @@ pub struct ReviewTab {
     pub banners: Entity<BannerStrip>,
     pub(crate) panes: panes::Panes,
     focus: FocusHandle,
+    /// The viewport pane's focus (key context `Viewport`), where the tab's
+    /// keyboard focus goes when it is activated.
+    viewport_focus: FocusHandle,
     /// The settings the viewport options were last built from.
     applied: Arc<Settings>,
     extensions: HashMap<TypeId, Box<dyn Any>>,
@@ -90,6 +93,7 @@ impl ReviewTab {
             banners,
             panes: panes::Panes::new(cx),
             focus,
+            viewport_focus: cx.focus_handle(),
             applied: settings,
             extensions: HashMap::new(),
             _subscriptions: subscriptions,
@@ -99,6 +103,21 @@ impl ReviewTab {
     /// The tab's label: the repo and what is compared (`app · main...topic`).
     pub fn title(&self) -> SharedString {
         title(&self.opened).into()
+    }
+
+    /// The viewport pane's focus handle (key context `Viewport`). Actions
+    /// dispatched on it reach the viewport's handlers and then the tab's.
+    pub fn viewport_focus(&self) -> &FocusHandle {
+        &self.viewport_focus
+    }
+
+    /// The viewport options for `settings`, with this tab's view toggles
+    /// (split/unified, whitespace, word diff; `palette::view_toggles`) on
+    /// top.
+    pub fn options_for(&self, settings: &Settings, cx: &App) -> ViewportOptions {
+        let mut opts = viewport_options(settings, cx);
+        crate::palette::view_toggles::apply_overrides(self, &mut opts);
+        opts
     }
 
     pub fn threads_panel_visible(&self) -> bool {
@@ -129,7 +148,7 @@ impl ReviewTab {
         if Arc::ptr_eq(&settings, &self.applied) || *settings == *self.applied {
             return;
         }
-        let opts = viewport_options(&settings, cx);
+        let opts = self.options_for(&settings, cx);
         self.applied = settings;
         self.viewport.update(cx, |v, cx| v.set_options(opts, cx));
     }
@@ -152,9 +171,11 @@ fn write_binary_kind(
     .detach();
 }
 
+/// Activating the tab focuses its viewport; the tab's own handle (its root,
+/// key context `Tab`) is the banner strip's dispatch target.
 impl Focusable for ReviewTab {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus.clone()
+        self.viewport_focus.clone()
     }
 }
 
@@ -162,7 +183,7 @@ impl Render for ReviewTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let toolbar = toolbar::render(self, window, cx);
         let panes = panes::render(self, window, cx);
-        v_flex()
+        crate::keymap::handlers::apply(v_flex(), cx)
             .key_context("Tab")
             .track_focus(&self.focus)
             .on_action(

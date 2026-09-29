@@ -13,6 +13,7 @@ mod support;
 
 mod home;
 mod kit_fonts;
+mod palette;
 mod shell;
 mod submit;
 mod theme;
@@ -38,6 +39,7 @@ fn main() -> std::process::ExitCode {
         kit_fonts::TESTS,
         viewport_screenshots::TESTS,
         shell::TESTS,
+        palette::TESTS,
         home::TESTS,
         theme::TESTS,
         tree::TESTS,
