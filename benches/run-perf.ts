@@ -270,12 +270,12 @@ export const scenarios: Scenario[] = [
     metrics: ["app_first_paint_ms"],
     enabled: true,
   },
+  // T3.11: one save in a live working tree of the corpus → the banner.
   {
     name: "watcher-banner",
     runner: "app",
     metrics: ["watcher_banner_ms"],
-    enabled: false,
-    note: "measured by `Polygloss --perf-scenario watcher-banner` from T3.11",
+    enabled: true,
   },
 ];
 

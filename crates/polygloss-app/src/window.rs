@@ -278,6 +278,18 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Shows `message` as a confirmation toast.
+    pub fn toast_success(
+        &mut self,
+        message: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toasts.push(message.clone());
+        window.push_notification(Notification::success(message), cx);
+        cx.notify();
+    }
+
     /// Reports a review that could not be opened.
     pub fn show_error(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
         let message: SharedString = message.into();

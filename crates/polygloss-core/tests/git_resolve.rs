@@ -357,6 +357,18 @@ fn git_runner_output_stdin_and_status() {
     repo.git(&["checkout", "-q", "--detach"]);
     assert_eq!(git.status(&os(&["symbolic-ref", "-q", "HEAD"])).unwrap(), 1);
 
+    // `run_stdin` feeds stdin and leaves the exit code to the caller
+    // (`check-ignore` exits 1 when no path is ignored).
+    repo.write(".gitignore", b"*.log\n");
+    let args = os(&["check-ignore", "-z", "--stdin"]);
+    let none = git.run_stdin(&args, b"a.txt\0").unwrap();
+    assert_eq!((none.code, none.stdout.as_slice()), (Some(1), &b""[..]));
+    let some = git.run_stdin(&args, b"a.txt\0x.log\0").unwrap();
+    assert_eq!(
+        (some.code, some.stdout.as_slice()),
+        (Some(0), &b"x.log\0"[..])
+    );
+
     // `output` maps a non-zero exit to `Failed` with stderr.
     match git.output(&os(&["rev-parse", "--verify", "no-such-rev"])) {
         Err(GitError::Failed { code, stderr, .. }) => {

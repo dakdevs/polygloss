@@ -231,6 +231,12 @@ impl Git {
         self.run_with(args, None)
     }
 
+    /// Like `run`, feeding `stdin` to the process (`check-ignore --stdin`
+    /// exits 1 as an answer).
+    pub fn run_stdin(&self, args: &[&OsStr], stdin: &[u8]) -> Result<GitOutput, GitError> {
+        self.run_with(args, Some(stdin))
+    }
+
     fn run_with(&self, args: &[&OsStr], stdin: Option<&[u8]>) -> Result<GitOutput, GitError> {
         let mut cmd = base_command(Some(&self.worktree));
         for (k, v) in &self.env {

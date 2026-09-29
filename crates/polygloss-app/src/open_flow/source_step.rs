@@ -364,8 +364,9 @@ impl ListDelegate for CommitDelegate {
     }
 }
 
-/// A short commit id in the code font.
-fn sha_pill(short: &str, cx: &App) -> impl IntoElement {
+/// A short commit id in the code font, in a bordered pill (the commit
+/// lists).
+pub fn sha_pill(short: &str, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     div()
         .flex_none()

@@ -42,6 +42,7 @@ use polygloss_viewport::{DiffViewport, FileFlags, ScrollTarget, ViewportEvent};
 
 use crate::keymap::actions::{tree as tree_actions, window as window_actions};
 use crate::keymap::handlers;
+use crate::live::DiffRefreshed;
 use crate::review_tab::ReviewTab;
 use crate::window::MenuKind;
 use filters::{StatusFilter, TreeFilters};
@@ -86,12 +87,22 @@ pub fn file_tree(tab: &ReviewTab) -> Option<&Entity<FileTree>> {
     tab.extension::<TreePane>().map(|p| &p.0)
 }
 
-/// Creates the tab's [`FileTree`].
+/// Creates the tab's [`FileTree`]; a refresh (T3.11) gives it the new
+/// files.
 pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     let files = tab.opened.files.clone();
     let viewport = tab.viewport.clone();
     let tree = cx.new(|cx| FileTree::new(files, viewport, window, cx));
     tab.insert_extension(TreePane(tree));
+    cx.subscribe_self(|tab: &mut ReviewTab, _: &DiffRefreshed, cx| {
+        let Some(tree) = file_tree(tab).cloned() else {
+            return;
+        };
+        let files = tab.opened.files.clone();
+        let flags = tab.viewport.read(cx).file_flags().to_vec();
+        tree.update(cx, |t, cx| t.set_files(files, flags, cx));
+    })
+    .detach();
 }
 
 /// The file tree pane.
@@ -253,6 +264,36 @@ impl FileTree {
                 })
             })
             .collect()
+    }
+
+    /// Shows another file list (the diff was refreshed, T3.11) with its
+    /// files' review state: the same filters, the same collapsed
+    /// directories (by path) and a selected folder that still exists; the
+    /// viewport's top file is marked.
+    pub fn set_files(
+        &mut self,
+        files: Arc<Vec<FileChange>>,
+        mut flags: Vec<FileFlags>,
+        cx: &mut Context<Self>,
+    ) {
+        self.full = Arc::new(TreeModel::build(
+            files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (i as u32, f.display_path())),
+        ));
+        self.files = files;
+        flags.resize(self.files.len(), FileFlags::default());
+        self.flags = Arc::new(flags);
+        let dirs: HashSet<String> = self.full.dir_paths().into_iter().collect();
+        self.collapsed.retain(|d| dirs.contains(d));
+        if !matches!(self.selected, Some(ItemId::Dir(_))) {
+            self.selected = None;
+        }
+        self.jumped = None;
+        self.current = (!self.files.is_empty()).then(|| self.viewport.read(cx).anchor().file_idx);
+        self.rebuild(cx);
+        cx.notify();
     }
 
     /// Every file's review state, as last pushed.
