@@ -6,4 +6,5 @@ mod cursor;
 mod document;
 mod headers_gaps;
 mod pipeline;
+mod support;
 mod viewport_render;

@@ -517,6 +517,32 @@ fn evict_farthest_first_under_budget() {
 }
 
 #[test]
+fn resident_bytes_count_rows_built_on_demand() {
+    let old = numbered(200).concat();
+    let new = old.replace("line 100\n", "LINE 100\n");
+    let file = Arc::new(MaterializedFile::from_blobs(
+        Arc::from(old.as_bytes()),
+        Arc::from(new.as_bytes()),
+        &DiffOptions::default(),
+        None,
+    ));
+    let mut d = doc_with_heights(&[100.0], 200.0);
+    let generation = d.begin_loading(0);
+    assert!(d.set_materialized(0, generation, file.clone()));
+    let data = d.resident_bytes();
+    assert_eq!(data, file.heap_bytes, "no rows built yet");
+    // Rows are built lazily (per layout) and count toward the budget once
+    // they exist.
+    let rows = file.rows(Layout::Split).len() + file.rows(Layout::Unified).len();
+    assert!(rows > 0);
+    assert!(
+        d.resident_bytes() >= data + rows * size_of::<Row>(),
+        "{} < {data} + {rows} rows",
+        d.resident_bytes()
+    );
+}
+
+#[test]
 fn collapsed_file_height_is_header_only() {
     let mut d = doc(5);
     d.set_viewport_height(300.0);

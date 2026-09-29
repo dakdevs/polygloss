@@ -80,11 +80,11 @@ impl FileEntry {
         }
     }
 
-    /// Heap bytes held while materialized: the data and its layout.
+    /// Heap bytes held while materialized: the data, its rows and its layout.
     pub(crate) fn resident_bytes(&self) -> usize {
         match &self.state {
             FileState::Materialized(file) => {
-                file.heap_bytes + self.layout().map_or(0, FileLayout::heap_bytes)
+                file.resident_bytes() + self.layout().map_or(0, FileLayout::heap_bytes)
             }
             _ => 0,
         }

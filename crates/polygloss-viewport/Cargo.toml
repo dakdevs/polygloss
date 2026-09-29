@@ -7,10 +7,19 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# `DiffViewport::debug()`: what the last frame painted, as text, for tests
+# and the perf harness. Off in shipping builds.
+debug-inspect = []
+
 [dependencies]
 polygloss-diff.workspace = true
 polygloss-highlight.workspace = true
 gpui-kit.workspace = true
+anyhow.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+# The integration tests read `DiffViewport::debug()`.
+polygloss-viewport = { path = ".", features = ["debug-inspect"] }
