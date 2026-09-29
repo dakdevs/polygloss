@@ -4,3 +4,5 @@
 //! `unsafe` is denied crate-wide. Only modules behind the `appkit` feature (objc2
 //! FFI) may opt out with a module-level `#![allow(unsafe_code)]`.
 #![deny(unsafe_code)]
+
+pub mod editor;

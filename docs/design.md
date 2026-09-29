@@ -903,6 +903,7 @@ flowchart LR
 ~/Library/Caches/polygloss/
   scratch/<repo-hash>/{objects/,<worktree-hash>/index}   unpinned snapshots (§5)
   blobs/<oid>/<basename>                         read-only copies for open-in-editor
+  commands/open-*.command                        self-deleting terminal-editor launchers (OQ-21)
 ~/Library/Logs/polygloss/                        app rolling log (CLI and MCP log to stderr only)
 ~/.config/polygloss/
   settings.json, keymap.json, themes/*.json

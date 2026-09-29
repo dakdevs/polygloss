@@ -66,6 +66,9 @@ pub fn init(cx: &mut App) {
     add_menu_items(
         MenuKind::App,
         vec![
+            // Handled by `editor` (T3.16).
+            MenuItem::action("Settings…", crate::keymap::actions::window::OpenSettings),
+            MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
             MenuItem::action("Quit Polygloss", Quit),
