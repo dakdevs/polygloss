@@ -62,6 +62,17 @@ pub enum Check {
     Mixed,
 }
 
+impl Check {
+    /// A folder's state with `viewed` of its `total` files viewed.
+    pub fn of(viewed: u32, total: u32) -> Check {
+        match viewed {
+            0 => Check::Off,
+            v if v >= total => Check::On,
+            _ => Check::Mixed,
+        }
+    }
+}
+
 /// The row of `entry`.
 pub fn render(
     ctx: &Rc<RowCtx>,
@@ -108,11 +119,7 @@ pub fn render(
     match id {
         Some(ItemId::Dir(path)) => {
             let (viewed, total) = ctx.dir_viewed.get(&path).copied().unwrap_or((0, 0));
-            let check = match viewed {
-                0 => Check::Off,
-                v if v == total => Check::On,
-                _ => Check::Mixed,
-            };
+            let check = Check::of(viewed, total);
             // The folder's files are read on click (a root folder of a
             // large diff lists thousands).
             let model = ctx.model.clone();

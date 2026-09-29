@@ -71,7 +71,7 @@ fn e2e_tree_badges() {
     let core = Core::open_default().expect("open the sandbox store");
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
     let (handle, main) = cx.update(|cx| {
-        startup::init(core, cx);
+        startup::init(core.clone(), cx);
         window::open_main_window_sized(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx)
             .expect("open the main window")
     });
@@ -87,6 +87,20 @@ fn e2e_tree_badges() {
         pin: None,
         actor: Actor::human(),
     };
+    // Viewed marks in the store (T3.7): README and filters.rs viewed (so
+    // `app/src/tree` is partly viewed), and row.rs viewed by this review at
+    // another blob pair (so it is "changed since viewed").
+    let opened = core.open(&req).expect("open the review in the store");
+    let mark = |idx: usize| {
+        core.set_viewed(Some(&opened.review_id), &opened.files[idx], true)
+            .expect("mark viewed");
+    };
+    mark(0);
+    mark(1);
+    let mut earlier = opened.files[2].clone();
+    earlier.new_blob = earlier.old_blob.clone();
+    core.set_viewed(Some(&opened.review_id), &earlier, true)
+        .expect("mark an earlier pair viewed");
     let _task = cx
         .update_window(handle, |_, window, cx| open_review(req, window, cx))
         .expect("the window is open");
@@ -105,6 +119,18 @@ fn e2e_tree_badges() {
         }
     }
     let tab = tab.expect("the review tab opened");
+    // T3.7 loads the Viewed marks from the store and pushes them; push the
+    // badges' state after that, so it is not overwritten.
+    for _ in 0..MAX_FRAMES {
+        if cx.update(|cx| polygloss_app::viewed::is_loaded(tab.read(cx))) {
+            break;
+        }
+        screenshot::draw(&mut cx, handle);
+    }
+    assert!(
+        cx.update(|cx| polygloss_app::viewed::is_loaded(tab.read(cx))),
+        "the Viewed marks loaded"
+    );
     let (tree, statuses) = cx.update(|cx| {
         let t = tab.read(cx);
         (
@@ -119,23 +145,30 @@ fn e2e_tree_badges() {
         "all four status letters"
     );
     let files = statuses.len();
-    // README viewed; filters.rs viewed (so `app/src/tree` is partly viewed);
-    // row.rs changed since viewed with two open threads, one an agent's;
-    // lib.rs one open thread.
+    // The store's marks, then row.rs with two open threads, one an
+    // agent's, and lib.rs with one (the threads' fields, T3.9's).
     let mut flags = vec![FileFlags::default(); files];
     flags[0].viewed = true;
     flags[1].viewed = true;
     flags[2].changed_since_viewed = true;
+    cx.update(|cx| assert_eq!(tree.read(cx).file_flags(), flags.as_slice()));
     flags[2].open_threads = 2;
     flags[2].agent_threads = true;
     flags[3].open_threads = 1;
-    // The same state in the diff's file headers (T3.7 pushes both).
     cx.update(|cx| {
-        tab.read(cx)
-            .viewport
-            .clone()
-            .update(cx, |v, cx| v.set_file_flags(flags.clone(), cx));
-        tree.update(cx, |t, cx| t.set_file_flags(flags, cx))
+        tab.update(cx, |t, cx| {
+            polygloss_app::viewed::update_file_flags(t, cx, |f| {
+                f[2].open_threads = 2;
+                f[2].agent_threads = true;
+                f[3].open_threads = 1;
+            })
+        });
+        // The same state in the diff's file headers and the tree.
+        assert_eq!(tree.read(cx).file_flags(), flags.as_slice());
+        assert_eq!(
+            tab.read(cx).viewport.read(cx).file_flags(),
+            flags.as_slice()
+        );
     });
 
     // Wait for the diff to paint and every file's +/− counts.

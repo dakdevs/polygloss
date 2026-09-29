@@ -284,6 +284,32 @@ fn n_p_jump_between_files(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn go_to_file_jumps_to_any_file_with_the_cursor(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = open(cx, two_files(), options(LayoutMode::Unified), 1000., 400.);
+    set_cursor(&view, cx, pos(0, Side::New, 4));
+    view.update(cx, |v, cx| v.go_to_file(1, cx));
+    settle(cx);
+    assert_eq!(cursor(&view, cx), Some(pos(1, Side::New, 0)));
+    assert_eq!(view.read_with(cx, |v, _| v.anchor().file_idx), 1);
+    // Backwards too, and past the end does nothing.
+    view.update(cx, |v, cx| v.go_to_file(0, cx));
+    settle(cx);
+    assert_eq!(cursor(&view, cx), Some(pos(0, Side::New, 2)));
+    view.update(cx, |v, cx| v.go_to_file(7, cx));
+    settle(cx);
+    assert_eq!(cursor(&view, cx), Some(pos(0, Side::New, 2)));
+    // A collapsed file: its header comes up, and the cursor leaves the
+    // file it was in.
+    view.update(cx, |v, cx| {
+        v.set_collapsed(1, true, cx);
+        v.go_to_file(1, cx);
+    });
+    settle(cx);
+    assert_eq!(cursor(&view, cx), None);
+}
+
+#[gpui_kit::test]
 fn gutter_plus_on_hover_emits_comment_requested(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let (view, cx) = open(cx, two_files(), options(LayoutMode::Unified), 1000., 2000.);
