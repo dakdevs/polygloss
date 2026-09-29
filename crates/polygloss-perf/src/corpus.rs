@@ -65,6 +65,37 @@ pub fn parse_manifest_entry(json: &str) -> anyhow::Result<CorpusSpec> {
     })
 }
 
+/// A run's private temp dir (`polygloss-perf-*` in `TMPDIR`): the store's
+/// `home/` and `data/` go in it. Made before the corpus opens and deleted by
+/// [`RunDir::close`] on every exit, also one that comes while the open is
+/// still in flight or before it started (the process exits without running
+/// destructors).
+pub struct RunDir {
+    tmp: tempfile::TempDir,
+    /// `tmp`'s path, canonical.
+    root: PathBuf,
+}
+
+impl RunDir {
+    pub fn create() -> anyhow::Result<RunDir> {
+        let tmp = tempfile::Builder::new()
+            .prefix("polygloss-perf-")
+            .tempdir()
+            .context("creating the run's data dir")?;
+        let root = tmp.path().canonicalize()?;
+        Ok(RunDir { tmp, root })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.root
+    }
+
+    /// Deletes the dir and everything in it.
+    pub fn close(self) {
+        let _ = self.tmp.close();
+    }
+}
+
 /// An opened corpus and the private store it was opened in.
 pub struct OpenedCorpus {
     pub opened: OpenedDiff,
@@ -74,31 +105,11 @@ pub struct OpenedCorpus {
     pub store_time: Duration,
     /// How long `Core::open` took (resolve, `diff-tree`, store writes).
     pub open_time: Duration,
-    /// The run's temp dir: `home/` and the store's `data/`.
-    root: tempfile::TempDir,
 }
 
-impl OpenedCorpus {
-    /// The run's private data dir (`polygloss.db` is here).
-    #[cfg(test)]
-    pub fn data_dir(&self) -> PathBuf {
-        self.root.path().canonicalize().unwrap().join("data")
-    }
-
-    /// Deletes the run's temp dir (the process exits without running
-    /// destructors, so this is called explicitly).
-    pub fn close(self) {
-        let _ = self.root.close();
-    }
-}
-
-/// Opens `spec` as a compare, as the app would, in a fresh private store.
-pub fn open_corpus(spec: &CorpusSpec) -> anyhow::Result<OpenedCorpus> {
-    let tmp = tempfile::Builder::new()
-        .prefix("polygloss-perf-")
-        .tempdir()
-        .context("creating the run's data dir")?;
-    let root = tmp.path().canonicalize()?;
+/// Opens `spec` as a compare, as the app would, in a fresh private store in
+/// `root` (a [`RunDir`]).
+pub fn open_corpus(spec: &CorpusSpec, root: &Path) -> anyhow::Result<OpenedCorpus> {
     let home = root.join("home");
     let data_dir = root.join("data");
     std::fs::create_dir_all(&home)?;
@@ -143,7 +154,6 @@ pub fn open_corpus(spec: &CorpusSpec) -> anyhow::Result<OpenedCorpus> {
         provider,
         store_time,
         open_time,
-        root: tmp,
     })
 }
 
@@ -236,12 +246,16 @@ mod tests {
         repo.commit("head");
         repo.git(&["tag", "head"]);
 
-        let corpus = open_corpus(&CorpusSpec {
-            repo: repo.path().to_owned(),
-            base: "base".to_owned(),
-            head: "head".to_owned(),
-            direct: true,
-        })
+        let dir = RunDir::create().unwrap();
+        let corpus = open_corpus(
+            &CorpusSpec {
+                repo: repo.path().to_owned(),
+                base: "base".to_owned(),
+                head: "head".to_owned(),
+                direct: true,
+            },
+            dir.path(),
+        )
         .unwrap();
         let files = corpus.provider.files();
         assert_eq!(files.len(), 1);
@@ -254,12 +268,32 @@ mod tests {
         );
         // The store lives in the run's own temp dir: nothing is written to
         // the (sandboxed) data dir the environment names.
-        let data = corpus.data_dir();
+        let data = dir.path().join("data");
         assert!(data.join("polygloss.db").exists());
         assert!(!data.starts_with(sb.home()));
         assert_eq!(std::fs::read_dir(sb.data_dir()).unwrap().count(), 0);
-        corpus.close();
+        drop(corpus);
+        dir.close();
         assert!(!data.exists());
+    }
+
+    #[test]
+    fn run_dir_is_deleted_on_close_without_a_corpus() {
+        // `finish` closes it on every exit, also when the window failed or
+        // the watchdog fired before the corpus was open.
+        let _sb = Sandbox::isolate();
+        let dir = RunDir::create().unwrap();
+        let root = dir.path().to_owned();
+        assert!(root.is_dir() && root.is_absolute());
+        assert!(
+            root.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("polygloss-perf-"),
+            "{root:?}"
+        );
+        dir.close();
+        assert!(!root.exists());
     }
 
     #[test]
@@ -268,12 +302,16 @@ mod tests {
         let repo = FixtureRepo::init(ObjectFormat::Sha1);
         repo.write("a.txt", b"a\n");
         repo.commit("only");
-        let err = open_corpus(&CorpusSpec {
-            repo: repo.path().to_owned(),
-            base: "nope".to_owned(),
-            head: "HEAD".to_owned(),
-            direct: false,
-        })
+        let dir = RunDir::create().unwrap();
+        let err = open_corpus(
+            &CorpusSpec {
+                repo: repo.path().to_owned(),
+                base: "nope".to_owned(),
+                head: "HEAD".to_owned(),
+                direct: false,
+            },
+            dir.path(),
+        )
         .err()
         .expect("a missing base fails");
         assert!(format!("{err:#}").contains("nope"), "{err:#}");

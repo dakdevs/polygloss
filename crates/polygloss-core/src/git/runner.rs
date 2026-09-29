@@ -245,11 +245,7 @@ impl Git {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         record_spawn(args);
-        let bin = git_binary();
-        let mut child = cmd.spawn().map_err(|source| GitError::Spawn {
-            bin: bin.clone(),
-            source,
-        })?;
+        let mut child = cmd.spawn().map_err(|source| spawn_error(&cmd, source))?;
         // Feed stdin from a thread so a large input can never deadlock against a
         // full stdout pipe.
         let writer = match (stdin, child.stdin.take()) {
@@ -295,6 +291,15 @@ pub(crate) fn base_command(dir: Option<&Path>) -> Command {
         cmd.arg("-c").arg(c);
     }
     cmd
+}
+
+/// `cmd` could not start: names the binary it ran (what [`git_binary`] chose
+/// for it, without looking it up again).
+pub(crate) fn spawn_error(cmd: &Command, source: std::io::Error) -> GitError {
+    GitError::Spawn {
+        bin: PathBuf::from(cmd.get_program()),
+        source,
+    }
 }
 
 fn check(args: &[&OsStr], out: GitOutput) -> Result<Vec<u8>, GitError> {

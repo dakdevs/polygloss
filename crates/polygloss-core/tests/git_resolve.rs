@@ -209,16 +209,32 @@ fn git_binary_bypasses_the_xcode_shim() {
     // T2.10.1: the Xcode shim (`/usr/bin/git`) costs ~9 ms per process on top
     // of git itself; the runner spawns the git it would run instead.
     let _sb = Sandbox::isolate();
+    let chosen = std::env::var_os("POLYGLOSS_GIT_BIN").filter(|v| !v.is_empty());
     let first_on_path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|d| d.join("git"))
         .find(|g| g.is_file());
     let started = std::time::Instant::now();
     let bin = git_binary();
     let lookup = started.elapsed();
-    if cfg!(target_os = "macos") && first_on_path.as_deref() == Some(Path::new("/usr/bin/git")) {
+    if let Some(chosen) = chosen {
+        // S13: a caller's `POLYGLOSS_GIT_BIN=<older git> nextest run` is the
+        // git under test, whatever `PATH` holds; the bypass never replaces it.
+        assert_eq!(bin, PathBuf::from(chosen));
+    } else if cfg!(target_os = "macos")
+        && first_on_path.as_deref() == Some(Path::new("/usr/bin/git"))
+    {
         // A fresh HOME (every perf run, every sandbox) must not make the
-        // lookup slow: `xcrun --find git` takes ~75 ms there.
-        assert!(lookup < std::time::Duration::from_millis(40), "{lookup:?}");
+        // lookup slow: it is one short process (`xcode-select -p`, ≈ 2 ms),
+        // while `xcrun --find git` takes ≈ 75 ms there. The bound grows with
+        // what one process costs right now, so a loaded host (parallel
+        // nextest) does not fail it.
+        let spawn_started = std::time::Instant::now();
+        std::process::Command::new("/usr/bin/true")
+            .status()
+            .unwrap();
+        let one_spawn = spawn_started.elapsed();
+        let bound = std::time::Duration::from_millis(40).max(one_spawn * 4);
+        assert!(lookup < bound, "{lookup:?} (one process: {one_spawn:?})");
         assert_ne!(bin, PathBuf::from("git"));
         assert_ne!(bin, PathBuf::from("/usr/bin/git"));
         assert!(bin.is_absolute() && bin.is_file(), "{bin:?}");
@@ -435,8 +451,18 @@ fn git_version_too_old_is_rejected() {
     );
     assert_eq!(check_version().unwrap().to_string(), "2.39.0");
 
-    set_env("POLYGLOSS_GIT_BIN", sb.home().join("no-such-git"));
-    assert!(matches!(check_version(), Err(GitError::Spawn { .. })));
+    // A git that cannot start is named in the error, by `check_version` and
+    // by every runner call.
+    let missing = sb.home().join("no-such-git");
+    set_env("POLYGLOSS_GIT_BIN", &missing);
+    match check_version() {
+        Err(GitError::Spawn { bin, .. }) => assert_eq!(bin, missing),
+        other => panic!("expected Spawn, got {other:?}"),
+    }
+    match Git::new(sb.home()).output(&os(&["--version"])) {
+        Err(GitError::Spawn { bin, .. }) => assert_eq!(bin, missing),
+        other => panic!("expected Spawn, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------- discovery

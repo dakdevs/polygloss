@@ -3,7 +3,7 @@
 use std::fmt;
 use std::process::Stdio;
 
-use crate::git::runner::{GitError, base_command, git_binary};
+use crate::git::runner::{GitError, base_command, spawn_error};
 
 /// A system git version (`git --version`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -65,14 +65,9 @@ impl fmt::Display for GitVersion {
 /// Runs `git --version` and checks it against `GitVersion::MIN`; an older git is
 /// `GitError::TooOld`. Call at startup and show the error to the user.
 pub fn check_version() -> Result<GitVersion, GitError> {
-    let out = base_command(None)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|source| GitError::Spawn {
-            bin: git_binary(),
-            source,
-        })?;
+    let mut cmd = base_command(None);
+    cmd.arg("--version").stdin(Stdio::null());
+    let out = cmd.output().map_err(|source| spawn_error(&cmd, source))?;
     if !out.status.success() {
         return Err(GitError::Failed {
             args: "--version".into(),

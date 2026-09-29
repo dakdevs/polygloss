@@ -4,6 +4,15 @@
 //! every face, ≈ 440 ms on the dev machine, before the first window) unless
 //! its theme names both of its families explicitly. These tests count the
 //! scans through a platform text system that records `all_font_names` calls.
+//!
+//! They need one process per test, which nextest gives every test in this
+//! repo: gpui-kit (gpui-component's `theme/mono_font.rs`) caches the listed
+//! families and its resolved mono family in process-wide `OnceLock`s, so in
+//! a process where some earlier test ran a plain `gpui_kit::init`,
+//! `plain_kit_init_lists_installed_fonts` fails (nothing is listed again)
+//! and `init_kit_never_lists_installed_fonts` would pass without testing
+//! anything. Run them with `scripts/cargo.sh nextest run`, never
+//! `cargo test` with several tests in one process.
 
 use std::borrow::Cow;
 use std::sync::Arc;

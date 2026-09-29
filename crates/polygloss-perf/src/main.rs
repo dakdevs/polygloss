@@ -34,7 +34,7 @@ use polygloss_viewport::{LayoutMode, ViewportOptions, ViewportTheme};
 use serde_json::json;
 
 use crate::args::{Args, USAGE};
-use crate::corpus::OpenedCorpus;
+use crate::corpus::{OpenedCorpus, RunDir};
 use crate::harness::{Harness, PerfWindow};
 use crate::metrics::{Clock, ScenarioResult, max_rss_mb, ms, timeline_ms};
 
@@ -72,7 +72,17 @@ fn main() -> ExitCode {
     } else {
         Duration::ZERO
     };
-    run_app(args, spec, clock, overhead)
+    // The run's private store's dir, made before GPUI starts so that every
+    // exit from the app (`finish`) deletes it, also one before the corpus
+    // is open.
+    let dir = match RunDir::create() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("polygloss-perf: {err:#}");
+            return ExitCode::from(1);
+        }
+    };
+    run_app(args, spec, dir, clock, overhead)
 }
 
 /// The viewport as the gate measures it: the layout pinned, Pierre Light,
@@ -96,7 +106,8 @@ fn layout_name(layout: Layout) -> &'static str {
     }
 }
 
-/// One run: what was asked, its clock, and the corpus it opened.
+/// One run: what was asked, its clock, its private store and the corpus it
+/// opened there.
 struct Run {
     args: Args,
     clock: Clock,
@@ -107,9 +118,11 @@ struct Run {
     app_launched: Instant,
     kit_initialized: Instant,
     corpus_opened: Cell<Option<Instant>>,
-    /// Set once the corpus is open; taken (and its temp dir deleted) by
-    /// [`finish`].
+    /// Set once the corpus is open; dropped by [`finish`].
     corpus: RefCell<Option<OpenedCorpus>>,
+    /// The run's temp dir, the store's home; taken and deleted by
+    /// [`finish`], whether or not the corpus opened.
+    dir: RefCell<Option<RunDir>>,
 }
 
 /// Runs the scenario in a GPUI app and exits the process when it is done.
@@ -119,11 +132,18 @@ struct Run {
 /// executor (resolve, `diff-tree`, the store) while gpui-kit initializes and
 /// the window opens, and the viewport goes into the window when the file
 /// list is there (plan T2.10.3).
-fn run_app(args: Args, spec: corpus::CorpusSpec, clock: Clock, overhead: Duration) -> ExitCode {
+fn run_app(
+    args: Args,
+    spec: corpus::CorpusSpec,
+    dir: RunDir,
+    clock: Clock,
+    overhead: Duration,
+) -> ExitCode {
     gpui_kit::application().run(move |cx: &mut App| {
         let app_launched = Instant::now();
+        let root = dir.path().to_owned();
         let opening = cx.background_spawn(async move {
-            let corpus = corpus::open_corpus(&spec);
+            let corpus = corpus::open_corpus(&spec, &root);
             (corpus, Instant::now())
         });
         let options = viewport_options(args.layout);
@@ -138,6 +158,7 @@ fn run_app(args: Args, spec: corpus::CorpusSpec, clock: Clock, overhead: Duratio
             kit_initialized: Instant::now(),
             corpus_opened: Cell::new(None),
             corpus: RefCell::new(None),
+            dir: RefCell::new(Some(dir)),
         });
         let title = format!(
             "polygloss-perf · {} · {} · {}",
@@ -283,8 +304,9 @@ fn finish(outcome: anyhow::Result<ScenarioResult>, run: &Run) -> ! {
             1
         }
     };
-    if let Some(c) = run.corpus.borrow_mut().take() {
-        c.close();
+    drop(run.corpus.borrow_mut().take());
+    if let Some(dir) = run.dir.borrow_mut().take() {
+        dir.close();
     }
     std::process::exit(code)
 }
