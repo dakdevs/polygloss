@@ -2,7 +2,7 @@
 //! per review. [`Tabs`] is the plain model the window renders and its tab
 //! actions drive.
 
-use gpui_kit::{App, Entity, KeyBinding, SharedString};
+use gpui_kit::{App, Entity, SharedString};
 
 use crate::home::HomeView;
 use crate::review_tab::ReviewTab;
@@ -19,17 +19,10 @@ gpui_kit::actions!(
     ]
 );
 
-/// The tab key bindings (design §11.9 provisional macOS additions). T3.2's
-/// keymap file can rebind them.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-w", CloseTab, None),
-        KeyBinding::new("cmd-}", NextTab, None),
-        KeyBinding::new("cmd-{", PrevTab, None),
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
-    ]);
-}
+/// The tab actions' bindings (⌘W, ⌘⇧] / ⌘⇧[, ⌃Tab / ⌃⇧Tab; design §11.9
+/// provisional macOS additions) are in `keymap::defaults`, so `keymap.json`
+/// can rebind them.
+pub fn init(_cx: &mut App) {}
 
 /// One tab of the main window.
 #[derive(Clone)]
