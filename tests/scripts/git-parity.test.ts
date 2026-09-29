@@ -237,6 +237,61 @@ describe("scripts/git-parity.ts", () => {
     ]);
   });
 
+  test("--corpus takes the repo and range from the corpora manifest", () => {
+    const root = join(scratch(), "corpora");
+    const made = Bun.spawnSync(["bun", "benches/corpora/make-typical.ts"], {
+      cwd: repoRoot,
+      env: { ...env, POLYGLOSS_CORPORA: root },
+    });
+    expect(made.stderr.toString()).toBe("");
+    expect(made.exitCode).toBe(0);
+    const r = Bun.spawnSync(
+      [
+        "bun",
+        "scripts/git-parity.ts",
+        "--corpus",
+        "typical",
+        "--min-rate",
+        "0",
+      ],
+      { cwd: repoRoot, env: { ...env, POLYGLOSS_CORPORA: root } },
+    );
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    const out = r.stdout.toString();
+    expect(out).toContain(
+      `repo        ${join(root, "generated", "typical")}\n`,
+    );
+    expect(out).toContain("range       corpus-base..corpus-head\n");
+    expect(out).toMatch(/files\s+[1-9]\d*\n/);
+  });
+
+  test("--corpus cannot be combined with --repo or --range", () => {
+    for (const extra of [
+      ["--repo", sandbox.home],
+      ["--range", "a..b"],
+    ]) {
+      const r = gitParity(["--corpus", "typical", ...extra]);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("--corpus");
+    }
+    expect(gitParity(["--corpus", "nope"]).code).toBe(2);
+  });
+
+  test("--corpus names the command that creates a missing corpus", () => {
+    const r = Bun.spawnSync(
+      ["bun", "scripts/git-parity.ts", "--corpus", "huge-file"],
+      {
+        cwd: repoRoot,
+        env: { ...env, POLYGLOSS_CORPORA: join(scratch(), "empty") },
+      },
+    );
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr.toString()).toContain(
+      "bun benches/corpora/make-huge-file.ts",
+    );
+  });
+
   test("rejects a range without two dots", () => {
     const r = gitParity(["--repo", sandbox.home, "--range", "main"]);
     expect(r.code).toBe(2);

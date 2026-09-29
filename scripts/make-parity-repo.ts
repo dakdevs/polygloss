@@ -31,7 +31,6 @@ export type ParityEntry = [
 ];
 
 const epoch = 1_767_225_600; // 2026-01-01T00:00:00Z
-const ident = "Polygloss Parity <parity@polygloss.invalid>";
 
 function gitEnv(home: string): Record<string, string> {
   return {
@@ -67,6 +66,7 @@ function runGit(opts: {
 function commitStream(opts: {
   mark: number;
   parent?: number;
+  ident: string;
   message: string;
   tag: string;
   files: ParityEntry[];
@@ -76,7 +76,7 @@ function commitStream(opts: {
   const parts: Buffer[] = [
     Buffer.from(
       `commit refs/heads/main\nmark :${opts.mark}\n` +
-        `author ${ident} ${when}\ncommitter ${ident} ${when}\n` +
+        `author ${opts.ident} ${when}\ncommitter ${opts.ident} ${when}\n` +
         `data ${message.length}\n`,
     ),
     message,
@@ -105,12 +105,19 @@ function commitStream(opts: {
  * Creates a repo at `out` (missing or empty) whose `parity-base` commit holds
  * exactly `base` and whose `parity-head` commit (its child, checked out on
  * `main`) holds exactly `head`. Bytes are stored as given, CRs included.
+ * `label` (default `parity`, lowercase) names the tags `<label>-base` and
+ * `<label>-head`, the commit messages and the fixed author/committer.
  */
 export function buildParityRepo(opts: {
   out: string;
   base: ParityEntry[];
   head: ParityEntry[];
+  label?: string;
 }): { path: string } {
+  const label = opts.label ?? "parity";
+  if (!/^[a-z][a-z0-9-]*$/.test(label))
+    throw new Error(`unsupported repo label: ${JSON.stringify(label)}`);
+  const ident = `Polygloss ${label[0]?.toUpperCase()}${label.slice(1)} <${label}@polygloss.invalid>`;
   if (existsSync(opts.out) && readdirSync(opts.out).length > 0)
     throw new Error(`--out ${opts.out} is not empty`);
   mkdirSync(opts.out, { recursive: true });
@@ -123,15 +130,17 @@ export function buildParityRepo(opts: {
     const stream = Buffer.concat([
       ...commitStream({
         mark: 1,
-        message: "parity base",
-        tag: "parity-base",
+        ident,
+        message: `${label} base`,
+        tag: `${label}-base`,
         files: opts.base,
       }),
       ...commitStream({
         mark: 2,
         parent: 1,
-        message: "parity head",
-        tag: "parity-head",
+        ident,
+        message: `${label} head`,
+        tag: `${label}-head`,
         files: opts.head,
       }),
     ]);
@@ -161,14 +170,15 @@ function prng(seed: number): () => number {
   };
 }
 
-type Rng = {
+/** Seeded helpers over mulberry32 (shared with benches/corpora). */
+export type Rng = {
   next: () => number;
   int: (lo: number, hi: number) => number;
   pick: <T>(items: readonly T[]) => T;
   chance: (p: number) => boolean;
 };
 
-function makeRng(seed: number): Rng {
+export function makeRng(seed: number): Rng {
   const next = prng(seed);
   const int = (lo: number, hi: number) =>
     lo + Math.floor(next() * (hi - lo + 1));

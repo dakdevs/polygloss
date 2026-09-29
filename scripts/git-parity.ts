@@ -1,8 +1,10 @@
 // Hunk parity against the system git on a real range (plan T1.16, design §6.3).
 //
-//   bun scripts/git-parity.ts --repo <path> --range <a>..<b> [--min-rate 0.999]
-//       [--algorithm myers|histogram] [--mismatches-dir <dir>]
+//   bun scripts/git-parity.ts (--repo <path> --range <a>..<b> | --corpus <name>)
+//       [--min-rate 0.999] [--algorithm myers|histogram] [--mismatches-dir <dir>]
 //
+// --corpus takes the repo and range from the perf corpora manifest
+// (benches/corpora/manifest.ts), e.g. `--corpus linux` for v6.10..v6.11.
 // Runs `polygloss-cli debug parity` (hidden subcommand) on the two revisions,
 // prints a summary table and exits 1 when the share of identical files is below
 // --min-rate (default 0.999, the provisional §6.3 target). --algorithm changes
@@ -13,6 +15,12 @@
 // built first through scripts/cargo.sh. Exit 2: usage error or tool failure.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  corpusCommands,
+  corpusEntry,
+  hasCommits,
+  isCorpusName,
+} from "../benches/corpora/lib";
 
 const repoRoot = resolve(import.meta.dir, "..");
 
@@ -25,8 +33,8 @@ type Report = {
 function fail(message: string): never {
   process.stderr.write(
     `git-parity: ${message}\n` +
-      "usage: bun scripts/git-parity.ts --repo <path> --range <a>..<b> [--min-rate 0.999]\n" +
-      "         [--algorithm myers|histogram] [--mismatches-dir <dir>]\n",
+      "usage: bun scripts/git-parity.ts (--repo <path> --range <a>..<b> | --corpus <name>)\n" +
+      "         [--min-rate 0.999] [--algorithm myers|histogram] [--mismatches-dir <dir>]\n",
   );
   process.exit(2);
 }
@@ -42,6 +50,7 @@ function parseArgs(argv: string[]): {
   const flags = [
     "--repo",
     "--range",
+    "--corpus",
     "--min-rate",
     "--algorithm",
     "--mismatches-dir",
@@ -54,9 +63,23 @@ function parseArgs(argv: string[]): {
       fail(`unexpected argument ${JSON.stringify(flag)}`);
     values[flag] = value;
   }
-  const repo = values["--repo"];
+  const corpus = values["--corpus"];
+  let repo = values["--repo"];
+  let range = values["--range"] ?? "";
+  if (corpus !== undefined) {
+    if (repo !== undefined || values["--range"] !== undefined)
+      fail("--corpus replaces --repo and --range; pass one or the other");
+    if (!isCorpusName(corpus))
+      fail(`--corpus ${JSON.stringify(corpus)} is not a known corpus`);
+    const entry = corpusEntry(corpus);
+    if (!hasCommits(entry.repo, [entry.base, entry.head]))
+      fail(
+        `the ${corpus} corpus is missing at ${entry.repo}; run ${corpusCommands[corpus]}`,
+      );
+    repo = entry.repo;
+    range = `${entry.base}..${entry.head}`;
+  }
   if (!repo) fail("--repo is required");
-  const range = values["--range"] ?? "";
   const parts = range.split("..");
   if (parts.length !== 2 || !parts[0] || !parts[1] || range.includes("..."))
     fail(`--range must be <base>..<head>, got ${JSON.stringify(range)}`);

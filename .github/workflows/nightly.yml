@@ -2,7 +2,8 @@
 # call goes through scripts/cargo.sh, which runs rustup's cargo from ~/.cargo/bin.
 #
 # git-parity (plan T1.16, design §6.3): our hunks vs `git diff` on seeded parity
-# repos. T2.1 adds a Linux-corpus parity step and T2.9 a perf job.
+# repos. linux-parity (plan T2.1): the same check on the Linux corpus
+# (v6.10..v6.11, compared --direct). T2.9 adds a perf job.
 name: nightly
 
 on:
@@ -47,5 +48,39 @@ jobs:
         if: always()
         with:
           name: git-parity-mismatches-seed-${{ matrix.seed }}
+          path: ${{ runner.temp }}/parity-mismatches
+          if-no-files-found: ignore
+
+  linux-parity:
+    name: Git parity (Linux v6.10..v6.11)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target-shared"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - run: scripts/cargo.sh build --release -p polygloss-cli
+      # Two depth-1 tag fetches from the GitHub mirror (the only network use;
+      # the app and CLI never fetch). No checkout: parity reads trees.
+      - name: Fetch the Linux corpus
+        run: benches/corpora/fetch-linux.sh
+        env:
+          POLYGLOSS_CORPORA: ${{ runner.temp }}/corpora
+      - name: Parity on v6.10..v6.11
+        run: bun scripts/git-parity.ts --corpus linux --min-rate 0.999 --mismatches-dir "$RUNNER_TEMP/parity-mismatches"
+        env:
+          POLYGLOSS_CORPORA: ${{ runner.temp }}/corpora
+          POLYGLOSS_CLI_BIN: target/release/polygloss-cli
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: git-parity-mismatches-linux
           path: ${{ runner.temp }}/parity-mismatches
           if-no-files-found: ignore

@@ -63,6 +63,29 @@ describe("nightly workflow", () => {
     expect(all).not.toMatch(/(^|\s)cargo (build|test|run)/m);
   });
 
+  test("linux-parity fetches the Linux corpus and checks v6.10..v6.11 at 99.9%", () => {
+    const job = loadWorkflow().jobs?.["linux-parity"];
+    if (!job) throw new Error("nightly.yml has no linux-parity job");
+    expect(job["runs-on"]).toBe("macos-15");
+    const steps = job.steps ?? [];
+    const fetch = steps.find((s) =>
+      s.run?.includes("benches/corpora/fetch-linux.sh"),
+    );
+    const parity = steps.find((s) => s.run?.includes("scripts/git-parity.ts"));
+    expect(fetch?.env?.POLYGLOSS_CORPORA).toBe("${{ runner.temp }}/corpora");
+    expect(parity?.env?.POLYGLOSS_CORPORA).toBe("${{ runner.temp }}/corpora");
+    expect(parity?.env?.POLYGLOSS_CLI_BIN).toBe("target/release/polygloss-cli");
+    expect(parity?.run).toMatch(
+      /bun scripts\/git-parity\.ts --corpus linux --min-rate 0\.999 --mismatches-dir/,
+    );
+    const runs = steps.flatMap((s) => (s.run ? [s.run] : [])).join("\n");
+    expect(runs).toContain("scripts/cargo.sh build --release -p polygloss-cli");
+    expect(runs).not.toMatch(/(^|\s)cargo (build|test|run)/m);
+    const upload = steps.find((s) => s.uses === "actions/upload-artifact@v7");
+    expect(upload?.if).toBe("always()");
+    expect(upload?.with?.["if-no-files-found"]).toBe("ignore");
+  });
+
   test("uploads mismatches as an artifact whether or not parity passes", () => {
     const upload = (parityJob().steps ?? []).find(
       (s) => s.uses === "actions/upload-artifact@v7",
