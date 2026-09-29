@@ -173,7 +173,11 @@ impl SubmitDialog {
         let subscriptions = vec![cx.subscribe(
             &summary,
             |this: &mut SubmitDialog, _, event: &InputEvent, cx| {
-                if let InputEvent::Change = event {
+                // The field is read-only while submitting; an edit then
+                // would be written after the submission consumed the draft.
+                if let InputEvent::Change = event
+                    && !this.submitting
+                {
                     this.error = None;
                     this.schedule_autosave(cx);
                     cx.notify();
@@ -235,14 +239,21 @@ impl SubmitDialog {
         self.saves
     }
 
+    /// A background write (an autosave or the submission) has started and
+    /// not finished.
+    pub fn write_in_flight(&self) -> bool {
+        self.last_write.as_ref().is_some_and(|w| w.peek().is_none())
+    }
+
     /// The summary's focus handle (the dialog opens with the keyboard
     /// there).
     pub fn summary_focus(&self, cx: &App) -> FocusHandle {
         self.summary.focus_handle(cx)
     }
 
+    /// Picks the verdict (ignored while the submission is in flight).
     pub fn set_verdict(&mut self, verdict: Verdict, cx: &mut Context<Self>) {
-        if self.verdict != verdict {
+        if self.verdict != verdict && !self.submitting {
             self.verdict = verdict;
             self.schedule_autosave(cx);
             cx.notify();
@@ -356,13 +367,16 @@ impl SubmitDialog {
             .px_2()
             .py_1p5()
             .rounded(px(6.))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.secondary))
-            .on_click(cx.listener(move |this, _, _, cx| this.set_verdict(v, cx)))
+            .when(!self.submitting, |row| {
+                row.cursor_pointer()
+                    .hover(|s| s.bg(theme.secondary))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_verdict(v, cx)))
+            })
             .child(
                 div().pt(px(1.)).child(
                     Radio::new(SharedString::from(format!("submit-radio-{slug}")))
                         .checked(checked)
+                        .disabled(self.submitting)
                         .on_click(
                             cx.listener(move |this, _: &bool, _, cx| this.set_verdict(v, cx)),
                         ),
@@ -445,7 +459,12 @@ impl Render for SubmitDialog {
                     .border_color(theme.border)
                     .px_1()
                     .py_1()
-                    .child(Textarea::new(&self.summary).bordered(false).w_full()),
+                    .child(
+                        Textarea::new(&self.summary)
+                            .bordered(false)
+                            .readonly(self.submitting)
+                            .w_full(),
+                    ),
             )
             .child(v_flex().gap_0p5().children(verdicts))
             .child(

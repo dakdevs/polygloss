@@ -557,9 +557,10 @@ fn saved(
 }
 
 /// The threads were loaded again: saved composers close (their thread or
-/// comment shows now), composers whose thread or comment is gone (or whose
-/// thread is another review's) close,
-/// and other reviews' threads get their review's title.
+/// comment shows now), composers whose thread or comment is gone close and
+/// drop their text, replies restored onto another review's thread close
+/// but keep their text (it is that review's draft, in the shared per-diff
+/// view state), and other reviews' threads get their review's title.
 fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     let (Some(entity), Some(model)) = (composers(tab).cloned(), threads::threads(tab).cloned())
     else {
@@ -579,21 +580,29 @@ fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Re
                 done.push(o.key.clone());
                 continue;
             }
-            let exists = match &o.key {
-                // A reply autosaved in another review's tab on the same diff
-                // (its view state is per diff) is not this review's to
-                // draft (OQ-P16).
-                ComposerKey::Reply { thread_id } => m
-                    .thread(thread_id)
-                    .is_some_and(|t| t.review_id.as_deref() == Some(tab.review_id.as_str())),
-                ComposerKey::Edit { comment_id } => find_comment(m, comment_id).is_some(),
-                _ => true,
-            };
-            if loaded && !exists && o.saved_at_load.is_none() {
-                gone.push(o.key.clone());
+            if !loaded || o.saved_at_load.is_some() {
+                continue;
+            }
+            match &o.key {
+                ComposerKey::Reply { thread_id } => match m.thread(thread_id) {
+                    None => gone.push(o.key.clone()),
+                    // A reply autosaved in another review's tab on the same
+                    // diff (its view state is per diff) is not this
+                    // review's to draft (OQ-P16). Its text stays in the
+                    // view state for that review's tab.
+                    Some(t) if t.review_id.as_deref() != Some(tab.review_id.as_str()) => {
+                        done.push(o.key.clone());
+                    }
+                    Some(_) => {}
+                },
+                ComposerKey::Edit { comment_id } if find_comment(m, comment_id).is_none() => {
+                    gone.push(o.key.clone());
+                }
+                _ => {}
             }
         }
     }
+    // `close` leaves the view state alone; `cancel` drops the text.
     for key in done {
         close(tab, &key, window, cx);
     }

@@ -298,7 +298,10 @@ fn submit_dialog_saves_pending_edits_on_close(cx: &mut gpui_kit::TestAppContext)
     );
 }
 
-#[gpui_kit::test]
+// Several seeds: the test scheduler runs ready tasks in a seeded random
+// order, so without the chaining some seed runs the autosave's write after
+// the submission's.
+#[gpui_kit::test(iterations = 16)]
 fn submit_after_autosave_leaves_no_stale_draft(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
@@ -308,13 +311,23 @@ fn submit_after_autosave_leaves_no_stale_draft(cx: &mut gpui_kit::TestAppContext
     let d = open(&mut shell, &tab);
     shell.cx.simulate_input("Ship it");
     click(&mut shell, "submit-verdict-approve");
-    // The debounce fires and its write starts; submitting right away waits
-    // for it, so the submission consumes the saved draft and nothing
+    // The debounce fires and its write starts but has not run (one task at
+    // a time: `advance_clock` would run it to the end); submitting then
+    // waits for it, so the submission consumes the saved draft and nothing
     // writes it back afterwards.
-    shell
-        .cx
-        .executor()
-        .advance_clock(AUTOSAVE_DEBOUNCE + Duration::from_millis(1));
+    let scheduler = shell.cx.dispatcher.scheduler().clone();
+    let mut steps = 0;
+    while !d.read_with(shell.cx, |d, _| d.write_in_flight()) {
+        if !scheduler.tick() {
+            assert!(
+                scheduler.advance_clock_to_next_timer(),
+                "the autosave never started"
+            );
+        }
+        steps += 1;
+        assert!(steps < 10_000, "the autosave never started");
+    }
+    assert_eq!(d.read_with(shell.cx, |d, _| d.autosaves()), 0);
     d.update(shell.cx, |d, cx| d.submit(cx));
     drop(d);
     draw(shell.cx);
@@ -325,6 +338,41 @@ fn submit_after_autosave_leaves_no_stale_draft(cx: &mut gpui_kit::TestAppContext
     let d = open(&mut shell, &tab);
     assert_eq!(d.read_with(shell.cx, |d, cx| d.summary(cx)), "");
     assert_eq!(d.read_with(shell.cx, |d, _| d.verdict()), Verdict::Comment);
+}
+
+#[gpui_kit::test]
+fn edits_while_submitting_are_ignored(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let review = tab.read_with(shell.cx, |t, _| t.review_id.clone());
+    let d = open(&mut shell, &tab);
+    shell.cx.simulate_input("Ship it");
+    click(&mut shell, "submit-verdict-approve");
+    // Edits made after Submit, before the submission lands, neither change
+    // what is being submitted nor schedule a write: one would land after
+    // the submission consumed the draft (the dialog writes pending edits
+    // when it closes) and bring a stale draft back.
+    let summary = d.read_with(shell.cx, |d, _| d.summary_input().clone());
+    shell.cx.update(|window, cx| {
+        d.update(cx, |d, cx| d.submit(cx));
+        d.update(cx, |d, cx| d.set_verdict(Verdict::RequestChanges, cx));
+        summary.update(cx, |s, cx| s.replace_all("Ship it, then fix", window, cx));
+    });
+    assert!(d.read_with(shell.cx, |d, _| d.is_submitting()));
+    assert_eq!(d.read_with(shell.cx, |d, _| d.verdict()), Verdict::Approve);
+    drop((d, summary));
+    draw(shell.cx);
+    draw(shell.cx);
+    shell
+        .cx
+        .executor()
+        .advance_clock(AUTOSAVE_DEBOUNCE + Duration::from_millis(50));
+    draw(shell.cx);
+    assert!(dialog(&mut shell, &tab).is_none(), "submitted and closed");
+    assert_eq!(review_status(&mut shell, &tab), "approved");
+    assert_eq!(shell.core.submit_draft(&review).unwrap(), None);
 }
 
 #[gpui_kit::test]

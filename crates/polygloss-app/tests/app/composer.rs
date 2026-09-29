@@ -866,4 +866,37 @@ fn restored_reply_on_another_reviews_thread_is_dropped(cx: &mut gpui_kit::TestAp
         open_keys(&mut shell, &tab).is_empty(),
         "no reply composer on another review's thread"
     );
+    // Dropping it here must not delete S's draft text: the view state is
+    // shared, and S's tab restores it later.
+    shell
+        .cx
+        .executor()
+        .advance_clock(SAVE_DEBOUNCE + Duration::from_millis(50));
+    draw(shell.cx);
+    let kept = |shell: &mut Shell| {
+        shell
+            .core
+            .load_view_state(&s.diff_id)
+            .unwrap()
+            .and_then(|v| v.composer.get(&format!("reply:{theirs}")).cloned())
+    };
+    assert_eq!(kept(&mut shell).as_deref(), Some("half a reply"));
+    // R saving its own view state afterwards keeps it too.
+    cursor_at(&mut shell, &tab, 0, Side::New, 4);
+    keys(&mut shell, "c");
+    typed(&mut shell, "R's own thought");
+    shell
+        .cx
+        .executor()
+        .advance_clock(SAVE_DEBOUNCE + Duration::from_millis(50));
+    draw(shell.cx);
+    let stored = shell.core.load_view_state(&s.diff_id).unwrap().unwrap();
+    assert_eq!(
+        stored
+            .composer
+            .get(&line5().to_string())
+            .map(String::as_str),
+        Some("R's own thought")
+    );
+    assert_eq!(kept(&mut shell).as_deref(), Some("half a reply"));
 }
