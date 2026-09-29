@@ -53,6 +53,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 regex.workspace = true
+# Comment bodies: the sanitizer's pre-pass parses them as gpui-kit's
+# TextView does (markdown-rs, same version).
+markdown.workspace = true
 # The perf scenarios' private data dir.
 tempfile.workspace = true
 

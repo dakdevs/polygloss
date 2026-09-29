@@ -63,6 +63,8 @@ pub(crate) struct FileEntry {
     /// Host blocks, in the host's order. A layout has them as rows and an
     /// explicit body includes them; an estimate adds them.
     pub(crate) blocks: Vec<PlacedBlock>,
+    /// How many times `blocks` was replaced ([`super::Document::block_sets`]).
+    pub(crate) block_sets: u32,
 }
 
 impl FileEntry {

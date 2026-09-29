@@ -648,6 +648,7 @@ impl DiffViewport {
             if self.doc.is_collapsed(f) {
                 continue;
             }
+            self.apply_deferred_reveals(f);
             let key = self.layout_key(f);
             let stale =
                 self.doc.file_layout(f).is_none() || self.layout_keys[f as usize] != Some(key);
@@ -699,6 +700,7 @@ impl DiffViewport {
     /// next frame once its data is there.
     pub(crate) fn relayout(&mut self, f: u32) {
         self.layout_keys[f as usize] = None;
+        self.apply_deferred_reveals(f);
         let key = self.layout_key(f);
         if let Some(layout) = self.build_layout(f, key) {
             self.doc.set_file_layout(f, layout);
