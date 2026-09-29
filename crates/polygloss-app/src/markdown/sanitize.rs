@@ -5,12 +5,15 @@
 //!   every `mdast::Node::Html` (block and inline) and show its source
 //!   literally. gpui-kit pairs a few inline formatting tags (`<b>…</b>`,
 //!   `<em>`, `<s>`, …) among a paragraph's children *before* any plugin sees
-//!   them, so [`prepare`] backslash-escapes those tags up front. Text
-//!   between two dollar signs is inline math, which gpui-kit re-parses as
-//!   prose when no plugin claims it (its `flatten_unclaimed_math`), tags and
-//!   images included, while an escape inside math would show literally; so
-//!   [`prepare`] escapes the dollar signs of any inline math holding such
-//!   markup, making it prose, and then escapes what is in it.
+//!   them, so [`prepare`] backslash-escapes those tags up front (an
+//!   autolink literal right before one, which would absorb the backslash,
+//!   is written as an explicit link). Text between two dollar signs is
+//!   inline math, which gpui-kit re-parses as prose when no plugin claims
+//!   it (its `flatten_unclaimed_math`), tags and images included, while an
+//!   escape inside math would show literally; so [`prepare`] escapes the
+//!   dollar signs of any inline math holding such markup, making it prose,
+//!   and then escapes what is in it. A body markdown-rs panics on is shown
+//!   as a plain code block.
 //! - **Images are links.** [`prepare`] rewrites every image (`![alt](url)`,
 //!   `![alt][ref]`) into a link to the same URL, labelled with its alt text
 //!   (the URL when there is none); an image inside a link becomes that link's
@@ -36,7 +39,7 @@ use mdast::Node;
 
 /// gpui-kit's markdown parse options (GFM with math, no MDX, no
 /// frontmatter), so [`prepare`] sees the nodes the text view will.
-fn parse_options() -> ParseOptions {
+pub(crate) fn parse_options() -> ParseOptions {
     let mut options = ParseOptions::gfm();
     options.constructs.math_text = true;
     options.constructs.math_flow = true;
@@ -56,39 +59,72 @@ fn prose_options() -> ParseOptions {
 /// inline formatting tags gpui-kit would pair (`b`, `strong`, `i`, `em`,
 /// `u`, `s`, `del`, `strike`) are backslash-escaped, so they show as text.
 /// Inline math holding either gets its dollar signs escaped (it renders as
-/// the same prose gpui-kit would make of it). Code, and everything else, is
-/// left as written.
+/// the same prose gpui-kit would make of it), and a GFM autolink literal
+/// (`https://…`, `www.…`) right before an escape becomes an explicit link
+/// (it would absorb the backslash). Code, and everything else, is left as
+/// written.
+///
+/// A body markdown-rs cannot parse (it panics on some list and math-block
+/// mixes, e.g. `1. $$` then `- x`; gpui-kit would panic on it too) comes
+/// back as one plain fenced code block.
 pub fn prepare(body: &str) -> String {
-    if !body.contains('<') && !body.contains('!') {
+    if !body.contains(['<', '!', '$']) {
         return body.to_owned();
     }
-    // Each pass rewrites what the parse shows; escaping inline math exposes
-    // its content to the next pass. Every pass that changes something
-    // escapes at least one tag, image or dollar sign for good, so this
-    // ends; the cap is a guard.
-    let mut out = body.to_owned();
-    for _ in 0..PREPARE_PASSES {
-        match prepare_once(&out) {
-            Some(next) => out = next,
-            None => return out,
+    match std::panic::catch_unwind(|| rewrite(body)) {
+        Ok((out, Some(_))) => out,
+        Ok((_, None)) => escape_all(body),
+        Err(_) => {
+            tracing::warn!("a comment body markdown cannot parse is shown as plain text");
+            as_code_block(body)
         }
     }
-    escape_all(&out)
+}
+
+/// How many rewriting passes [`prepare`] makes on `body` before it settles
+/// (`Some(0)`: nothing to rewrite), or `None` when it would stop at the cap
+/// and escape everything instead. Panics where markdown-rs does.
+pub fn prepare_passes(body: &str) -> Option<usize> {
+    rewrite(body).1
+}
+
+/// [`prepare_once`] until nothing changes: the result, and the number of
+/// passes that changed something (`None` at the cap).
+fn rewrite(body: &str) -> (String, Option<usize>) {
+    // Each pass rewrites what the parse shows; escaping inline math exposes
+    // its content to the next pass. Every pass that changes something
+    // escapes at least one tag, image or dollar sign for good (an autolink
+    // literal that would absorb the escape is made explicit in the same
+    // pass), so this ends, in a few passes; the cap is a guard.
+    let mut out = body.to_owned();
+    for passes in 0..PREPARE_PASSES {
+        match prepare_once(&out) {
+            Some(next) => out = next,
+            None => return (out, Some(passes)),
+        }
+    }
+    (out, None)
 }
 
 const PREPARE_PASSES: usize = 32;
 
-/// The last resort when [`prepare`] does not settle: every `<`, `!` and `$`
-/// backslash-escaped (code shows the backslashes; nothing renders).
-fn escape_all(body: &str) -> String {
-    let mut out = String::with_capacity(body.len() + body.len() / 8);
-    for c in body.chars() {
-        if matches!(c, '<' | '!' | '$') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
+/// The last resort when [`prepare`] does not settle: every ASCII
+/// punctuation character backslash-escaped, backslashes included, so no
+/// markup survives (an escape never leaves a live `<` behind an escaped
+/// backslash; code shows the backslashes; nothing renders).
+pub fn escape_all(body: &str) -> String {
+    escape(body)
+}
+
+/// `body` as one fenced code block without an info string, fenced with more
+/// backticks than any run in it.
+fn as_code_block(body: &str) -> String {
+    let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat((longest + 1).max(3));
+    format!(
+        "{fence}\n{}\n{fence}\n",
+        body.trim_end_matches(['\n', '\r'])
+    )
 }
 
 /// One rewrite of `body`, or `None` when there is nothing to rewrite.
@@ -99,8 +135,9 @@ fn prepare_once(body: &str) -> Option<String> {
     if edits.is_empty() {
         return None;
     }
-    // Edits never overlap (images are not descended into); apply them back
-    // to front so earlier offsets stay valid.
+    // Edits never overlap (images and rewritten autolinks are not descended
+    // into; an escape right after an autolink is an empty range at its
+    // end); apply them back to front so earlier offsets stay valid.
     edits.sort_by_key(|(r, _): &(Range<usize>, String)| std::cmp::Reverse((r.start, r.end)));
     let mut out = body.to_owned();
     for (range, text) in edits {
@@ -187,26 +224,36 @@ fn collect(
                 return;
             };
             let mut inner = Vec::new();
-            for child in root
-                .children
-                .iter()
-                .flat_map(|c| c.children().into_iter().flatten())
-            {
-                collect(child, src, range.start, cx, &mut inner);
+            for block in &root.children {
+                collect_children(block, src, range.start, cx, &mut inner);
             }
             if inner.is_empty() {
                 return;
             }
             let open = literal.len() - literal.trim_start_matches('$').len();
             let close = literal.len() - literal.trim_end_matches('$').len();
-            for i in (0..open).chain(literal.len() - close..literal.len()) {
+            // An autolink literal running into the closing `$`s (`$1 <b>x</b>
+            // https://a.com$`) holds them in gpui-kit's prose too, and would
+            // absorb their escapes: it becomes an explicit link instead,
+            // closing `$`s included.
+            let closing = range.start + literal.len() - close;
+            let mut links = Vec::new();
+            literal_links(&Node::Root(root), src, range.start, &mut links);
+            let swallowed = links.into_iter().find(|(r, _)| r.end > closing);
+            for i in 0..open {
                 edits.push((range.start + i..range.start + i, "\\".to_owned()));
+            }
+            match swallowed {
+                Some(link) => edits.push(link),
+                None => {
+                    for i in closing..range.end {
+                        edits.push((i..i, "\\".to_owned()));
+                    }
+                }
             }
         }
         Node::Link(_) | Node::LinkReference(_) => {
-            for child in node.children().into_iter().flatten() {
-                collect(child, src, base, Context::Link, edits);
-            }
+            collect_children(node, src, base, Context::Link, edits);
         }
         Node::Root(_)
         | Node::Blockquote(_)
@@ -215,9 +262,7 @@ fn collect(
         | Node::FootnoteDefinition(_)
         | Node::Table(_)
         | Node::TableRow(_) => {
-            for child in node.children().into_iter().flatten() {
-                collect(child, src, base, Context::Block, edits);
-            }
+            collect_children(node, src, base, Context::Block, edits);
         }
         _ => {
             let inner = if cx == Context::Link {
@@ -225,10 +270,57 @@ fn collect(
             } else {
                 Context::Inline
             };
-            for child in node.children().into_iter().flatten() {
-                collect(child, src, base, inner, edits);
-            }
+            collect_children(node, src, base, inner, edits);
         }
+    }
+}
+
+/// Collects the edits for `node`'s children, each in context `cx`, and
+/// rewrites every GFM autolink literal among them that an edit follows
+/// directly. A literal (`https://…`, `www.…`) runs until whitespace or `<`,
+/// so it would absorb the backslash escaping a tag right after it
+/// (`<b>https://example.com</b>`), leaving the tag live; as an explicit
+/// link (`[https://example\.com](<https://example.com>)`) it ends where it
+/// did.
+fn collect_children(
+    node: &Node,
+    src: &str,
+    base: usize,
+    cx: Context,
+    edits: &mut Vec<(Range<usize>, String)>,
+) {
+    let mut literals = Vec::new();
+    for child in node.children().into_iter().flatten() {
+        collect(child, src, base, cx, edits);
+        literals.extend(explicit_link(child, src, base));
+    }
+    for (range, link) in literals {
+        if edits.iter().any(|(r, _)| r.start == range.end) {
+            edits.push((range, link));
+        }
+    }
+}
+
+/// When `node` is a GFM autolink literal, its span and the same link
+/// written explicitly (`[text](<url>)`, the text escaped).
+fn explicit_link(node: &Node, src: &str, base: usize) -> Option<(Range<usize>, String)> {
+    let Node::Link(link) = node else {
+        return None;
+    };
+    let range = span(node, base)?;
+    let text = src.get(range.clone())?;
+    if text.starts_with(['[', '<']) {
+        return None;
+    }
+    let explicit = format!("[{}](<{}>)", escape(text), angle_url(&link.url));
+    Some((range, explicit))
+}
+
+/// Every autolink literal in `node`, as [`explicit_link`] gives it.
+fn literal_links(node: &Node, src: &str, base: usize, out: &mut Vec<(Range<usize>, String)>) {
+    out.extend(explicit_link(node, src, base));
+    for child in node.children().into_iter().flatten() {
+        literal_links(child, src, base, out);
     }
 }
 

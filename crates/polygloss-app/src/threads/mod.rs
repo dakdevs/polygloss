@@ -120,7 +120,18 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
         .try_global::<SettingsStore>()
         .is_some_and(|s| s.settings().agent_notes.hidden);
     let opened = &tab.opened;
+    let diff_options = tab.viewport.read(cx).options().diff;
     let model = cx.new(|cx| {
+        // New diff options (hide whitespace) change the diffs: the changed
+        // blocks cached for ordering are recomputed with them.
+        cx.observe(&tab.viewport, |m: &mut ReviewThreads, viewport, cx| {
+            let options = viewport.read(cx).options().diff;
+            if options != m.diff_options {
+                m.diff_options = options;
+                m.reload(cx);
+            }
+        })
+        .detach();
         let mut m = ReviewThreads {
             review_id: tab.review_id.clone(),
             diff_id: opened.diff_id.clone(),
@@ -137,6 +148,7 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
             places: HashMap::new(),
             digests: HashMap::new(),
             changes: HashMap::new(),
+            diff_options,
             applied: BTreeMap::new(),
             expanded: HashSet::new(),
             hide_agent_notes: hide,
@@ -283,9 +295,12 @@ pub struct ReviewThreads {
     /// A digest of what each thread's block shows.
     digests: HashMap<String, u64>,
     /// The changed blocks of files with old-side threads, computed at load
-    /// (the diff never changes), to order threads in files the viewport has
-    /// not loaded ([`ReviewThreads::changes`]).
-    changes: HashMap<u32, Arc<Changes>>,
+    /// with the diff options then in effect, to order threads in files the
+    /// viewport has not loaded ([`ReviewThreads::changes`]; entries for
+    /// other options are ignored, and recomputed on the next load).
+    changes: HashMap<u32, (DiffOptions, Arc<Changes>)>,
+    /// The viewport's diff options as last seen (a change reloads).
+    diff_options: DiffOptions,
     /// The blocks the viewport has, per file.
     applied: BTreeMap<u32, Vec<(BlockId, BlockAnchor)>>,
     /// Collapsed threads (resolved, notes) the user opened.
@@ -306,7 +321,7 @@ type Loaded = (
     BlobReader,
     Vec<ThreadView>,
     HashMap<String, Position>,
-    HashMap<u32, Arc<Changes>>,
+    HashMap<u32, (DiffOptions, Arc<Changes>)>,
 );
 
 impl ReviewThreads {
@@ -414,8 +429,13 @@ impl ReviewThreads {
         let scratch = self.scratch.clone();
         let blobs = self.blobs.clone();
         let file_index = self.file_index.clone();
-        let have: HashSet<u32> = self.changes.keys().copied().collect();
         let diff_options = self.viewport.read(cx).options().diff;
+        let have: HashSet<u32> = self
+            .changes
+            .iter()
+            .filter(|(_, (o, _))| *o == diff_options)
+            .map(|(f, _)| *f)
+            .collect();
         let work = cx.background_spawn(async move {
             let blobs = match blobs {
                 Some(b) => b,
@@ -605,8 +625,9 @@ impl ReviewThreads {
 
     /// File `f`'s changed blocks: from the viewport's loaded diff (its
     /// current options), else as computed at load for files with old-side
-    /// threads; `None` when neither has it (then lines order by number,
-    /// which is exact for new-side lines alone).
+    /// threads, when with the same options; `None` when neither has it
+    /// (then lines order by number, which is exact for new-side lines
+    /// alone).
     fn changes(&self, viewport: &DiffViewport, f: u32) -> Option<Arc<Changes>> {
         let doc = viewport.document();
         if f < doc.len()
@@ -614,7 +635,11 @@ impl ReviewThreads {
         {
             return Some(placement::changes_of(&file.diff).into());
         }
-        self.changes.get(&f).cloned()
+        let options = viewport.options().diff;
+        self.changes
+            .get(&f)
+            .filter(|(o, _)| *o == options)
+            .map(|(_, c)| c.clone())
     }
 }
 
@@ -668,7 +693,7 @@ fn old_side_changes(
     have: &HashSet<u32>,
     blobs: &BlobReader,
     options: &DiffOptions,
-) -> HashMap<u32, Arc<Changes>> {
+) -> HashMap<u32, (DiffOptions, Arc<Changes>)> {
     let wanted: std::collections::BTreeSet<u32> = positions
         .values()
         .filter_map(|p| match placement::place(Some(p), file_index) {
@@ -695,7 +720,7 @@ fn old_side_changes(
         match read {
             Ok((old, new)) => {
                 let fd = polygloss_diff::hunks::diff_blobs(&old, &new, options);
-                out.insert(f, placement::changes_of(&fd).into());
+                out.insert(f, (*options, placement::changes_of(&fd).into()));
             }
             Err(e) => tracing::debug!("reading {} to order its threads: {e}", file.display_path()),
         }

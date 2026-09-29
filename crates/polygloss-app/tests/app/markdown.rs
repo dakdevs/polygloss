@@ -163,6 +163,107 @@ fn sanitizer_renders_raw_html_as_text(cx: &mut gpui_kit::TestAppContext) {
         sanitize::prepare("<b>a</b> costs $5 and $10"),
         "\\<b>a\\</b> costs $5 and $10"
     );
+
+    // A GFM autolink literal (`https://…`, `www.…`) runs until whitespace
+    // or `<`, so it would absorb the backslash escaping a tag right after
+    // it and leave the tag live; it becomes an explicit link to the same
+    // URL instead, and `prepare` settles in a pass or two (review fix,
+    // round 2).
+    use ::markdown::mdast::Node;
+    let urls = |md: &str| -> Vec<String> {
+        nodes(md)
+            .iter()
+            .filter_map(|n| match n {
+                Node::Link(l) => Some(l.url.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    for (body, want) in [
+        (
+            "Docs: <b>https://example.com</b>",
+            &["https://example.com"][..],
+        ),
+        ("<b>http://example.com</b>", &["http://example.com"]),
+        // `www.` right after `>` is not a literal (it needs a space or
+        // punctuation before it): nothing to absorb the escape.
+        ("<em>www.example.com</em>", &[]),
+        (
+            "see http://a.com<b>bold http://b.com</b>",
+            &["http://a.com", "http://b.com"],
+        ),
+        (
+            "www.a.com<em>x www.b.com</em>",
+            &["http://www.a.com", "http://www.b.com"],
+        ),
+        (
+            "https://a.com/x?y=1</s> and <strong>https://b.com/p_q</strong>",
+            &["https://a.com/x?y=1", "https://b.com/p_q"],
+        ),
+        // A literal running into inline math's closing `$` holds it (as in
+        // gpui-kit's prose re-parse of the math).
+        (
+            "costs $5 <b>x</b> see https://a.com$ ok",
+            &["https://a.com$"],
+        ),
+    ] {
+        assert!(has_paired_tag(body), "the case is live: {body:?}");
+        let prepared = sanitize::prepare(body);
+        assert!(!has_paired_tag(&prepared), "{prepared:?} still pairs tags");
+        let passes = sanitize::prepare_passes(body);
+        assert!(
+            matches!(passes, Some(1..=2)),
+            "{body:?} settles in {passes:?} passes"
+        );
+        assert_eq!(urls(&prepared), want, "{prepared:?}");
+        assert_eq!(sanitize::prepare(&prepared), prepared, "idempotent");
+    }
+    let body = "Docs: <b>https://example.com</b>";
+    let (state, _) = probe(&mut shell, body, None);
+    let text = rendered(&mut shell, &state);
+    assert!(text.contains(body), "{text:?}");
+    assert!(!text.contains('\\'), "no escape shows: {text:?}");
+
+    // The last resort, should `prepare` not settle, leaves no markup: an
+    // escaped backslash never precedes a live tag.
+    let escaped = sanitize::escape_all("\\<b>x</b> $1$ ![a](u) `c` https://a.com<i>y</i>");
+    assert!(!has_paired_tag(&escaped), "{escaped:?}");
+    assert!(
+        !nodes(&escaped).iter().any(|n| matches!(
+            n,
+            Node::Html(_)
+                | Node::InlineMath(_)
+                | Node::Image(_)
+                | Node::InlineCode(_)
+                | Node::Link(_)
+        )),
+        "{escaped:?}"
+    );
+
+    // markdown-rs panics on some list and math-block mixes (gpui-kit would
+    // too, on the main thread): such a body shows as one plain code block
+    // (review fix, round 2).
+    for body in [
+        "1. $$\n- x",
+        "- $$\n1. x",
+        "Look:\n\n1. $$ <b>x</b>\n- ![i](u)",
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| nodes(body)).is_err(),
+            "the case is live: {body:?}"
+        );
+        let prepared = sanitize::prepare(body);
+        let parsed = nodes(&prepared);
+        assert!(
+            matches!(&parsed[1], Node::Code(c) if c.value == body && c.lang.is_none()),
+            "{prepared:?}"
+        );
+        let (state, _) = probe(&mut shell, body, None);
+        let text = rendered(&mut shell, &state);
+        for line in body.lines() {
+            assert!(text.contains(line), "{line:?} not in {text:?}");
+        }
+    }
 }
 
 #[gpui_kit::test]

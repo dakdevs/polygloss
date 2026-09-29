@@ -165,10 +165,12 @@ impl MarkdownPlugin for SuggestionPlugin {
 }
 
 /// Where the top-level ` ```suggestion ` blocks of `source` start (byte
-/// offsets): the blocks `parse_suggestions` returns (GFM, children of the
-/// root).
+/// offsets): the blocks `parse_suggestions` returns (children of the root).
+/// Parsed as gpui-kit parses it (GFM with math), so the offsets match the
+/// nodes the plugin sees; `source` is text gpui-kit has parsed (a
+/// [`super::sanitize::prepare`]d body).
 pub fn top_level_suggestions(source: &str) -> Vec<usize> {
-    let Ok(root) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
+    let Ok(root) = markdown::to_mdast(source, &super::sanitize::parse_options()) else {
         return Vec::new();
     };
     root.children()

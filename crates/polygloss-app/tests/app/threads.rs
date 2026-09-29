@@ -789,6 +789,85 @@ fn mixed_sides_follow_the_diff_order(shell: &mut Shell) {
     assert_eq!(cursor(shell, &tab), Some(at_y));
 }
 
+/// Threads on both sides of a file the viewport has not loaded order by
+/// the changed blocks computed with the threads (review fix, round 2), and
+/// again after the diff options change.
+#[gpui_kit::test]
+fn old_side_threads_order_in_files_not_loaded(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    // 40 long files first, so `list.txt` (as in the mixed-sides case) is
+    // far below the fold.
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    let base: String = (1..=50).map(|i| format!("b{i}\n")).collect();
+    let head: String = (1..=30)
+        .map(|i| format!("n{i}\n"))
+        .chain((1..=50).filter(|&i| i != 40).map(|i| format!("b{i}\n")))
+        .collect();
+    let filler = |tag: &str| -> String { (1..=40).map(|i| format!("{tag}{i}\n")).collect() };
+    for f in 0..40 {
+        repo.write(&format!("a{f:02}.txt"), filler("old").as_bytes());
+    }
+    repo.write("list.txt", base.as_bytes());
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    for f in 0..40 {
+        repo.write(&format!("a{f:02}.txt"), filler("new").as_bytes());
+    }
+    repo.write("list.txt", head.as_bytes());
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    shell.cx.dispatch_action(viewport_actions::LayoutUnified);
+    draw(shell.cx);
+    // X: removed old line 40 (row ~70). Y: new line 50 (old 20, row 50).
+    let x = create(
+        &mut shell,
+        &tab,
+        line("list.txt", Side::Old, 40, 40),
+        ThreadKind::Comment,
+        "X",
+        human(),
+    );
+    let y = create(
+        &mut shell,
+        &tab,
+        line("list.txt", Side::New, 50, 50),
+        ThreadKind::Comment,
+        "Y",
+        human(),
+    );
+    reload(&mut shell, &tab);
+    let list_loaded = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            matches!(
+                t.viewport.read(cx).document().state(40),
+                polygloss_viewport::FileState::Materialized(_)
+            )
+        })
+    };
+    let m = model(&mut shell, &tab);
+    let ids = |shell: &mut Shell| -> Vec<String> {
+        m.read_with(shell.cx, panel::rows)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    };
+    assert!(!list_loaded(&mut shell), "list.txt is not loaded");
+    // By line number X (40) would come first; the diff shows Y first.
+    assert_eq!(ids(&mut shell), [y.clone(), x.clone()]);
+
+    // Hiding whitespace changes the diff options: the cached blocks are
+    // recomputed with them (stale ones are never used).
+    shell.cx.dispatch_action(viewport_actions::ToggleWhitespace);
+    draw(shell.cx);
+    assert!(tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).options().diff.ignore_whitespace
+    }));
+    assert!(!list_loaded(&mut shell), "list.txt is still not loaded");
+    assert_eq!(ids(&mut shell), [y, x]);
+}
+
 #[test]
 fn diff_order_puts_both_sides_in_one_coordinate() {
     use placement::{line_diff_order, line_order};
