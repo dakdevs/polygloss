@@ -76,6 +76,9 @@ criterion = { version = "0.8.2", default-features = false, features = ["cargo_be
 # --- plan additions (docs/plan.md Open questions) ---
 uuid = { version = "1", features = ["v7", "serde"] } # OQ-P2
 regex = "1.13.1"                                      # OQ-P8 (app find)
+# T2.8: screenshot baselines (dev-only). The version gpui-pre already links, so
+# `Window::render_to_image`'s `RgbaImage` is this crate's type.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [profile.dev]
 debug = "line-tables-only" # full debuginfo for gpui-kit bloats target/ by GBs

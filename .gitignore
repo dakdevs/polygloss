@@ -7,3 +7,6 @@
 /benches/results/
 *.profraw
 .DS_Store
+# Screenshot runner failure output (T2.8)
+*.actual.png
+*.diff.png

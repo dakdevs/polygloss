@@ -8,18 +8,29 @@ license.workspace = true
 repository.workspace = true
 default-run = "Polygloss"
 
+# The app's modules live in the library so the `app` and `e2e` integration
+# test binaries can reach them; `src/main.rs` is only the entry point.
+[lib]
+name = "polygloss_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "Polygloss"
 path = "src/main.rs"
 
+# GPUI E2E and screenshot suites (tests/e2e/main.rs). `harness = false`: GPUI's
+# real macOS text system can only be created on the main thread, where libtest
+# never runs tests, so the binary brings a small libtest-compatible runner
+# (tests/support/harness.rs) that nextest drives like any test binary.
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
+harness = false
 required-features = ["e2e"]
 
 [features]
 # Gates the `e2e` integration test binary (GPUI E2E and screenshot suites,
-# tests/e2e/main.rs from T2.8); scripts/test-e2e.sh runs it.
+# tests/e2e/main.rs); scripts/test-e2e.sh runs it.
 e2e = []
 
 [dependencies]
@@ -40,5 +51,10 @@ regex.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+# `testing::{Sandbox, FixtureRepo}` for the test binaries.
+polygloss-core = { workspace = true, features = ["test-support"] }
+# The tests read `DiffViewport::debug()`.
+polygloss-viewport = { workspace = true, features = ["debug-inspect"] }
+image.workspace = true
 insta.workspace = true
 tempfile.workspace = true

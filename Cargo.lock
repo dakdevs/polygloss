@@ -6513,6 +6513,7 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui-kit",
+ "image",
  "insta",
  "notify 8.2.0",
  "notify-debouncer-full",

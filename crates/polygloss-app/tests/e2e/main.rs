@@ -2,4 +2,29 @@
 //! screenshot suites, one module per feature. `scripts/test-e2e.sh` runs it via
 //! `cargo nextest run -p polygloss-app --features e2e -E 'binary(e2e)'`.
 //!
-//! Empty until M2: T2.8 adds `mod viewport_screenshots;` and the screenshot runner.
+//! The binary is `harness = false`: tests are plain `fn()`s listed in each
+//! module's `TESTS` table (`tests![…]` names them after the function) and
+//! run on the main thread by `support::harness`, because GPUI's real text
+//! system can only be created there. `#[test]` and `#[gpui_kit::test]` do
+//! nothing in this binary.
+
+#[path = "../support/mod.rs"]
+mod support;
+
+mod viewport_screenshots;
+
+use support::harness::Test;
+
+fn e2e_harness_runs_tests_on_the_main_thread() {
+    assert_eq!(std::thread::current().name(), Some("main"));
+    assert_eq!(
+        support::harness::current_test(),
+        Some("e2e_harness_runs_tests_on_the_main_thread")
+    );
+}
+
+const HARNESS: &[Test] = &crate::tests![e2e_harness_runs_tests_on_the_main_thread];
+
+fn main() -> std::process::ExitCode {
+    support::harness::run(&[HARNESS, viewport_screenshots::TESTS])
+}
