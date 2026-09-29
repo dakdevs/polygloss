@@ -96,6 +96,8 @@ pub struct SummaryCursor {
 /// unarchived review, newest first, up to [`DEFAULT_SUMMARY_LIMIT`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReviewFilter {
+    /// Only this review (T3.10's "Reply in <review>" names another review).
+    pub review_id: Option<String>,
     /// Only reviews of this repo (its realpath'd git common dir, `RepoInfo::common_dir`).
     pub repo_common_dir: Option<PathBuf>,
     /// Only reviews with this `reviews.status`.
@@ -112,6 +114,20 @@ pub struct ReviewFilter {
 }
 
 impl Core {
+    /// The summary of review `review_id`, archived or not (`None` when there is
+    /// no such review).
+    pub fn review_summary(&self, review_id: &str) -> Result<Option<ReviewSummary>, CoreError> {
+        Ok(self
+            .review_summaries(&ReviewFilter {
+                review_id: Some(review_id.to_owned()),
+                include_archived: true,
+                limit: Some(1),
+                ..ReviewFilter::default()
+            })?
+            .into_iter()
+            .next())
+    }
+
     /// Review summaries matching `filter`, most recently active first (module docs).
     pub fn review_summaries(&self, filter: &ReviewFilter) -> Result<Vec<ReviewSummary>, CoreError> {
         let assigned = filter
@@ -154,6 +170,9 @@ impl Core {
         };
         if !filter.include_archived {
             sql.push_str(" AND r.archived_at IS NULL");
+        }
+        if let Some(id) = &filter.review_id {
+            arg(&mut sql, " AND r.id = ?", Value::Text(id.clone()));
         }
         if let Some(dir) = &filter.repo_common_dir {
             arg(

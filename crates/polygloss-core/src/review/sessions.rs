@@ -281,6 +281,47 @@ impl Core {
         Ok(())
     }
 
+    /// The session the review is assigned to (its canonical session), `None`
+    /// when unassigned. `NotFound` for an unknown review.
+    pub fn assigned_session(&self, review_id: &str) -> Result<Option<SessionInfo>, CoreError> {
+        let found: Option<Option<SessionInfo>> = self.store.read(|c| {
+            if !review_exists(c, review_id)? {
+                return Ok(None);
+            }
+            let session: Option<String> = c
+                .query_row(
+                    "SELECT session_id FROM review_assignments WHERE review_id = ?1",
+                    [review_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(session) = session else {
+                return Ok(Some(None));
+            };
+            let root = canonical(c, &session)?;
+            Ok(Some(
+                c.query_row(
+                    "SELECT id, client_name, client_version, owner_pid, cwd FROM sessions \
+                     WHERE id = ?1",
+                    [&root],
+                    |r| {
+                        Ok(SessionInfo {
+                            id: r.get(0)?,
+                            client_name: r.get(1)?,
+                            client_version: r.get(2)?,
+                            owner_pid: r.get(3)?,
+                            cwd: r
+                                .get::<_, Option<String>>(4)?
+                                .map(|p| crate::review::models::path_from_db(&p)),
+                        })
+                    },
+                )
+                .optional()?,
+            ))
+        })?;
+        found.ok_or_else(|| CoreError::not_found("review", review_id))
+    }
+
     /// The live waiter `(canonical session id, pid)` of the session the review is
     /// assigned to, if any. Dead pids and passed deadlines count as absent.
     /// `NotFound` for an unknown review.

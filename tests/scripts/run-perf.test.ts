@@ -267,12 +267,20 @@ describe("plan", () => {
     ]);
     expect(where("scroll")).toHaveLength(8);
     expect(where("highlight")).toHaveLength(8);
-    expect(where("blocks")).toEqual([
+    // Comment round-trips run in the app (T3.10) where their budget
+    // applies; polygloss-perf's M2 `blocks` is no longer planned.
+    expect(where("comment-roundtrip")).toEqual([
       "typical/split",
       "typical/unified",
       "synthetic/split",
       "synthetic/unified",
     ]);
+    expect(
+      runs
+        .filter((r) => r.scenario === "comment-roundtrip")
+        .every((r) => r.runner === "app" && r.enabled),
+    ).toBe(true);
+    expect(where("blocks")).toEqual([]);
     // The app's own first paint runs in the app (`Polygloss --perf-scenario
     // open`) where its budget applies.
     expect(where("app-open")).toEqual([
@@ -482,6 +490,7 @@ sleep 0.2
 case "$scenario" in
   open) metrics="\\"app_first_paint_ms\\": \${APP_FIRST_PAINT:-150}" ;;
   watcher-banner) metrics="\\"watcher_banner_ms\\": \${WATCHER_BANNER:-260}" ;;
+  comment-roundtrip) metrics='"comment_repaint_ms": 12' ;;
   *) echo "fake-app: unknown scenario $scenario" >&2; exit 2 ;;
 esac
 printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"repo":"%s","base":"%s","head":"%s","mode":"%s","polygloss_test":"%s"}}\\n' \\
@@ -864,7 +873,7 @@ describe("run-perf CLI", () => {
         "--layouts",
         "unified",
         "--scenarios",
-        "open,blocks",
+        "open,comment-roundtrip",
         "--repeat",
         "2",
         "--out",
@@ -874,9 +883,9 @@ describe("run-perf CLI", () => {
       const results = JSON.parse(readFileSync(out, "utf8")) as Results;
       expect(results.runs.map((x) => x.scenario)).toEqual([
         "open",
-        "blocks",
+        "comment-roundtrip",
         "open",
-        "blocks",
+        "comment-roundtrip",
       ]);
       expect(results.rows).toHaveLength(1);
       expect(results.rows[0]!.metrics).toMatchObject({
@@ -900,7 +909,7 @@ describe("run-perf CLI", () => {
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("open linux split");
       expect(r.stdout).toContain("--direct");
-      expect(r.stdout).not.toContain("blocks");
+      expect(r.stdout).not.toContain("comment-roundtrip");
       expect(r.stdout.split("\n")[0]).toMatch(
         /^warm-up \(not measured\): open linux split: .* --scenario open /,
       );

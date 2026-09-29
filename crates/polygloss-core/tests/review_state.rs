@@ -1181,6 +1181,42 @@ fn summaries_filters_submission_assignment_and_mute() {
     assert_eq!(mine[0].review_id, b.review_id);
     assert_eq!(mine[0].assigned_session.as_deref(), Some("s1"));
 
+    // One review by id (T3.10's "Reply in <review>"), archived ones too.
+    let one = core
+        .review_summaries(&ReviewFilter {
+            review_id: Some(b.review_id.clone()),
+            ..ReviewFilter::default()
+        })
+        .unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].review_id, b.review_id);
+    assert_eq!(
+        core.review_summary(&b.review_id)
+            .unwrap()
+            .map(|s| s.review_id),
+        Some(b.review_id.clone())
+    );
+    core.archive_review(&a.review_id, &Actor::human()).unwrap();
+    assert_eq!(
+        core.review_summary(&a.review_id)
+            .unwrap()
+            .map(|s| s.review_id),
+        Some(a.review_id.clone())
+    );
+    assert_eq!(core.review_summary("nope").unwrap(), None);
+
+    // The assigned session (the submit dialog names it), by its canonical id.
+    let assigned = core.assigned_session(&b.review_id).unwrap().unwrap();
+    assert_eq!(
+        (assigned.id.as_str(), assigned.client_name.as_str()),
+        ("s1", "claude-code")
+    );
+    assert_eq!(core.assigned_session(&a.review_id).unwrap(), None);
+    assert!(matches!(
+        core.assigned_session("nope"),
+        Err(CoreError::NotFound { .. })
+    ));
+
     // Mute.
     core.set_muted(&b.review_id, true).unwrap();
     assert!(summary_of(&core, &b.review_id).muted);

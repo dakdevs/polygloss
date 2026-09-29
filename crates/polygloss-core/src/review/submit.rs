@@ -12,7 +12,7 @@
 //! (for `since=merge-base`, after the default branch moved) could pin a diff the
 //! human never saw. Pinning goes through [`Core::pin_live_on_base`].
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension as _, params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -76,6 +76,13 @@ pub struct Submission {
     pub seq: i64,
 }
 
+/// The autosaved Submit review dialog (`review_drafts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmitDraft {
+    pub summary_md: String,
+    pub verdict: Option<Verdict>,
+}
+
 /// A draft being published: `(comment id, thread id, author name, is root,
 /// thread kind, thread subject, origin diff)`.
 type Draft = (String, String, String, bool, String, String, String);
@@ -105,6 +112,31 @@ impl Core {
             )?;
             Ok(Ok(()))
         })?
+    }
+
+    /// The autosaved Submit dialog of the review ([`Core::save_submit_draft`]),
+    /// `None` when nothing was saved since the last submission. `NotFound` for an
+    /// unknown review.
+    pub fn submit_draft(&self, review_id: &str) -> Result<Option<SubmitDraft>, CoreError> {
+        let row: Option<Option<(String, Option<String>)>> = self.store.read(|c| {
+            if !review_exists(c, review_id)? {
+                return Ok(None);
+            }
+            Ok(Some(
+                c.query_row(
+                    "SELECT summary_md, verdict FROM review_drafts WHERE review_id = ?1",
+                    [review_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?,
+            ))
+        })?;
+        let row = row.ok_or_else(|| CoreError::not_found("review", review_id))?;
+        Ok(row.map(|(summary_md, verdict)| SubmitDraft {
+            summary_md,
+            // An unknown stored verdict reads as none chosen.
+            verdict: verdict.as_deref().and_then(Verdict::parse),
+        }))
     }
 
     /// Submits the review: pins `live` first (as `submit`) when given, then publishes

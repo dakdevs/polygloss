@@ -158,6 +158,8 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
             loading: None,
             stats: ThreadsStats::default(),
             nav: None,
+            extra: BTreeMap::new(),
+            composers: None,
         };
         m.reload(cx);
         m
@@ -313,6 +315,11 @@ pub struct ReviewThreads {
     loading: Option<Task<()>>,
     stats: ThreadsStats,
     nav: Option<NavMark>,
+    /// Blocks other features show in the diff with the threads (T3.10's
+    /// composers), per file: after the threads at the same anchor.
+    extra: BTreeMap<u32, Vec<BlockSpec>>,
+    /// The tab's composers (T3.10), for the thread cards' footers.
+    composers: Option<WeakEntity<crate::composer::Composers>>,
 }
 
 impl EventEmitter<ThreadsEvent> for ReviewThreads {}
@@ -414,6 +421,42 @@ impl ReviewThreads {
         self.hide_agent_notes = hide;
         self.update_blocks(&HashMap::new(), cx);
         cx.emit(ThreadsEvent::Changed);
+        cx.notify();
+    }
+
+    /// Sets the blocks other features show in the diff next to the threads
+    /// (T3.10's line and file composers): `(file, block)`, placed after the
+    /// file's thread blocks at the same anchor. Only files whose blocks
+    /// change are laid out again.
+    pub fn set_extra_blocks(&mut self, blocks: Vec<(u32, BlockSpec)>, cx: &mut Context<Self>) {
+        let mut extra: BTreeMap<u32, Vec<BlockSpec>> = BTreeMap::new();
+        for (f, spec) in blocks {
+            if (f as usize) < self.files.len() {
+                extra.entry(f).or_default().push(spec);
+            }
+        }
+        self.extra = extra;
+        self.update_blocks(&HashMap::new(), cx);
+    }
+
+    /// The tab's composers (T3.10), which draw the cards' reply boxes,
+    /// Resolve buttons and edit fields.
+    pub fn composers(&self) -> Option<Entity<crate::composer::Composers>> {
+        self.composers.as_ref()?.upgrade()
+    }
+
+    pub fn set_composers(&mut self, composers: WeakEntity<crate::composer::Composers>) {
+        self.composers = Some(composers);
+    }
+
+    /// Thread `id`'s block changed without its thread changing (a reply box
+    /// opened in it): measured again on the next frame.
+    pub fn invalidate_thread(&mut self, id: &str, cx: &mut Context<Self>) {
+        let block = placement::block_id(id);
+        if self.applied.values().flatten().any(|(b, _)| *b == block) {
+            self.viewport
+                .update(cx, |v, cx| v.invalidate_block(block, cx));
+        }
         cx.notify();
     }
 
@@ -532,24 +575,32 @@ impl ReviewThreads {
         let files: Vec<u32> = wanted
             .keys()
             .chain(self.applied.keys())
+            .chain(self.extra.keys())
             .copied()
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
         let mut relaid: HashSet<u32> = HashSet::new();
         for f in files {
+            let extra = self.extra.get(&f).map(Vec::as_slice).unwrap_or_default();
             let new: Vec<(BlockId, BlockAnchor)> = wanted
                 .get(&f)
-                .map(|v| v.iter().map(|p| (p.block, p.anchor)).collect())
-                .unwrap_or_default();
+                .map(|v| v.iter().map(|p| (p.block, p.anchor)).collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .chain(extra.iter().map(|b| (b.id, b.anchor)))
+                .collect();
             let old = self.applied.get(&f).cloned().unwrap_or_default();
             if new == old {
                 continue;
             }
             let specs: Vec<BlockSpec> = wanted
                 .get(&f)
-                .map(|v| v.iter().map(|p| self.spec(p)).collect())
-                .unwrap_or_default();
+                .map(|v| v.iter().map(|p| self.spec(p)).collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .chain(extra.iter().cloned())
+                .collect();
             self.viewport.update(cx, |v, cx| v.set_blocks(f, specs, cx));
             *self.stats.set_blocks.entry(f).or_default() += 1;
             relaid.insert(f);
