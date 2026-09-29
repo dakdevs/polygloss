@@ -612,7 +612,7 @@ position(thread T, diff D):
   cur = file.new_blob if T.side = new else file.old_blob
   cur == T.anchor_blob  -> exact    (same lines)
   map T.start_line..T.line through imara(T.anchor_blob -> cur):
-    every line in an equal region -> moved    (new line numbers)
+    all lines in one equal region -> moved    (new line numbers)
     otherwise                     -> outdated (original snippet; placed at nearest mapped line)
   cache in thread_positions(T, D, engine_version)
 ```

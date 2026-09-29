@@ -607,7 +607,7 @@ impl LineMap {
   pub fn new(old: &[u8], new: &[u8]) -> LineMap;
   pub fn from_diff(fd: &FileDiff) -> LineMap;
   pub fn map_line(&self, old_line: u32) -> Mapped;
-  pub fn map_range(&self, start: u32, end_inclusive: u32) -> MappedRange;   // Moved only if every line is in an equal region
+  pub fn map_range(&self, start: u32, end_inclusive: u32) -> MappedRange;   // Moved only if every line is in one equal region (contiguous)
   pub fn map_line_back(&self, new_line: u32) -> Mapped;                     // new -> old, used by scroll anchors
 }
 ```
@@ -615,6 +615,8 @@ impl LineMap {
 Used by carry-forward (T1.15), refresh anchor restore (T3.11) and open-in-editor (T3.16).
 
 **Tests:** `line_map_identity`, `line_map_shift_after_insert_above`, `line_map_changed_line_reports_nearest`, `line_map_range_partially_changed_is_outdated`, `line_map_delete_everything`, `line_map_append_at_eof`, `line_map_back_roundtrip`, `line_map_150k_lines_fast` (asserts < 500 ms in the dev profile; criterion bench tracks the release number).
+
+**As built (T1.8):** module path `polygloss_diff::line_map` (not re-exported from the crate root). `LineMap` stores only the changed `(old, new)` ranges plus both line counts, so building is one diff and each query is a binary search. `LineMap::new` shares `hunks::line_changes` (a `pub(crate)` helper extracted from `diff_blobs`, context-free) with the §6.3 defaults (Myers + indent heuristic, whitespace exact), so it agrees with `diff_blobs` alignment; `from_diff` reads the `Change` blocks and is independent of the diff's context settings (in whitespace mode, whitespace-only differences count as unchanged). `Mapped`/`MappedRange` are `Copy + Eq + Hash`; `LineMap` is `Clone + Eq`. Extra helpers: `old_len()`, `new_len()`. Semantics beyond the contract: **`Changed { nearest }`** is the line at the same offset inside the replacement block (clamped to its last line); for a pure deletion or insertion, the line right after the gap, clamped to the last line (0 when that side is empty). **`map_range`** accepts bounds in either order and returns `Moved` only when the whole range lies in _one_ equal region, i.e. it stays contiguous: an insertion between two unchanged commented lines makes it `Outdated` (§8.6 wording clarified to match); `Outdated { nearest }` is where the range's last line maps (where the thread renders). Lines past the end of a side report `Changed { nearest: last line }` and never panic. Tests beyond the named ones: `line_map_range_split_by_insertion_is_outdated`, `line_map_range_accepts_reversed_bounds`, `line_map_from_diff_ignores_context_settings`, `line_map_out_of_range_lines_do_not_panic`. `line_map_150k_lines_fast` takes ≈ 0.14 s in dev. Bench (`--quick`, release, M-series), 150k lines: `new` ≈ 6.5 ms, `from_diff` ≈ 1.8 µs, 10k × (`map_line` + `map_line_back` + `map_range`) ≈ 0.27 ms.
 
 ### T1.9 Row model for split and unified
 
