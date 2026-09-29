@@ -247,7 +247,10 @@ fn not_a_blob(oid: &Oid, kind: gix::objs::Kind) -> ObjectError {
 /// Makes `<scratch>/info/alternates` exactly one entry: `repo_objects`. Written to
 /// a temp file and renamed, so concurrent snapshotters of one repo (which write the
 /// same content) never expose a torn file to git or gix.
-fn ensure_alternates(scratch_objects: &Path, repo_objects: &Path) -> std::io::Result<()> {
+pub(crate) fn ensure_alternates(
+    scratch_objects: &Path,
+    repo_objects: &Path,
+) -> std::io::Result<()> {
     let info = scratch_objects.join("info");
     let path = info.join("alternates");
     let mut want = alternates_entry(repo_objects.as_os_str());

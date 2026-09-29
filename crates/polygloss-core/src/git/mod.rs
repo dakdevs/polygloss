@@ -18,4 +18,5 @@ pub use resolve::{
     Since, Source, default_branch, resolve,
 };
 pub use runner::{Git, GitError, GitOutput, git_binary};
+pub use snapshot::{LiveState, SNAPSHOT_REF_PREFIX, SnapshotError, Snapshotter, snapshot_ref};
 pub use version::{GitVersion, check_version};
