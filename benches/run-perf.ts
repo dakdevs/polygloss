@@ -15,8 +15,8 @@
 // benches/corpora/lib.ts `corpusEntry`, passed to the harness as flags.
 // The harness is launched once (`--version`) before the matrix, so macOS's
 // first-launch assessment of a fresh build is not measured, and then runs one
-// unmeasured `open` window (the first planned corpus and layout), so a fresh
-// build's one-time Metal shader compilation (OQ-P12) is not either; that
+// unmeasured `open` window (the first planned corpus and layout), so a new
+// binary's first-window Metal shader compilation (OQ-P12) is not either; that
 // warm-up's first paint is reported (`warmup` in the results).
 // `peak_rss_mb` is the largest RSS (`ps -o rss= -p`, every 100 ms) of any run
 // of a corpus and layout. `--repeat n` runs everything n times; each metric is
@@ -312,11 +312,12 @@ export function planRuns(opts: {
 
 /**
  * The unmeasured window run before the matrix: `open` on the first enabled
- * `polygloss-perf` run's corpus and layout (`null` when nothing runs). A
- * binary's first window compiles GPUI's Metal shaders (gpui-kit forces
- * runtime shaders, OQ-P12) and Metal caches them per binary, so the first
- * windowed launch of a fresh build spends ≈ 150–200 ms more before its first
- * frame than every later launch.
+ * `polygloss-perf` run's corpus and layout (`null` when nothing runs).
+ * gpui-kit forces runtime shaders (OQ-P12): GPUI compiles its Metal shaders
+ * when it opens a window, and Metal caches the result. The first windowed
+ * launch of a new binary can miss that cache (seen right after a rebuild and
+ * for a copy at a new path); its window then opens ≈ 150–200 ms later than
+ * on every later launch.
  */
 export function warmupRun(plan: PlannedRun[]): PlannedRun | null {
   const first = plan.find((p) => p.enabled && p.runner === "perf");
@@ -743,7 +744,7 @@ async function main(argv: string[]): Promise<number> {
   } finally {
     warmup.cleanup();
   }
-  // One unmeasured window keeps a fresh build's shader compilation out of
+  // One unmeasured window keeps a new binary's shader compilation out of
   // the matrix (see `warmupRun`); its first paint is still reported.
   let warmupRecord: RunRecord | null = null;
   if (warm) {
@@ -759,7 +760,7 @@ async function main(argv: string[]): Promise<number> {
     const fp = warmupRecord.result?.metrics.first_paint_ms;
     process.stderr.write(
       warmupRecord.error === null
-        ? `run-perf: warm-up first paint ${fp} ms (not counted: a fresh build's first window compiles GPUI's shaders, OQ-P12)\n`
+        ? `run-perf: warm-up first paint ${fp} ms (not counted: a new binary's first window can compile GPUI's shaders, OQ-P12)\n`
         : `run-perf: warm-up failed: ${warmupRecord.error} (continuing)\n`,
     );
   }
