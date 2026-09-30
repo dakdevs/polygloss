@@ -26,14 +26,21 @@ pub struct KeyMenu {
 impl KeyMenu {
     /// Builds the menu with `build`, focuses it and returns it; `slot`
     /// finds where `this` keeps it, so a dismissed menu is dropped (and the
-    /// keyboard handed back).
+    /// keyboard handed back). `replacing` is the menu already open in that
+    /// slot, if any (the key pressed again while it shows): the new menu
+    /// hands the keyboard back to what had it before that one, not to the
+    /// replaced menu.
     pub fn open<V: 'static>(
         slot: fn(&mut V) -> Option<&mut Option<KeyMenu>>,
+        replacing: Option<KeyMenu>,
         build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu,
         window: &mut Window,
         cx: &mut Context<V>,
     ) -> KeyMenu {
-        let previous = window.focused(cx);
+        let previous = match replacing {
+            Some(old) => old.previous,
+            None => window.focused(cx),
+        };
         let view = PopupMenu::build(window, cx, build);
         let dismiss = cx.subscribe_in(
             &view,

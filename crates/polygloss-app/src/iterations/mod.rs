@@ -324,9 +324,6 @@ pub fn label(tab: &ReviewTab) -> String {
     }
 }
 
-/// Whether the toolbar shows the picker: a live or compare review with two
-/// or more states to pick from or a submission, or one showing something
-/// other than its current state.
 /// Whether the iteration menu is open from the keyboard (`i`).
 pub fn menu_open(tab: &ReviewTab) -> bool {
     state(tab).is_some_and(|s| s.key_menu.is_some())
@@ -340,8 +337,12 @@ pub fn open_menu(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Revi
     }
     let data = picker::MenuData::of(tab);
     let weak = cx.entity().downgrade();
+    let replacing = tab
+        .extension_mut::<Iterations>()
+        .and_then(|s| s.key_menu.take());
     let menu = KeyMenu::open(
         |t: &mut ReviewTab| t.extension_mut::<Iterations>().map(|s| &mut s.key_menu),
+        replacing,
         move |menu, _, _| picker::build_menu(&weak, data, menu),
         window,
         cx,
@@ -352,6 +353,9 @@ pub fn open_menu(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Revi
     cx.notify();
 }
 
+/// Whether the toolbar shows the picker: a live or compare review with two
+/// or more states to pick from or a submission, or one showing something
+/// other than its current state.
 pub fn picker_visible(tab: &ReviewTab) -> bool {
     let Some(s) = state(tab) else {
         return false;

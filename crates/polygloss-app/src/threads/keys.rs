@@ -7,7 +7,9 @@
 //! The thread these act on ([`current_thread`]) is the panel's selected
 //! row while the panel has the keyboard; from the diff it is the thread the
 //! last `.`/`,` went to (while the cursor is still there), else the thread
-//! on the cursor's line.
+//! on the cursor's line, else none. With the keyboard anywhere else (the
+//! tree, a toolbar button) there is none either: the panel's selection may
+//! be off screen and stale, and "Delete my comment" drops a draft unasked.
 
 use gpui_kit::{App, Context, Entity, Window};
 use polygloss_core::review::{ThreadStatus, ThreadView};
@@ -84,27 +86,22 @@ pub fn current_thread(tab: &ReviewTab, window: &Window, cx: &App) -> Option<Stri
     if model.panel_focus.contains_focused(window, cx) {
         return model.selected.clone();
     }
-    if tab.viewport_focus().contains_focused(window, cx) {
-        let cursor = tab.viewport.read(cx).cursor();
-        if let Some(mark) = &model.nav
-            && mark.cursor == cursor
-            && cursor.is_some()
-        {
-            return Some(mark.thread_id.clone());
-        }
-        if let Some(c) = cursor {
-            let on_line = |t: &&ThreadView| {
-                matches!(model.place(&t.id), Some(ThreadPlace::Line { file_idx, side, line, .. })
-                    if *file_idx == c.file_idx && *side == c.side && *line == c.line)
-            };
-            let mut here: Vec<&ThreadView> = model.threads().filter(on_line).collect();
-            here.sort_by_key(|t| t.status != ThreadStatus::Open);
-            if let Some(t) = here.first() {
-                return Some(t.id.clone());
-            }
-        }
+    if !tab.viewport_focus().contains_focused(window, cx) {
+        return None;
     }
-    model.selected.clone()
+    let c = tab.viewport.read(cx).cursor()?;
+    if let Some(mark) = &model.nav
+        && mark.cursor == Some(c)
+    {
+        return Some(mark.thread_id.clone());
+    }
+    let on_line = |t: &&ThreadView| {
+        matches!(model.place(&t.id), Some(ThreadPlace::Line { file_idx, side, line, .. })
+            if *file_idx == c.file_idx && *side == c.side && *line == c.line)
+    };
+    let mut here: Vec<&ThreadView> = model.threads().filter(on_line).collect();
+    here.sort_by_key(|t| t.status != ThreadStatus::Open);
+    here.first().map(|t| t.id.clone())
 }
 
 /// Gives the panel the keyboard, its first row selected when none is.

@@ -353,6 +353,27 @@ fn focus_cycles_between_panes(cx: &mut gpui_kit::TestAppContext) {
     );
     keys(&mut shell, "tab");
     assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    // Esc in the filter box hands the keyboard back to the tree's list.
+    focus_pane(&mut shell, &tab, &Pane::Tree);
+    keys(&mut shell, "/");
+    assert!(
+        shell
+            .cx
+            .update(|window, _| filter_focused.is_focused(window))
+    );
+    keys(&mut shell, "escape");
+    assert!(
+        !shell
+            .cx
+            .update(|window, _| filter_focused.is_focused(window))
+    );
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    assert!(
+        shell
+            .cx
+            .update(|window, _| window.context_stack().iter().any(|c| c.contains("Tree"))),
+        "the list (key context `Tree`) has the keyboard"
+    );
 
     // A hidden threads panel is skipped; without composers the cycle is
     // tree ⇄ viewport.
@@ -485,6 +506,110 @@ fn threads_panel_works_from_the_keyboard(cx: &mut gpui_kit::TestAppContext) {
         Ok(t) => t.comments.iter().all(|c| c.deleted),
     };
     assert!(gone, "the draft is deleted");
+}
+
+/// From the diff, the destructive thread actions act on the thread the
+/// last `.`/`,` (or panel jump) went to while the cursor is still there,
+/// else on the thread on the cursor's line — never on a stale panel
+/// selection somewhere else in the review.
+#[gpui_kit::test]
+fn thread_actions_in_the_diff_ignore_a_stale_selection(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let question = create(
+        &mut shell,
+        &tab,
+        new_line("src/config.rs", 2),
+        "Why this?",
+        AuthorKind::Agent,
+    );
+    let own = create(
+        &mut shell,
+        &tab,
+        new_line("src/config.rs", 6),
+        "Mine",
+        AuthorKind::Human,
+    );
+    let current = |shell: &mut Shell| {
+        shell.cx.update(|window, cx| {
+            let t = tab.read(cx);
+            threads::current_thread(t, window, cx)
+        })
+    };
+    let dispatch = |shell: &mut Shell, action: Box<dyn gpui_kit::Action>| {
+        shell
+            .cx
+            .update(|window, cx| window.dispatch_action(action, cx));
+        draw(shell.cx);
+    };
+
+    // `.` goes to the question: the thread actions act on it.
+    cursor_at(&mut shell, &tab, 0, 0);
+    keys(&mut shell, ".");
+    assert_eq!(current(&mut shell).as_deref(), Some(question.as_str()));
+    // The cursor moves on to a line with no thread: nothing is current,
+    // though the panel still has the question selected.
+    cursor_at(&mut shell, &tab, 0, 3);
+    let selected = tab.read_with(shell.cx, |t, cx| {
+        threads::threads(t)
+            .unwrap()
+            .read(cx)
+            .selected()
+            .map(str::to_owned)
+    });
+    assert_eq!(selected.as_deref(), Some(question.as_str()));
+    assert_eq!(current(&mut shell), None);
+    dispatch(&mut shell, Box::new(actions::threads::ToggleResolved));
+    assert_eq!(
+        shell.core.thread(&question, Viewer::Agent).unwrap().status,
+        ThreadStatus::Open,
+        "resolve leaves the off-screen question alone"
+    );
+
+    // A panel jump to our draft, then the cursor moves off it: Delete
+    // leaves the draft alone (a draft would go at once, unasked).
+    tab.update_in(shell.cx, |t, window, cx| {
+        threads::activate_thread(t, &own, window, cx)
+    });
+    draw(shell.cx);
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    assert_eq!(current(&mut shell).as_deref(), Some(own.as_str()));
+    cursor_at(&mut shell, &tab, 0, 3);
+    assert_eq!(current(&mut shell), None);
+    dispatch(&mut shell, Box::new(actions::threads::DeleteComment));
+    assert!(!has_dialog(&mut shell));
+    let mine = shell
+        .core
+        .thread(&own, Viewer::Human)
+        .expect("the draft stays");
+    assert!(mine.comments.iter().all(|c| !c.deleted), "the draft stays");
+    dispatch(&mut shell, Box::new(actions::threads::ToggleResolved));
+    assert_eq!(
+        shell.core.thread(&question, Viewer::Agent).unwrap().status,
+        ThreadStatus::Open
+    );
+
+    // Neither the panel nor the diff has the keyboard (the tree does):
+    // nothing is current either.
+    focus_pane(&mut shell, &tab, &Pane::Tree);
+    assert_eq!(current(&mut shell), None);
+    dispatch(&mut shell, Box::new(actions::threads::DeleteComment));
+    assert!(
+        shell
+            .core
+            .thread(&own, Viewer::Human)
+            .unwrap()
+            .comments
+            .iter()
+            .all(|c| !c.deleted)
+    );
+
+    // The panel with the keyboard acts on its selected row.
+    let panel = panel_focus(&mut shell, &tab);
+    focus_on(&mut shell, &panel);
+    assert_eq!(current(&mut shell).as_deref(), Some(own.as_str()));
 }
 
 /// A repo whose `feature` branch gains a second commit (a second
@@ -628,6 +753,16 @@ fn escape_closes_popovers_and_dialogs(cx: &mut gpui_kit::TestAppContext) {
         "i",
         &iteration_menu,
     );
+    // `i` again while the menu shows replaces it, and Esc still hands the
+    // keyboard back to the diff (not to the replaced menu).
+    esc_closes(
+        &mut shell,
+        &tab,
+        "the reopened iteration menu",
+        v(),
+        "i i",
+        &iteration_menu,
+    );
     // The find bar.
     let find = |shell: &mut Shell| {
         tab.read_with(shell.cx, |t, cx| {
@@ -712,17 +847,61 @@ fn submit_dialog_verdicts_and_tab_work_from_the_keyboard(cx: &mut gpui_kit::Test
         verdict(&mut shell),
         polygloss_core::review::Verdict::Comment
     );
-    // ⇥ leaves the summary (nothing typed into it) for the dialog's other
-    // controls, and stays in the dialog; ⇧⇥ comes back.
+    // ⇥ leaves the summary (nothing typed into it) for the first verdict
+    // radio (Space picks it), and stays in the dialog; ⇧⇥ comes back.
     shell.cx.simulate_input("Summary");
     draw(shell.cx);
+    keys(&mut shell, "cmd-3");
+    let summary_focused =
+        |shell: &mut Shell| shell.cx.update(|window, _| summary.is_focused(window));
     keys(&mut shell, "tab");
-    assert!(!shell.cx.update(|window, _| summary.is_focused(window)));
+    assert!(!summary_focused(&mut shell));
     assert!(has_dialog(&mut shell));
     assert_eq!(dialog.read_with(shell.cx, |d, cx| d.summary(cx)), "Summary");
+    press_space(&mut shell);
+    assert_eq!(
+        verdict(&mut shell),
+        polygloss_core::review::Verdict::Comment,
+        "the first ⇥ lands on the Comment radio"
+    );
     keys(&mut shell, "shift-tab");
-    assert!(shell.cx.update(|window, _| summary.is_focused(window)));
+    assert!(summary_focused(&mut shell));
     assert_eq!(dialog.read_with(shell.cx, |d, cx| d.summary(cx)), "Summary");
+    // ⇥ on through the radios (Space picks each), then Cancel, Submit
+    // review and the dialog's close button, and around to the summary.
+    keys(&mut shell, "tab");
+    keys(&mut shell, "tab");
+    press_space(&mut shell);
+    assert_eq!(
+        verdict(&mut shell),
+        polygloss_core::review::Verdict::Approve
+    );
+    keys(&mut shell, "tab");
+    press_space(&mut shell);
+    assert_eq!(
+        verdict(&mut shell),
+        polygloss_core::review::Verdict::RequestChanges
+    );
+    for stop in ["Cancel", "Submit review", "the close button"] {
+        keys(&mut shell, "tab");
+        assert!(!summary_focused(&mut shell), "⇥ to {stop}");
+        assert!(has_dialog(&mut shell), "⇥ to {stop}");
+    }
+    keys(&mut shell, "tab");
+    assert!(summary_focused(&mut shell), "⇥ wraps around to the summary");
     keys(&mut shell, "escape");
     assert!(!has_dialog(&mut shell));
+}
+
+/// Space as a real key press, down and up (gpui-kit's radios and buttons
+/// do not activate on `simulate_keystrokes` alone).
+fn press_space(shell: &mut Shell) {
+    let keystroke = gpui_kit::Keystroke::parse("space").unwrap();
+    shell.cx.simulate_event(gpui_kit::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    shell.cx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+    draw(shell.cx);
 }

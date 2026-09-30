@@ -775,7 +775,7 @@ Keyboard-only use (OQ-23, plan T5.6): every action has a key or a palette row, a
 | `⌘1` / `⌘2` / `⌘3` | Verdict Comment / Approve / Request changes                                                  | Submit dialog |
 | `R`                | Reload the list                                                                              | Home          |
 
-The pane with the keyboard shows a focus ring while the keyboard is in use (focus-visible: a click does not light it). In the composer and the Submit review summary, `⇥` moves on instead of indenting (`⌘]` / `⌘[` indent). `Esc` closes every dialog, popover and menu and hands the keyboard back. From the diff, the threads actions act on the thread the last `.` / `,` went to, else the one on the cursor's line.
+The pane with the keyboard shows a focus ring while the keyboard is in use (focus-visible: a click does not light it). In the composer and the Submit review summary, `⇥` moves on instead of indenting (`⌘]` / `⌘[` indent). `Esc` closes every dialog, popover and menu and hands the keyboard back. The threads actions act on the panel's selected row while the panel has the keyboard; from the diff, on the thread the last `.` / `,` (or a panel jump) went to while the cursor is still there, else the one on the cursor's line, else on none. Anywhere else (the tree, a toolbar button) they act on none: the panel's selection may be off screen, and "Delete my comment" drops a draft without asking.
 
 ### 11.10 Themes and fonts (ADR-0024)
 

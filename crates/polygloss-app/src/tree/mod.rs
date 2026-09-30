@@ -179,6 +179,10 @@ pub struct FileTree {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The file tree's own key context, around its list, filter box and
+/// filter menu (no bindings use it: [`FileTree::contains_focus`] does).
+pub const KEY_CONTEXT: &str = "FileTree";
+
 impl EventEmitter<FileTreeEvent> for FileTree {}
 
 impl FileTree {
@@ -275,7 +279,8 @@ impl FileTree {
         self.filter_input.focus_handle(cx)
     }
 
-    /// Whether the filter menu is open (from the keyboard or the mouse).
+    /// Whether the filter menu opened from the keyboard (`f`) is open (the
+    /// button's own dropdown, opened with the mouse, is gpui-kit's).
     pub fn filter_menu_open(&self) -> bool {
         self.key_menu.is_some()
     }
@@ -295,6 +300,7 @@ impl FileTree {
         let (f, extensions) = (self.filters.clone(), filters::extensions(&self.files));
         let menu = KeyMenu::open(
             |t: &mut FileTree| Some(&mut t.key_menu),
+            self.key_menu.take(),
             move |menu, _, _| build_filter_menu(&tree, f, extensions, menu),
             window,
             cx,
@@ -537,10 +543,15 @@ impl FileTree {
         self.step(-1, cx);
     }
 
-    /// Whether the keyboard is in the tree: its list (key context `Tree`),
-    /// its filter box or its filter menu.
+    /// Whether the keyboard is in the tree: its list, its filter box or its
+    /// filter menu. gpui-kit's `TreeState` does not expose its focus handle,
+    /// so the list is found by this widget's own key context
+    /// ([`KEY_CONTEXT`]), not gpui-kit's `Tree` (any tree widget has that).
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
-        window.context_stack().iter().any(|c| c.contains("Tree"))
+        window
+            .context_stack()
+            .iter()
+            .any(|c| c.contains(KEY_CONTEXT))
             || self.filter_input.focus_handle(cx).is_focused(window)
             || self
                 .key_menu
@@ -925,6 +936,7 @@ impl Render for FileTree {
                 .into_any_element()
         };
         v_flex()
+            .key_context(KEY_CONTEXT)
             .size_full()
             .bg(theme.sidebar)
             .child(
