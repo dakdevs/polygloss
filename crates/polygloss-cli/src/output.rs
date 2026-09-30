@@ -4,7 +4,8 @@
 //! A command prints one JSON object on stdout, or in human mode a few lines of
 //! text. Errors exit 1: in JSON mode `{"error": {"code", "message"}}` on
 //! stdout (codes as MCP's, design §15.1), in human mode `polygloss: <message>`
-//! on stderr.
+//! on stderr. Usage errors exit 2, in JSON mode with the CLI-only code
+//! `invalid_args`.
 
 use std::fmt;
 use std::io::{IsTerminal as _, Write as _};
@@ -61,6 +62,14 @@ impl CliError {
 
     pub fn internal(message: impl Into<String>) -> CliError {
         CliError::new("internal", message)
+    }
+
+    /// A clap usage error: code `invalid_args`, clap's text without the
+    /// `error: ` prefix or colors.
+    pub fn from_usage(err: &clap::Error) -> CliError {
+        let text = err.render().to_string();
+        let text = text.trim();
+        CliError::new("invalid_args", text.strip_prefix("error: ").unwrap_or(text))
     }
 
     /// The JSON-mode error object.
@@ -149,5 +158,19 @@ mod tests {
             (api.code.as_str(), api.message.as_str()),
             ("internal", "boom")
         );
+    }
+
+    #[test]
+    fn usage_errors_are_invalid_args_without_prefix_or_colors() {
+        use clap::CommandFactory as _;
+        let err = crate::cli::Cli::command()
+            .color(clap::ColorChoice::Always)
+            .try_get_matches_from(["polygloss", "threads"])
+            .expect_err("missing review id");
+        let e = CliError::from_usage(&err);
+        assert_eq!(e.code, "invalid_args");
+        assert!(e.message.contains("<REVIEW_ID>"), "{}", e.message);
+        assert!(!e.message.starts_with("error:"), "{}", e.message);
+        assert!(!e.message.contains('\u{1b}'), "{}", e.message);
     }
 }

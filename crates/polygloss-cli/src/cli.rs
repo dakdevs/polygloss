@@ -11,11 +11,17 @@
 //! ```
 //!
 //! The global flags (`--repo`, `--json`, `--no-open`, `--agent`, `--session`)
-//! are accepted before or after the subcommand.
+//! are accepted before or after the subcommand. Parse with
+//! [`Cli::try_parse_args`], which also rejects the live review's `--since` and
+//! `<PATH>` next to a subcommand.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{Args, CommandFactory as _, Parser, Subcommand};
+
+use crate::output::Mode;
 
 use crate::commands::json::{
     CommentArgs, DeleteArgs, EditArgs, FocusArgs, ReplyArgs, RereviewArgs, ResolveArgs,
@@ -28,14 +34,16 @@ use crate::debug::DebugArgs;
 /// Local diff reviewer for humans and coding agents.
 ///
 /// Without a subcommand, opens a live review of the worktree at <PATH> (default:
-/// the current directory) against its merge-base with the default branch.
+/// the current directory) against its merge-base with the default branch. A
+/// directory named like a subcommand needs a `./` prefix.
+//
+// Not `args_conflicts_with_subcommands`: with it, any root argument parsed
+// first (a global flag included) stops clap from matching subcommands, so
+// `polygloss --json show HEAD` would read `show` as the live review's PATH.
+// Subcommand names win instead, and `try_parse_args` rejects `--since`/PATH
+// next to a subcommand.
 #[derive(Debug, Parser)]
-#[command(
-    name = "polygloss",
-    version = polygloss_core::VERSION,
-    args_conflicts_with_subcommands = true,
-    subcommand_negates_reqs = true
-)]
+#[command(name = "polygloss", version = polygloss_core::VERSION)]
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
@@ -43,6 +51,71 @@ pub struct Cli {
     pub live: LiveArgs,
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Cli {
+    /// Parses `args` (argv, program name first): clap, then the live review's
+    /// arguments never combine with a subcommand.
+    pub fn try_parse_args<I, T>(args: I) -> Result<Cli, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let cli = Cli::try_parse_from(args)?;
+        if let Some(command) = &cli.command {
+            let live = [
+                cli.live.since.as_ref().map(|_| "--since".to_owned()),
+                cli.live
+                    .path
+                    .as_ref()
+                    .map(|p| format!("PATH '{}'", p.display())),
+            ];
+            let live: Vec<String> = live.into_iter().flatten().collect();
+            if !live.is_empty() {
+                return Err(Cli::command().error(
+                    ErrorKind::ArgumentConflict,
+                    format!(
+                        "the live review's {} cannot be used with the subcommand '{}'",
+                        live.join(" and "),
+                        command.name()
+                    ),
+                ));
+            }
+        }
+        Ok(cli)
+    }
+}
+
+/// How a usage error (a [`clap::Error`] other than `--help`/`--version`) is
+/// reported for `args`: `None` leaves it to clap (plain text on stderr), for
+/// `mcp`, `wait` and `debug`, whose stdout is a protocol, and in human mode;
+/// `Some(Mode::Json)` prints `{"error": {"code": "invalid_args", "message"}}`
+/// on stdout, for the JSON CLI and, like results, when `--json` is given or
+/// stdout is not a terminal.
+pub fn usage_error_mode(args: &[OsString], stdout_is_tty: bool) -> Option<Mode> {
+    let json_flag = args
+        .iter()
+        .skip(1)
+        .take_while(|a| a.as_os_str() != "--")
+        .any(|a| a.as_os_str() == "--json");
+    match usage_subcommand(args).as_deref() {
+        Some("mcp" | "wait" | "debug") => None,
+        Some(name) if Command::is_json_cli(name) => Some(Mode::Json),
+        _ => match Mode::choose(json_flag, stdout_is_tty) {
+            Mode::Json => Some(Mode::Json),
+            Mode::Human => None,
+        },
+    }
+}
+
+/// Best effort: the subcommand `args` meant, even though parsing failed.
+pub fn usage_subcommand(args: &[OsString]) -> Option<String> {
+    Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(args)
+        .ok()?
+        .subcommand_name()
+        .map(str::to_owned)
 }
 
 /// Flags every command accepts (design §14 "Global flags").
@@ -123,6 +196,53 @@ pub enum Command {
     Debug(DebugArgs),
 }
 
+impl Command {
+    /// The subcommand's name on the command line (`wait-review`).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Command::Show(_) => "show",
+            Command::Compare(_) => "compare",
+            Command::Open(_) => "open",
+            Command::Snapshot(_) => "snapshot",
+            Command::Mcp(_) => "mcp",
+            Command::Wait(_) => "wait",
+            Command::Reviews(_) => "reviews",
+            Command::Threads(_) => "threads",
+            Command::Thread(_) => "thread",
+            Command::Reply(_) => "reply",
+            Command::Resolve(_) => "resolve",
+            Command::Unresolve(_) => "unresolve",
+            Command::Edit(_) => "edit",
+            Command::Delete(_) => "delete",
+            Command::Comment(_) => "comment",
+            Command::WaitReview(_) => "wait-review",
+            Command::Rereview(_) => "rereview",
+            Command::Focus(_) => "focus",
+            Command::Debug(_) => "debug",
+        }
+    }
+
+    /// The JSON CLI's commands, which always print JSON.
+    pub const JSON_CLI: [&'static str; 12] = [
+        "reviews",
+        "threads",
+        "thread",
+        "reply",
+        "resolve",
+        "unresolve",
+        "edit",
+        "delete",
+        "comment",
+        "wait-review",
+        "rereview",
+        "focus",
+    ];
+
+    pub fn is_json_cli(name: &str) -> bool {
+        Command::JSON_CLI.contains(&name)
+    }
+}
+
 /// `polygloss show <rev>`.
 #[derive(Debug, Clone, Args)]
 pub struct ShowArgs {
@@ -170,7 +290,17 @@ pub struct SnapshotArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory as _;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_args(std::iter::once("polygloss").chain(args.iter().copied()))
+    }
+
+    fn os(args: &[&str]) -> Vec<OsString> {
+        std::iter::once("polygloss")
+            .chain(args.iter().copied())
+            .map(OsString::from)
+            .collect()
+    }
 
     #[test]
     fn command_tree_is_consistent() {
@@ -179,39 +309,155 @@ mod tests {
 
     #[test]
     fn global_flags_parse_after_subcommands() {
-        let cli = Cli::try_parse_from([
-            "polygloss",
-            "show",
-            "HEAD",
-            "--json",
-            "--no-open",
-            "--repo",
-            "/r",
-        ])
-        .expect("parse");
+        let cli = parse(&["show", "HEAD", "--json", "--no-open", "--repo", "/r"]).expect("parse");
         assert!(cli.global.json && cli.global.no_open);
         assert_eq!(cli.global.repo, Some(PathBuf::from("/r")));
         assert!(matches!(cli.command, Some(Command::Show(ShowArgs { ref rev })) if rev == "HEAD"));
     }
 
     #[test]
+    fn global_flags_parse_before_subcommands() {
+        let cli = parse(&["--json", "--no-open", "show", "HEAD"]).expect("show");
+        assert!(cli.global.json && cli.global.no_open);
+        assert!(matches!(cli.command, Some(Command::Show(ShowArgs { ref rev })) if rev == "HEAD"));
+        assert!(cli.live.path.is_none());
+
+        let cli = parse(&["--repo", "/x", "snapshot"]).expect("snapshot");
+        assert_eq!(cli.global.repo, Some(PathBuf::from("/x")));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Snapshot(SnapshotArgs { path: None, .. }))
+        ));
+
+        let cli = parse(&["--session", "s1", "wait"]).expect("wait");
+        assert_eq!(cli.global.session.as_deref(), Some("s1"));
+        assert!(matches!(cli.command, Some(Command::Wait(_))));
+
+        let cli = parse(&["--no-open", "open", "deadbeef"]).expect("open");
+        assert!(cli.global.no_open);
+        assert!(
+            matches!(cli.command, Some(Command::Open(OpenArgs { ref diff })) if diff == "deadbeef")
+        );
+
+        let cli = parse(&["--agent", "x", "reviews"]).expect("reviews");
+        assert_eq!(cli.global.agent.as_deref(), Some("x"));
+        assert!(matches!(cli.command, Some(Command::Reviews(_))));
+
+        let cli = parse(&["--json", "mcp", "--channel"]).expect("mcp");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Mcp(McpArgs { channel: true }))
+        ));
+
+        // Mixed: some before, some after.
+        let cli =
+            parse(&["--json", "compare", "a", "b", "--no-open", "--repo", "/r"]).expect("compare");
+        assert!(cli.global.json && cli.global.no_open);
+        assert!(matches!(cli.command, Some(Command::Compare(_))));
+    }
+
+    #[test]
+    fn subcommand_help_after_a_global_flag_is_the_subcommand_help() {
+        let err = parse(&["--json", "mcp", "--help"]).expect_err("help");
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+        assert!(err.to_string().contains("--channel"), "{err}");
+    }
+
+    #[test]
     fn bare_invocation_is_the_live_review() {
-        let cli = Cli::try_parse_from(["polygloss", "--since", "HEAD", "some/dir"]).expect("parse");
+        let cli = parse(&["--since", "HEAD", "some/dir"]).expect("parse");
         assert!(cli.command.is_none());
         assert_eq!(cli.live.since.as_deref(), Some("HEAD"));
         assert_eq!(cli.live.path, Some(PathBuf::from("some/dir")));
-        // A live flag never combines with a subcommand.
-        assert!(Cli::try_parse_from(["polygloss", "--since", "HEAD", "show", "x"]).is_err());
+
+        let cli = parse(&["--json", "--no-open", "some/dir", "--repo", "/r"]).expect("flags");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.live.path, Some(PathBuf::from("some/dir")));
+        assert!(cli.global.json && cli.global.no_open);
+
+        // A directory named like a subcommand needs `./`.
+        let cli = parse(&["./show"]).expect("dir");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.live.path, Some(PathBuf::from("./show")));
+    }
+
+    #[test]
+    fn live_arguments_never_combine_with_a_subcommand() {
+        for args in [
+            &["--since", "HEAD", "show", "x"][..],
+            &["--json", "--since", "HEAD", "wait"],
+            &["some/dir", "show", "x"],
+            &["--no-open", "some/dir", "snapshot"],
+        ] {
+            let err = parse(args).expect_err(&format!("{args:?}"));
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{args:?}: {err}");
+            assert!(err.to_string().contains("live review"), "{err}");
+        }
+        // The subcommand's own --since is fine.
+        let cli = parse(&["snapshot", "--since", "HEAD"]).expect("snapshot --since");
+        assert!(
+            matches!(cli.command, Some(Command::Snapshot(SnapshotArgs { ref since, .. })) if since.as_deref() == Some("HEAD"))
+        );
     }
 
     #[test]
     fn wait_takes_the_global_session() {
-        let cli = Cli::try_parse_from(["polygloss", "wait", "--session", "abc", "--timeout", "90"])
-            .expect("parse");
+        let cli = parse(&["wait", "--session", "abc", "--timeout", "90"]).expect("parse");
         assert_eq!(cli.global.session.as_deref(), Some("abc"));
         let Some(Command::Wait(args)) = cli.command else {
             panic!("not wait");
         };
         assert_eq!(args.timeout, Some(90));
+    }
+
+    #[test]
+    fn command_names_match_the_tree() {
+        let tree: Vec<String> = Cli::command()
+            .get_subcommands()
+            .map(|c| c.get_name().to_owned())
+            .collect();
+        for name in Command::JSON_CLI {
+            assert!(tree.iter().any(|t| t == name), "{name}");
+        }
+        let cli = parse(&["wait-review", "r1"]).expect("wait-review");
+        assert_eq!(cli.command.expect("command").name(), "wait-review");
+        let cli = parse(&["snapshot"]).expect("snapshot");
+        assert_eq!(cli.command.expect("command").name(), "snapshot");
+    }
+
+    #[test]
+    fn usage_errors_are_json_for_the_json_cli_and_json_mode() {
+        // The JSON CLI always prints JSON, flags before or after.
+        assert_eq!(usage_error_mode(&os(&["threads"]), true), Some(Mode::Json));
+        assert_eq!(
+            usage_error_mode(&os(&["--agent", "a", "reply", "t1", "--bogus"]), true),
+            Some(Mode::Json)
+        );
+        // Human commands follow --json and the terminal.
+        assert_eq!(usage_error_mode(&os(&["show"]), true), None);
+        assert_eq!(usage_error_mode(&os(&["show"]), false), Some(Mode::Json));
+        assert_eq!(
+            usage_error_mode(&os(&["--json", "show"]), true),
+            Some(Mode::Json)
+        );
+        assert_eq!(
+            usage_error_mode(&os(&["show", "--json"]), true),
+            Some(Mode::Json)
+        );
+        assert_eq!(usage_error_mode(&os(&["--bogus"]), false), Some(Mode::Json));
+        assert_eq!(usage_error_mode(&os(&["show", "--", "--json"]), true), None);
+        assert_eq!(
+            usage_subcommand(&os(&["--repo", "/r", "wait", "--bogus"])).as_deref(),
+            Some("wait")
+        );
+        assert_eq!(usage_subcommand(&os(&["--bogus"])), None);
+        // stdout is the protocol of mcp, wait and debug: clap's own text.
+        for sub in ["mcp", "wait", "debug"] {
+            assert_eq!(
+                usage_error_mode(&os(&["--json", sub, "--bogus"]), false),
+                None,
+                "{sub}"
+            );
+        }
     }
 }

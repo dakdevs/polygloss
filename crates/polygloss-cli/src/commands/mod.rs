@@ -113,7 +113,7 @@ fn latest_seq(core: &Core) -> Result<i64, CliError> {
 }
 
 /// The review's display label (`reviews.label`).
-fn review_label(core: &Core, review_id: &str) -> Result<Option<String>, CliError> {
+pub fn review_label(core: &Core, review_id: &str) -> Result<Option<String>, CliError> {
     Ok(core
         .store
         .read(|c| {

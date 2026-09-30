@@ -1,8 +1,9 @@
 // The human CLI (design §14, T4.3): `polygloss [--since …] [<path>]`, `show`,
 // `compare`, `open`, `snapshot`, the global flags, JSON output and errors.
-// Every command runs with `--no-open`, or against a fake app bound at the
-// sandbox socket, or with POLYGLOSS_TEST=1 and POLYGLOSS_APP_BIN pointing
-// at a fake app: never the installed Polygloss on the real data dir.
+// Every command runs with POLYGLOSS_TEST=1, which refuses to launch anything
+// but POLYGLOSS_APP_BIN (a fake app), and with `--no-open` or against a fake
+// app bound at the sandbox socket: never the installed Polygloss on the real
+// data dir.
 import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
@@ -21,6 +22,9 @@ import { makeSandbox } from "../support/sandbox";
 
 const sandbox = makeSandbox();
 afterAll(() => sandbox.cleanup());
+// Test mode without POLYGLOSS_APP_BIN: a command that forgets `--no-open`
+// fails with app_unavailable instead of launching the installed app.
+const cliEnv: Record<string, string> = { ...sandbox.env, POLYGLOSS_TEST: "1" };
 // A debug-build live open snapshots the worktree with several git calls
 // (about 0.6 s each here); some tests run a handful.
 setDefaultTimeout(60_000);
@@ -56,7 +60,7 @@ function run(
   opts: { env?: Record<string, string>; cwd?: string } = {},
 ): { json: Json; stdout: string; stderr: string; exitCode: number } {
   const r = Bun.spawnSync([cliBin(), ...args], {
-    env: opts.env ?? sandbox.env,
+    env: opts.env ?? cliEnv,
     cwd: opts.cwd,
   });
   const stdout = r.stdout.toString();
@@ -72,7 +76,7 @@ function run(
 /** Runs the CLI with stdout on a pseudo-terminal (`script`). */
 function runOnTty(
   args: string[],
-  env: Record<string, string> = sandbox.env,
+  env: Record<string, string> = cliEnv,
 ): {
   output: string;
   exitCode: number;
@@ -407,6 +411,101 @@ describe("polygloss human commands", () => {
     expect(second.json.review_id).toBe(snap.json.review_id);
   });
 
+  test("global flags work before the subcommand", () => {
+    const repo = makeRepo("flags-first");
+    commitFile(repo, "a.txt", "first\n", "second");
+    // Directories named like subcommands: a live review of any of them would
+    // succeed, so reading the subcommand as PATH would record one.
+    for (const dir of ["show", "snapshot", "wait", "reviews", "open"])
+      mkdirSync(join(repo, dir));
+    const reviewCount = () =>
+      query<{ n: number }>("SELECT COUNT(*) AS n FROM reviews").n;
+
+    const shown = run(["--json", "--no-open", "show", "HEAD"], { cwd: repo });
+    expect(shown.stderr).toBe("");
+    expect(shown.exitCode).toBe(0);
+    expect(shown.json).toMatchObject({
+      kind: "commit",
+      review_key: `commit:${git(repo, ["rev-parse", "HEAD"])}`,
+      app: "skipped",
+    });
+
+    const opened = run(["--no-open", "open", shown.json.diff_id.slice(0, 8)]);
+    expect(opened.exitCode).toBe(0);
+    expect(opened.json).toMatchObject({
+      diff_id: shown.json.diff_id,
+      review_id: shown.json.review_id,
+      app: "skipped",
+    });
+
+    writeFileSync(join(repo, "a.txt"), "first\nedited\n");
+    const snap = run(["--repo", repo, "snapshot"], { cwd: sandbox.home });
+    expect(snap.exitCode).toBe(0);
+    expect(snap.json).toMatchObject({
+      kind: "live",
+      review_key: `worktree:${repo}@main#since=merge-base`,
+      iteration: 1,
+      app: "skipped",
+    });
+
+    // `wait` and the JSON CLI are later tasks' stubs here; whatever they
+    // print, they must not open a live review of `<cwd>/wait` or `reviews`.
+    const before = reviewCount();
+    for (const args of [
+      ["--session", "S", "wait", "--timeout", "1"],
+      ["--agent", "x", "reviews"],
+      ["--json", "--session", "S", "reviews"],
+    ]) {
+      const r = run(args, { cwd: repo });
+      expect(r.json.review_key).toBeUndefined();
+      expect(r.json.kind).toBeUndefined();
+    }
+    expect(reviewCount()).toBe(before);
+
+    // A global flag first still gives the subcommand's help.
+    const help = run(["--json", "mcp", "--help"]);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain("--channel");
+  });
+
+  test("usage errors exit 2 with an invalid_args error in json mode", () => {
+    const repo = makeRepo("usage");
+    // The live review's --since or PATH never combine with a subcommand.
+    for (const args of [
+      ["--since", "HEAD", "show", "HEAD"],
+      [repo, "snapshot"],
+    ]) {
+      const r = run(["--no-open", ...args], { cwd: repo });
+      expect(r.exitCode).toBe(2);
+      expect(r.json.error.code).toBe("invalid_args");
+      expect(r.json.error.message).toContain("live review");
+    }
+    // A missing argument of the JSON CLI: JSON even on a terminal.
+    const missing = run(["threads"]);
+    expect(missing.exitCode).toBe(2);
+    expect(missing.json.error.code).toBe("invalid_args");
+    expect(missing.json.error.message).toContain("<REVIEW_ID>");
+    const onTty = runOnTty(["reply"]);
+    expect(onTty.exitCode).toBe(2);
+    expect(onTty.output).toContain('"invalid_args"');
+
+    // Human mode: clap's text on stderr.
+    const human = runOnTty(["show"]);
+    expect(human.exitCode).toBe(2);
+    expect(human.output).toContain("<REV>");
+    expect(human.output).not.toContain("invalid_args");
+    // `mcp` keeps stdout for JSON-RPC: clap's text on stderr only.
+    const mcp = run(["mcp", "--bogus"]);
+    expect(mcp.exitCode).toBe(2);
+    expect(mcp.stdout).toBe("");
+    expect(mcp.stderr).toContain("--bogus");
+    // `wait`'s exit 2 wakes the session, so its usage errors exit 1.
+    const wait = run(["--session", "S", "wait", "--bogus"]);
+    expect(wait.exitCode).toBe(1);
+    expect(wait.stdout).toBe("");
+    expect(wait.stderr).toContain("--bogus");
+  });
+
   test("the command tree has every section 14 command", () => {
     const help = run(["--help"]);
     expect(help.exitCode).toBe(0);
@@ -497,7 +596,7 @@ function readOps(dataDir: string): Json[] {
 describe("human commands show the review in the app", () => {
   test("a running app is asked to open the review with activate", async () => {
     const dataDir = shortDataDir();
-    const env = { ...sandbox.env, POLYGLOSS_DATA_DIR: dataDir };
+    const env = { ...cliEnv, POLYGLOSS_DATA_DIR: dataDir };
     const script = join(dataDir, "fake-app.ts");
     writeFileSync(script, fakeAppSource());
     const app = Bun.spawn([process.execPath, script], {

@@ -2,9 +2,10 @@
 //! and `polygloss wait` (design §14). Never links GPUI, lumis or tree-sitter.
 //!
 //! Exit codes: 0 success, 1 error (in JSON mode with `{"error": {"code",
-//! "message"}}` on stdout), 2 a usage error from clap, or `polygloss wait`
-//! waking the session. `mcp`, `wait` and `debug` keep stdout for their own
-//! protocols and report errors on stderr only.
+//! "message"}}` on stdout), 2 a usage error from clap (in JSON mode with code
+//! `invalid_args`; `wait` exits 1 instead), or `polygloss wait` waking the
+//! session. `mcp`, `wait` and `debug` keep stdout for their own protocols and
+//! report errors on stderr only.
 #![forbid(unsafe_code)]
 
 mod cli;
@@ -13,16 +14,20 @@ mod debug;
 mod debug_human;
 mod output;
 
+use std::ffi::OsString;
+use std::io::IsTerminal as _;
 use std::process::ExitCode;
-
-use clap::Parser;
 
 use cli::{Cli, Command};
 use commands::json::JsonCommand;
 use output::{CliError, Mode, Report};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let cli = match Cli::try_parse_args(&args) {
+        Ok(cli) => cli,
+        Err(err) => return usage_error(err, &args),
+    };
     let global = cli.global;
     let mode = Mode::detect(global.json);
     let command = match cli.command {
@@ -61,6 +66,26 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => fail(Mode::Json, &err),
+    }
+}
+
+/// `--help`/`--version` (exit 0) and usage errors (exit 2): clap's text, or in
+/// JSON mode an `invalid_args` error object on stdout. `wait` exits 1 instead,
+/// since its exit 2 wakes the agent's session (design §14, §16).
+fn usage_error(err: clap::Error, args: &[OsString]) -> ExitCode {
+    if !err.use_stderr() {
+        err.exit();
+    }
+    if cli::usage_subcommand(args).as_deref() == Some("wait") {
+        let _ = err.print();
+        return ExitCode::FAILURE;
+    }
+    match cli::usage_error_mode(args, std::io::stdout().is_terminal()) {
+        Some(Mode::Json) => {
+            output::print_error(Mode::Json, &CliError::from_usage(&err));
+            ExitCode::from(2)
+        }
+        _ => err.exit(),
     }
 }
 

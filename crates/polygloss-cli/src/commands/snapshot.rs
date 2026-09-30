@@ -25,5 +25,11 @@ pub fn run(args: SnapshotArgs, global: &GlobalArgs) -> Result<Report, CliError> 
     })?;
     super::nudge(&core);
     let url = super::url_for(&opened);
-    Ok(super::opened_report(&opened, None, &url, AppShown::Skipped))
+    let label = super::review_label(&core, &opened.review_id)?;
+    Ok(super::opened_report(
+        &opened,
+        label.as_deref(),
+        &url,
+        AppShown::Skipped,
+    ))
 }
