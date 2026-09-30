@@ -11,6 +11,7 @@
 
 use std::fmt::Write as _;
 
+use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{PositionState, ReviewFilter, ReviewSummary, ThreadView};
 use polygloss_diff::hunks::diff_blobs;
 use polygloss_diff::options::DiffOptions;
@@ -437,6 +438,11 @@ fn status_text(f: &FileChange) -> &'static str {
 /// Added and deleted lines of a text file (`None` for binaries, submodules and
 /// unreadable blobs).
 fn line_counts(f: &FileChange, dc: &DiffContext) -> Option<(u32, u32)> {
+    line_counts_with(f, &dc.blobs)
+}
+
+/// [`line_counts`] reading the blobs through `blobs`.
+pub(crate) fn line_counts_with(f: &FileChange, blobs: &BlobReader) -> Option<(u32, u32)> {
     if matches!(f.kind, FileKind::Binary | FileKind::Submodule) {
         return None;
     }
@@ -444,12 +450,24 @@ fn line_counts(f: &FileChange, dc: &DiffContext) -> Option<(u32, u32)> {
         if absent || blob.is_zero() {
             return Some(Vec::new());
         }
-        dc.blobs.read(blob).ok().map(|b| b.to_vec())
+        blobs.read(blob).ok().map(|b| b.to_vec())
     };
     let old = read(&f.old_blob, f.status == FileStatus::Added)?;
     let new = read(&f.new_blob, f.status == FileStatus::Deleted)?;
     let fd = diff_blobs(&old, &new, &DiffOptions::default());
     Some((fd.additions, fd.deletions))
+}
+
+/// A file status as JSON results spell it: `added`, `modified`, `deleted`,
+/// `renamed` or `type_changed`.
+pub(crate) fn file_status(status: FileStatus) -> &'static str {
+    match status {
+        FileStatus::Added => "added",
+        FileStatus::Modified => "modified",
+        FileStatus::Deleted => "deleted",
+        FileStatus::Renamed => "renamed",
+        FileStatus::TypeChanged => "type_changed",
+    }
 }
 
 /// `text` in a fenced code block whose fence is longer than any backtick run

@@ -5,12 +5,15 @@
 //! - [`server`]: the rmcp tool router, instructions and result mapping;
 //!   [`serve_stdio`] runs it.
 //! - [`context`], [`session`], [`errors`], [`paging`]: what every tool shares.
+//! - [`app_link`]: what the write tools ask of the app (nudge, show, focus,
+//!   the hidden launch that lets a re-review request notify).
 //! - [`channel`]: opt-in `claude/channel` push (T4.13).
 //! - [`wake`]: which submissions wake a session, and the text (`polygloss wait`,
 //!   T4.8; the channel push reuses it).
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod app_link;
 pub mod channel;
 pub mod context;
 pub mod errors;

@@ -833,6 +833,28 @@ impl Core {
             .ok_or_else(|| CoreError::not_found("thread", thread_id))
     }
 
+    /// One comment as the viewer sees it in its thread (`NotFound` when it does
+    /// not exist for them: unknown, a draft or a draft thread for an agent, or
+    /// deleted without leaving a placeholder).
+    pub fn comment(&self, comment_id: &str, viewer: Viewer) -> Result<CommentView, CoreError> {
+        self.store
+            .read(|c| {
+                let thread: Option<String> = c
+                    .query_row(
+                        "SELECT thread_id FROM comments WHERE id = ?1",
+                        [comment_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let Some(thread) = thread else {
+                    return Ok(None);
+                };
+                Ok(load_thread(c, &thread, viewer, |_| true)?
+                    .and_then(|t| t.comments.into_iter().find(|x| x.id == comment_id)))
+            })?
+            .ok_or_else(|| CoreError::not_found("comment", comment_id))
+    }
+
     /// The review's unpublished comments (the Submit button's count).
     pub fn drafts_count(&self, review_id: &str) -> Result<u32, CoreError> {
         let n = self.store.read(|c| {

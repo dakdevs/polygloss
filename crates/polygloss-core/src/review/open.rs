@@ -172,6 +172,7 @@ impl Core {
                     base: res.base.clone(),
                     head_tree: head.tree.clone(),
                     head_commit: head.commit.clone(),
+                    head_ref: head.ref_name.clone(),
                     files,
                     live: None,
                     warnings: res.warnings.clone(),
@@ -223,6 +224,7 @@ impl Core {
                     base: res.base.clone(),
                     head_tree: state.head_tree.clone(),
                     head_commit: None,
+                    head_ref: None,
                     files,
                     live: Some(state),
                     warnings: res.warnings.clone(),
@@ -274,6 +276,57 @@ impl Core {
         let fixed_base = matches!(since, Since::Commit(_));
         let (it, _) = self.pin_state(&repo, review_id, base, fixed_base, live, by, actor)?;
         Ok(it)
+    }
+
+    /// A fresh, unpinned open of the live review `review_id`: its worktree
+    /// snapshotted now, against its stored `since`. Agents that pin the state next
+    /// (`create_comment`, `request_rereview`) pass `.base` and `.live` to
+    /// [`Core::pin_live_on_base`] / `request_rereview`. `Ok(None)` for commit and
+    /// compare reviews; `NotFound` for an unknown review; `Conflict` when the
+    /// worktree now belongs to another review (e.g. it is on another branch).
+    pub fn reopen_live(
+        &self,
+        review_id: &str,
+        actor: &Actor,
+    ) -> Result<Option<OpenedDiff>, CoreError> {
+        let row = self
+            .store
+            .read(|c| review_row(c, review_id))?
+            .ok_or_else(|| CoreError::not_found("review", review_id))?;
+        if row.kind != ReviewKind::Live.as_str() {
+            return Ok(None);
+        }
+        let worktree = row
+            .worktree_path
+            .as_deref()
+            .map(path_from_db)
+            .ok_or_else(|| {
+                CoreError::Store(StoreError::Integrity(format!(
+                    "live review {review_id} has no worktree path"
+                )))
+            })?;
+        let since = match row.since.as_deref().unwrap_or("merge-base") {
+            "merge-base" => Since::MergeBase,
+            "HEAD" => Since::Head,
+            oid => Since::Commit(oid.to_owned()),
+        };
+        let opened = self.open(&OpenRequest {
+            worktree: worktree.clone(),
+            source: Source::Live { since },
+            label: None,
+            pin: None,
+            actor: actor.clone(),
+        })?;
+        if opened.review_id != review_id {
+            return Err(CoreError::Conflict(format!(
+                "{} now shows review {} ({}), not review {review_id} ({})",
+                worktree.display(),
+                opened.review_id,
+                opened.review_key,
+                row.key
+            )));
+        }
+        Ok(Some(opened))
     }
 
     /// The review's iterations in `seq` order (empty for an unpinned live review).

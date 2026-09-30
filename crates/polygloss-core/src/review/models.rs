@@ -116,6 +116,9 @@ pub struct OpenedDiff {
     pub head_tree: Oid,
     /// The head commit; `None` for live diffs (the head is the working tree).
     pub head_commit: Option<Oid>,
+    /// The full ref name the head was resolved from when it was a ref (commit and
+    /// compare opens, e.g. `refs/heads/feature`); `None` for live diffs.
+    pub head_ref: Option<String>,
     /// The file list in `diff-tree` order, from `file_changes` when stored.
     pub files: Arc<Vec<FileChange>>,
     /// The live state (possibly unpinned) for live opens.

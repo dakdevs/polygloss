@@ -34,6 +34,11 @@ const POLL: Duration = Duration::from_millis(25);
 
 const OPEN: &str = "/usr/bin/open";
 
+/// Set to `1` (foreground) or `0` (background, `open -g`) for an app binary
+/// started through [`SystemLauncher::AppBin`], so test doubles of the app can
+/// record how they were launched.
+pub const ACTIVATE_ENV: &str = "POLYGLOSS_LAUNCH_ACTIVATE";
+
 /// What [`ensure_app`] found or did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchOutcome {
@@ -186,7 +191,7 @@ impl Launcher for SystemLauncher {
         let argv = self.argv(url, activate);
         match self {
             SystemLauncher::Open => run_open(&argv),
-            SystemLauncher::AppBin(_) => spawn_detached(&argv),
+            SystemLauncher::AppBin(_) => spawn_detached(&argv, activate),
             SystemLauncher::Refused(reason) => Err(io::Error::other(reason.clone())),
         }
     }
@@ -210,10 +215,12 @@ fn run_open(argv: &[OsString]) -> io::Result<()> {
 }
 
 /// Starts the app binary in its own process group with stdio closed, and
-/// reaps it on a thread, so the caller never waits for it.
-fn spawn_detached(argv: &[OsString]) -> io::Result<()> {
+/// reaps it on a thread, so the caller never waits for it. `activate` goes in
+/// [`ACTIVATE_ENV`] (`1` or `0`), the stand-in for `open`'s `-g`.
+fn spawn_detached(argv: &[OsString], activate: bool) -> io::Result<()> {
     let mut child = Command::new(Path::new(&argv[0]))
         .args(&argv[1..])
+        .env(ACTIVATE_ENV, if activate { "1" } else { "0" })
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

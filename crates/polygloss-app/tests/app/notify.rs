@@ -409,3 +409,44 @@ fn rereview_tags_name_their_review() {
     assert_eq!(notify::review_of_tag("rereview:"), None);
     assert_eq!(notify::review_of_tag("other:r-123"), None);
 }
+
+/// MCP `request_rereview` launches a closed app in the background with the
+/// review's URL; the store feed of a fresh app starts after the request, so
+/// the URL itself delivers the notification (T4.6).
+#[gpui_kit::test]
+fn review_url_delivers_a_pending_rereview_notification(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let (mut shell, _recorder) = start_recording(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let review = review_id(&mut shell, &tab);
+    shell.cx.deactivate_window();
+    let url = polygloss_core::urls::format_url(&polygloss_core::urls::PolyglossUrl::Review(
+        review.clone(),
+    ));
+    let open_url = |shell: &mut Shell, url: &str| {
+        let task = shell
+            .cx
+            .update(|_, cx| polygloss_app::urls::open_url(url, cx));
+        draw(shell.cx);
+        futures::FutureExt::now_or_never(task).expect("the URL open finished")
+    };
+
+    // No request pending: opening the review posts nothing.
+    open_url(&mut shell, &url).unwrap();
+    assert!(shown(&mut shell).is_empty());
+
+    // A request the feed has not read (no nudge): the URL delivers it.
+    other_core()
+        .request_rereview(&review, "Fixed as asked.", &agent_actor(), None)
+        .expect("request a re-review");
+    open_url(&mut shell, &url).unwrap();
+    let posted = shown(&mut shell);
+    assert_eq!(posted.len(), 1, "{posted:?}");
+    assert_eq!(posted[0].tag.as_ref(), notify::rereview_tag(&review));
+
+    // Muted: nothing more.
+    shell.core.set_muted(&review, true).unwrap();
+    open_url(&mut shell, &url).unwrap();
+    assert_eq!(shown(&mut shell).len(), 1);
+}

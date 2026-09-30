@@ -18,6 +18,11 @@
 //! app itself: a clicked link comes forward through LaunchServices, while a
 //! background launch (`open -g`) stays in the background. Errors show in the
 //! window like a failed open.
+//!
+//! A review URL also delivers the review's pending re-review notification
+//! (`notify::rereview_requested`, T4.6): MCP `request_rereview` launches a
+//! closed app in the background with that URL, and the store feed of a fresh
+//! app starts after the request (T3.17's note).
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Application, AsyncApp, Context, Entity, Subscription,
@@ -102,6 +107,12 @@ pub fn listen(inbox: UrlInbox, cx: &mut App) {
 pub fn open_url(url: &str, cx: &mut App) -> Task<anyhow::Result<()>> {
     tracing::info!("opening {url}");
     let parsed = parse_url(url);
+    // A review URL is how an agent's `request_rereview` launches the app in the
+    // background to notify (the feed of a fresh app starts after the request).
+    let notify_review = match &parsed {
+        Ok(PolyglossUrl::Review(id)) => Some(id.clone()),
+        _ => None,
+    };
     let core = cx.try_global::<AppState>().map(|s| s.core.clone());
     let url = url.to_owned();
     cx.spawn(async move |cx: &mut AsyncApp| {
@@ -148,6 +159,11 @@ pub fn open_url(url: &str, cx: &mut App) -> Task<anyhow::Result<()>> {
             let message = format!("Could not open {url}: {err:#}");
             tracing::warn!("{message}");
             cx.update(|cx| show_error(message, cx));
+        }
+        if let Some(review_id) = notify_review {
+            // Posts only for a pending request, when the app is in the
+            // background and the review is not muted (`notify` rules).
+            cx.update(|cx| crate::notify::rereview_requested(review_id, cx));
         }
         result
     })

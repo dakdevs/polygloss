@@ -30,17 +30,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-pub use create_comment::{CreateCommentRequest, create_comment};
-pub use delete_comment::{DeleteCommentRequest, delete_comment};
-pub use edit_comment::{EditCommentRequest, edit_comment};
-pub use focus::{FocusRequest, focus};
+pub use create_comment::{CreateCommentRequest, CreateCommentResult, create_comment};
+pub use delete_comment::{DeleteCommentRequest, DeleteCommentResult, delete_comment};
+pub use edit_comment::{EditCommentRequest, EditCommentResult, edit_comment};
+pub use focus::{FocusRequest, FocusResult, focus};
 pub use get_thread::{GetThreadRequest, GetThreadResult, get_thread};
 pub use list_reviews::{ListReviewsRequest, ListReviewsResult, list_reviews};
 pub use list_threads::{ListThreadsRequest, ListThreadsResult, list_threads};
-pub use open_diff::{OpenDiffRequest, open_diff};
-pub use reply::{ReplyRequest, reply};
-pub use request_rereview::{RequestRereviewRequest, request_rereview};
-pub use resolve::{ResolveRequest, UnresolveRequest, resolve, unresolve};
+pub use open_diff::{OpenDiffRequest, OpenDiffResult, open_diff};
+pub use reply::{ReplyRequest, ReplyResult, reply};
+pub use request_rereview::{RequestRereviewRequest, RequestRereviewResult, request_rereview};
+pub use resolve::{
+    ResolveRequest, ResolveResult, UnresolveRequest, UnresolveResult, resolve, unresolve,
+};
 pub use wait_for_review::{WaitForReviewRequest, wait_for_review};
 
 /// A progress callback: `(elapsed, total)` since the wait started.
