@@ -6559,6 +6559,7 @@ dependencies = [
  "hex",
  "insta",
  "interprocess",
+ "libc",
  "markdown",
  "polygloss-core",
  "polygloss-diff",

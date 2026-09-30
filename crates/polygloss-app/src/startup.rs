@@ -12,7 +12,10 @@
 //! launched, while gpui-kit initializes (with named fonts, never its
 //! ≈ 440 ms font scan) and the window opens; its tab appears when the open
 //! is done. M4 adds the socket and `polygloss://` URLs as further sources
-//! of open requests.
+//! of open requests: [`main`] first claims the data dir
+//! (`ipc::single_instance`; a second instance hands its argv to the running
+//! app and exits 0), and [`run`] starts the socket server
+//! (`ipc::serve_app`) once the window is open.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -25,6 +28,7 @@ use polygloss_core::review::{Core, OpenRequest};
 use polygloss_core::store::events::Actor;
 
 use crate::app_state::AppState;
+use crate::ipc::single_instance::{self, Claim};
 use crate::perf::Clock;
 use crate::review_tab::{self, ReviewTab};
 use crate::settings::SettingsStore;
@@ -170,13 +174,46 @@ pub fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let paths = match DataPaths::resolve() {
+        Ok(paths) => paths,
+        Err(err) => {
+            eprintln!("Polygloss: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    // One app per data dir (design §13.4): held until the process exits.
+    let _instance = match single_instance::claim(&paths) {
+        Ok(Claim::Primary(lock)) => Some(lock),
+        Ok(Claim::Secondary) => return forward_to_running_app(args.open.as_ref(), &paths),
+        Err(err) => {
+            eprintln!(
+                "Polygloss: cannot lock {} ({err}); starting anyway",
+                paths.app_lock.display()
+            );
+            None
+        }
+    };
     run(Launch {
         open: args.open,
-        paths: None,
+        paths: Some(paths),
         clock,
         before_window: None,
         after_launch: None,
     })
+}
+
+/// A second instance: the running app shows `open` (or just comes forward).
+fn forward_to_running_app(open: Option<&OpenRequest>, paths: &DataPaths) -> ExitCode {
+    match single_instance::forward(open, paths, single_instance::FORWARD_WAIT) {
+        Ok(_) => {
+            eprintln!("Polygloss is already running; handed the request to it.");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Polygloss: {err}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// Everything the app sets up before its first window: [`AppState`], the
@@ -249,6 +286,8 @@ pub fn run(launch: Launch) -> ExitCode {
             }
         };
         let window_opened = Instant::now();
+        // Socket requests may now open tabs in the window.
+        crate::ipc::serve_app(cx);
         cx.activate(true);
         let opening = opening.and_then(|opening| {
             window

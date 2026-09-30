@@ -1668,3 +1668,60 @@ fn open_changes_since_needs_a_pinned_live_state() {
     let paths: Vec<&str> = since.files.iter().map(|f| f.display_path()).collect();
     assert_eq!(paths, ["b.txt"]);
 }
+
+#[test]
+fn latest_review_for_diff_prefers_most_recent_unarchived_review() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+
+    // `main` is `feature`'s merge base and parent: all three reviews show
+    // the same diff.
+    let three_dot = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    let commit = core.open(&req(repo.path(), commit("feature"))).unwrap();
+    assert_eq!(three_dot.diff_id, commit.diff_id);
+    let diff = three_dot.diff_id.as_str().to_owned();
+
+    exec(
+        &core,
+        &format!(
+            "UPDATE reviews SET updated_at = 1000 WHERE id = '{}'",
+            three_dot.review_id
+        ),
+    );
+    exec(
+        &core,
+        &format!(
+            "UPDATE reviews SET updated_at = 2000 WHERE id = '{}'",
+            commit.review_id
+        ),
+    );
+    assert_eq!(
+        core.latest_review_for_diff(&diff).unwrap(),
+        Some(commit.review_id.clone())
+    );
+    // An archived review comes last, however recent.
+    core.archive_review(&commit.review_id, &Actor::human())
+        .unwrap();
+    exec(
+        &core,
+        &format!(
+            "UPDATE reviews SET updated_at = 3000 WHERE id = '{}'",
+            commit.review_id
+        ),
+    );
+    assert_eq!(
+        core.latest_review_for_diff(&diff).unwrap(),
+        Some(three_dot.review_id.clone())
+    );
+
+    // A diff no review pinned, and a malformed id.
+    let unknown = "0".repeat(64);
+    assert_eq!(core.latest_review_for_diff(&unknown).unwrap(), None);
+    assert!(matches!(
+        core.latest_review_for_diff("xyz"),
+        Err(CoreError::Id(_))
+    ));
+}
