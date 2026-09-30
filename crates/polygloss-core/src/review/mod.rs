@@ -5,6 +5,7 @@
 pub mod activity;
 pub mod carry_forward;
 pub mod iterations;
+pub mod lookup;
 pub mod models;
 pub mod open;
 pub mod sessions;

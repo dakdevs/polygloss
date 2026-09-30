@@ -514,7 +514,9 @@ impl EventFeed {
     }
 }
 
-fn latest_seq(conn: &Connection) -> Result<i64, StoreError> {
+/// The highest `seq` in `events` (0 when empty): the `latest_seq` agents pass
+/// back as `since` (design §15.2).
+pub fn latest_seq(conn: &Connection) -> Result<i64, StoreError> {
     Ok(conn
         .prepare_cached("SELECT COALESCE(MAX(seq), 0) FROM events")?
         .query_row([], |r| r.get(0))?)
