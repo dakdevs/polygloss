@@ -760,6 +760,23 @@ GPUI actions, remappable through `keymap.json` (§18).
 
 **Provisional** additions following macOS conventions: `Esc` (cancel composer, close popover), `⌘W` (close tab), `⌘⇧[` / `⌘⇧]` (previous/next tab), `⌘,` (open `settings.json`). Vim mode is optional and comes later.
 
+Keyboard-only use (OQ-23, plan T5.6): every action has a key or a palette row, and these reach what only the mouse did before.
+
+| Key                | Action                                                                                       | Context       |
+| ------------------ | -------------------------------------------------------------------------------------------- | ------------- |
+| `⇥` / `⇧⇥`         | Next / previous pane: file tree → diff → threads panel (when shown) → open composers         | Tab           |
+| `i`                | Iteration menu (the toolbar picker's)                                                        | Tab           |
+| `m`                | The cursor file's ⋯ menu (Open in editor, Comment on file, Copy path, Expand all, Load diff) | Viewport      |
+| `z`                | Collapse or expand the cursor's file                                                         | Viewport      |
+| `/` / `f`          | Filter box / filter menu                                                                     | Tree          |
+| `j` `k` / `↓` `↑`  | Select the next / previous thread                                                            | ThreadsPanel  |
+| `⏎`                | Go to the selected thread (or open it in the panel)                                          | ThreadsPanel  |
+| `r` / `x` / `e`    | Reply / resolve or unresolve / edit your latest comment ("Delete my comment": palette)       | ThreadsPanel  |
+| `⌘1` / `⌘2` / `⌘3` | Verdict Comment / Approve / Request changes                                                  | Submit dialog |
+| `R`                | Reload the list                                                                              | Home          |
+
+The pane with the keyboard shows a focus ring while the keyboard is in use (focus-visible: a click does not light it). In the composer and the Submit review summary, `⇥` moves on instead of indenting (`⌘]` / `⌘[` indent). `Esc` closes every dialog, popover and menu and hands the keyboard back. From the diff, the threads actions act on the thread the last `.` / `,` went to, else the one on the cursor's line.
+
 ### 11.10 Themes and fonts (ADR-0024)
 
 - The defaults are **Pierre Light** and **Pierre Dark**, a port of the Apache-2.0 `@pierre/theme` 2.0 into Zed's theme JSON format (NOTICE kept). They follow the system appearance.

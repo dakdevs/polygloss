@@ -49,6 +49,7 @@ pub fn group_title(namespace: &str) -> &'static str {
         "viewport" => "Diff",
         "tree" => "File tree",
         "composer" => "Comment",
+        "threads" => "Threads",
         "tab" => "Review",
         "window" => "Window",
         _ => "Other",

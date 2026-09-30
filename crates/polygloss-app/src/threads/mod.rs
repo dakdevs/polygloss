@@ -29,6 +29,7 @@
 //! the thread's line is in.
 
 pub mod block;
+pub mod keys;
 pub mod panel;
 pub mod placement;
 
@@ -40,8 +41,8 @@ use std::sync::Arc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{IconName, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _,
-    IntoElement, MenuItem, Task, WeakEntity, Window, div,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+    InteractiveElement as _, IntoElement, MenuItem, ScrollHandle, Task, WeakEntity, Window, div,
 };
 use polygloss_core::git::RepoInfo;
 use polygloss_core::ids::DiffId;
@@ -65,8 +66,12 @@ use crate::settings::SettingsStore;
 use crate::window::MenuKind;
 use placement::{Changes, DiffOrder, PlacedThread, ThreadPlace};
 
-/// Registers `.` / `,`, "Hide agent notes" and their menu items.
+pub use keys::{current_thread, focus_panel};
+
+/// Registers `.` / `,`, "Hide agent notes", the threads panel's keys and
+/// their menu items.
 pub fn init(cx: &mut App) {
+    keys::init(cx);
     handlers::on_action(
         cx,
         |tab: &mut ReviewTab, _: &viewport_actions::NextOpenThread, _, cx| {
@@ -163,6 +168,9 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
             nav: None,
             extra: BTreeMap::new(),
             composers: None,
+            panel_focus: cx.focus_handle(),
+            selected: None,
+            panel_scroll: ScrollHandle::new(),
         };
         m.reload(cx);
         m
@@ -335,6 +343,11 @@ pub struct ReviewThreads {
     extra: BTreeMap<u32, Vec<BlockSpec>>,
     /// The tab's composers (T3.10), for the thread cards' footers.
     composers: Option<WeakEntity<crate::composer::Composers>>,
+    /// The threads panel's keyboard focus (key context `ThreadsPanel`).
+    panel_focus: FocusHandle,
+    /// The panel's selected row (a thread id).
+    selected: Option<String>,
+    panel_scroll: ScrollHandle,
 }
 
 impl EventEmitter<ThreadsEvent> for ReviewThreads {}
@@ -354,6 +367,37 @@ impl ReviewThreads {
 
     pub fn review_id(&self) -> &str {
         &self.review_id
+    }
+
+    /// The threads panel's focus handle (key context `ThreadsPanel`).
+    pub fn panel_focus(&self) -> &FocusHandle {
+        &self.panel_focus
+    }
+
+    /// The thread selected in the panel.
+    pub fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
+    /// Selects row `ix` of the panel (the last one past the end) and
+    /// scrolls it into view.
+    pub fn select_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let rows = panel::rows(self, cx);
+        let Some(last) = rows.len().checked_sub(1) else {
+            return;
+        };
+        let ix = ix.min(last);
+        self.selected = Some(rows[ix].0.clone());
+        // The list's children: the rows, with the "RESOLVED" title before
+        // the first resolved one.
+        let title = rows[..=ix].iter().any(|(_, open)| !open);
+        self.panel_scroll.scroll_to_item(ix + usize::from(title));
+        cx.notify();
+    }
+
+    /// The threads panel list's scroll position.
+    pub(crate) fn panel_scroll(&self) -> &ScrollHandle {
+        &self.panel_scroll
     }
 
     /// Every thread of the tab (drafts included), oldest first.
@@ -943,11 +987,13 @@ pub fn jump_to_open_thread(tab: &mut ReviewTab, step: Step, cx: &mut Context<Rev
         return;
     };
     let cursor = go_to(tab, &id, place, cx);
-    model.update(cx, |m, _| {
+    model.update(cx, |m, cx| {
+        m.selected = Some(id.clone());
         m.nav = Some(NavMark {
             thread_id: id,
             cursor,
-        })
+        });
+        cx.notify();
     });
 }
 
@@ -1022,6 +1068,10 @@ pub fn activate_thread(
         let place = m.place(id).copied().unwrap_or(ThreadPlace::Panel);
         (place, m.thread(id).is_some_and(|t| m.shows(t)))
     };
+    model.update(cx, |m, cx| {
+        m.selected = Some(id.to_owned());
+        cx.notify();
+    });
     // Panel-only threads, and hidden agent notes (listed when outdated),
     // open under their row.
     if place == ThreadPlace::Panel || !shows {

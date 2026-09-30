@@ -55,4 +55,22 @@ pub const DEFAULT_BINDINGS: &[DefaultBinding] = &[
     ("cmd-,", "window::OpenSettings", "Window"),
     ("cmd-q", "window::Quit", ""),
     ("cmd-m", "window::Minimize", ""),
+    // Keyboard-only use (T5.6, OQ-23): Tab cycles the review tab's panes;
+    // the file menu, collapse, the tree's filters, the iteration menu and
+    // the threads panel, which only the mouse reached before.
+    ("tab", "tab::FocusNextPane", "Tab"),
+    ("shift-tab", "tab::FocusPrevPane", "Tab"),
+    ("i", "tab::ChooseIteration", "Tab"),
+    ("m", "viewport::FileMenu", "Viewport"),
+    ("z", "viewport::ToggleCollapse", "Viewport"),
+    ("/", "tree::FocusFilter", "Tree"),
+    ("f", "tree::FilterMenu", "Tree"),
+    ("j", "threads::SelectNext", "ThreadsPanel"),
+    ("down", "threads::SelectNext", "ThreadsPanel"),
+    ("k", "threads::SelectPrev", "ThreadsPanel"),
+    ("up", "threads::SelectPrev", "ThreadsPanel"),
+    ("enter", "threads::Open", "ThreadsPanel"),
+    ("r", "threads::Reply", "ThreadsPanel"),
+    ("x", "threads::ToggleResolved", "ThreadsPanel"),
+    ("e", "threads::EditComment", "ThreadsPanel"),
 ];

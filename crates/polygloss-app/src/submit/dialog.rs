@@ -13,7 +13,9 @@ use futures::FutureExt as _;
 use futures::future::Shared;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{
+    Enter, IndentInline, InputEvent, OutdentInline, Textarea, TextareaState,
+};
 use gpui_kit::component::radio::Radio;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
@@ -37,8 +39,23 @@ gpui_kit::actions!(
     [
         /// `⌘⏎` in the Submit review dialog: submit.
         ConfirmSubmit,
+        /// `⌘1`: the verdict Comment (T5.6).
+        VerdictComment,
+        /// `⌘2`: the verdict Approve (T5.6).
+        VerdictApprove,
+        /// `⌘3`: the verdict Request changes (T5.6).
+        VerdictRequestChanges,
     ]
 );
+
+/// A verdict's key in the dialog (`⌘1`…`⌘3`, the order the rows show).
+pub fn verdict_key(v: Verdict) -> &'static str {
+    match v {
+        Verdict::Comment => "cmd-1",
+        Verdict::Approve => "cmd-2",
+        Verdict::RequestChanges => "cmd-3",
+    }
+}
 
 /// How long the dialog waits after the last change before autosaving.
 pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(400);
@@ -403,6 +420,13 @@ impl SubmitDialog {
                             .child(detail),
                     ),
             )
+            // Its key (T5.6).
+            .child(div().flex_1())
+            .children(
+                gpui_kit::Keystroke::parse(verdict_key(v))
+                    .ok()
+                    .map(|k| crate::palette::key_cap::key_cap(&k, cx)),
+            )
     }
 }
 
@@ -441,6 +465,19 @@ impl Render for SubmitDialog {
             .debug_selector(|| "submit-dialog".into())
             .key_context(CONTEXT)
             .on_action(cx.listener(|this, _: &ConfirmSubmit, _, cx| this.submit(cx)))
+            .on_action(
+                cx.listener(|this, _: &VerdictComment, _, cx| {
+                    this.set_verdict(Verdict::Comment, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &VerdictApprove, _, cx| {
+                    this.set_verdict(Verdict::Approve, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &VerdictRequestChanges, _, cx| {
+                this.set_verdict(Verdict::RequestChanges, cx)
+            }))
             .track_focus(&self.focus)
             // ⌘⏎ in the summary submits (the field would insert a newline).
             .capture_action(cx.listener(|this, action: &Enter, _, cx| {
@@ -448,6 +485,16 @@ impl Render for SubmitDialog {
                     cx.stop_propagation();
                     this.submit(cx);
                 }
+            }))
+            // ⇥ / ⇧⇥ leave the summary for the verdicts and buttons (T5.6)
+            // instead of indenting it (⌘] / ⌘[ still indent).
+            .capture_action(cx.listener(|_, _: &IndentInline, window, cx| {
+                cx.stop_propagation();
+                crate::keyboard::focus_step(true, window, cx);
+            }))
+            .capture_action(cx.listener(|_, _: &OutdentInline, window, cx| {
+                cx.stop_propagation();
+                crate::keyboard::focus_step(false, window, cx);
             }))
             .w_full()
             .gap_3()

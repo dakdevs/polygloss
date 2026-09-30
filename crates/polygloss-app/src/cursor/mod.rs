@@ -8,7 +8,8 @@
 //! asks for a comment (`ViewportEvent::CommentRequested`, which the
 //! composer opens, T3.10), `e` expands the gap nearest the cursor by 20 lines
 //! toward it, `E` the cursor's whole file, and `⌘C` copies the selection as
-//! source text.
+//! source text. `m` opens the cursor file's ⋯ menu and `z` collapses or
+//! expands the file (T5.6: the header's controls from the keyboard).
 //!
 //! Owned by T3.8. T3.1 already calls [`init`] (from `features::init`) and
 //! [`attach`] (for every new review tab).
@@ -46,6 +47,21 @@ pub fn init(cx: &mut App) {
         v.expand_cursor_file(cx)
     });
     on(cx, |v, _: &viewport::Copy, cx| v.copy(cx));
+    // The file header's controls from the keyboard (T5.6): `m` opens the
+    // cursor file's ⋯ menu, `z` collapses or expands it.
+    handlers::on_action(
+        cx,
+        |tab: &mut ReviewTab, _: &viewport::FileMenu, window, cx| {
+            tab.viewport.update(cx, |v, cx| {
+                let f = v.current_file();
+                v.open_file_menu(f, window, cx);
+            });
+        },
+    );
+    on(cx, |v, _: &viewport::ToggleCollapse, cx| {
+        let f = v.current_file();
+        v.toggle_collapsed(f, cx);
+    });
 }
 
 /// Nothing per tab: the cursor lives in the tab's viewport.

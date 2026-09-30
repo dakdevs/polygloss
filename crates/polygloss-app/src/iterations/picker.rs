@@ -7,11 +7,12 @@
 //! newest first with what each one is and when it was pinned.
 
 use gpui_kit::component::button::Button;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _,
-    SharedString, Styled as _, Window, div, px,
+    Anchor, AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    SharedString, Styled as _, WeakEntity, Window, div, px,
 };
 use polygloss_core::store::events::now_ms;
 
@@ -41,66 +42,96 @@ pub fn toolbar_items(
         .outline()
         .selected(since_on)
         .tooltip("Choose which iteration to show")
-        .dropdown_menu(move |mut menu, _, cx| {
-            let Some(tab) = this.upgrade() else {
-                return menu;
-            };
-            let (entries, available, checked, hint) = {
-                let t = tab.read(cx);
-                (
-                    picker_entries(t),
-                    changes_since_available(t),
-                    changes_since_checked(t),
-                    changes_since_hint(t),
-                )
-            };
-            let toggle = {
-                let tab = tab.downgrade();
-                PopupMenuItem::element(move |_, cx| {
-                    two_lines("Changes since last review", hint.clone(), cx)
-                })
-                .checked(checked)
-                .disabled(!available && !checked)
-                .on_click(move |_, window, cx| {
-                    if let Some(tab) = tab.upgrade() {
-                        tab.update(cx, |t, cx| toggle_changes_since(t, window, cx));
-                    }
-                })
-            };
-            menu = menu.item(toggle).separator().label("Iterations");
-            let now = now_ms();
-            let offset = local_utc_offset_s(now);
-            for entry in entries {
-                let PickerEntry {
-                    choice,
-                    label,
-                    detail,
-                    at,
-                    selected,
-                } = entry;
-                let note = match at {
-                    Some(at) => format!("{detail} · {}", relative_time(now, at, offset)),
-                    None => detail,
-                };
-                let tab = tab.downgrade();
-                menu = menu.item(
-                    PopupMenuItem::element(move |_, cx| two_lines(&label, note.clone(), cx))
-                        .checked(selected)
-                        .on_click(move |_, window, cx| {
-                            if let Some(tab) = tab.upgrade() {
-                                tab.update(cx, |t, cx| show(t, choice, window, cx));
-                            }
-                        }),
-                );
+        .dropdown_menu(move |menu, _, cx| match this.upgrade() {
+            Some(tab) => {
+                let data = MenuData::of(tab.read(cx));
+                build_menu(&this, data, menu)
             }
-            menu.min_w(px(280.)).max_h(px(420.)).scrollable(true)
+            None => menu,
         });
+    let key_menu = super::state(tab).and_then(|s| s.key_menu.as_ref());
     vec![
         div()
             .debug_selector(|| "iteration-picker".into())
+            .relative()
             .child(button)
+            .when_some(key_menu, |el, menu| el.child(menu.element(Anchor::TopLeft)))
             .into_any_element(),
     ]
+}
+
+/// What the menu lists, read as it opens.
+pub(crate) struct MenuData {
+    entries: Vec<PickerEntry>,
+    available: bool,
+    checked: bool,
+    hint: String,
+}
+
+impl MenuData {
+    pub(crate) fn of(t: &ReviewTab) -> MenuData {
+        MenuData {
+            entries: picker_entries(t),
+            available: changes_since_available(t),
+            checked: changes_since_checked(t),
+            hint: changes_since_hint(t),
+        }
+    }
+}
+
+/// The picker's menu (its button's, and `i`'s): the **Changes since last
+/// review** toggle, then the states newest first.
+pub(crate) fn build_menu(
+    tab: &WeakEntity<ReviewTab>,
+    data: MenuData,
+    mut menu: PopupMenu,
+) -> PopupMenu {
+    let MenuData {
+        entries,
+        available,
+        checked,
+        hint,
+    } = data;
+    let toggle = {
+        let tab = tab.clone();
+        PopupMenuItem::element(move |_, cx| {
+            two_lines("Changes since last review", hint.clone(), cx)
+        })
+        .checked(checked)
+        .disabled(!available && !checked)
+        .on_click(move |_, window, cx| {
+            if let Some(tab) = tab.upgrade() {
+                tab.update(cx, |t, cx| toggle_changes_since(t, window, cx));
+            }
+        })
+    };
+    menu = menu.item(toggle).separator().label("Iterations");
+    let now = now_ms();
+    let offset = local_utc_offset_s(now);
+    for entry in entries {
+        let PickerEntry {
+            choice,
+            label,
+            detail,
+            at,
+            selected,
+        } = entry;
+        let note = match at {
+            Some(at) => format!("{detail} · {}", relative_time(now, at, offset)),
+            None => detail,
+        };
+        let tab = tab.clone();
+        menu = menu.item(
+            PopupMenuItem::element(move |_, cx| two_lines(&label, note.clone(), cx))
+                .checked(selected)
+                .on_click(move |_, window, cx| {
+                    if let Some(tab) = tab.upgrade() {
+                        tab.update(cx, |t, cx| show(t, choice, window, cx));
+                    }
+                }),
+        );
+    }
+    menu.min_w(px(280.)).max_h(px(420.)).scrollable(true)
 }
 
 /// A menu row: a title and a muted note below it.

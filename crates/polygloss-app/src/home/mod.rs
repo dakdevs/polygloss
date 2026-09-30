@@ -91,8 +91,32 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-backspace", Prune, ctx),
         KeyBinding::new("m", ToggleMute, ctx),
         KeyBinding::new("a", AssignToSession, ctx),
+        // T5.6: the list reloads by itself; `R` does it now, as in a review
+        // tab.
+        KeyBinding::new("shift-r", Refresh, ctx),
     ]);
+    // "Assign to session…" from a review tab (the palette, T5.6): the
+    // Home's picker, for the tab's review.
+    crate::keymap::handlers::on_action(
+        cx,
+        |tab: &mut crate::review_tab::ReviewTab, _: &AssignToSession, window, cx| {
+            let Some(home) = home_view(cx) else {
+                return;
+            };
+            let (id, title) = (tab.review_id.clone(), tab.title());
+            home.update(cx, |h, cx| h.pick_session_for(id, title, window, cx));
+        },
+    );
     prune::start(cx);
+}
+
+/// The main window's Home.
+fn home_view(cx: &App) -> Option<Entity<HomeView>> {
+    let (_, main) = crate::window::main_window(cx)?;
+    main.read(cx).tabs().items().iter().find_map(|t| match t {
+        crate::tabs::TabItem::Home(home) => Some(home.clone()),
+        _ => None,
+    })
 }
 
 /// What one reload read (on the background executor).
@@ -363,21 +387,34 @@ impl HomeView {
         let Some(row) = self.row(review_id) else {
             return;
         };
+        let title = row.title.clone();
+        self.pick_session_for(review_id.to_owned(), title, window, cx);
+    }
+
+    /// The session picker for review `review_id`, titled `title` (a review
+    /// tab's `tab::AssignToSession` too, T5.6): the sessions and the
+    /// current assignee are read off the main thread.
+    pub fn pick_session_for(
+        &mut self,
+        review_id: String,
+        title: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let core = AppState::global(cx).core.clone();
         let since = (self.clock)() - ASSIGN_SESSIONS_WITHIN.as_millis() as i64;
-        let (id, title, current) = (
-            review_id.to_owned(),
-            row.title.clone(),
-            row.summary.assigned_session.clone(),
-        );
+        let id = review_id.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let sessions = cx
-                .background_spawn(async move { core.recent_sessions(since) })
+            let read = cx
+                .background_spawn(async move {
+                    let current = core.assigned_session(&id)?.map(|s| s.id);
+                    Ok::<_, CoreError>((core.recent_sessions(since)?, current))
+                })
                 .await;
-            this.update_in(cx, |_, window, cx| match sessions {
-                Ok(sessions) => dialogs::pick_session(
+            this.update_in(cx, |_, window, cx| match read {
+                Ok((sessions, current)) => dialogs::pick_session(
                     cx.entity().downgrade(),
-                    id,
+                    review_id,
                     title,
                     current,
                     sessions,

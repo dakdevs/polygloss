@@ -129,7 +129,7 @@ pub fn render(
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
-    let (rows, loaded, notes, composer) = {
+    let (rows, loaded, notes, composer, focus, scroll, selected) = {
         let m = model.read(cx);
         let rows = rows(m, cx);
         let notes = rows
@@ -138,8 +138,19 @@ pub fn render(
             .count();
         // The review-level composer (T3.10) sits at the top.
         let composer = crate::composer::review_composer(m, cx);
-        (rows, m.is_loaded(), notes, composer)
+        (
+            rows,
+            m.is_loaded(),
+            notes,
+            composer,
+            m.panel_focus().clone(),
+            m.panel_scroll().clone(),
+            m.selected().map(str::to_owned),
+        )
     };
+    // The selected row is marked while the panel has the keyboard (and
+    // shaded otherwise, so the keys' target is never a guess).
+    let focused = focus.is_focused(window) && window.last_input_was_keyboard();
     let listed_open = rows.iter().filter(|(_, open)| *open).count();
     let open = listed_open - notes;
     let resolved = rows.len() - listed_open;
@@ -150,7 +161,8 @@ pub fn render(
             resolved_title = true;
             list.push(section_title(format!("RESOLVED {resolved}"), cx).into_any_element());
         }
-        list.push(row(model, id, window, cx));
+        let is_selected = selected.as_deref() == Some(id.as_str());
+        list.push(row(model, id, is_selected, focused, window, cx));
     }
     let theme = cx.theme();
     let header = h_flex()
@@ -214,11 +226,14 @@ pub fn render(
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .children(list)
             .into_any_element()
     };
     v_flex()
         .debug_selector(|| "threads-panel".into())
+        .key_context("ThreadsPanel")
+        .track_focus(&focus)
         .size_full()
         .bg(theme.sidebar)
         .child(header)
@@ -244,6 +259,8 @@ fn section_title(text: String, cx: &Context<ReviewTab>) -> impl IntoElement {
 fn row(
     model: &Entity<ReviewThreads>,
     id: &str,
+    selected: bool,
+    focused: bool,
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
@@ -277,8 +294,13 @@ fn row(
         }
         (false, ThreadKind::Comment) => (IconName::User, theme.muted_foreground),
     };
-    let (sel, q_sel, o_sel, click_id) =
-        (id.to_owned(), id.to_owned(), id.to_owned(), id.to_owned());
+    let (sel, q_sel, o_sel, click_id, mark_sel) = (
+        id.to_owned(),
+        id.to_owned(),
+        id.to_owned(),
+        id.to_owned(),
+        id.to_owned(),
+    );
     v_flex()
         .w_full()
         .border_b_1()
@@ -287,12 +309,29 @@ fn row(
             v_flex()
                 .id(SharedString::from(format!("threads-panel-{id}")))
                 .debug_selector(move || format!("threads-panel-{sel}"))
+                .relative()
                 .w_full()
                 .px_3()
                 .py_2()
                 .gap_1()
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.list_hover))
+                .when(selected, |el| {
+                    el.bg(theme.list_active).child(
+                        div()
+                            .debug_selector(move || format!("threads-panel-selected-{mark_sel}"))
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(if focused { 3. } else { 2. }))
+                            .bg(if focused {
+                                theme.ring
+                            } else {
+                                theme.muted_foreground.opacity(0.5)
+                            }),
+                    )
+                })
                 .when(resolved, |el| el.opacity(0.75))
                 .on_click(cx.listener(move |tab, _, window, cx| {
                     activate_thread(tab, &click_id, window, cx);

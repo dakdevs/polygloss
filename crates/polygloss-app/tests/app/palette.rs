@@ -76,7 +76,17 @@ fn palette_lists_every_action_with_binding_hint(cx: &mut TestAppContext) {
     let groups: Vec<&str> = palette.read_with(shell.cx, |p, _| {
         p.groups().iter().map(|(h, _)| *h).collect()
     });
-    assert_eq!(groups, ["Diff", "File tree", "Comment", "Review", "Window"]);
+    assert_eq!(
+        groups,
+        [
+            "Diff",
+            "File tree",
+            "Comment",
+            "Threads",
+            "Review",
+            "Window"
+        ]
+    );
 
     // Choosing a row runs its action in the tab the palette was opened
     // from: "Split view".
@@ -177,7 +187,14 @@ fn cheat_sheet_opens_on_question_mark(cx: &mut TestAppContext) {
     let headings: Vec<&str> = sections.iter().map(|(h, _)| *h).collect();
     assert_eq!(
         headings,
-        ["Diff", "File tree", "Comment", "Review", "Window"]
+        [
+            "Diff",
+            "File tree",
+            "Comment",
+            "Threads",
+            "Review",
+            "Window"
+        ]
     );
     let diff = &sections[0].1;
     let cursor = diff

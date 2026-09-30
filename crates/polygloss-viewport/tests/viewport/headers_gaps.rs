@@ -1621,3 +1621,55 @@ fn load_diff_is_ignored_for_a_file_shown_in_full(cx: &mut TestAppContext) {
         ["== small.rs", "Large diff · 20 changed lines"]
     );
 }
+
+#[gpui_kit::test]
+fn file_menu_opens_from_the_keyboard_for_the_cursor_file(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    init_kit(cx);
+    // 300 px tall: `b.rs`'s header is below the fold at the top.
+    let (view, cx) = open(cx, two_added(), options(LayoutMode::Unified), 1000., 300.);
+    assert_eq!(view.read_with(cx, |v, _| v.current_file()), 0);
+    // `m` without a cursor: the top file's menu, under its ⋯ button.
+    view.update_in(cx, |v, window, cx| {
+        let f = v.current_file();
+        v.open_file_menu(f, window, cx)
+    });
+    settle(cx);
+    let d = debug(&view, cx);
+    assert_eq!(d.menu.as_ref().map(|m| m.file_idx), Some(0));
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(debug(&view, cx).menu.is_none());
+
+    // A file whose header is off screen is scrolled in, and its menu opens
+    // with the frame that paints the header.
+    let before = debug(&view, cx);
+    assert!(before.headers.iter().all(|h| h.file_idx != 1));
+    view.update_in(cx, |v, window, cx| v.open_file_menu(1, window, cx));
+    settle(cx);
+    let d = debug(&view, cx);
+    assert_eq!(d.menu.as_ref().map(|m| m.file_idx), Some(1));
+    assert!(d.headers.iter().any(|h| h.file_idx == 1));
+    // Past the last file: nothing.
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    view.update_in(cx, |v, window, cx| v.open_file_menu(9, window, cx));
+    settle(cx);
+    assert!(debug(&view, cx).menu.is_none());
+}
+
+#[gpui_kit::test]
+fn toggle_collapsed_folds_the_file_and_unfolds_it(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    init_kit(cx);
+    let (view, cx) = open(cx, two_added(), options(LayoutMode::Unified), 1000., 800.);
+    view.update(cx, |v, cx| v.toggle_collapsed(0, cx));
+    settle(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.collapsed()), vec![0]);
+    view.update(cx, |v, cx| v.toggle_collapsed(0, cx));
+    settle(cx);
+    assert!(view.read_with(cx, |v, _| v.collapsed()).is_empty());
+    // An index past the end changes nothing.
+    view.update(cx, |v, cx| v.toggle_collapsed(7, cx));
+    assert!(view.read_with(cx, |v, _| v.collapsed()).is_empty());
+}

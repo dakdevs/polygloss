@@ -13,6 +13,7 @@ pub fn init(cx: &mut App) {
     crate::window::init(cx);
     crate::tabs::init(cx);
     crate::keymap::init(cx);
+    crate::keyboard::init(cx);
     crate::palette::init(cx);
     crate::home::init(cx);
     crate::open_flow::init(cx);

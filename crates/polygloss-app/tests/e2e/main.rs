@@ -16,6 +16,7 @@ mod feed;
 mod find;
 mod home;
 mod iterations;
+mod keyboard_only_review;
 mod kit_fonts;
 mod ligatures;
 mod live;
@@ -59,5 +60,6 @@ fn main() -> std::process::ExitCode {
         find::TESTS,
         iterations::TESTS,
         feed::TESTS,
+        keyboard_only_review::TESTS,
     ])
 }

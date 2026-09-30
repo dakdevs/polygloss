@@ -10,7 +10,9 @@
 //! instead.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Escape, InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{
+    Enter, Escape, IndentInline, InputEvent, OutdentInline, Textarea, TextareaState,
+};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
@@ -23,6 +25,7 @@ use gpui_kit::{
 
 use super::draft_store::ComposerKey;
 use crate::keymap::actions::composer as actions;
+use crate::keymap::actions::tab as tab_actions;
 
 /// Rows the text field shows at least and grows to at most.
 const MIN_ROWS: usize = 3;
@@ -241,7 +244,8 @@ impl Render for Composer {
                 .child(Textarea::new(&self.input).bordered(false).w_full())
                 .into_any_element()
         };
-        let _ = window;
+        // The focus ring shows while the keyboard is in use (focus-visible).
+        let focused = window.last_input_was_keyboard() && self.contains_focus(window, cx);
         let (write, preview) = (!self.preview, self.preview);
         let tabs = h_flex()
             .gap_1()
@@ -269,7 +273,7 @@ impl Render for Composer {
             .gap_1()
             .text_xs()
             .text_color(theme.muted_foreground)
-            .child("Markdown · ⌘⏎ to save · Esc to cancel");
+            .child("Markdown · ⌘⏎ to save · Esc to cancel · ⇥ next pane");
         let error = self.error.clone();
         let footer = h_flex()
             .w_full()
@@ -333,6 +337,17 @@ impl Render for Composer {
             .on_action(cx.listener(|this, _: &actions::TogglePreview, window, cx| {
                 this.toggle_preview(window, cx)
             }))
+            // ⇥ / ⇧⇥ go to the next or previous pane (T5.6) instead of
+            // indenting (⌘] / ⌘[ still indent).
+            .capture_action(cx.listener(|_, _: &IndentInline, window, cx| {
+                cx.stop_propagation();
+                window.dispatch_action(Box::new(tab_actions::FocusNextPane), cx);
+            }))
+            .capture_action(cx.listener(|_, _: &OutdentInline, window, cx| {
+                cx.stop_propagation();
+                window.dispatch_action(Box::new(tab_actions::FocusPrevPane), cx);
+            }))
+            .relative()
             .w_full()
             .rounded(px(6.))
             .border_1()
@@ -343,5 +358,19 @@ impl Render for Composer {
             .child(header)
             .child(body)
             .child(footer)
+            // The focus ring: a second pixel of ring while the keyboard is
+            // here.
+            .when(focused, |el| {
+                let key = self.key.clone();
+                el.child(
+                    div()
+                        .debug_selector(move || format!("composer-focus-ring-{key}"))
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(theme.ring),
+                )
+            })
     }
 }

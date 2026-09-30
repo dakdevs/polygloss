@@ -43,6 +43,7 @@ use polygloss_diff::Oid;
 pub use picker::toolbar_items;
 
 use crate::app_state::AppState;
+use crate::keyboard::menu::KeyMenu;
 use crate::keymap::actions::tab as tab_actions;
 use crate::keymap::handlers;
 use crate::live::refresh;
@@ -96,6 +97,8 @@ pub struct Iterations {
     switching: bool,
     generation: u64,
     load: Option<Task<()>>,
+    /// The picker's menu, when opened from the keyboard (`i`).
+    key_menu: Option<KeyMenu>,
 }
 
 impl Iterations {
@@ -152,6 +155,12 @@ pub fn init(cx: &mut App) {
             toggle_changes_since(tab, window, cx);
         },
     );
+    handlers::on_action(
+        cx,
+        |tab: &mut ReviewTab, _: &tab_actions::ChooseIteration, window, cx| {
+            open_menu(tab, window, cx);
+        },
+    );
     crate::window::add_menu_items(
         MenuKind::Review,
         vec![MenuItem::action(
@@ -176,6 +185,7 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
         switching: false,
         generation: 0,
         load: None,
+        key_menu: None,
     });
     if let Some(model) = crate::threads::threads(tab).cloned() {
         cx.subscribe(
@@ -317,6 +327,31 @@ pub fn label(tab: &ReviewTab) -> String {
 /// Whether the toolbar shows the picker: a live or compare review with two
 /// or more states to pick from or a submission, or one showing something
 /// other than its current state.
+/// Whether the iteration menu is open from the keyboard (`i`).
+pub fn menu_open(tab: &ReviewTab) -> bool {
+    state(tab).is_some_and(|s| s.key_menu.is_some())
+}
+
+/// `i`: the iteration picker's menu, opened from the keyboard under its
+/// button (while the picker shows).
+pub fn open_menu(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
+    if !picker_visible(tab) {
+        return;
+    }
+    let data = picker::MenuData::of(tab);
+    let weak = cx.entity().downgrade();
+    let menu = KeyMenu::open(
+        |t: &mut ReviewTab| t.extension_mut::<Iterations>().map(|s| &mut s.key_menu),
+        move |menu, _, _| picker::build_menu(&weak, data, menu),
+        window,
+        cx,
+    );
+    if let Some(s) = tab.extension_mut::<Iterations>() {
+        s.key_menu = Some(menu);
+    }
+    cx.notify();
+}
+
 pub fn picker_visible(tab: &ReviewTab) -> bool {
     let Some(s) = state(tab) else {
         return false;

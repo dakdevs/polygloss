@@ -24,6 +24,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
     ("Diff", &["Viewport"]),
     ("File tree", &["Tree"]),
     ("Comment", &["Composer"]),
+    ("Threads", &["ThreadsPanel"]),
     ("Review", &["Tab"]),
     ("Window", &["Window", ""]),
 ];
@@ -81,7 +82,7 @@ pub fn open(window: &mut Window, cx: &mut App) -> Entity<CheatSheet> {
     let content = sheet.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .w(px(760.))
+            .w(px(1040.))
             .margin_top(px(72.))
             .title("Keyboard Shortcuts")
             .child(content.clone())
@@ -136,8 +137,17 @@ fn section(heading: &'static str, rows: &[CheatRow], cx: &App) -> impl IntoEleme
 
 impl Render for CheatSheet {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Two columns: the diff's keys on the left, the rest on the right.
-        let (left, right) = self.sections.split_at(self.sections.len().min(1));
+        // Three columns: the diff's keys; the file tree's, the composer's
+        // and the threads panel's; the review's and the window's (and any
+        // other context's).
+        let side = |h: &str| matches!(h, "File tree" | "Comment" | "Threads");
+        let left: Vec<_> = self.sections.iter().take(1).cloned().collect();
+        let (middle, right): (Vec<_>, Vec<_>) = self
+            .sections
+            .iter()
+            .skip(1)
+            .cloned()
+            .partition(|(h, _)| side(h));
         let column = |sections: &[(&'static str, Vec<CheatRow>)], cx: &App| {
             v_flex()
                 .flex_1()
@@ -149,7 +159,8 @@ impl Render for CheatSheet {
             .items_start()
             .gap_8()
             .pb_2()
-            .child(column(left, cx))
-            .child(column(right, cx))
+            .child(column(&left, cx))
+            .child(column(&middle, cx))
+            .child(column(&right, cx))
     }
 }
