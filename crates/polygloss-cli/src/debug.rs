@@ -1,5 +1,5 @@
 //! Hidden `polygloss debug …` developer commands: `parity` (T1.16) and the
-//! test-only human simulation in `debug_human` (T4.4).
+//! test-only human simulation in `debug_human` (T4.4; `assign`: T4.8).
 //!
 //! `debug parity` checks our hunks against the system git on a real range (design
 //! §6.3 "Parity"): for every text modify/rename pair that `list_changes` reports
@@ -45,6 +45,8 @@ pub enum DebugCommand {
     HumanViewed(debug_human::HumanViewedArgs),
     /// Test-only: submit the review with a verdict.
     HumanSubmit(debug_human::HumanSubmitArgs),
+    /// Test-only: record an agent session and assign the review to it.
+    Assign(debug_human::AssignArgs),
 }
 
 #[derive(Debug, Args)]
@@ -116,6 +118,7 @@ pub fn run(args: DebugArgs) -> anyhow::Result<()> {
         DebugCommand::HumanComment(args) => print_json(debug_human::human_comment(args)?),
         DebugCommand::HumanViewed(args) => print_json(debug_human::human_viewed(args)?),
         DebugCommand::HumanSubmit(args) => print_json(debug_human::human_submit(args)?),
+        DebugCommand::Assign(args) => print_json(debug_human::assign(args)?),
     }
 }
 

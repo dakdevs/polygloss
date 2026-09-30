@@ -9,6 +9,9 @@
 //!   agents until `human-submit`.
 //! - `human-viewed` marks a file of the latest iteration viewed.
 //! - `human-submit` publishes the drafts with a verdict and summary.
+//! - `assign` records an agent session and assigns a review to it, as an
+//!   agent's `open_diff` (or the human's "Assign to session…", OQ-32) would
+//!   (T4.8: `polygloss wait` tests).
 
 use std::path::PathBuf;
 
@@ -17,7 +20,8 @@ use clap::{Args, ValueEnum};
 use polygloss_core::git::{CompareMode, Since, Source};
 use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{
-    Author, AuthorKind, Core, NewThread, OpenRequest, PinnedBy, Subject, ThreadKind, Verdict,
+    AssignedBy, Author, AuthorKind, Core, NewThread, OpenRequest, PinnedBy, SessionInfo, Subject,
+    ThreadKind, Verdict,
 };
 use polygloss_core::store::events::Actor;
 use polygloss_diff::Side;
@@ -94,6 +98,31 @@ pub struct HumanSubmitArgs {
     pub verdict: VerdictArg,
     #[arg(long, default_value = "")]
     pub summary: String,
+}
+
+/// `debug assign`: record a session and assign the review to it.
+#[derive(Debug, Args)]
+pub struct AssignArgs {
+    #[arg(long)]
+    pub review: String,
+    /// The session id (`CLAUDE_CODE_SESSION_ID` or `pg-<uuidv7>`).
+    #[arg(long)]
+    pub session: String,
+    /// The session's client name (MCP `clientInfo.name`).
+    #[arg(long, default_value = "claude-code")]
+    pub client: String,
+    /// The agent host process that owns the session (links drifted ids, §16.4).
+    #[arg(long)]
+    pub owner_pid: Option<i32>,
+    #[arg(long, value_enum, default_value_t = AssignedByArg::OpenDiff)]
+    pub by: AssignedByArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AssignedByArg {
+    OpenDiff,
+    Human,
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -247,5 +276,29 @@ pub fn human_submit(args: HumanSubmitArgs) -> anyhow::Result<Value> {
         "iteration": s.iteration.seq,
         "comment_count": s.comment_count,
         "seq": s.seq,
+    }))
+}
+
+pub fn assign(args: AssignArgs) -> anyhow::Result<Value> {
+    require_test_env("assign")?;
+    let core = core()?;
+    let canonical = core.upsert_session(&SessionInfo {
+        id: args.session.clone(),
+        client_name: args.client,
+        client_version: None,
+        owner_pid: args.owner_pid,
+        cwd: None,
+    })?;
+    let by = match args.by {
+        AssignedByArg::OpenDiff => AssignedBy::OpenDiff,
+        AssignedByArg::Human => AssignedBy::Human,
+        AssignedByArg::Agent => AssignedBy::Agent,
+    };
+    core.assign_review(&args.review, &args.session, by)?;
+    Ok(json!({
+        "review_id": args.review,
+        "session_id": args.session,
+        "canonical_id": canonical,
+        "assigned_by": by.as_str(),
     }))
 }

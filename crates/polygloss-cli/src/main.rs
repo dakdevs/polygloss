@@ -22,6 +22,9 @@ struct Cli {
 enum Command {
     /// Run the stdio MCP server for coding agents.
     Mcp(commands::mcp::McpArgs),
+    /// Wait for the human to submit a review assigned to the session (Stop hook).
+    /// Exit 0: nothing to report; 2: submitted (summary on stderr); 1: error.
+    Wait(commands::wait::WaitArgs),
     /// Developer tools (git parity checks).
     #[command(hide = true)]
     Debug(debug::DebugArgs),
@@ -31,6 +34,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Some(Command::Mcp(args)) => commands::mcp::run(args),
+        Some(Command::Wait(args)) => return commands::wait::run(args),
         Some(Command::Debug(args)) => debug::run(args),
         None => Ok(()),
     };

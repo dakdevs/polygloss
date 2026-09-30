@@ -6,6 +6,8 @@
 //!   [`serve_stdio`] runs it.
 //! - [`context`], [`session`], [`errors`], [`paging`]: what every tool shares.
 //! - [`channel`]: opt-in `claude/channel` push (T4.13).
+//! - [`wake`]: which submissions wake a session, and the text (`polygloss wait`,
+//!   T4.8; the channel push reuses it).
 #![forbid(unsafe_code)]
 
 pub mod api;
@@ -15,6 +17,7 @@ pub mod errors;
 pub mod paging;
 pub mod server;
 pub mod session;
+pub mod wake;
 
 pub use context::{ApiContext, nudge_app};
 pub use errors::{ApiError, ApiErrorCode};

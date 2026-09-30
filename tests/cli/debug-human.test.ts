@@ -59,6 +59,7 @@ describe("polygloss-cli debug human commands", () => {
       ["human-comment", "--review", "r", "--body", "x"],
       ["human-viewed", "--review", "r", "--path", "a.txt"],
       ["human-submit", "--review", "r"],
+      ["assign", "--review", "r", "--session", "s"],
     ]) {
       const r = debug(args, sandbox.env);
       expect(r.exitCode).toBe(1);
@@ -202,5 +203,53 @@ describe("polygloss-cli debug human commands", () => {
     ]);
     expect(missing.exitCode).toBe(1);
     expect(missing.stderr.length).toBeGreaterThan(0);
+  });
+  test("assign records the session and assigns the review", () => {
+    const seeded = debug([
+      "seed",
+      "--repo",
+      liveRepo("assign"),
+      "--since",
+      "HEAD",
+    ]);
+    const reviewId = seeded.json.review_id as string;
+    const assigned = debug([
+      "assign",
+      "--review",
+      reviewId,
+      "--session",
+      "debug-assign-session",
+      "--owner-pid",
+      "4242",
+    ]);
+    expect(assigned.exitCode).toBe(0);
+    expect(assigned.json).toEqual({
+      review_id: reviewId,
+      session_id: "debug-assign-session",
+      canonical_id: "debug-assign-session",
+      assigned_by: "open_diff",
+    });
+    const conn = db();
+    try {
+      expect(
+        conn
+          .query(
+            "SELECT client_name, owner_pid FROM sessions WHERE id = 'debug-assign-session'",
+          )
+          .get(),
+      ).toEqual({ client_name: "claude-code", owner_pid: 4242 });
+      expect(
+        conn
+          .query(
+            "SELECT session_id, assigned_by FROM review_assignments WHERE review_id = ?",
+          )
+          .get(reviewId),
+      ).toEqual({
+        session_id: "debug-assign-session",
+        assigned_by: "open_diff",
+      });
+    } finally {
+      conn.close();
+    }
   });
 });
