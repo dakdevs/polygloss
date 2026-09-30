@@ -14,7 +14,17 @@
 //!   ```` ```suggestion ```` block replaces `start_line..=line`, the position's
 //!   lines while the thread is exact or moved, else the anchor's; `original` is
 //!   the anchored text.
-//! - Bodies over 20k characters are cut and flagged `truncated`.
+//! - Bodies over 20k characters are cut and flagged `truncated`. A comment's
+//!   suggestions (replacement and original text) count toward those 20k: they
+//!   are kept first, whole, and the body gets what is left; a suggestion that
+//!   does not fit is left out (never cut) and the comment is flagged too.
+//! - The whole result stays under the page budget (about 60k characters, under
+//!   Claude Code's 25k-token tool output cap): snippets and `diff_hunk` are cut
+//!   at [`SNIPPET_MAX_CHARS`] (`anchor.snippets_truncated`), and comments are
+//!   paged: `comments_truncated: true` with a `next_cursor` to pass back as
+//!   `cursor`.
+//! - When no repo has the diff's objects any more, the position is the cached
+//!   one or `absent`, and only the stored snippet is shown.
 
 use polygloss_core::review::{
     AuthorKind, CommentView, Position, PositionState, Subject, ThreadView, Viewer,
@@ -27,21 +37,34 @@ use polygloss_diff::{FileChange, FileKind, FileStatus, Oid, Side};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::api::shapes::{BODY_MAX_CHARS, SideParam, ThreadSummary, timestamp, truncate_chars};
+use crate::api::shapes::{
+    BODY_MAX_CHARS, PAGE_BUDGET, SideParam, ThreadSummary, timestamp, truncate_chars,
+};
 use crate::api::thread_summary::{
     DiffContext, latest_diff, positions, summarize, takes_suggestions,
 };
 use crate::context::ApiContext;
 use crate::errors::ApiError;
+use crate::paging::{Cursor, decode_cursor, encode_cursor};
 
 /// Lines of context around an outdated thread's `current_snippet`, and before a
 /// line outside every hunk in its `diff_hunk`.
 const CONTEXT: u32 = 3;
 
+/// The longest `original_snippet`, `current_snippet` or `diff_hunk`, in
+/// characters.
+pub const SNIPPET_MAX_CHARS: usize = 5_000;
+
+/// The cursor list name of a thread's comments.
+const COMMENTS_LIST: &str = "thread_comments";
+
 /// `get_thread` params.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetThreadRequest {
     pub thread_id: String,
+    /// `next_cursor` of the previous call, to read the thread's next comments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// `get_thread` result: the thread's summary plus its details.
@@ -51,6 +74,11 @@ pub struct GetThreadResult {
     pub summary: ThreadSummary,
     pub anchor: AnchorOut,
     pub comments: Vec<CommentOut>,
+    /// More comments than fit: call again with `cursor: next_cursor`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub comments_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_by: Option<ResolvedByOut>,
     pub origin_diff_id: String,
@@ -76,6 +104,9 @@ pub struct AnchorOut {
     pub current_snippet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff_hunk: Option<String>,
+    /// A snippet or the hunk was longer than 5,000 characters and was cut.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub snippets_truncated: bool,
 }
 
 /// One comment.
@@ -86,7 +117,8 @@ pub struct CommentOut {
     pub author_name: String,
     /// Empty for a deleted root's placeholder.
     pub body_md: String,
-    /// The body was longer than 20k characters and was cut.
+    /// The body (with its suggestions) was longer than 20k characters: the body
+    /// was cut, and suggestions that did not fit were left out.
     pub truncated: bool,
     /// A "comment deleted" placeholder (a deleted root that has replies).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -116,9 +148,23 @@ pub struct ResolvedByOut {
     pub at: String,
 }
 
-/// One thread with its anchor, snippets, `diff_hunk` and comments.
+/// One thread with its anchor, snippets, `diff_hunk` and a page of comments.
 pub fn get_thread(ctx: &ApiContext, req: GetThreadRequest) -> Result<GetThreadResult, ApiError> {
-    let t = ctx.core.thread(req.thread_id.trim(), Viewer::Agent)?;
+    let thread_id = req.thread_id.trim();
+    let t = ctx.core.thread(thread_id, Viewer::Agent)?;
+    let after = match req
+        .cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        Some(c) => {
+            let cursor = decode_cursor(c)?;
+            cursor.check_query(COMMENTS_LIST, &t.id)?;
+            Some(cursor.after_as::<String>()?)
+        }
+        None => None,
+    };
     let target = latest_diff(ctx, t.review_id.as_deref())?;
     let (pos, mut diffs) = positions(ctx, &[&t], target.as_ref())?;
     let position = pos.get(&t.id);
@@ -135,18 +181,49 @@ pub fn get_thread(ctx: &ApiContext, req: GetThreadRequest) -> Result<GetThreadRe
         diffs.get(&target_id),
         diffs.get(&t.origin_diff_id),
     );
-    let comments = comments_out(&t, position, anchor.original_snippet.as_deref());
-    Ok(GetThreadResult {
+    let all = comments_out(&t, position, anchor.original_snippet.as_deref());
+    let start = match &after {
+        Some(id) => all
+            .iter()
+            .position(|c| &c.comment_id == id)
+            .map(|i| i + 1)
+            .ok_or_else(|| {
+                ApiError::conflict("invalid cursor; pass next_cursor exactly as returned")
+            })?,
+        None => 0,
+    };
+    let mut result = GetThreadResult {
         summary,
         anchor,
-        comments,
+        comments: Vec::new(),
+        comments_truncated: false,
+        next_cursor: Some(String::new()),
         resolved_by: t.resolved_by.as_ref().map(|r| ResolvedByOut {
             kind: r.kind,
             name: r.name.clone(),
             at: timestamp(r.at),
         }),
         origin_diff_id: t.origin_diff_id.as_str().to_owned(),
-    })
+    };
+    // What the rest of the result uses (with room for a cursor), then as many
+    // comments as fit; the first always does (each is at most ~20k).
+    let used = serde_json::to_string(&result)
+        .map(|s| s.chars().count())
+        .unwrap_or(0)
+        + 400;
+    let (page, cut) =
+        crate::paging::fit_page(all[start..].to_vec(), PAGE_BUDGET.saturating_sub(used));
+    result.next_cursor = match (cut, page.last()) {
+        (true, Some(last)) => Some(encode_cursor(&Cursor::new(
+            COMMENTS_LIST,
+            t.id.clone(),
+            &last.comment_id,
+        )?)),
+        _ => None,
+    };
+    result.comments_truncated = result.next_cursor.is_some();
+    result.comments = page;
+    Ok(result)
 }
 
 fn anchor_out(
@@ -179,15 +256,26 @@ fn anchor_out(
         let (old, new) = file_blobs(file, dc)?;
         diff_hunk(&old, &new, side, line)
     });
+    let mut cut = false;
+    let mut cap = |s: Option<String>| {
+        s.map(|s| {
+            let (s, was_cut) = truncate_chars(&s, SNIPPET_MAX_CHARS);
+            cut |= was_cut;
+            s
+        })
+    };
+    let (original_snippet, current_snippet, diff_hunk) =
+        (cap(original), cap(current), cap(diff_hunk));
     AnchorOut {
         path: Some(path.clone()),
         side: Some(side.into()),
         start_line: Some(start_line),
         line: Some(line),
         anchor_blob: t.anchor.anchor_blob.as_ref().map(|b| b.as_str().to_owned()),
-        original_snippet: original,
-        current_snippet: current,
+        original_snippet,
+        current_snippet,
         diff_hunk,
+        snippets_truncated: cut,
     }
 }
 
@@ -208,7 +296,7 @@ fn original_snippet(
         }
     }
     let blob = t.anchor.anchor_blob.as_ref()?;
-    let bytes = origin?.blobs.read(blob).ok()?;
+    let bytes = origin?.blobs.as_ref()?.read(blob).ok()?;
     lines_text(&bytes, start_line, line)
 }
 
@@ -217,7 +305,7 @@ fn current_snippet(p: &Position, dc: &DiffContext) -> Option<String> {
     let (path, side, start, end) = (p.path.as_deref()?, p.side?, p.start_line?, p.line?);
     let file = dc.file(path)?;
     let blob = side_blob(file, side)?;
-    let bytes = dc.blobs.read(blob).ok()?;
+    let bytes = dc.blobs.as_ref()?.read(blob).ok()?;
     let (start, end) = if p.state == PositionState::Outdated {
         (
             start.saturating_sub(CONTEXT).max(1),
@@ -271,13 +359,14 @@ fn file_blobs(file: &FileChange, dc: &DiffContext) -> Option<(Vec<u8>, Vec<u8>)>
     if matches!(file.kind, FileKind::Binary | FileKind::Submodule) {
         return None;
     }
+    let blobs = dc.blobs.as_ref()?;
     let read = |side: Side| -> Option<Vec<u8>> {
         let absent = matches!(
             (side, file.status),
             (Side::Old, FileStatus::Added) | (Side::New, FileStatus::Deleted)
         );
         match side_blob(file, side) {
-            Some(blob) if !absent => dc.blobs.read(blob).ok().map(|b| b.to_vec()),
+            Some(blob) if !absent => blobs.read(blob).ok().map(|b| b.to_vec()),
             _ => Some(Vec::new()),
         }
     };
@@ -422,25 +511,34 @@ fn suggestion_lines(t: &ThreadView, position: Option<&Position>) -> Option<(u32,
 }
 
 fn comment_out(c: &CommentView, lines: Option<(u32, u32)>, original: Option<&str>) -> CommentOut {
-    let (body_md, truncated) = truncate_chars(&c.body_md, BODY_MAX_CHARS);
-    let suggestions = match lines {
-        Some((start_line, line)) if !c.deleted => parse_suggestions(&c.body_md)
-            .into_iter()
-            .map(|replacement| SuggestionOut {
+    // Suggestions first, whole, within the cap; the body gets the rest.
+    let mut budget = BODY_MAX_CHARS;
+    let mut dropped = false;
+    let mut suggestions = Vec::new();
+    if let (Some((start_line, line)), false) = (lines, c.deleted) {
+        let original = original.unwrap_or_default();
+        for replacement in parse_suggestions(&c.body_md) {
+            let cost = replacement.chars().count() + original.chars().count();
+            if cost > budget {
+                dropped = true;
+                continue;
+            }
+            budget -= cost;
+            suggestions.push(SuggestionOut {
                 start_line,
                 line,
-                original: original.unwrap_or_default().to_owned(),
+                original: original.to_owned(),
                 replacement,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+            });
+        }
+    }
+    let (body_md, cut) = truncate_chars(&c.body_md, budget);
     CommentOut {
         comment_id: c.id.clone(),
         author_kind: c.author.kind,
         author_name: c.author.name.clone(),
         body_md,
-        truncated,
+        truncated: cut || dropped,
         deleted: c.deleted,
         suggestions,
         created_at: timestamp(c.published_at.unwrap_or(c.created_at)),

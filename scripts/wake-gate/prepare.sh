@@ -64,10 +64,40 @@ done
 
 [ "$(uname -s)" = Darwin ] || die "the wake gate runs on macOS only"
 
-# Absolute paths, resolved against the caller's directory.
-case "$root" in /*) ;; *) root="$PWD/$root" ;; esac
-root="${root%/}"
-[ -n "$root" ] || root=/
+# `path` made absolute (against the caller's directory) and lexically normal:
+# no `.`, `..`, empty components or trailing slash.
+normalize() {
+  local path=$1 part out=""
+  case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+  local IFS=/
+  for part in $path; do
+    case "$part" in
+    "" | .) ;;
+    ..) out="${out%/*}" ;;
+    *) out="$out/$part" ;;
+    esac
+  done
+  printf '%s\n' "${out:-/}"
+}
+
+# `path` normalized, with its longest existing ancestor resolved through
+# symlinks (`pwd -P`), in lower case: what the guard compares (APFS is
+# case-insensitive by default).
+canonical_lower() {
+  local path rest="" dir
+  path="$(normalize "$1")"
+  dir=$path
+  while [ "$dir" != / ] && [ ! -d "$dir" ]; do
+    rest="/${dir##*/}$rest"
+    dir="${dir%/*}"
+    [ -n "$dir" ] || dir=/
+  done
+  dir="$(cd "$dir" 2>/dev/null && pwd -P || printf '%s' "$dir")"
+  dir="${dir%/}$rest"
+  printf '%s\n' "${dir:-/}" | tr '[:upper:]' '[:lower:]'
+}
+
+root="$(normalize "$root")"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$repo_root"
@@ -81,14 +111,20 @@ repo_a="$root/repo-a"
 repo_b="$root/repo-b"
 
 # Never the real data dir, config or Claude Code state, nor a whole home or /.
+# Compared normalized, through symlinks and case-insensitively.
 home="${HOME:-}"
-case "$root" in
-/ | "$home") die "refusing gate root $root: pick a dedicated directory" ;;
+root_key="$(canonical_lower "$root")"
+home_key=""
+[ -z "$home" ] || home_key="$(canonical_lower "$home")"
+case "$root_key" in
+/ | "$home_key") die "refusing gate root $root: pick a dedicated directory" ;;
 esac
 if [ -n "$home" ]; then
-  for real in "$home/Library" "$home/.config" "$home/.claude"; do
-    case "$root/" in
-    "$real"/*) die "refusing gate root $root: it is inside $real (real app or Claude Code state)" ;;
+  for real in Library .config .claude; do
+    case "$root_key/" in
+    "$home_key/$(printf '%s' "$real" | tr '[:upper:]' '[:lower:]')"/*)
+      die "refusing gate root $root: it is inside $home/$real (real app or Claude Code state)"
+      ;;
     esac
   done
 fi

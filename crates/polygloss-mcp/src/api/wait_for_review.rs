@@ -5,7 +5,8 @@
 //! Rules:
 //!
 //! - It watches the review's `review.submitted` and `review.archived` events
-//!   after `since` (default: the latest event seq when the call starts) with an
+//!   after `since` (default: the latest event seq when the call starts; a
+//!   `since` above it is clamped to it) with an
 //!   [`EventFeed`] polled every [`POLL`] (a `PRAGMA data_version` read while
 //!   nothing changes). Anything already there returns at once.
 //! - A submission wins over an archive in the same batch (an approval followed
@@ -172,8 +173,10 @@ pub fn wait_for_review_with(
     };
     let mut feed = EventFeed::open(&ctx.core.paths, req.since.unwrap_or(0).max(0), filter)
         .map_err(store_error)?;
+    // The feed clamps a `since` above the latest seq (T5.9): a future cursor
+    // would skip every event until the seq caught up.
     let since = match req.since {
-        Some(s) => s.max(0),
+        Some(_) => feed.cursor(),
         None => feed.seek_to_latest().map_err(store_error)?,
     };
 

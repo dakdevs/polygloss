@@ -10,6 +10,13 @@
 //! $XDG_CONFIG_HOME|~/.config /polygloss/     config_dir
 //! ```
 //!
+//! Overrides (every value must be absolute): `POLYGLOSS_DATA_DIR` moves the
+//! data dir and, unless they are set themselves, the cache and logs dirs to
+//! `<data_dir>/cache` and `<data_dir>/logs`, so a sandboxed data dir (tests,
+//! the wake-gate kit) never writes the real `~/Library/Caches` or
+//! `~/Library/Logs`. `POLYGLOSS_CACHE_DIR` and `POLYGLOSS_LOG_DIR` set those
+//! two directly.
+//!
 //! Resolution only computes paths; nothing is created here (`Store::open` creates
 //! the data dir with mode `0700`).
 
@@ -23,6 +30,10 @@ pub const SOCKET_PATH_MAX: usize = 103;
 
 /// Environment variable that overrides the data directory (design §7.1).
 pub const DATA_DIR_ENV: &str = "POLYGLOSS_DATA_DIR";
+/// Environment variable that overrides the cache directory.
+pub const CACHE_DIR_ENV: &str = "POLYGLOSS_CACHE_DIR";
+/// Environment variable that overrides the logs directory.
+pub const LOG_DIR_ENV: &str = "POLYGLOSS_LOG_DIR";
 
 /// Every on-disk location Polygloss uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,13 +50,15 @@ pub struct DataPaths {
     pub app_lock: PathBuf,
     /// `<data_dir>/bin`: stable `polygloss` CLI symlink.
     pub bin_dir: PathBuf,
-    /// `~/Library/Caches/polygloss`.
+    /// `~/Library/Caches/polygloss`, `$POLYGLOSS_CACHE_DIR`, or
+    /// `<data_dir>/cache` when only the data dir is overridden.
     pub cache_dir: PathBuf,
     /// `<cache_dir>/scratch`: unpinned snapshot object stores (§5).
     pub scratch_dir: PathBuf,
     /// `<cache_dir>/blobs`: read-only blob copies for open-in-editor.
     pub blobs_dir: PathBuf,
-    /// `~/Library/Logs/polygloss`: the app's rolling log.
+    /// `~/Library/Logs/polygloss` (the app's rolling log), `$POLYGLOSS_LOG_DIR`,
+    /// or `<data_dir>/logs` when only the data dir is overridden.
     pub logs_dir: PathBuf,
     /// `$XDG_CONFIG_HOME/polygloss` or `~/.config/polygloss`.
     pub config_dir: PathBuf,
@@ -86,17 +99,28 @@ impl DataPaths {
             });
         }
 
-        let data_dir = match var(DATA_DIR_ENV) {
-            Some(dir) if dir.is_absolute() => dir,
-            Some(dir) => {
-                return Err(PathsError::NotAbsolute {
-                    var: DATA_DIR_ENV,
+        let absolute = |name: &'static str| -> Result<Option<PathBuf>, PathsError> {
+            match var(name) {
+                Some(dir) if dir.is_absolute() => Ok(Some(dir)),
+                Some(dir) => Err(PathsError::NotAbsolute {
+                    var: name,
                     value: dir,
-                });
+                }),
+                None => Ok(None),
             }
-            None => platform::data_dir(&home, &var),
         };
-        let cache_dir = platform::cache_dir(&home, &var);
+        let data_override = absolute(DATA_DIR_ENV)?;
+        let cache_override = absolute(CACHE_DIR_ENV)?;
+        let logs_override = absolute(LOG_DIR_ENV)?;
+        let data_dir = data_override
+            .clone()
+            .unwrap_or_else(|| platform::data_dir(&home, &var));
+        let cache_dir = cache_override
+            .or_else(|| data_override.as_ref().map(|d| d.join("cache")))
+            .unwrap_or_else(|| platform::cache_dir(&home, &var));
+        let logs_dir = logs_override
+            .or_else(|| data_override.as_ref().map(|d| d.join("logs")))
+            .unwrap_or_else(|| platform::logs_dir(&home, &var));
         // XDG: a relative value is invalid and must be ignored.
         let config_home = var("XDG_CONFIG_HOME")
             .filter(|p| p.is_absolute())
@@ -110,7 +134,7 @@ impl DataPaths {
             bin_dir: data_dir.join("bin"),
             scratch_dir: cache_dir.join("scratch"),
             blobs_dir: cache_dir.join("blobs"),
-            logs_dir: platform::logs_dir(&home, &var),
+            logs_dir,
             config_dir: config_home.join("polygloss"),
             cache_dir,
             data_dir,

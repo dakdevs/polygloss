@@ -18,7 +18,8 @@ use futures::channel::mpsc;
 use gpui_kit::{App, AppContext as _, AsyncApp, Context, Entity, Task};
 use polygloss_core::ipc::{IpcError, Op, codes};
 use polygloss_core::review::{Core, CoreError, ReviewSummary, Viewer};
-use polygloss_diff::Side;
+use polygloss_diff::lines::LineIndex;
+use polygloss_diff::{FileKind, FileStatus, Side};
 use serde_json::{Value, json};
 
 use crate::app_state::AppState;
@@ -119,11 +120,20 @@ async fn focus(target: Target, place: Place, cx: &mut AsyncApp) -> Result<Value,
         return Err(bad_request("focus with a line needs its path"));
     }
     cx.update(|cx| bring_forward(false, cx));
+    let named_diff = target.diff_id.clone();
     let (tab, _) = show_tab(target, cx).await?;
+    if let Some(diff_id) = named_diff {
+        cx.update(|cx| check_shown_diff(tab.read(cx), &diff_id))?;
+    }
     if let Some(thread_id) = &place.thread_id {
         focus_thread(&tab, thread_id, cx).await?;
     } else if let Some(path) = &place.path {
-        cx.update(|cx| tab.update(cx, |t, cx| focus_path(t, path, place.side, place.line, cx)))?;
+        let (file_idx, side) =
+            cx.update(|cx| find_file(tab.read(cx), path, place.side.unwrap_or(Side::New), cx))?;
+        if let Some(line) = place.line {
+            check_line(&tab, file_idx, side, line, cx).await?;
+        }
+        cx.update(|cx| tab.update(cx, |t, cx| focus_path(t, file_idx, side, place.line, cx)));
     }
     Ok(cx.update(|cx| tab_result("focused", &tab, cx)))
 }
@@ -261,16 +271,25 @@ fn lookup(core: &Core, target: &Target) -> Result<ReviewSummary, IpcError> {
         .ok_or_else(|| not_found(format!("no review {review_id}")))
 }
 
-/// Puts the cursor on `line` (1-based) of `path` on `side` (default new), or
-/// scrolls to the file when there is no line.
-fn focus_path(
-    tab: &mut ReviewTab,
-    path: &str,
-    side: Option<Side>,
-    line: Option<u32>,
-    cx: &mut Context<ReviewTab>,
-) -> Result<(), IpcError> {
-    let side = side.unwrap_or(Side::New);
+/// `focus` positions refer to the diff the tab shows (design §15.2): a
+/// `diff_id` (or a prefix of it) naming another diff is a mismatch.
+fn check_shown_diff(tab: &ReviewTab, diff_id: &str) -> Result<(), IpcError> {
+    let shown = tab.opened.diff_id.as_str();
+    let wanted = diff_id.trim().to_ascii_lowercase();
+    if !wanted.is_empty() && shown.starts_with(&wanted) {
+        return Ok(());
+    }
+    Err(bad_request(&format!(
+        "review {} shows diff {shown}, not {diff_id}; focus with that diff_id (or the review_id \
+         alone) and positions in it",
+        tab.review_id
+    )))
+}
+
+/// The index of `path` in the tab's diff and the side to focus: `not_found`
+/// when the file is not in the diff, or has no `side` (the old side of an
+/// added file, the new side of a deleted one).
+fn find_file(tab: &ReviewTab, path: &str, side: Side, cx: &App) -> Result<(u32, Side), IpcError> {
     let files = tab.viewport.read(cx).document().files().clone();
     let file_idx = files
         .iter()
@@ -279,7 +298,84 @@ fn focus_path(
                 || (side == Side::Old && f.old_path.as_ref().is_some_and(|p| p.text == path))
         })
         .ok_or_else(|| not_found(format!("{path} is not in the diff this tab shows")))?;
-    let file_idx = u32::try_from(file_idx).unwrap_or(u32::MAX);
+    let absent = match side {
+        Side::Old => files[file_idx].status == FileStatus::Added,
+        Side::New => files[file_idx].status == FileStatus::Deleted,
+    };
+    if absent {
+        let (what, other) = match side {
+            Side::Old => ("added", "new"),
+            Side::New => ("deleted", "old"),
+        };
+        return Err(not_found(format!(
+            "{path} is {what} in this diff: it has no {} side (use side={other})",
+            side_name(side)
+        )));
+    }
+    Ok((u32::try_from(file_idx).unwrap_or(u32::MAX), side))
+}
+
+/// `bad_request` unless `line` (1-based) is a line of the file's `side`. The
+/// blob is read off the main thread; an unreadable blob is not checked.
+async fn check_line(
+    tab: &Entity<ReviewTab>,
+    file_idx: u32,
+    side: Side,
+    line: u32,
+    cx: &mut AsyncApp,
+) -> Result<(), IpcError> {
+    let (provider, file) = cx.update(|cx| {
+        let v = tab.read(cx).viewport.read(cx);
+        let file = v.document().files().get(file_idx as usize).cloned();
+        (v.provider().clone(), file)
+    });
+    let Some(file) = file else {
+        return Ok(());
+    };
+    if matches!(file.kind, FileKind::Binary | FileKind::Submodule) {
+        return Err(bad_request(&format!(
+            "{} is not a text file: focus it without a line",
+            file.display_path()
+        )));
+    }
+    let blob = match side {
+        Side::Old => file.old_blob.clone(),
+        Side::New => file.new_blob.clone(),
+    };
+    let count = cx
+        .background_spawn(async move {
+            provider
+                .load_blob(&blob)
+                .ok()
+                .map(|bytes| LineIndex::new(&bytes).len())
+        })
+        .await;
+    match count {
+        Some(n) if line > n => Err(bad_request(&format!(
+            "{} has {n} lines on the {} side; line {line} is past its end",
+            file.display_path(),
+            side_name(side)
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Old => "old",
+        Side::New => "new",
+    }
+}
+
+/// Puts the cursor on `line` (1-based) of file `file_idx` on `side`, or
+/// scrolls to the file when there is no line.
+fn focus_path(
+    tab: &mut ReviewTab,
+    file_idx: u32,
+    side: Side,
+    line: Option<u32>,
+    cx: &mut Context<ReviewTab>,
+) {
     match line {
         Some(line) => {
             let line = line.saturating_sub(1);
@@ -300,7 +396,6 @@ fn focus_path(
             v.go_to_file(file_idx, cx);
         }),
     }
-    Ok(())
 }
 
 /// Shows thread `id` in `tab`: the cursor on it in the diff, or open in the

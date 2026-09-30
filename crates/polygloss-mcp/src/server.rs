@@ -11,8 +11,10 @@
 //!   parent pid as `owner_pid`, `clientInfo` name and version).
 //! - Every tool call runs its `api::*` function on tokio's blocking pool with an
 //!   [`ApiContext`]. The client's roots are fetched with `roots/list` on the first
-//!   call (inside that call, as SEP-2260 requires from 2026-07-28) when the client
-//!   declared the capability, and again after `notifications/roots/list_changed`.
+//!   call of a tool that needs a repo default (`open_diff`; inside that call, as
+//!   SEP-2260 requires from 2026-07-28) when the client declared the capability,
+//!   and again after `notifications/roots/list_changed`. Tools that name their
+//!   review, thread or diff never wait for that round trip.
 //! - Results carry `structuredContent` and the same JSON as text; errors are
 //!   `isError: true` results with `{code, message}` ([`tool_result`]).
 //! - Resources (§15.3) are markdown from `api::resources`; an unknown URI or id
@@ -235,8 +237,13 @@ impl PolyglossServer {
     }
 
     /// The context of one call: the store, the recorded session, the caller's
-    /// name and the roots.
-    async fn context(&self, rc: &RequestContext<RoleServer>) -> Result<ApiContext, ApiError> {
+    /// name and, when `with_roots`, the roots (else none: the call names its
+    /// review, thread or diff and needs no repo default).
+    async fn context(
+        &self,
+        rc: &RequestContext<RoleServer>,
+        with_roots: bool,
+    ) -> Result<ApiContext, ApiError> {
         let (name, version) = match self.client() {
             Some(c) => c,
             None => {
@@ -256,7 +263,11 @@ impl PolyglossServer {
         })
         .await
         .map_err(|e| ApiError::internal(format!("session setup panicked: {e}")))??;
-        let roots = self.roots(rc).await;
+        let roots = if with_roots {
+            self.roots(rc).await
+        } else {
+            Vec::new()
+        };
         Ok(ApiContext {
             core,
             session_id: self.state.session_id.clone(),
@@ -266,7 +277,8 @@ impl PolyglossServer {
         })
     }
 
-    /// Runs `f` with a fresh context on the blocking pool and maps the result.
+    /// Runs `f` with a fresh context (no roots) on the blocking pool and maps
+    /// the result.
     async fn run<T, F>(
         &self,
         rc: &RequestContext<RoleServer>,
@@ -276,7 +288,34 @@ impl PolyglossServer {
         T: Serialize + Send + 'static,
         F: FnOnce(&ApiContext) -> Result<T, ApiError> + Send + 'static,
     {
-        let ctx = match self.context(rc).await {
+        self.run_in(rc, false, f).await
+    }
+
+    /// [`PolyglossServer::run`] for a tool that needs the repo default, so the
+    /// context carries the client's roots.
+    async fn run_with_roots<T, F>(
+        &self,
+        rc: &RequestContext<RoleServer>,
+        f: F,
+    ) -> Result<CallToolResult, ErrorData>
+    where
+        T: Serialize + Send + 'static,
+        F: FnOnce(&ApiContext) -> Result<T, ApiError> + Send + 'static,
+    {
+        self.run_in(rc, true, f).await
+    }
+
+    async fn run_in<T, F>(
+        &self,
+        rc: &RequestContext<RoleServer>,
+        with_roots: bool,
+        f: F,
+    ) -> Result<CallToolResult, ErrorData>
+    where
+        T: Serialize + Send + 'static,
+        F: FnOnce(&ApiContext) -> Result<T, ApiError> + Send + 'static,
+    {
+        let ctx = match self.context(rc, with_roots).await {
             Ok(ctx) => ctx,
             Err(e) => return Ok(tool_result::<()>(Err(e))),
         };
@@ -293,7 +332,7 @@ impl PolyglossServer {
         T: Send + 'static,
         F: FnOnce(&ApiContext) -> Result<T, ApiError> + Send + 'static,
     {
-        let ctx = self.context(rc).await.map_err(rpc_error)?;
+        let ctx = self.context(rc, false).await.map_err(rpc_error)?;
         tokio::task::spawn_blocking(move || f(&ctx))
             .await
             .unwrap_or_else(|e| Err(ApiError::internal(format!("request panicked: {e}"))))
@@ -363,7 +402,8 @@ impl PolyglossServer {
         Parameters(req): Parameters<api::OpenDiffRequest>,
         rc: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(&rc, move |ctx| api::open_diff(ctx, req)).await
+        self.run_with_roots(&rc, move |ctx| api::open_diff(ctx, req))
+            .await
     }
 
     #[tool(

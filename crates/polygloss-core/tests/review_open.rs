@@ -1800,3 +1800,45 @@ fn reopen_live_is_none_for_compare_and_errors_for_unknown_or_moved_reviews() {
     let err = core.reopen_live(&on_main.review_id, &agent()).unwrap_err();
     assert!(matches!(err, CoreError::Conflict(_)), "{err:?}");
 }
+
+/// Agents act on a review by id through `reopen_live` (`create_comment`,
+/// `request_rereview`): it only snapshots. It never inserts a review for the
+/// branch the worktree is on now, never un-archives the review and never
+/// bumps its `updated_at` (T5.9 #10).
+#[test]
+fn reopen_live_writes_no_review_rows() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let on_main = core.open(&req(repo.path(), live(Since::Head))).unwrap();
+    let id = on_main.review_id.clone();
+    core.archive_review(&id, &Actor::human()).unwrap();
+    let before = |core: &Core| {
+        (
+            count(core, "SELECT count(*) FROM reviews"),
+            count(core, "SELECT count(*) FROM events"),
+            text(
+                core,
+                &format!("SELECT updated_at || '/' || archived_at FROM reviews WHERE id = '{id}'"),
+            ),
+        )
+    };
+    let snapshot = before(&core);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    repo.write("new.txt", b"fresh\n");
+    let again = core
+        .reopen_live(&id, &agent())
+        .unwrap()
+        .expect("a live review reopens");
+    assert_eq!(again.review_id, id);
+    assert!(again.live.is_some());
+    assert_eq!(before(&core), snapshot, "reopening wrote to the store");
+
+    // On another branch the worktree belongs to another review: a conflict,
+    // and no review is created for that branch.
+    repo.checkout("feature");
+    let err = core.reopen_live(&id, &agent()).unwrap_err();
+    assert!(matches!(err, CoreError::Conflict(_)), "{err:?}");
+    assert_eq!(before(&core), snapshot, "a conflict wrote to the store");
+}

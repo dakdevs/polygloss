@@ -374,6 +374,53 @@ fn ipc_focus_scrolls_to_line_and_spawns_no_editor(cx: &mut gpui_kit::TestAppCont
     );
 }
 
+/// `focus` checks the location against the diff the tab shows (T5.9 #3,
+/// design §15.2): a line past the end of the file, a side the file does not
+/// have (the old side of an added file) and a `diff_id` other than the tab's
+/// are errors, never `focused`.
+#[gpui_kit::test]
+fn ipc_focus_rejects_bad_lines_missing_sides_and_stale_diffs(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let opened = stored_review(&shell, repo.path());
+    let focus = |diff_id: Option<&str>, side: Option<Side>, line: u32| Op::Focus {
+        review_id: Some(opened.review_id.clone()),
+        diff_id: diff_id.map(str::to_owned),
+        path: Some("src/main.rs".into()),
+        side,
+        line: Some(line),
+        thread_id: None,
+    };
+    // In range on the new side: fine (and opens the tab).
+    let r = run(&mut shell, focus(None, Some(Side::New), 1)).expect("focus");
+    assert_eq!(r["status"], "focused");
+    // The fixture's `src/main.rs` has 10 lines.
+    let lines = 10;
+    let r = run(&mut shell, focus(None, None, lines)).expect("the last line");
+    assert_eq!(r["status"], "focused");
+
+    let err = run(&mut shell, focus(None, Some(Side::New), lines + 1)).unwrap_err();
+    assert_eq!(err.code, codes::BAD_REQUEST, "{err:?}");
+    assert!(err.message.contains("has 10 lines"), "{}", err.message);
+    // `src/main.rs` is added: it has no old side.
+    let err = run(&mut shell, focus(None, Some(Side::Old), 1)).unwrap_err();
+    assert_eq!(err.code, codes::NOT_FOUND, "{err:?}");
+    // The tab shows another diff than the one named.
+    let stale = "0".repeat(64);
+    let err = run(&mut shell, focus(Some(&stale), Some(Side::New), 1)).unwrap_err();
+    assert_eq!(err.code, codes::BAD_REQUEST, "{err:?}");
+    assert!(
+        err.message.contains(opened.diff_id.as_str()),
+        "{}",
+        err.message
+    );
+    // The tab's own diff id (or a prefix of it) is fine.
+    let own = opened.diff_id.as_str()[..12].to_owned();
+    let r = run(&mut shell, focus(Some(&own), Some(Side::New), 2)).expect("own diff");
+    assert_eq!(r["status"], "focused");
+}
+
 #[gpui_kit::test]
 fn ipc_store_changed_nudges_feed(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();

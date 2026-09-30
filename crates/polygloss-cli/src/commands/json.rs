@@ -113,6 +113,9 @@ pub struct ThreadsArgs {
 pub struct ThreadArgs {
     #[arg(value_name = "THREAD_ID")]
     pub thread_id: String,
+    /// `next_cursor` of the previous call, for the thread's next comments.
+    #[arg(long)]
+    pub cursor: Option<String>,
 }
 
 /// `polygloss reply <thread_id> --body-file -` (`reply`).
@@ -361,6 +364,7 @@ pub fn run(command: JsonCommand, global: &GlobalArgs) -> Result<Value, CliError>
             &ctx,
             api::GetThreadRequest {
                 thread_id: a.thread_id,
+                cursor: a.cursor,
             },
         )),
         JsonCommand::Reply(a) => {

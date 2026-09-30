@@ -8,13 +8,13 @@ This procedure proves the agent wake-up path end to end in real Claude Code: an 
 
 ## What the kit touches
 
-| Where                                                    | W1–W7                                                                                                                                                                                                                                      |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/tmp/polygloss-wake-gate/`                              | Everything `prepare.sh` creates: `data/` (the sandbox data dir: database, socket, stable CLI link `data/bin/polygloss`), `repo-a/` and `repo-b/` (scratch repos). `prepare.sh` replaces it on every run.                                   |
-| `~/Library/Application Support/polygloss`                | Untouched: `POLYGLOSS_DATA_DIR` points the CLI, the MCP server, the hook and the dev app at the sandbox.                                                                                                                                   |
-| `~/Library/Caches/polygloss`, `~/Library/Logs/polygloss` | Used as usual: `POLYGLOSS_DATA_DIR` moves only the data dir, so snapshot scratch objects and the app log land in the real cache and log dirs. The app log is where to look when a case fails.                                              |
-| `~/.config/polygloss`                                    | Read as usual (settings, keymap, themes).                                                                                                                                                                                                  |
-| Claude Code                                              | The plugin is installed at **local scope** in the scratch repos only (`<repo>/.claude/settings.local.json`, excluded from git so it never appears in the review). Other Claude Code sessions get no Polygloss MCP server and no Stop hook. |
+| Where                                                    | W1–W7                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/tmp/polygloss-wake-gate/`                              | Everything `prepare.sh` creates: `data/` (the sandbox data dir: database, socket, stable CLI link `data/bin/polygloss`, and the `cache/` and `logs/` dirs), `repo-a/` and `repo-b/` (scratch repos). `prepare.sh` replaces it on every run. It refuses a root inside your home's `Library`, `.config` or `.claude` however the path is spelled (`..`, symlinks, letter case). |
+| `~/Library/Application Support/polygloss`                | Untouched: `POLYGLOSS_DATA_DIR` points the CLI, the MCP server, the hook and the dev app at the sandbox.                                                                                                                                                                                                                                                                      |
+| `~/Library/Caches/polygloss`, `~/Library/Logs/polygloss` | Untouched in W1–W7: with `POLYGLOSS_DATA_DIR` set, the cache and log dirs move into the sandbox too (`data/cache/`, `data/logs/`), so snapshot scratch objects and the app log stay in the gate root. The app log (`/tmp/polygloss-wake-gate/data/logs/`) is where to look when a case fails. W8 uses the real ones.                                                          |
+| `~/.config/polygloss`                                    | Read as usual (settings, keymap, themes).                                                                                                                                                                                                                                                                                                                                     |
+| Claude Code                                              | The plugin is installed at **local scope** in the scratch repos only (`<repo>/.claude/settings.local.json`, excluded from git so it never appears in the review). Other Claude Code sessions get no Polygloss MCP server and no Stop hook.                                                                                                                                    |
 
 `prepare.sh` never runs `claude` and never writes to your Claude Code config; you run the `claude plugin …` commands yourself.
 
@@ -106,7 +106,7 @@ scripts/wake-gate/prepare.sh --no-build
 2. Wait **15 minutes** without typing into Claude, then run the checks again: the waiter is still there.
 3. Add a comment and **Submit review** with **Request changes**. Note the time.
 
-**Pass when:** Claude wakes. This proves the hook's `timeout: 3600` is honored for `asyncRewake` (the default is 600 s). Record the wake latency.
+**Pass when:** Claude wakes. This proves the hook's `timeout: 3600` is honored for `asyncRewake`. Claude Code's hooks reference (checked 2026-09-30) says it "still enforces `timeout` on a hook you run with `asyncRewake`" (unlike plain `async` hooks) with a 600 s default for command hooks, but not whether values as large as 3600 are honored; this case is the evidence. Record the wake latency.
 
 ### W3 Waiter expired
 
@@ -176,7 +176,7 @@ polygloss reviews --json
 2. **Submit review** with **Approve**.
 3. After Claude's turn ends, run the checks.
 
-**Pass when:** Claude wakes, reports that the review is done and does not wait again: no waiter is left and the review's `status` is no longer `open`.
+**Pass when:** Claude wakes, reports that the review is done and does not wait again: no waiter is left and `polygloss reviews --json` shows the review's `status` as `approved`.
 
 ### W7 Two sessions
 

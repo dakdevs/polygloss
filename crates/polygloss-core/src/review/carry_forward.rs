@@ -252,6 +252,27 @@ impl Core {
     }
 }
 
+impl Core {
+    /// The positions of `thread_ids` in `diff_id` that are cached from the
+    /// current engine, without computing any (for when the repo's objects are
+    /// gone: callers report the rest as absent).
+    pub fn cached_positions(
+        &self,
+        diff_id: &DiffId,
+        thread_ids: &[String],
+    ) -> Result<HashMap<String, Position>, CoreError> {
+        Ok(self.store.read(|c| {
+            let mut out = HashMap::new();
+            for id in thread_ids {
+                if let Some(p) = cached_position(c, id, diff_id)? {
+                    out.insert(id.clone(), p);
+                }
+            }
+            Ok(out)
+        })?)
+    }
+}
+
 /// The cached position of `thread_id` in `diff_id` from the current engine.
 fn cached_position(
     c: &Connection,

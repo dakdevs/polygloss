@@ -390,11 +390,116 @@ describe("polygloss wait", () => {
       }
       const newer = startWait(["--session", session, "--timeout", "36"]);
       const stuckResult = await stuck.done;
-      // SIGTERM: killed by the signal, never a wake-up.
-      expect(stuckResult.exitCode).not.toBe(2);
-      expect(stuck.proc.signalCode).toBe("SIGTERM");
+      // SIGTERM: the waiter stops listening and exits 0 (never a wake-up),
+      // removing its own row on the way out.
+      expect(stuckResult.exitCode).toBe(0);
+      expect(stuckResult.stderr).toBe("");
+      const otherDb = new Database(join(otherData, "polygloss.db"));
+      try {
+        expect(
+          (
+            otherDb
+              .query("SELECT COUNT(*) AS n FROM waiters WHERE pid = ?")
+              .get(stuck.proc.pid) as { n: number }
+          ).n,
+        ).toBe(0);
+      } finally {
+        otherDb.close();
+      }
       const newerResult = await newer.done;
       expect(newerResult.exitCode).toBe(0);
+    },
+    SLOW,
+  );
+
+  test(
+    "a same-named process on a reused pid is never signaled",
+    async () => {
+      const session = newSession();
+      assignedReview(session);
+      // The waiter row predates the process that now holds its pid: an
+      // executable named polygloss-cli (here a `polygloss-cli mcp` server) is
+      // not proof enough that it is the waiter (PID reuse).
+      const before = Date.now() - 60_000;
+      const stranger = Bun.spawn([cliBin(), "mcp"], {
+        env: testEnv,
+        stdin: "pipe",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      try {
+        await Bun.sleep(200);
+        expect(alive(stranger.pid)).toBe(true);
+        const conn = db();
+        try {
+          conn
+            .query(
+              "INSERT INTO waiters (session_id, pid, started_at, deadline_at) VALUES (?, ?, ?, ?)",
+            )
+            .run(session, stranger.pid, before, Date.now() + 3_600_000);
+        } finally {
+          conn.close();
+        }
+        const r = await runWait(["--session", session, "--timeout", "34"]);
+        expect(r.exitCode).toBe(0);
+        expect(alive(stranger.pid)).toBe(true);
+        expect(stranger.signalCode).toBeNull();
+      } finally {
+        stranger.kill();
+      }
+    },
+    SLOW,
+  );
+
+  test(
+    "SIGTERM ends the wait with exit 0 and removes the waiter row",
+    async () => {
+      const session = newSession();
+      assignedReview(session);
+      const waiter = startWait(["--session", session]);
+      await registered(waiter.proc.pid);
+      waiter.proc.kill("SIGTERM");
+      const r = await waiter.done;
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toBe("");
+      expect(
+        query<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM waiters WHERE session_id = ?",
+          session,
+        )?.n,
+      ).toBe(0);
+    },
+    SLOW,
+  );
+
+  test(
+    "a submission from before the session's assignment does not wake it",
+    async () => {
+      // An earlier session had the review; the human approved it then. A new
+      // session that opens the same review must not be woken with that.
+      const earlier = newSession();
+      const { reviewId } = assignedReview(earlier);
+      submit(reviewId, "Old approval.", "approve");
+      const session = newSession();
+      debug([
+        "assign",
+        "--review",
+        reviewId,
+        "--session",
+        session,
+        "--client",
+        "claude-code",
+      ]);
+      const r = await runWait(["--session", session, "--timeout", "31"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toBe("");
+
+      // A submission after the assignment still wakes it.
+      submit(reviewId, "New feedback.", "comment");
+      const later = await runWait(["--session", session]);
+      expect(later.exitCode).toBe(2);
+      expect(later.stderr).toContain("New feedback.");
+      expect(later.stderr).not.toContain("Old approval.");
     },
     SLOW,
   );

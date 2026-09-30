@@ -18,16 +18,21 @@
 //! - **Open** for the waiter (§16.3 step 2) means not archived and not approved
 //!   (`approve` means done, §15.2).
 //! - **Waiters**: one row per canonical session; a newer waiter replaces the older
-//!   one and gets its pid back to signal. A waiter only removes its own row. A
-//!   waiter counts as live while its pid exists (probed with `/bin/kill -0`, since
-//!   core has no `libc` and denies `unsafe`; waiters run as the same user) and its
-//!   deadline has not passed. `last_woken_seq` (the wake-up high-water mark,
-//!   §16.3) lives on the canonical session too.
+//!   one and gets its pid and registration time back ([`ReplacedWaiter`]), so it
+//!   can prove the process is still that waiter before signaling it
+//!   ([`crate::process::is_waiter`]). A waiter only removes its own row. A waiter
+//!   counts as live while a process with its pid exists that started no later
+//!   than the row's `started_at` (a reused pid does not count) and its deadline
+//!   has not passed. `last_woken_seq` (the wake-up high-water mark, §16.3) lives
+//!   on the canonical session too.
+//! - **Assignment point** ([`Core::assignment_seq`]): the `seq` of the
+//!   `review.assigned` event that began the review's current run of
+//!   assignments to a session. Submissions before it never wake that session
+//!   (T5.9: a new session opening a review with an old verdict).
 //! - Sessions, waiters, `last_seen_seq` and mute have no event kind (§7.3), so
 //!   those writes append none.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -83,6 +88,14 @@ impl AssignedBy {
             AssignedBy::Agent => "agent",
         }
     }
+}
+
+/// The waiter a registration replaced: its pid and when it registered (ms since
+/// the epoch; the process must have started by then to be that waiter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplacedWaiter {
+    pub pid: i32,
+    pub started_at: i64,
 }
 
 impl Core {
@@ -236,25 +249,31 @@ impl Core {
     }
 
     /// Registers `pid` as the waiter of the session's canonical session, replacing
-    /// the previous one. Returns the replaced pid (for the caller to signal after
-    /// checking it really is a waiter), `None` when there was none or it was
-    /// `pid`. `NotFound` for an unknown session.
+    /// the previous one. Returns the replaced waiter (for the caller to signal
+    /// only after [`crate::process::is_waiter`] proves it is still that
+    /// process), `None` when there was none or it was `pid`. `NotFound` for an
+    /// unknown session.
     pub fn register_waiter(
         &self,
         session_id: &str,
         pid: i32,
         deadline_at: i64,
-    ) -> Result<Option<i32>, CoreError> {
+    ) -> Result<Option<ReplacedWaiter>, CoreError> {
         self.store.write(|tx| {
             if session_row(tx, session_id)?.is_none() {
                 return Ok(Err(CoreError::not_found("session", session_id)));
             }
             let session = canonical(tx, session_id)?;
-            let previous: Option<i32> = tx
+            let previous: Option<ReplacedWaiter> = tx
                 .query_row(
-                    "SELECT pid FROM waiters WHERE session_id = ?1",
+                    "SELECT pid, started_at FROM waiters WHERE session_id = ?1",
                     [&session],
-                    |r| r.get(0),
+                    |r| {
+                        Ok(ReplacedWaiter {
+                            pid: r.get(0)?,
+                            started_at: r.get(1)?,
+                        })
+                    },
                 )
                 .optional()?;
             tx.execute(
@@ -264,7 +283,7 @@ impl Core {
                    deadline_at = excluded.deadline_at",
                 params![session, pid, now_ms(), deadline_at],
             )?;
-            Ok(Ok(previous.filter(|&p| p != pid)))
+            Ok(Ok(previous.filter(|p| p.pid != pid)))
         })?
     }
 
@@ -402,7 +421,7 @@ impl Core {
         &self,
         review_id: &str,
     ) -> Result<Option<(String, i32)>, CoreError> {
-        let waiter: Option<Option<(String, i32, i64)>> = self.store.read(|c| {
+        let waiter: Option<Option<(String, i32, i64, i64)>> = self.store.read(|c| {
             if !review_exists(c, review_id)? {
                 return Ok(None);
             }
@@ -420,12 +439,12 @@ impl Core {
             Ok(Some(
                 c.query_row(
                     &format!(
-                        "SELECT session_id, pid, deadline_at FROM waiters \
+                        "SELECT session_id, pid, deadline_at, started_at FROM waiters \
                          WHERE session_id IN ({SESSION_GROUP_SQL}) \
                          ORDER BY started_at DESC LIMIT 1"
                     ),
                     [&root],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?,
             ))
@@ -434,8 +453,62 @@ impl Core {
             return Err(CoreError::not_found("review", review_id));
         };
         Ok(waiter
-            .filter(|(_, pid, deadline)| *deadline > now_ms() && pid_alive(*pid))
-            .map(|(session, pid, _)| (session, pid)))
+            .filter(|(_, pid, deadline, started)| {
+                *deadline > now_ms() && crate::process::alive_since(*pid, *started)
+            })
+            .map(|(session, pid, _, _)| (session, pid)))
+    }
+
+    /// Where the review's current assignment to the session (its canonical
+    /// session) began: the `seq` of the first `review.assigned` event of the
+    /// latest unbroken run of assignments to it (re-assigning the same session
+    /// another way keeps the point). `None` when the review is not assigned to
+    /// the session now, or no event records it. `NotFound` for an unknown
+    /// review.
+    pub fn assignment_seq(
+        &self,
+        review_id: &str,
+        session_id: &str,
+    ) -> Result<Option<i64>, CoreError> {
+        let found: Option<Option<i64>> = self.store.read(|c| {
+            if !review_exists(c, review_id)? {
+                return Ok(None);
+            }
+            let root = canonical(c, session_id)?;
+            let assigned: Option<String> = c
+                .query_row(
+                    "SELECT session_id FROM review_assignments WHERE review_id = ?1",
+                    [review_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match assigned {
+                Some(s) if canonical(c, &s)? == root => {}
+                _ => return Ok(Some(None)),
+            }
+            let mut stmt = c.prepare_cached(
+                "SELECT seq, json_extract(payload, '$.session_id') FROM events \
+                 WHERE review_id = ?1 AND kind = 'review.assigned' ORDER BY seq DESC",
+            )?;
+            let rows = stmt
+                .query_map([review_id], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut point = None;
+            for (seq, session) in rows {
+                let ours = match session {
+                    Some(s) => canonical(c, &s)? == root,
+                    None => false,
+                };
+                if !ours {
+                    break;
+                }
+                point = Some(seq);
+            }
+            Ok(Some(point))
+        })?;
+        found.ok_or_else(|| CoreError::not_found("review", review_id))
     }
 
     /// Records that the human has seen the review's events up to `seq` (never
@@ -526,19 +599,4 @@ fn link_by_owner_pid(tx: &Transaction, id: &str, pid: i32) -> Result<(), StoreEr
         params![id, root],
     )?;
     Ok(())
-}
-
-/// Whether a process with this pid exists (`kill -0`; same-user waiters only).
-fn pid_alive(pid: i32) -> bool {
-    // `kill -0 0` or a negative pid would address process groups.
-    if pid <= 0 {
-        return false;
-    }
-    Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
 }

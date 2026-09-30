@@ -11,6 +11,10 @@
 #   3. the CLI inside /Applications/Polygloss.app
 # and replaces itself with the first executable one (argv and stdin untouched).
 # Nothing is ever written to stdout: for `mcp` it is the JSON-RPC channel.
+#
+# With none installed it prints a one-line hint on stderr and exits 0, so the
+# plugin never breaks a session (the Stop hook would report an error on every
+# turn). A relative $POLYGLOSS_DATA_DIR is an error, as it is for the CLI.
 
 app_cli="/Applications/Polygloss.app/Contents/MacOS/polygloss-cli"
 
@@ -19,11 +23,15 @@ runnable() {
 }
 
 # The data dir, as polygloss-core resolves it: an absolute $POLYGLOSS_DATA_DIR,
-# else under $HOME.
+# else under $HOME (empty counts as unset; relative is an error).
 stable=""
 case "${POLYGLOSS_DATA_DIR:-}" in
+"") [ -n "${HOME:-}" ] && stable="$HOME/Library/Application Support/polygloss/bin/polygloss" ;;
 /*) stable="$POLYGLOSS_DATA_DIR/bin/polygloss" ;;
-*) [ -n "${HOME:-}" ] && stable="$HOME/Library/Application Support/polygloss/bin/polygloss" ;;
+*)
+	echo "polygloss-shim: POLYGLOSS_DATA_DIR must be an absolute path, got \"$POLYGLOSS_DATA_DIR\"" >&2
+	exit 1
+	;;
 esac
 
 if [ -n "$stable" ] && runnable "$stable"; then
@@ -39,11 +47,6 @@ if runnable "$app_cli"; then
 	exec "$app_cli" "$@"
 fi
 
-{
-	echo "polygloss-shim: cannot find the polygloss CLI. Looked for:"
-	[ -n "$stable" ] && echo "  $stable"
-	echo "  polygloss on PATH"
-	echo "  $app_cli"
-	echo "Install Polygloss.app and launch it once (it links its CLI at the first path), or put polygloss on PATH."
-} >&2
-exit 127
+looked="${stable:+$stable, }polygloss on PATH and $app_cli"
+echo "polygloss-shim: Polygloss is not installed (looked for $looked); install Polygloss.app and launch it once." >&2
+exit 0

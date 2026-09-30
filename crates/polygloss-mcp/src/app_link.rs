@@ -127,7 +127,7 @@ pub enum FocusStatus {
 
 /// Sends `focus` (an [`Op::Focus`]), launching the app in the background when
 /// needed. The app's own errors (an unknown path, a bad line) are returned with
-/// their §15.1 code (`bad_request` is `conflict`).
+/// their design §15.1 code (`bad_request` is `conflict`).
 pub fn focus(ctx: &ApiContext, op: Op) -> Result<FocusStatus, ApiError> {
     match run_op(ctx, op) {
         Ok(false) => Ok(FocusStatus::Focused),
@@ -151,10 +151,14 @@ pub fn focus(ctx: &ApiContext, op: Op) -> Result<FocusStatus, ApiError> {
 /// from its store feed (the nudge after the write); one that is not running is
 /// launched in the background with the review's URL, whose handler posts the
 /// notification (the feed of a fresh app starts after the request). Muted
-/// reviews never launch the app. Returns whether it launched the app. Never
-/// waits for the app and never fails.
+/// reviews, and notifications turned off globally (`notifications.enabled:
+/// false` in settings.json, design §17), never launch the app. Returns whether
+/// it launched the app. Never waits for the app and never fails.
 pub fn launch_to_notify(ctx: &ApiContext, review_id: &str) -> bool {
     if app_is_running(&ctx.core.paths) {
+        return false;
+    }
+    if !polygloss_core::settings::notifications_enabled(&ctx.core.paths) {
         return false;
     }
     match ctx.core.review_summary(review_id) {

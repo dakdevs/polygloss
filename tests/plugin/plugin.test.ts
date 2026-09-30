@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -227,19 +228,50 @@ describe("marketplace and manifests", () => {
     // Claude Code reads frontmatter only when `---` is the first line.
     const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(skill);
     if (!match) throw new Error("SKILL.md has no frontmatter");
-    const frontmatter = Object.fromEntries(
-      (match[1] ?? "")
-        .split("\n")
-        .map((line) => /^([a-z_-]+):\s*(.*)$/.exec(line))
-        .filter((m): m is RegExpExecArray => m !== null)
-        .map((m) => [m[1], m[2]]),
-    );
+    const frontmatter = Bun.YAML.parse(match[1] ?? "") as Record<
+      string,
+      unknown
+    >;
     expect(frontmatter.name).toBe("review-loop");
-    const description = frontmatter.description ?? "";
+    const description = String(frontmatter.description ?? "");
     expect(description.length).toBeGreaterThan(40);
     // The skill listing truncates description (+ when_to_use) at 1,536 chars.
     expect(description.length).toBeLessThan(1536);
     expect(description).toContain("Polygloss");
+    expect(description).toContain(
+      "Polygloss: the human submitted their review",
+    );
+  });
+
+  test("every SKILL.md frontmatter is strict YAML", () => {
+    // A plain scalar with ": " in it is invalid YAML that lenient parsers
+    // accept: quote such descriptions (T5.9).
+    const skillsDir = join(pluginDir, "skills");
+    const skills = readdirSync(skillsDir).map((d) =>
+      join(skillsDir, d, "SKILL.md"),
+    );
+    expect(skills.length).toBeGreaterThan(0);
+    for (const path of skills) {
+      const text = readFileSync(path, "utf8");
+      const match = /^---\n([\s\S]*?)\n---\n/.exec(text);
+      if (!match) throw new Error(`${path} has no frontmatter`);
+      const parsed = Bun.YAML.parse(match[1] ?? "") as Record<string, unknown>;
+      expect(typeof parsed.name).toBe("string");
+      expect(typeof parsed.description).toBe("string");
+    }
+  });
+
+  test("skill names every position state", () => {
+    const body = readFileSync(
+      join(pluginDir, "skills/review-loop/SKILL.md"),
+      "utf8",
+    );
+    for (const state of ["exact", "moved", "outdated", "absent"]) {
+      expect({ state, found: body.includes(`\`${state}\``) }).toEqual({
+        state,
+        found: true,
+      });
+    }
   });
 
   test("skill teaches the design 15.4 loop", () => {
@@ -383,16 +415,41 @@ describe("polygloss-shim", () => {
     );
   });
 
-  test("shim exits 127 with a message when nothing is found", () => {
+  test("shim exits 0 with a one-line hint when nothing is found", () => {
+    // Not 127: the Stop hook would report an error on every turn of every
+    // session with the plugin enabled but Polygloss not installed (T5.9).
     const s = pluginSandbox();
-    const r = runShim({ shim: s.shim, env: s.env });
-    expect(r.exitCode).toBe(127);
-    // stdout is the MCP JSON-RPC channel: the shim never writes to it.
+    for (const args of [["mcp"], ["wait", "--session", "s"]]) {
+      const r = runShim({ shim: s.shim, env: s.env, args });
+      expect(r.exitCode).toBe(0);
+      // stdout is the MCP JSON-RPC channel: the shim never writes to it.
+      expect(r.stdout).toBe("");
+      const lines = r.stderr.trimEnd().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("polygloss-shim: Polygloss is not installed");
+      expect(lines[0]).toContain(join(s.dataDir, "bin/polygloss"));
+      expect(lines[0]).toContain("polygloss on PATH");
+      expect(lines[0]).toContain(s.appCli);
+    }
+  });
+
+  test("a relative POLYGLOSS_DATA_DIR is an error, as it is for the CLI", () => {
+    const s = pluginSandbox();
+    fakeCli(join(s.pathDir, "polygloss"), "path");
+    const r = runShim({
+      shim: s.shim,
+      env: { ...s.env, POLYGLOSS_DATA_DIR: "relative/data" },
+    });
+    expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("");
-    expect(r.stderr).toContain("polygloss-shim: cannot find the polygloss CLI");
-    expect(r.stderr).toContain(join(s.dataDir, "bin/polygloss"));
-    expect(r.stderr).toContain("polygloss on PATH");
-    expect(r.stderr).toContain(s.appCli);
+    expect(r.stderr).toContain("POLYGLOSS_DATA_DIR must be an absolute path");
+    // Empty counts as unset (like core): falls through to the HOME path, then PATH.
+    const empty = runShim({
+      shim: s.shim,
+      env: { ...s.env, POLYGLOSS_DATA_DIR: "" },
+    });
+    expect(empty.exitCode).toBe(0);
+    expect(empty.stdout.split("\n")[0]).toBe("path");
   });
 });
 
