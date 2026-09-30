@@ -993,6 +993,47 @@ fn focus_checks_ids_and_sends_the_op() {
 }
 
 #[test]
+fn focus_check_validates_ids_without_the_app() {
+    // The JSON CLI's `--no-open focus` checks the request like `focus` but
+    // never talks to (or launches) the app.
+    let w = world();
+    let launcher = no_launch();
+    let ctx = w.ctx(launcher.clone());
+    let r = w.live_review(&ctx);
+    let ops: Ops = Arc::default();
+    let _app = fake_app(&w.core, ops.clone(), None);
+    let code = |req: FocusRequest| api::focus::check(&ctx, req).unwrap_err().code;
+    assert_eq!(code(FocusRequest::default()), ApiErrorCode::Conflict);
+    assert_eq!(
+        code(FocusRequest {
+            review_id: Some("nope".into()),
+            ..FocusRequest::default()
+        }),
+        ApiErrorCode::NotFound
+    );
+    assert_eq!(
+        code(FocusRequest {
+            review_id: Some(r.review_id.clone()),
+            line: Some(3),
+            ..FocusRequest::default()
+        }),
+        ApiErrorCode::Conflict
+    );
+    api::focus::check(
+        &ctx,
+        FocusRequest {
+            diff_id: Some(r.diff_id[..12].to_owned()),
+            path: Some("a.txt".into()),
+            line: Some(5),
+            ..FocusRequest::default()
+        },
+    )
+    .unwrap();
+    assert!(launcher.calls().is_empty());
+    assert!(ops.lock().unwrap().is_empty());
+}
+
+#[test]
 fn focus_launches_the_app_in_the_background() {
     let w = world();
     let ops: Ops = Arc::default();

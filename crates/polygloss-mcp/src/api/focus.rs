@@ -48,6 +48,13 @@ pub fn focus(ctx: &ApiContext, req: FocusRequest) -> Result<FocusResult, ApiErro
     })
 }
 
+/// Checks `req` as [`focus`] does (`conflict`, `not_found`) without talking
+/// to the app: the JSON CLI's `--no-open focus`, which then reports
+/// `unavailable`.
+pub fn check(ctx: &ApiContext, req: FocusRequest) -> Result<(), ApiError> {
+    focus_op(ctx, req).map(|_| ())
+}
+
 /// The checked socket op for `req`.
 fn focus_op(ctx: &ApiContext, req: FocusRequest) -> Result<Op, ApiError> {
     let blank = |s: &Option<String>| {
