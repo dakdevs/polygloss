@@ -6,6 +6,7 @@ mod support;
 
 mod composer;
 mod cursor;
+mod dump;
 mod e2e_harness;
 mod editor;
 mod feed;

@@ -6,41 +6,77 @@ Built in Rust on [GPUI](https://www.gpui.rs) via gpui-kit, with our own diff vie
 
 ## Status
 
-**Pre-alpha.** The workspace is scaffolded and the implementation follows [`docs/plan.md`](docs/plan.md). Nothing is released yet.
+**Pre-release.** v1 is feature-complete and in release testing; there is no public release yet. Until then, [build it from source](#build-from-source).
 
-## Requirements
+## Install
 
-| Tool      | Version                                                                                       |
-| --------- | --------------------------------------------------------------------------------------------- |
-| macOS     | 14 or later, Apple Silicon only                                                               |
-| git       | system git 2.39 or later (never bundled)                                                      |
-| Rust      | [rustup](https://rustup.rs); the pinned 1.98.1 toolchain installs from `rust-toolchain.toml`  |
-| Dev tools | `cargo-nextest` and `cargo-deny` in `~/.cargo/bin` (`cargo-insta` to review snapshot changes) |
-| Bun       | 1.3                                                                                           |
+Polygloss needs macOS 14 or later on Apple Silicon, and git 2.39 or later (the system git from the Xcode command line tools is fine).
 
-### The cargo `PATH` gotcha
+**Homebrew** (installs the app and puts the `polygloss` CLI on your `PATH`):
 
-A Homebrew `cargo`/`rustc` earlier on `PATH` shadows rustup and breaks doc-tests (`E0514`). Always run cargo through **`scripts/cargo.sh`**. It runs rustup's cargo from `~/.cargo/bin`, keeps build intermediates in `<main checkout>/target-shared` (shared by every git worktree) and final binaries in `<checkout>/target`, and serializes builds across worktrees. Details: [Cargo invocation](docs/plan.md#cargo-invocation-read-once).
+```bash
+brew install --cask dakdevs/tap/polygloss
+```
 
-## Build and test
+**DMG:** download `Polygloss_<version>_aarch64.dmg` from [GitHub Releases](https://github.com/dakdevs/polygloss/releases), drag Polygloss to Applications and launch it once. For the CLI, run **Install CLI** from the command palette (`⌘K`); it links `/usr/local/bin/polygloss` to the app's CLI, asking for your password if needed. Polygloss can check for updates (it asks on first launch; the check is its only network access).
 
-Run from the repository root, in order:
+### Claude Code plugin
+
+The plugin adds Polygloss's MCP server, a hook that wakes Claude when you submit a review, and a skill that teaches Claude the review loop:
+
+```bash
+claude plugin marketplace add dakdevs/polygloss
+claude plugin install polygloss@polygloss
+```
+
+Other agents (Codex, Cursor, Claude Desktop, …) run `polygloss mcp` as a stdio MCP server or use the JSON CLI: see [docs/agents.md](docs/agents.md#other-mcp-clients).
+
+## Quick start
+
+```bash
+cd ~/code/my-project
+polygloss                       # review your working tree against its merge-base with the default branch
+polygloss show HEAD             # one commit
+polygloss compare main feature  # a branch, like a pull request (three-dot)
+```
+
+In the app: `j`/`k` move through lines, `n`/`p` through files, `v` marks a file viewed, `c` comments (`⌘⏎` saves the draft), and `⇧⌘⏎` submits the review with a verdict. `⌘K` lists every action and `?` every key. `⌘O` opens anything from the app.
+
+With the plugin, ask Claude to "open this in Polygloss for review". It opens its changes in the app and ends its turn; when you press **Submit review**, it wakes up, reads your threads, fixes the code, replies, and asks for a re-review.
+
+## Docs
+
+- [User guide](docs/user-guide.md): reviewing, comments and Submit review, Viewed, live mode, keys, settings, themes
+- [Agents](docs/agents.md): the Claude Code plugin, MCP tools, the JSON CLI, sessions and wake-up, other MCP clients
+- [Contributing](CONTRIBUTING.md): setup, the cargo gotcha, checks and test rules
+- [Design](docs/design.md), [ADRs](docs/adr/README.md), [implementation plan](docs/plan.md), [library choices](docs/research/library-choices.md)
+- [Agent wake-up gate](docs/testing/agent-wake-gate.md): the manual release check in real Claude Code
+- [`AGENTS.md`](AGENTS.md): rules for coding agents working in this repo
+
+## Build from source
+
+You need [rustup](https://rustup.rs) (the pinned toolchain installs itself), `cargo-nextest` and `cargo-deny` in `~/.cargo/bin`, and Bun 1.3. Always run cargo through `scripts/cargo.sh`: a Homebrew `cargo` earlier on `PATH` shadows rustup's and breaks the build ([details](CONTRIBUTING.md#cargo-only-through-scriptscargosh)).
 
 ```bash
 bun install --frozen-lockfile
-scripts/cargo.sh --version                        # cargo 1.98.1
 scripts/cargo.sh build --workspace
-target/debug/polygloss-cli --version              # polygloss 0.1.0
-bun run format:check                              # cargo fmt --check + prettier --check
-bun run lint                                      # clippy -D warnings + tsc --noEmit
-bun run test:unit                                 # cargo nextest
-bun test                                          # bun suites (builds polygloss-cli first)
-bun run test:e2e                                  # GPUI E2E + screenshots, then MCP E2E
-scripts/check-deps.sh                             # crate-graph rules (slim CLI, no GPL, offline)
-scripts/cargo.sh deny check licenses bans sources
+target/debug/Polygloss                  # the app
+target/debug/polygloss-cli --version    # the CLI (installed as `polygloss`)
+scripts/package-release.sh              # dist/Polygloss.app and the DMG (needs cargo-packager 0.11.8)
 ```
 
-`bun run format` rewrites Rust and TypeScript formatting in place. Tests never touch your real `HOME`: every test process gets a temp `HOME`, data dir and git config.
+Checks, as CI runs them:
+
+```bash
+bun run format:check    # cargo fmt --check + prettier --check
+bun run lint            # clippy -D warnings + tsc --noEmit
+bun run test:unit       # cargo nextest
+bun test                # bun suites
+bun run test:e2e        # GPUI E2E and screenshots, then the agent-surface E2E
+scripts/check-deps.sh   # crate-graph rules (slim CLI, no GPL, offline)
+```
+
+Tests never touch your real `HOME`: every test process gets a temporary `HOME`, data dir and git config.
 
 ## Layout
 
@@ -55,18 +91,10 @@ scripts/cargo.sh deny check licenses bans sources
 | `crates/polygloss-mcp`       | Agent API and the stdio MCP server                                                  |
 | `crates/polygloss-cli`       | `polygloss-cli` (installed as `polygloss`): CLI, `mcp`, `wait`, JSON commands       |
 | `crates/polygloss-perf`      | Perf harness (dev only)                                                             |
+| `plugins/polygloss`          | The Claude Code plugin (marketplace in `.claude-plugin/`)                           |
 | `tests/`                     | bun suites                                                                          |
-| `scripts/`                   | `cargo.sh`, `check-deps.sh` and other dev scripts                                   |
-| `docs/`                      | Design, ADRs, research, plan, manual test procedures                                |
-
-## Docs
-
-- [`docs/design.md`](docs/design.md): the design spec
-- [`docs/adr/`](docs/adr/README.md): architecture decision records
-- [`docs/plan.md`](docs/plan.md): the implementation plan
-- [`docs/research/library-choices.md`](docs/research/library-choices.md): pinned libraries and why
-- [`docs/testing/agent-wake-gate.md`](docs/testing/agent-wake-gate.md): the manual agent wake-up gate in real Claude Code (`scripts/wake-gate/prepare.sh` sets it up)
-- [`AGENTS.md`](AGENTS.md): rules for coding agents working in this repo
+| `scripts/`                   | `cargo.sh`, `check-deps.sh`, packaging and other dev scripts                        |
+| `docs/`                      | User guide, agents, design, ADRs, research, plan, manual test procedures            |
 
 ## License
 
