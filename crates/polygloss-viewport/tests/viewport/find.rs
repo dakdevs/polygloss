@@ -205,3 +205,48 @@ fn find_marks_follow_lines_shaped_again(cx: &mut TestAppContext) {
     );
     assert_eq!(marks(cx, t.find_match).len(), 2);
 }
+
+#[gpui_kit::test]
+fn find_marks_never_keep_dropped_lines_alive(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // An added file far taller than the window: every line matches.
+    let lines = numbered("line", 200).concat();
+    let provider = MemProvider::new(vec![Spec::added("src/a.rs", &lines)]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 400.);
+    let t = theme(&view, cx);
+    set(
+        &view,
+        cx,
+        Some(FindHighlights {
+            matcher: matcher("line"),
+            current: None,
+        }),
+    );
+    let top = marks(cx, t.find_match);
+    assert!(!top.is_empty());
+    let cache = |view: &Entity<DiffViewport>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| v.debug_find_cache().expect("find is on"))
+    };
+    let (live, freed) = cache(&view, cx);
+    assert_eq!((live, freed), (top.len(), 0), "one cached line per mark");
+    // The text cache drops every shaped line (a font change) and the view
+    // scrolls on before those lines are shaped again: the find cache still
+    // lists them but holds them weakly, so they are freed, not kept alive.
+    let mut opts = view.read_with(cx, |v, _| v.options().clone());
+    opts.ligatures = true;
+    view.update(cx, |v, cx| {
+        v.set_options(opts, cx);
+        v.scroll_by(2000.0, cx);
+    });
+    settle(cx);
+    let (live, freed) = cache(&view, cx);
+    assert!(live > 0, "the lines now shown are cached");
+    assert_eq!(freed, top.len(), "the dropped lines are not kept alive");
+    // Back at the top the dropped lines are shaped (and matched) again, and
+    // the marks land where they did.
+    view.update(cx, |v, cx| v.scroll_by(-2000.0, cx));
+    settle(cx);
+    assert_eq!(marks(cx, t.find_match), top);
+    let (_, freed) = cache(&view, cx);
+    assert_eq!(freed, 0, "lines shaped again are matched again");
+}

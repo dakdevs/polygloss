@@ -134,6 +134,18 @@ impl FindState {
         rects
     }
 
+    /// `(live, freed)`: cached lines whose shaped line is still alive, and
+    /// those whose shaped line was dropped (evicted or cleared) since.
+    #[cfg(feature = "debug-inspect")]
+    pub fn cached_lines(&self) -> (usize, usize) {
+        let live = self
+            .rects
+            .values()
+            .filter(|(at, _)| at.strong_count() > 0)
+            .count();
+        (live, self.rects.len() - live)
+    }
+
     /// The current match's range if it is in line `line` of `side` in file
     /// `f` (compare with [`FindRect::range`]).
     pub fn current_in(&self, f: u32, side: Side, line: u32) -> Option<Range<u32>> {

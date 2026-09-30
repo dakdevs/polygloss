@@ -163,6 +163,12 @@ impl FileLayout {
         self
     }
 
+    /// The same rows (split or not) at new `heights`, one per row. Panics if
+    /// the lengths differ.
+    pub fn with_heights(&self, heights: &[f32]) -> FileLayout {
+        FileLayout::new(self.rows.clone(), heights).with_split(self.split)
+    }
+
     /// Whether these are split rows (see [`FileLayout::with_split`]).
     pub fn is_split(&self) -> bool {
         self.split

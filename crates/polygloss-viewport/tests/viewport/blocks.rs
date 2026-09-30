@@ -387,6 +387,29 @@ fn placement_pairs_old_and_new_blocks_of_one_split_row() {
 }
 
 #[test]
+fn new_heights_keep_split_rows_pairing() {
+    let (a, b) = twenty_lines();
+    let split = layout_of(&a, &b, Layout::Split);
+    // Wrapped heights (taller rows) keep the rows and the split flag, so
+    // old- and new-side blocks of one row still pair.
+    let heights: Vec<f32> = (0..split.len()).map(|i| 20.0 + i as f32).collect();
+    let wrapped = split.with_heights(&heights);
+    assert!(wrapped.is_split());
+    assert_eq!(wrapped.rows(), split.rows());
+    assert_eq!(wrapped.row_height(1), 21.0);
+    let placed_wrapped = wrapped.with_blocks(&[placed(1, new(10), 30.0), placed(2, old(10), 90.0)]);
+    assert!(describe(&placed_wrapped).contains(&"[2|1]".to_owned()));
+    // Unified stays unified.
+    let unified = layout_of(&a, &b, Layout::Unified);
+    let heights = vec![20.0; unified.len()];
+    assert!(!unified.with_heights(&heights).is_split());
+    // A layout marked split by its mode stays split when rebuilt, even with
+    // no split rows in it (a file of gaps alone).
+    let gaps = FileLayout::new(Vec::new(), &[]).with_split(true);
+    assert!(gaps.with_heights(&[]).is_split());
+}
+
+#[test]
 fn document_pair_row_follows_the_taller_block() {
     let files = Arc::new((0..1).map(text_change).collect::<Vec<_>>());
     let mut d = Document::new(files, Metrics::default());

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use gpui_kit::{Entity, Focusable as _, TestAppContext};
+use gpui_kit::{Entity, Focusable as _, Styled as _, TestAppContext};
 use polygloss_app::find::search::{self, FindMatch, FindOptions};
 use polygloss_app::find::{self, FindBar};
 use polygloss_app::review_tab::ReviewTab;
@@ -1050,4 +1050,10 @@ fn find_previews_draw_in_the_diff_code_font_without_ligatures(cx: &mut TestAppCo
         polygloss_viewport::code_font_features(false),
         "ligatures are off by default"
     );
+    // The result list's cells (line numbers and previews) are styled with
+    // that family and those features, not the family alone.
+    let mut cell = FindBar::preview_cell(&preview);
+    let text = cell.text_style();
+    assert_eq!(text.font_family, Some(preview.family.clone()));
+    assert_eq!(text.font_features, Some(preview.features.clone()));
 }

@@ -583,6 +583,15 @@ impl DiffViewport {
         self.layout
     }
 
+    /// Find's per-line match cache as `(live, freed)` (feature
+    /// `debug-inspect`): lines whose shaped text is still alive, and lines
+    /// the text cache dropped since. `None` while find is off. The cache
+    /// holds shaped lines weakly, so it never keeps a dropped line alive.
+    #[cfg(feature = "debug-inspect")]
+    pub fn debug_find_cache(&self) -> Option<(usize, usize)> {
+        self.find.as_ref().map(|f| f.cached_lines())
+    }
+
     /// What the last frame painted (feature `debug-inspect`).
     #[cfg(feature = "debug-inspect")]
     pub fn debug(&self) -> crate::ViewportDebug {
@@ -880,13 +889,15 @@ impl DiffViewport {
         }
         self.labels[f as usize] = None;
         let rows = self.gaps.rows(f, &file, key.layout);
-        let layout = FileLayout::from_rows(rows, &metrics);
+        // Split by the layout mode rather than the rows' contents (a split
+        // file of gaps alone holds no split rows): `with_blocks` pairs old-
+        // and new-side blocks by it.
+        let layout = FileLayout::from_rows(rows, &metrics).with_split(key.layout == Layout::Split);
         if key.wrap == 0 {
             return Some(layout);
         }
         let heights = wrapped_heights(&layout, rows, &file, self.geometry.advance, key.wrap as f32);
-        // Keep the split flag: `with_blocks` pairs old- and new-side blocks by it.
-        Some(FileLayout::new(layout.rows().to_vec(), &heights).with_split(layout.is_split()))
+        Some(layout.with_heights(&heights))
     }
 
     /// A worker finished a job (`None`: it found nothing to do). Takes the
