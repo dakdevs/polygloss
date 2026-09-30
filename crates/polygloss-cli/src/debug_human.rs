@@ -12,9 +12,14 @@
 //! - `human-viewed` marks a file of the latest iteration viewed.
 //! - `human-submit` publishes the drafts with a verdict and summary.
 //! - `agent-comment` adds a published agent thread (note, question or comment)
-//!   on the latest iteration, or an agent reply with `--reply-to`.
-//! - `assign` assigns a review to an agent session (upserted without an owner
-//!   pid, so sessions made by one test runner never link to each other).
+//!   on the latest iteration, or an agent reply with `--reply-to`; the author
+//!   name is the global `--agent` (default `claude-code`) and the session the
+//!   global `--session` (recorded on the comment, not upserted).
+//! - `assign` records an agent session (the global `--session`, required) and
+//!   assigns a review to it, as an agent's `open_diff` (or the human's "Assign
+//!   to session…", OQ-32) would. The session has no owner pid unless
+//!   `--owner-pid` is given, so sessions made by one test runner never link to
+//!   each other (T4.5 read-tool and T4.8 `polygloss wait` tests).
 
 use std::path::PathBuf;
 
@@ -101,7 +106,8 @@ pub struct HumanSubmitArgs {
     pub summary: String,
 }
 
-/// `debug agent-comment`: a published agent thread or reply.
+/// `debug agent-comment`: a published agent thread or reply. The author is the
+/// global `--agent` (default `claude-code`) and the global `--session`.
 #[derive(Debug, Args)]
 pub struct AgentCommentArgs {
     /// The review (not needed with --reply-to).
@@ -124,24 +130,29 @@ pub struct AgentCommentArgs {
     pub line: Option<u32>,
     #[arg(long, requires = "line")]
     pub start_line: Option<u32>,
-    /// The agent's name (`clientInfo.name`).
-    #[arg(long, default_value = "claude-code")]
-    pub agent: String,
-    /// The agent session recorded on the comment (not upserted).
-    #[arg(long)]
-    pub session: Option<String>,
 }
 
-/// `debug assign`: assign a review to an agent session.
+/// `debug assign`: record a session (the global `--session`) and assign the
+/// review to it.
 #[derive(Debug, Args)]
 pub struct AssignArgs {
     #[arg(long)]
     pub review: String,
-    #[arg(long)]
-    pub session: String,
-    /// The session's client name.
+    /// The session's client name (MCP `clientInfo.name`).
     #[arg(long, default_value = "claude-code")]
-    pub agent: String,
+    pub client: String,
+    /// The agent host process that owns the session (links drifted ids, §16.4).
+    #[arg(long)]
+    pub owner_pid: Option<i32>,
+    #[arg(long, value_enum, default_value_t = AssignedByArg::OpenDiff)]
+    pub by: AssignedByArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AssignedByArg {
+    OpenDiff,
+    Human,
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -297,13 +308,20 @@ fn new_thread(
     Ok(json!({ "thread_id": thread_id, "diff_id": latest.diff_id.as_str() }))
 }
 
-pub fn agent_comment(args: AgentCommentArgs) -> anyhow::Result<Value> {
+/// Default author name of `agent-comment` without the global `--agent`.
+pub const DEFAULT_AGENT: &str = "claude-code";
+
+pub fn agent_comment(
+    args: AgentCommentArgs,
+    agent: Option<String>,
+    session: Option<String>,
+) -> anyhow::Result<Value> {
     require_test_env("agent-comment")?;
     let core = core()?;
     let author = Author {
         kind: AuthorKind::Agent,
-        name: args.agent,
-        session_id: args.session,
+        name: agent.unwrap_or_else(|| DEFAULT_AGENT.to_owned()),
+        session_id: session,
     };
     if let Some(thread_id) = &args.reply_to {
         let comment_id = core.reply(thread_id, &args.body, &author)?;
@@ -321,18 +339,29 @@ pub fn agent_comment(args: AgentCommentArgs) -> anyhow::Result<Value> {
     new_thread(&core, review, subject, kind, args.body, author)
 }
 
-pub fn assign(args: AssignArgs) -> anyhow::Result<Value> {
+pub fn assign(args: AssignArgs, session: Option<String>) -> anyhow::Result<Value> {
     require_test_env("assign")?;
+    let session = session.ok_or_else(|| anyhow!("--session <ID> is required"))?;
     let core = core()?;
-    core.upsert_session(&SessionInfo {
-        id: args.session.clone(),
-        client_name: args.agent,
+    let canonical = core.upsert_session(&SessionInfo {
+        id: session.clone(),
+        client_name: args.client,
         client_version: None,
-        owner_pid: None,
+        owner_pid: args.owner_pid,
         cwd: None,
     })?;
-    core.assign_review(&args.review, &args.session, AssignedBy::OpenDiff)?;
-    Ok(json!({ "review_id": args.review, "session_id": args.session }))
+    let by = match args.by {
+        AssignedByArg::OpenDiff => AssignedBy::OpenDiff,
+        AssignedByArg::Human => AssignedBy::Human,
+        AssignedByArg::Agent => AssignedBy::Agent,
+    };
+    core.assign_review(&args.review, &session, by)?;
+    Ok(json!({
+        "review_id": args.review,
+        "session_id": session,
+        "canonical_id": canonical,
+        "assigned_by": by.as_str(),
+    }))
 }
 
 pub fn human_viewed(args: HumanViewedArgs) -> anyhow::Result<Value> {

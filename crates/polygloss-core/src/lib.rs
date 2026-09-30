@@ -12,6 +12,7 @@ pub mod ids;
 pub mod ipc;
 pub mod objects;
 pub mod paths;
+pub mod process;
 pub mod review;
 pub mod store;
 pub mod urls;

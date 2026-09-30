@@ -21,7 +21,8 @@
 //!   one and gets its pid back to signal. A waiter only removes its own row. A
 //!   waiter counts as live while its pid exists (probed with `/bin/kill -0`, since
 //!   core has no `libc` and denies `unsafe`; waiters run as the same user) and its
-//!   deadline has not passed.
+//!   deadline has not passed. `last_woken_seq` (the wake-up high-water mark,
+//!   §16.3) lives on the canonical session too.
 //! - Sessions, waiters, `last_seen_seq` and mute have no event kind (§7.3), so
 //!   those writes append none.
 
@@ -320,6 +321,78 @@ impl Core {
             ))
         })?;
         found.ok_or_else(|| CoreError::not_found("review", review_id))
+    }
+
+    /// The stored row of session `id` itself (not its canonical session), `None`
+    /// when unknown.
+    pub fn session(&self, id: &str) -> Result<Option<SessionInfo>, CoreError> {
+        Ok(self.store.read(|c| {
+            Ok(c.query_row(
+                "SELECT id, client_name, client_version, owner_pid, cwd FROM sessions \
+                 WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(SessionInfo {
+                        id: r.get(0)?,
+                        client_name: r.get(1)?,
+                        client_version: r.get(2)?,
+                        owner_pid: r.get(3)?,
+                        cwd: r
+                            .get::<_, Option<String>>(4)?
+                            .map(|p| crate::review::models::path_from_db(&p)),
+                    })
+                },
+            )
+            .optional()?)
+        })?)
+    }
+
+    /// The `last_woken_seq` of the session's canonical session (§16.3 step 4):
+    /// `review.submitted` events up to it already woke the session. 0 for an
+    /// unknown session.
+    pub fn last_woken_seq(&self, session_id: &str) -> Result<i64, CoreError> {
+        Ok(self.store.read(|c| {
+            let root = canonical(c, session_id)?;
+            Ok(c.query_row(
+                "SELECT last_woken_seq FROM sessions WHERE id = ?1",
+                [&root],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+        })?)
+    }
+
+    /// Records that the session (its canonical session) was woken for events up
+    /// to `seq` (§16.3 step 5); never moves backwards. `NotFound` for an unknown
+    /// session.
+    pub fn set_last_woken_seq(&self, session_id: &str, seq: i64) -> Result<(), CoreError> {
+        self.store.write(|tx| {
+            if session_row(tx, session_id)?.is_none() {
+                return Ok(Err(CoreError::not_found("session", session_id)));
+            }
+            let root = canonical(tx, session_id)?;
+            tx.execute(
+                "UPDATE sessions SET last_woken_seq = MAX(last_woken_seq, ?2) WHERE id = ?1",
+                params![root, seq],
+            )?;
+            Ok(Ok(()))
+        })?
+    }
+
+    /// The pid registered as the waiter of the session's canonical session
+    /// (alive or not), `None` when there is none. A waiter polls this to notice
+    /// it was replaced.
+    pub fn waiter_pid(&self, session_id: &str) -> Result<Option<i32>, CoreError> {
+        Ok(self.store.read(|c| {
+            let root = canonical(c, session_id)?;
+            Ok(c.query_row(
+                "SELECT pid FROM waiters WHERE session_id = ?1",
+                [&root],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })?)
     }
 
     /// The live waiter `(canonical session id, pid)` of the session the review is

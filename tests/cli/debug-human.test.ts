@@ -252,6 +252,8 @@ describe("polygloss-cli debug human commands", () => {
     expect(assigned.json).toEqual({
       review_id: reviewId,
       session_id: "sess-a",
+      canonical_id: "sess-a",
+      assigned_by: "open_diff",
     });
 
     const conn = db();
@@ -277,6 +279,59 @@ describe("polygloss-cli debug human commands", () => {
         .query("SELECT session_id FROM review_assignments WHERE review_id = ?")
         .get(reviewId);
       expect(assignment).toEqual({ session_id: "sess-a" });
+      // No owner pid without --owner-pid, so test sessions never link.
+      expect(
+        conn.query("SELECT owner_pid FROM sessions WHERE id = 'sess-a'").get(),
+      ).toEqual({ owner_pid: null });
+    } finally {
+      conn.close();
+    }
+  });
+
+  test("assign records the session and assigns the review", () => {
+    const seeded = debug([
+      "seed",
+      "--repo",
+      liveRepo("assign"),
+      "--since",
+      "HEAD",
+    ]);
+    const reviewId = seeded.json.review_id as string;
+    const assigned = debug([
+      "assign",
+      "--review",
+      reviewId,
+      "--session",
+      "debug-assign-session",
+      "--owner-pid",
+      "4242",
+    ]);
+    expect(assigned.exitCode).toBe(0);
+    expect(assigned.json).toEqual({
+      review_id: reviewId,
+      session_id: "debug-assign-session",
+      canonical_id: "debug-assign-session",
+      assigned_by: "open_diff",
+    });
+    const conn = db();
+    try {
+      expect(
+        conn
+          .query(
+            "SELECT client_name, owner_pid FROM sessions WHERE id = 'debug-assign-session'",
+          )
+          .get(),
+      ).toEqual({ client_name: "claude-code", owner_pid: 4242 });
+      expect(
+        conn
+          .query(
+            "SELECT session_id, assigned_by FROM review_assignments WHERE review_id = ?",
+          )
+          .get(reviewId),
+      ).toEqual({
+        session_id: "debug-assign-session",
+        assigned_by: "open_diff",
+      });
     } finally {
       conn.close();
     }

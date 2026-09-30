@@ -1301,3 +1301,55 @@ fn mark_seen_only_moves_forward() {
         Err(CoreError::NotFound { .. })
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Waiter support (T4.8, design §16.3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn session_lookup_returns_the_stored_row() {
+    let _sb = Sandbox::isolate();
+    let core = core();
+    assert_eq!(core.session("s1").unwrap(), None);
+    core.upsert_session(&session("s1", Some(77))).unwrap();
+    assert_eq!(core.session("s1").unwrap(), Some(session("s1", Some(77))));
+}
+
+#[test]
+fn last_woken_seq_is_kept_on_the_canonical_session_and_only_moves_forward() {
+    let _sb = Sandbox::isolate();
+    let core = core();
+    core.upsert_session(&session("s1", Some(50))).unwrap();
+    core.upsert_session(&session("s2", Some(50))).unwrap();
+    assert_eq!(core.last_woken_seq("s1").unwrap(), 0);
+    // Unknown sessions have never been woken.
+    assert_eq!(core.last_woken_seq("nobody").unwrap(), 0);
+
+    // A wake under the drifted id is recorded on the canonical session.
+    core.set_last_woken_seq("s2", 12).unwrap();
+    assert_eq!(core.last_woken_seq("s1").unwrap(), 12);
+    assert_eq!(core.last_woken_seq("s2").unwrap(), 12);
+    assert_eq!(
+        count(&core, "SELECT last_woken_seq FROM sessions WHERE id = 's1'"),
+        12
+    );
+    core.set_last_woken_seq("s1", 7).unwrap();
+    assert_eq!(core.last_woken_seq("s2").unwrap(), 12);
+    assert!(matches!(
+        core.set_last_woken_seq("nobody", 3),
+        Err(CoreError::NotFound { .. })
+    ));
+}
+
+#[test]
+fn waiter_pid_reports_the_canonical_sessions_waiter() {
+    let _sb = Sandbox::isolate();
+    let core = core();
+    core.upsert_session(&session("s1", Some(50))).unwrap();
+    core.upsert_session(&session("s2", Some(50))).unwrap();
+    assert_eq!(core.waiter_pid("s1").unwrap(), None);
+    core.register_waiter("s2", 321, far_future()).unwrap();
+    assert_eq!(core.waiter_pid("s1").unwrap(), Some(321));
+    assert_eq!(core.waiter_pid("s2").unwrap(), Some(321));
+    assert_eq!(core.waiter_pid("nobody").unwrap(), None);
+}
