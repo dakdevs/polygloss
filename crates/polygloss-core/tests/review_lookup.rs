@@ -1,11 +1,12 @@
 //! Id lookups the agent surface needs without a repo on disk (T4.5): a diff id
-//! prefix resolved against the store only, and the latest event seq.
+//! prefix resolved against the store only, and the latest event seq; plus
+//! the submission and archived lookups of `wait_for_review` (T4.7).
 //!
 //! Every test runs under `Sandbox::isolate()`; only nextest is supported.
 
 use polygloss_core::ObjectFormat;
 use polygloss_core::git::{Since, Source};
-use polygloss_core::review::{Core, CoreError, OpenRequest, PinnedBy};
+use polygloss_core::review::{Core, CoreError, OpenRequest, PinnedBy, Verdict};
 use polygloss_core::store::events::{Actor, latest_seq};
 use polygloss_core::testing::{FixtureRepo, Sandbox};
 
@@ -82,4 +83,56 @@ fn latest_seq_is_zero_then_the_newest_event() {
         .unwrap();
     assert!(n > 0);
     assert_eq!(core.store.read(latest_seq).unwrap(), n);
+}
+
+fn live_review(core: &Core) -> (FixtureRepo, String) {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"a\n");
+    repo.commit("c1");
+    repo.write("a.txt", b"b\n");
+    let opened = core
+        .open(&OpenRequest {
+            worktree: repo.path().to_path_buf(),
+            source: Source::Live { since: Since::Head },
+            label: None,
+            pin: Some(PinnedBy::Manual),
+            actor: Actor::human(),
+        })
+        .unwrap();
+    (repo, opened.review_id)
+}
+
+#[test]
+fn submission_lookup_returns_the_row_its_iteration_and_event_seq() {
+    let _sb = Sandbox::isolate();
+    let core = Core::open_default().unwrap();
+    let (_repo, review) = live_review(&core);
+    assert_eq!(core.submission("no-such-submission").unwrap(), None);
+    let first = core
+        .submit_review(&review, Verdict::Comment, "first", None)
+        .unwrap();
+    let second = core
+        .submit_review(&review, Verdict::RequestChanges, "Rename it.", None)
+        .unwrap();
+    let got = core.submission(&second.id).unwrap().unwrap();
+    assert_eq!(got, second);
+    assert_eq!(got.iteration.seq, 1);
+    assert_eq!(got.summary_md, "Rename it.");
+    assert!(got.seq > first.seq);
+    assert_eq!(core.submission(&first.id).unwrap().unwrap(), first);
+}
+
+#[test]
+fn review_archived_follows_archive_and_reopen() {
+    let _sb = Sandbox::isolate();
+    let core = Core::open_default().unwrap();
+    let (repo, review) = live_review(&core);
+    assert!(!core.review_archived(&review).unwrap());
+    core.archive_review(&review, &Actor::human()).unwrap();
+    assert!(core.review_archived(&review).unwrap());
+    // Reopening un-archives it.
+    open_live(&core, &repo);
+    assert!(!core.review_archived(&review).unwrap());
+    let err = core.review_archived("no-such-review").unwrap_err();
+    assert_eq!(err.code(), "not_found");
 }

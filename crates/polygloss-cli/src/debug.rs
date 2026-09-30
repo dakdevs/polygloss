@@ -1,6 +1,6 @@
 //! Hidden `polygloss debug …` developer commands: `parity` (T1.16) and the
-//! test-only human (T4.4) and agent (T4.5, `assign`: T4.8) stand-ins in
-//! `debug_human`.
+//! test-only human (T4.4, `human-archive`: T4.7) and agent (T4.5, `assign`:
+//! T4.8) stand-ins in `debug_human`.
 //!
 //! `debug parity` checks our hunks against the system git on a real range (design
 //! §6.3 "Parity"): for every text modify/rename pair that `list_changes` reports
@@ -51,6 +51,8 @@ pub enum DebugCommand {
     AgentComment(debug_human::AgentCommentArgs),
     /// Test-only: record an agent session and assign the review to it.
     Assign(debug_human::AssignArgs),
+    /// Test-only: archive (or prune) the review.
+    HumanArchive(debug_human::HumanArchiveArgs),
 }
 
 /// `debug parity` arguments. `--repo` (any path inside the repository, required)
@@ -127,6 +129,7 @@ pub fn run(args: DebugArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         DebugCommand::Assign(args) => {
             print_json(debug_human::assign(args, global.session.clone())?)
         }
+        DebugCommand::HumanArchive(args) => print_json(debug_human::human_archive(args)?),
     }
 }
 

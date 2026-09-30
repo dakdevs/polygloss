@@ -20,7 +20,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use polygloss_core::review::Core;
@@ -109,6 +109,9 @@ struct State {
     session_recorded: AtomicBool,
     /// `None` until fetched, and again after `roots/list_changed`.
     roots: tokio::sync::Mutex<Option<Vec<PathBuf>>>,
+    /// Cancel flags of `wait_for_review` calls, set when the server stops so
+    /// a pending wait never outlives stdin (the runtime waits for blocking tasks).
+    waits: Mutex<Vec<Weak<AtomicBool>>>,
 }
 
 /// The Polygloss MCP server. Cheap to clone.
@@ -135,6 +138,7 @@ impl PolyglossServer {
                 client: Mutex::new(None),
                 session_recorded: AtomicBool::new(false),
                 roots: tokio::sync::Mutex::new(None),
+                waits: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -142,6 +146,22 @@ impl PolyglossServer {
     /// This process's session id.
     pub fn session_id(&self) -> &str {
         &self.state.session_id
+    }
+
+    /// Cancels every pending `wait_for_review` (the server is stopping).
+    pub fn cancel_waits(&self) {
+        let waits =
+            std::mem::take(&mut *self.state.waits.lock().unwrap_or_else(|p| p.into_inner()));
+        for flag in waits.iter().filter_map(Weak::upgrade) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Registers a wait's cancel flag for [`PolyglossServer::cancel_waits`].
+    fn track_wait(&self, ctl: &WaitControl) {
+        let mut waits = self.state.waits.lock().unwrap_or_else(|p| p.into_inner());
+        waits.retain(|w| w.strong_count() > 0);
+        waits.push(Arc::downgrade(&ctl.cancel_flag()));
     }
 
     /// The core, opening the store on first use (blocking).
@@ -452,6 +472,7 @@ impl PolyglossServer {
         rc: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let ctl = wait_control(&rc);
+        self.track_wait(&ctl);
         self.run(&rc, move |ctx| api::wait_for_review(ctx, req, &ctl))
             .await
     }
@@ -607,7 +628,10 @@ pub async fn serve_stdio_with(
     launcher: Arc<dyn Launcher + Send + Sync>,
 ) -> anyhow::Result<()> {
     let server = PolyglossServer::new(opts, session::session_id_from_env(), launcher);
-    let running = server.serve(rmcp::transport::stdio()).await?;
-    running.waiting().await?;
+    let running = server.clone().serve(rmcp::transport::stdio()).await?;
+    let waited = running.waiting().await;
+    // Blocking waits would keep the runtime (and the process) alive.
+    server.cancel_waits();
+    waited?;
     Ok(())
 }

@@ -41,7 +41,7 @@ pub use open_diff::{OpenDiffRequest, open_diff};
 pub use reply::{ReplyRequest, reply};
 pub use request_rereview::{RequestRereviewRequest, request_rereview};
 pub use resolve::{ResolveRequest, UnresolveRequest, resolve, unresolve};
-pub use wait_for_review::{WaitForReviewRequest, wait_for_review};
+pub use wait_for_review::{WaitForReviewRequest, WaitForReviewResult, wait_for_review};
 
 /// A progress callback: `(elapsed, total)` since the wait started.
 pub type ProgressFn = Box<dyn Fn(Duration, Duration) + Send + Sync>;
