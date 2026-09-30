@@ -11,6 +11,7 @@ mod editor;
 mod feed;
 mod find;
 mod home;
+mod ipc;
 mod iterations;
 mod keymap;
 mod live;

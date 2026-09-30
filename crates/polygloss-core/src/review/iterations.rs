@@ -138,6 +138,24 @@ impl Core {
         entries.ok_or_else(|| CoreError::not_found("review", review_id))
     }
 
+    /// The most recently active review (`updated_at`, then id) with an
+    /// iteration of diff `diff_id` (full id), archived reviews last; `None`
+    /// when no review pinned that diff. The app's socket `open`/`focus` and
+    /// `polygloss://diff/<id>` open this review (design §13.5).
+    pub fn latest_review_for_diff(&self, diff_id: &str) -> Result<Option<String>, CoreError> {
+        let id = DiffId::parse(diff_id)?;
+        Ok(self.store.read(|c| {
+            Ok(c.query_row(
+                "SELECT v.id FROM reviews v \
+                 WHERE v.id IN (SELECT review_id FROM iterations WHERE diff_id = ?1) \
+                 ORDER BY v.archived_at IS NOT NULL, v.updated_at DESC, v.id DESC LIMIT 1",
+                [id.as_str()],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+        })?)
+    }
+
     /// The review's latest submission (by `submitted_at`) and its iteration;
     /// `None` when it was never submitted.
     pub fn last_submission(&self, review_id: &str) -> Result<Option<LastSubmission>, CoreError> {
