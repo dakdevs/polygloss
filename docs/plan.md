@@ -1762,7 +1762,7 @@ scripts/check-deps.sh                      # polygloss-cli still has zero gpui/l
 
 **Goal:** a signed-when-credentials-exist, notarizable `Polygloss.app` + DMG built by cargo-packager, a Sparkle stub, a Homebrew cask template, user docs, a keyboard-only pass, license and egress audits, and a full E2E run against the bundled app.
 
-**Waves:** W1 = T5.1 ∥ T5.5 ∥ T5.6. W2 = T5.2 ∥ T5.3 ∥ T5.4. W3 = T5.7. W4 = T5.8.
+**Waves:** W1 = T5.9 ∥ T5.10 ∥ T5.1. W2 = T5.5 ∥ T5.6 ∥ T5.2. W3 = T5.3 ∥ T5.4. W4 = T5.7. W5 = T5.8. (T5.9 and T5.10 were added by the orchestrator after M4 from the M3/M4 review findings; they land first so docs, the a11y pass and the bundle audits see the hardened code.)
 
 ### T5.1 cargo-packager bundle and bundle smoke test
 
@@ -1831,6 +1831,49 @@ scripts/check-deps.sh                      # polygloss-cli still has zero gpui/l
 - [ ] The user runs the manual wake gate **W1–W8** and records results.
 - [ ] Walk the [Definition of done](#definition-of-done-v1) and tick every line with evidence (test name, command output or recorded manual result).
 - [ ] Dry-run `release.yml` on a `v0.1.0-rc.1` tag in a fork or with `workflow_dispatch` (unsigned without secrets).
+
+### T5.9 Agent-surface hardening from M4 review findings
+
+Added by the orchestrator after M4. Each item is a nonblocking M4 review finding that should be fixed before release. Fix each with a test that fails before the fix. Where an item turns out to be already fixed or wrong on inspection, say so in the As-built note instead of changing code.
+
+**Files:** as needed in `crates/polygloss-core/src/ipc/`, `crates/polygloss-core/src/review/`, `crates/polygloss-mcp/`, `crates/polygloss-cli/`, `crates/polygloss-platform/`, `plugins/polygloss/`, `scripts/wake-gate/`, `docs/testing/agent-wake-gate.md`, `docs/design.md`, and their tests.
+
+**Items**
+
+1. **IPC reconnect:** long-lived clients (`polygloss mcp`, waiters) must reconnect once on `disconnected` before reporting the app unavailable (the server closes idle connections after 60 s). Test: a call after more than `IDLE_TIMEOUT` idle succeeds.
+2. **IPC handler concurrency:** a slow `open`/`focus` must not block `store_changed` nudges. Accept `Fn + Send + Sync` handlers (or give nudges a non-blocking path). Test: a nudge answers in under 200 ms while a slow op is in flight.
+3. **`focus` validation:** an out-of-range `line`, or a `side` that does not exist for the file (e.g. `old` on an added file), returns `not_found`/`bad_request` rather than `focused`. A stale `diff_id` either switches the tab to the matching iteration or returns a clear mismatch; design §15.2 is the contract.
+4. **Socket trust:** `IpcClient::connect_at` verifies that the socket and its directory are owned by the current uid before sending anything (the `/tmp` fallback case).
+5. **Waiter PID-reuse safety (`polygloss wait`):** never SIGTERM a process unless it is provably our waiter for that session, e.g. by comparing a stored process start time (`proc_pidinfo`/`sysctl` `kp_proc.p_starttime`) or an argv check for `wait --session <id>`. Install a SIGTERM handler so the waiter row is removed on signal. Test with a same-named non-waiter process.
+6. **Waiter first-run wake:** a session's first Stop must not wake it for submissions older than the session's `open_diff`/assignment. Initialize `last_woken_seq` from the assignment point. Test: an existing review with an old approval does not wake a new session.
+7. **Orphaned repos:** `list_threads`, `get_thread`, the thread/digest resources and `wait_for_review` must degrade gracefully when the review's repo is gone (positions `absent`, not `repo_not_found`). Tests.
+8. **Cursor sanity:** `wait_for_review`/feeds clamp a `since` above the latest seq instead of skipping future events. Test.
+9. **Output size:** `get_thread` and the thread resource enforce an overall size cap under Claude Code's default tool-output limit (~25k tokens), with a `truncated` flag and pagination hint. Suggestion replacements count toward the 20k body cap. Tests.
+10. **`reopen_live` / `upsert_review`:** never INSERT a new review for a different branch when acting on an existing review id, and never silently unarchive or bump `updated_at` from agent reads/writes that target a specific review id. Tests.
+11. **`reply` with `resolve: true`:** one transaction. Test the rollback.
+12. **Global notifications setting:** `launch_to_notify` checks the global `notifications.enabled` (not only the per-review mute) before launching the app. Test.
+13. **JSON CLI errors:** clap usage errors in JSON mode emit `{error:{code:"bad_request",message}}` on stdout with a non-zero exit. Test.
+14. **Plugin:** `plugins/polygloss/skills/*/SKILL.md` frontmatter must be valid strict YAML (quote the description); add a test that parses every SKILL.md frontmatter with `Bun.YAML.parse`. Fix the SKILL.md text about `position.state` (`exact|moved|outdated|absent`). The hook/MCP shim must exit 0 with a one-line stderr hint (not 127) when neither `Polygloss.app` nor a `polygloss` CLI is installed. The shim treats a relative `POLYGLOSS_DATA_DIR` the same way core does (error).
+15. **MCP schema text:** remove internal design references such as "§15.2" from agent-facing schema descriptions and tool docs. Add a test that no tool/schema description contains `§`.
+16. **roots/list:** don't block tools that need no repo (`get_thread`, `reply`, `resolve`, …) on the first `roots/list` round trip.
+17. **Paths:** `cache_dir`/`logs_dir` honor an override (a `POLYGLOSS_CACHE_DIR`/`POLYGLOSS_LOG_DIR`, or siblings of `POLYGLOSS_DATA_DIR` when that is set), so the wake-gate kit and tests never write the real `~/Library/Caches|Logs/polygloss`. The wake-gate `prepare.sh` root guard normalizes paths (resolves `..`, compares case-insensitively), and W6's pass condition checks the review's status changed to `approved`.
+18. **Docs accuracy:** re-check the current Claude Code hooks docs about whether `timeout` is enforced for `asyncRewake` command hooks, and update design §16.3/§16.4, OQ-12 and the wake-gate doc to match. Drop the unverified `anthropic/alwaysLoad` claim unless the docs confirm it.
+
+**Acceptance:** every item fixed (or documented as not applicable) with its test; the standard completion block passes.
+
+### T5.10 UI polish from M3 reviews and screenshot checks
+
+Added by the orchestrator after M3/M4. Fix each item with a test and update the affected screenshot baselines deliberately. Open every changed PNG and describe it in the report.
+
+1. **Ligatures off by default:** diffs must show literal characters (`->` must not render as `→`). Disable OpenType ligatures/contextual alternates (`calt`, `liga`) for the code font by default; add a setting `buffer_font.ligatures` (default `false`). Test via the shaped glyphs or a screenshot.
+2. **Split view, same-line threads:** when the old and new side each have a thread anchored on the same row, render them side by side in the same block row (each in its own column, the taller one setting the row height) instead of stacked with spacers. Test with a screenshot and a layout test.
+3. **Find highlights all matches:** ⌘F highlights every visible match in the diff, with the current match emphasized. Screenshot test.
+4. **Cheat sheet Esc glyph:** show `Esc` (text) instead of `⎋`.
+5. **Composer autosave edge case:** a reply composer on a thread that disappears from the new diff after an iteration switch must keep its autosaved text (use the `close()` path, not `cancel()`). Test.
+6. **Background launch must not steal focus (§13.4):** startup must not call `activate_app` on hidden/background launches (`open -g`, request_rereview notification launches); only on user launches and `activate: true` ops. Test via the IPC debug state `activations` counter.
+7. **`open` status naming:** `open` with `activate: false` and no target should report a truthful status (e.g. `shown`, not `activated`).
+
+**Acceptance:** all items done with tests; screenshot baselines updated and inspected; the standard completion block passes; perf budgets unchanged (run `bun benches/run-perf.ts --corpus typical,synthetic --layouts split,unified --check-budgets`).
 
 ### M5 exit gate
 
