@@ -1,0 +1,12 @@
+{
+  "name": "polygloss",
+  "displayName": "Polygloss",
+  "version": "0.1.0",
+  "description": "Review Claude's changes in Polygloss: an MCP server for diffs and threads, and a Stop hook that wakes Claude when you submit your review.",
+  "author": {
+    "name": "Dak Washbrook"
+  },
+  "repository": "https://github.com/dakdevs/polygloss",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["code-review", "diff", "mcp", "macos"]
+}

@@ -1,0 +1,49 @@
+#!/bin/bash
+# polygloss-shim: runs the Polygloss CLI for the Claude Code plugin (design
+# §16.1). The plugin's MCP server (`polygloss-shim mcp`) and Stop hook
+# (`polygloss-shim wait …`) go through here, because stdio clients never
+# respawn a server after an app update: a stable path keeps working.
+#
+# Tries, in order:
+#   1. <data dir>/bin/polygloss, the symlink the app refreshes at every launch
+#      (~/Library/Application Support/polygloss, or $POLYGLOSS_DATA_DIR)
+#   2. polygloss on PATH
+#   3. the CLI inside /Applications/Polygloss.app
+# and replaces itself with the first executable one (argv and stdin untouched).
+# Nothing is ever written to stdout: for `mcp` it is the JSON-RPC channel.
+
+app_cli="/Applications/Polygloss.app/Contents/MacOS/polygloss-cli"
+
+runnable() {
+	[ -f "$1" ] && [ -x "$1" ]
+}
+
+# The data dir, as polygloss-core resolves it: an absolute $POLYGLOSS_DATA_DIR,
+# else under $HOME.
+stable=""
+case "${POLYGLOSS_DATA_DIR:-}" in
+/*) stable="$POLYGLOSS_DATA_DIR/bin/polygloss" ;;
+*) [ -n "${HOME:-}" ] && stable="$HOME/Library/Application Support/polygloss/bin/polygloss" ;;
+esac
+
+if [ -n "$stable" ] && runnable "$stable"; then
+	exec "$stable" "$@"
+fi
+
+on_path="$(type -P polygloss 2>/dev/null)"
+if [ -n "$on_path" ] && runnable "$on_path"; then
+	exec "$on_path" "$@"
+fi
+
+if runnable "$app_cli"; then
+	exec "$app_cli" "$@"
+fi
+
+{
+	echo "polygloss-shim: cannot find the polygloss CLI. Looked for:"
+	[ -n "$stable" ] && echo "  $stable"
+	echo "  polygloss on PATH"
+	echo "  $app_cli"
+	echo "Install Polygloss.app and launch it once (it links its CLI at the first path), or put polygloss on PATH."
+} >&2
+exit 127

@@ -1,0 +1,14 @@
+{
+  "name": "polygloss",
+  "description": "Polygloss: the human's local code-review app for agent changes, as a Claude Code plugin.",
+  "owner": {
+    "name": "Dak Washbrook"
+  },
+  "plugins": [
+    {
+      "name": "polygloss",
+      "source": "./plugins/polygloss",
+      "description": "Review Claude's changes in Polygloss: an MCP server for diffs and threads, and a Stop hook that wakes Claude when you submit your review."
+    }
+  ]
+}
