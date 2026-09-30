@@ -15,6 +15,8 @@
 //!   declared the capability, and again after `notifications/roots/list_changed`.
 //! - Results carry `structuredContent` and the same JSON as text; errors are
 //!   `isError: true` results with `{code, message}` ([`tool_result`]).
+//! - Resources (§15.3) are markdown from `api::resources`; an unknown URI or id
+//!   is JSON-RPC error `-32002` (resource not found) with `data.code`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,8 +28,10 @@ use polygloss_platform::launch::Launcher;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, Implementation, InitializeRequestParams, InitializeResult, MetaObject,
-    ProgressNotificationParam, ServerCapabilities, ServerConfig,
+    CallToolResult, Implementation, InitializeRequestParams, InitializeResult,
+    ListResourceTemplatesResult, ListResourcesResult, MetaObject, PaginatedRequestParams,
+    ProgressNotificationParam, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{NotificationContext, RequestContext};
 use rmcp::{
@@ -38,7 +42,7 @@ use serde_json::json;
 
 use crate::api::{self, WaitControl};
 use crate::context::{ApiContext, root_uri_to_path};
-use crate::errors::ApiError;
+use crate::errors::{ApiError, ApiErrorCode};
 use crate::session;
 
 /// The server name in `serverInfo`.
@@ -261,6 +265,32 @@ impl PolyglossServer {
             .unwrap_or_else(|e| Err(ApiError::internal(format!("tool panicked: {e}"))));
         Ok(tool_result(r))
     }
+
+    /// Runs `f` with a fresh context on the blocking pool for a non-tool
+    /// request (resources): API errors become JSON-RPC errors.
+    async fn blocking<T, F>(&self, rc: &RequestContext<RoleServer>, f: F) -> Result<T, ErrorData>
+    where
+        T: Send + 'static,
+        F: FnOnce(&ApiContext) -> Result<T, ApiError> + Send + 'static,
+    {
+        let ctx = self.context(rc).await.map_err(rpc_error)?;
+        tokio::task::spawn_blocking(move || f(&ctx))
+            .await
+            .unwrap_or_else(|e| Err(ApiError::internal(format!("request panicked: {e}"))))
+            .map_err(rpc_error)
+    }
+}
+
+/// An API error as a JSON-RPC error: `not_found` is "resource not found"
+/// (`-32002`), `conflict` invalid params, anything else internal; `data.code`
+/// keeps the §15.1 code.
+pub fn rpc_error(e: ApiError) -> ErrorData {
+    let data = Some(json!({ "code": e.code }));
+    match e.code {
+        ApiErrorCode::NotFound => ErrorData::resource_not_found(e.message, data),
+        ApiErrorCode::Conflict => ErrorData::invalid_params(e.message, data),
+        _ => ErrorData::internal_error(e.message, data),
+    }
 }
 
 /// The local directories of a `roots/list` answer (non-`file://` roots dropped).
@@ -453,7 +483,10 @@ impl PolyglossServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for PolyglossServer {
     fn get_info(&self) -> ServerConfig {
-        let mut caps = ServerCapabilities::builder().enable_tools().build();
+        let mut caps = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
         crate::channel::declare(&self.state.opts, &mut caps);
         let mut info = InitializeResult::new(caps).with_instructions(INSTRUCTIONS.trim_end());
         info.server_info = Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION"));
@@ -502,6 +535,61 @@ impl ServerHandler for PolyglossServer {
 
     async fn on_roots_list_changed(&self, _context: NotificationContext<RoleServer>) {
         *self.state.roots.lock().await = None;
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let list = self
+            .blocking(&context, api::resources::list_resources)
+            .await?;
+        Ok(ListResourcesResult::with_all_items(
+            list.into_iter()
+                .map(|r| {
+                    Resource::new(r.uri, r.name)
+                        .with_title(r.title)
+                        .with_description(r.description)
+                        .with_mime_type(api::resources::MIME)
+                })
+                .collect(),
+        ))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        Ok(ListResourceTemplatesResult::with_all_items(
+            api::resources::resource_templates()
+                .into_iter()
+                .map(|t| {
+                    ResourceTemplate::new(t.uri_template, t.name)
+                        .with_title(t.title)
+                        .with_description(t.description)
+                        .with_mime_type(api::resources::MIME)
+                })
+                .collect(),
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let uri = request.uri.clone();
+        let md = self
+            .blocking(&context, move |ctx| {
+                api::resources::read_resource(ctx, &uri)
+            })
+            .await?;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(md, request.uri).with_mime_type(api::resources::MIME),
+        ])
+        .into())
     }
 }
 

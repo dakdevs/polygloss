@@ -1,6 +1,8 @@
 //! Hidden `polygloss debug seed|human-comment|human-viewed|human-submit`: the
-//! human's side of a review for bun tests (T4.4, OQ-P4). They run only with
-//! `POLYGLOSS_TEST=1` and print one JSON object on stdout.
+//! human's side of a review for bun tests (T4.4, OQ-P4), plus
+//! `agent-comment|assign`, stand-ins for an agent's writes that do not go
+//! through MCP (T4.5). They run only with `POLYGLOSS_TEST=1` and print one JSON
+//! object on stdout.
 //!
 //! - `seed` opens a review the way the app would (live states are pinned, as a
 //!   human comment would pin them) and prints its ids.
@@ -9,6 +11,10 @@
 //!   agents until `human-submit`.
 //! - `human-viewed` marks a file of the latest iteration viewed.
 //! - `human-submit` publishes the drafts with a verdict and summary.
+//! - `agent-comment` adds a published agent thread (note, question or comment)
+//!   on the latest iteration, or an agent reply with `--reply-to`.
+//! - `assign` assigns a review to an agent session (upserted without an owner
+//!   pid, so sessions made by one test runner never link to each other).
 
 use std::path::PathBuf;
 
@@ -17,7 +23,8 @@ use clap::{Args, ValueEnum};
 use polygloss_core::git::{CompareMode, Since, Source};
 use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{
-    Author, AuthorKind, Core, NewThread, OpenRequest, PinnedBy, Subject, ThreadKind, Verdict,
+    AssignedBy, Author, AuthorKind, Core, NewThread, OpenRequest, PinnedBy, SessionInfo, Subject,
+    ThreadKind, Verdict,
 };
 use polygloss_core::store::events::Actor;
 use polygloss_diff::Side;
@@ -92,6 +99,56 @@ pub struct HumanSubmitArgs {
     pub verdict: VerdictArg,
     #[arg(long, default_value = "")]
     pub summary: String,
+}
+
+/// `debug agent-comment`: a published agent thread or reply.
+#[derive(Debug, Args)]
+pub struct AgentCommentArgs {
+    /// The review (not needed with --reply-to).
+    #[arg(long, required_unless_present = "reply_to")]
+    pub review: Option<String>,
+    #[arg(long, value_enum, default_value_t = KindArg::Note)]
+    pub kind: KindArg,
+    /// Markdown body.
+    #[arg(long)]
+    pub body: String,
+    /// Reply to this thread instead of starting one.
+    #[arg(long, conflicts_with_all = ["review", "path", "side", "line", "start_line"])]
+    pub reply_to: Option<String>,
+    /// File path; without --line a file thread, without --path a review thread.
+    #[arg(long)]
+    pub path: Option<String>,
+    #[arg(long, value_enum, requires = "line")]
+    pub side: Option<SideArg>,
+    #[arg(long, requires = "path")]
+    pub line: Option<u32>,
+    #[arg(long, requires = "line")]
+    pub start_line: Option<u32>,
+    /// The agent's name (`clientInfo.name`).
+    #[arg(long, default_value = "claude-code")]
+    pub agent: String,
+    /// The agent session recorded on the comment (not upserted).
+    #[arg(long)]
+    pub session: Option<String>,
+}
+
+/// `debug assign`: assign a review to an agent session.
+#[derive(Debug, Args)]
+pub struct AssignArgs {
+    #[arg(long)]
+    pub review: String,
+    #[arg(long)]
+    pub session: String,
+    /// The session's client name.
+    #[arg(long, default_value = "claude-code")]
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum KindArg {
+    Note,
+    Question,
+    Comment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -178,37 +235,104 @@ pub fn human_comment(args: HumanCommentArgs) -> anyhow::Result<Value> {
         let comment_id = core.reply(thread_id, &args.body, &human())?;
         return Ok(json!({ "thread_id": thread_id, "comment_id": comment_id }));
     }
-    let latest = core
-        .iterations(&args.review)?
-        .pop()
-        .ok_or_else(|| anyhow!("review {} has no iteration", args.review))?;
-    let subject = match (args.path, args.line) {
+    let subject = subject(args.path, args.side, args.line, args.start_line);
+    new_thread(
+        &core,
+        args.review,
+        subject,
+        ThreadKind::Comment,
+        args.body,
+        human(),
+    )
+}
+
+/// The subject named by `--path`, `--side`, `--line` and `--start-line`.
+fn subject(
+    path: Option<String>,
+    side: Option<SideArg>,
+    line: Option<u32>,
+    start_line: Option<u32>,
+) -> Subject {
+    match (path, line) {
         (Some(path), Some(line)) => Subject::Line {
             path,
-            side: match args.side {
+            side: match side {
                 Some(SideArg::Old) => Side::Old,
                 _ => Side::New,
             },
-            start_line: args.start_line.unwrap_or(line),
+            start_line: start_line.unwrap_or(line),
             line,
         },
         (Some(path), None) => Subject::File { path },
         (None, _) => Subject::Review,
-    };
+    }
+}
+
+/// Creates a thread on the review's latest iteration and prints its ids.
+fn new_thread(
+    core: &Core,
+    review_id: String,
+    subject: Subject,
+    kind: ThreadKind,
+    body_md: String,
+    author: Author,
+) -> anyhow::Result<Value> {
+    let latest = core
+        .iterations(&review_id)?
+        .pop()
+        .ok_or_else(|| anyhow!("review {review_id} has no iteration"))?;
     let (repo, _) = core.find_repo_for_diff(latest.diff_id.as_str(), None)?;
     let blobs = BlobReader::open(&repo)?;
     let thread_id = core.create_thread(
         &NewThread {
-            review_id: args.review,
+            review_id,
             diff_id: latest.diff_id.clone(),
             subject,
-            kind: ThreadKind::Comment,
-            body_md: args.body,
-            author: human(),
+            kind,
+            body_md,
+            author,
         },
         &blobs,
     )?;
     Ok(json!({ "thread_id": thread_id, "diff_id": latest.diff_id.as_str() }))
+}
+
+pub fn agent_comment(args: AgentCommentArgs) -> anyhow::Result<Value> {
+    require_test_env("agent-comment")?;
+    let core = core()?;
+    let author = Author {
+        kind: AuthorKind::Agent,
+        name: args.agent,
+        session_id: args.session,
+    };
+    if let Some(thread_id) = &args.reply_to {
+        let comment_id = core.reply(thread_id, &args.body, &author)?;
+        return Ok(json!({ "thread_id": thread_id, "comment_id": comment_id }));
+    }
+    let review = args
+        .review
+        .ok_or_else(|| anyhow!("--review or --reply-to is required"))?;
+    let kind = match args.kind {
+        KindArg::Note => ThreadKind::Note,
+        KindArg::Question => ThreadKind::Question,
+        KindArg::Comment => ThreadKind::Comment,
+    };
+    let subject = subject(args.path, args.side, args.line, args.start_line);
+    new_thread(&core, review, subject, kind, args.body, author)
+}
+
+pub fn assign(args: AssignArgs) -> anyhow::Result<Value> {
+    require_test_env("assign")?;
+    let core = core()?;
+    core.upsert_session(&SessionInfo {
+        id: args.session.clone(),
+        client_name: args.agent,
+        client_version: None,
+        owner_pid: None,
+        cwd: None,
+    })?;
+    core.assign_review(&args.review, &args.session, AssignedBy::OpenDiff)?;
+    Ok(json!({ "review_id": args.review, "session_id": args.session }))
 }
 
 pub fn human_viewed(args: HumanViewedArgs) -> anyhow::Result<Value> {

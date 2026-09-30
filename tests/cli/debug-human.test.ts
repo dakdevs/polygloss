@@ -59,6 +59,8 @@ describe("polygloss-cli debug human commands", () => {
       ["human-comment", "--review", "r", "--body", "x"],
       ["human-viewed", "--review", "r", "--path", "a.txt"],
       ["human-submit", "--review", "r"],
+      ["agent-comment", "--review", "r", "--body", "x"],
+      ["assign", "--review", "r", "--session", "s"],
     ]) {
       const r = debug(args, sandbox.env);
       expect(r.exitCode).toBe(1);
@@ -202,5 +204,81 @@ describe("polygloss-cli debug human commands", () => {
     ]);
     expect(missing.exitCode).toBe(1);
     expect(missing.stderr.length).toBeGreaterThan(0);
+  });
+
+  test("agent-comment and assign stand in for the agent", () => {
+    const repo = liveRepo("agent-stand-in");
+    const reviewId = debug(["seed", "--repo", repo, "--since", "HEAD"]).json
+      .review_id as string;
+
+    const question = debug([
+      "agent-comment",
+      "--review",
+      reviewId,
+      "--kind",
+      "question",
+      "--body",
+      "Keep TWO?",
+      "--path",
+      "a.txt",
+      "--line",
+      "2",
+      "--agent",
+      "claude-code",
+      "--session",
+      "sess-a",
+    ]);
+    expect(question.exitCode).toBe(0);
+    const threadId = question.json.thread_id as string;
+    const reply = debug([
+      "agent-comment",
+      "--reply-to",
+      threadId,
+      "--body",
+      "Answering myself.",
+    ]);
+    expect(reply.exitCode).toBe(0);
+    expect(reply.json.thread_id).toBe(threadId);
+    expect(typeof reply.json.comment_id).toBe("string");
+
+    const assigned = debug([
+      "assign",
+      "--review",
+      reviewId,
+      "--session",
+      "sess-a",
+    ]);
+    expect(assigned.exitCode).toBe(0);
+    expect(assigned.json).toEqual({
+      review_id: reviewId,
+      session_id: "sess-a",
+    });
+
+    const conn = db();
+    try {
+      const thread = conn
+        .query(
+          "SELECT kind, created_by_kind, created_by_name FROM threads WHERE id = ?",
+        )
+        .get(threadId);
+      expect(thread).toEqual({
+        kind: "question",
+        created_by_kind: "agent",
+        created_by_name: "claude-code",
+      });
+      // Agent comments are published at once.
+      const drafts = conn
+        .query(
+          "SELECT COUNT(*) AS n FROM comments WHERE thread_id = ? AND published_at IS NULL",
+        )
+        .get(threadId) as { n: number };
+      expect(drafts.n).toBe(0);
+      const assignment = conn
+        .query("SELECT session_id FROM review_assignments WHERE review_id = ?")
+        .get(reviewId);
+      expect(assignment).toEqual({ session_id: "sess-a" });
+    } finally {
+      conn.close();
+    }
   });
 });
