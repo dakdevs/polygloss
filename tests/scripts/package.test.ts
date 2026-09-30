@@ -340,6 +340,9 @@ if [ "$1" = build ] && [ -n "\${FAKE_CARGO_PAUSE-}" ] && [ ! -e "$FAKE_CARGO_PAU
   sleep 1
 fi
 if [ "$1" = packager ]; then
+  if [ -n "\${FAKE_CARGO_ENV_LOG-}" ]; then
+    printf 'env-at-packager:%s\\n' "$(env | grep -o '^APPLE_[A-Z_]*' | sort | tr '\\n' ' ' | sed 's/ $//')" >>"$FAKE_CARGO_LOG"
+  fi
   out=""
   while [ $# -gt 0 ]; do
     if [ "$1" = --out-dir ]; then out="$2"; fi
@@ -524,11 +527,48 @@ describe("scripts/package-release.sh", () => {
   });
 
   test("--sign hands the app, then the dmg, to scripts/sign-and-notarize.sh", () => {
-    const signer = join(repoRoot, "scripts", "sign-and-notarize.sh");
-    if (existsSync(signer)) return; // T5.2 owns --sign from here on (tests/scripts/sign.test.ts).
+    // No credentials in the sandbox: the signer skips both (T5.2,
+    // tests/scripts/sign.test.ts covers the credentialed path).
     const r = packageRun(["--sign"]);
-    expect(r.exitCode).not.toBe(0);
-    expect(r.output).toContain("scripts/sign-and-notarize.sh");
+    expect(r.output).toContain("package-release: done");
+    expect(r.exitCode).toBe(0);
+    const app = join(r.dist, "Polygloss.app");
+    const dmg = join(r.dist, `Polygloss_${workspaceVersion}_aarch64.dmg`);
+    const order = [
+      `package-release: signing and notarizing ${app}`,
+      `sign-and-notarize: signing skipped: no credentials (${app})`,
+      `package-release: making ${dmg}`,
+      `package-release: signing and notarizing ${dmg}`,
+      `sign-and-notarize: signing skipped: no credentials (${dmg})`,
+      "package-release: done",
+    ].map((line) => r.output.indexOf(line));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // The ad-hoc signature stays.
+    expect(run(["codesign", "--display", "--verbose=2", app]).output).toContain(
+      "Signature=adhoc",
+    );
+  });
+
+  test("cargo packager never sees the signing credentials", () => {
+    // cargo-packager signs and imports certificates on its own when it finds
+    // APPLE_CERTIFICATE (rewriting the keychain search list); T5.2 signs.
+    const r = packageRun([], {
+      APPLE_CERTIFICATE: "c2VjcmV0",
+      APPLE_CERTIFICATE_PASSWORD: "secret",
+      APPLE_SIGNING_IDENTITY: "Developer ID Application: X (5U7E4UQ5M3)",
+      APPLE_API_KEY: "KEY",
+      APPLE_API_ISSUER: "ISSUER",
+      APPLE_API_KEY_PATH: "/nonexistent/key.p8",
+      APPLE_KEYCHAIN_PROFILE: "profile",
+      APPLE_ID: "someone@example.invalid",
+      APPLE_PASSWORD: "secret",
+      APPLE_TEAM_ID: "5U7E4UQ5M3",
+      FAKE_CARGO_ENV_LOG: "1",
+    });
+    expect(r.exitCode).toBe(0);
+    const packager = r.log.find((l) => l.startsWith("env-at-packager:"));
+    expect(packager).toBe("env-at-packager:");
   });
 
   test("rejects unknown arguments", () => {

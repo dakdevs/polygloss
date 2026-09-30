@@ -1,0 +1,167 @@
+# Release for polygloss (plan T5.2, design §21, ADR-0019). macOS arm64 only.
+#
+# A `v*` tag builds the release bundle with scripts/package-release.sh --sign:
+# with the signing secrets it is signed as team 5U7E4UQ5M3, notarized and
+# stapled (scripts/sign-and-notarize.sh); without them the artifacts stay
+# ad-hoc signed. The DMG is uploaded to the tag's GitHub release, then the
+# Sparkle appcast (T5.3) and the Homebrew tap (T5.4) are updated.
+# `workflow_dispatch` is a dry run: the same build, with the DMG kept as a run
+# artifact and nothing published.
+#
+# Secrets reach the scripts only through step `env:` (pinned by
+# tests/scripts/sign.test.ts): APPLE_CERTIFICATE (base64 .p12),
+# APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY,
+# APPLE_API_ISSUER, APPLE_API_PRIVATE_KEY (the notarytool .p8 contents),
+# SPARKLE_PRIVATE_ED_KEY and HOMEBREW_TAP_TOKEN. Repository variables (not
+# secret): POLYGLOSS_APPCAST_URL, SPARKLE_PUBLIC_ED_KEY and HOMEBREW_TAP_REPO
+# (owner/name of the tap).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build, sign, notarize and publish
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      # rustup >= 1.28 no longer installs the toolchain on `rustup show`; with no
+      # argument, `toolchain install` installs the one rust-toolchain.toml pins.
+      - run: rustup toolchain install
+      - run: rustup show
+      # scripts/cargo.sh keeps build intermediates in target-shared (build.build-dir)
+      # and only final artifacts in target/, so cache the former.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target-shared"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+
+      - name: Check the tag against the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(bun -e 'console.log(Bun.TOML.parse(await Bun.file("Cargo.toml").text()).workspace.package.version)')"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the crate version $version (Cargo.toml)" >&2
+            exit 1
+          fi
+
+      - name: Install cargo-packager
+        run: scripts/cargo.sh install cargo-packager --version =0.11.8 --locked
+
+      - name: Fetch Sparkle (T5.3)
+        run: |
+          if [ -x scripts/fetch-sparkle.sh ]; then
+            scripts/fetch-sparkle.sh
+          else
+            echo "Sparkle skipped: scripts/fetch-sparkle.sh arrives with T5.3"
+          fi
+
+      - name: Write the notarytool API key
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APPLE_API_PRIVATE_KEY" ]; then
+            key="$RUNNER_TEMP/notarytool-api-key.p8"
+            (umask 077 && printf '%s\n' "$APPLE_API_PRIVATE_KEY" >"$key")
+            echo "APPLE_API_KEY_PATH=$key" >>"$GITHUB_ENV"
+          fi
+
+      # Without APPLE_CERTIFICATE/APPLE_SIGNING_IDENTITY the signer prints
+      # "signing skipped: no credentials" and the bundle stays ad-hoc signed.
+      # With them, missing notarytool credentials fail the release.
+      - name: Build, sign and notarize the bundle and DMG
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          POLYGLOSS_REQUIRE_NOTARIZATION: "1"
+          POLYGLOSS_APPCAST_URL: ${{ vars.POLYGLOSS_APPCAST_URL }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: scripts/package-release.sh --sign
+
+      - name: Remove the notarytool API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/notarytool-api-key.p8"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: polygloss-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: Upload the DMG to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag "${flags[@]}" \
+              --title "Polygloss ${GITHUB_REF_NAME#v}" --notes "Polygloss ${GITHUB_REF_NAME#v}"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "dist/Polygloss_${GITHUB_REF_NAME#v}_aarch64.dmg" --clobber
+
+      - name: Update the Sparkle appcast (T5.3)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          POLYGLOSS_APPCAST_URL: ${{ vars.POLYGLOSS_APPCAST_URL }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -x scripts/make-appcast.sh ]; then
+            echo "appcast skipped: scripts/make-appcast.sh arrives with T5.3"
+            exit 0
+          fi
+          scripts/make-appcast.sh dist
+          if [ -f dist/appcast.xml ]; then
+            gh release upload "$GITHUB_REF_NAME" dist/appcast.xml --clobber
+          fi
+
+      - name: Bump the Homebrew tap (T5.4)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+        run: |
+          if [ ! -f scripts/bump-tap.ts ]; then
+            echo "tap bump skipped: scripts/bump-tap.ts arrives with T5.4"
+            exit 0
+          fi
+          if [ -z "$HOMEBREW_TAP_TOKEN" ] || [ -z "$HOMEBREW_TAP_REPO" ]; then
+            echo "tap bump skipped: HOMEBREW_TAP_TOKEN or HOMEBREW_TAP_REPO is not set"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          sha="$(shasum -a 256 "dist/Polygloss_${version}_aarch64.dmg" | cut -d ' ' -f 1)"
+          tap="$RUNNER_TEMP/homebrew-tap"
+          export GH_TOKEN="$HOMEBREW_TAP_TOKEN"
+          gh auth setup-git
+          gh repo clone "$HOMEBREW_TAP_REPO" "$tap"
+          bun scripts/bump-tap.ts --version "$version" --sha256 "$sha" --repo "$GITHUB_REPOSITORY" --out "$tap"
+          git -C "$tap" add -A
+          git -C "$tap" -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "polygloss $version"
+          git -C "$tap" push
