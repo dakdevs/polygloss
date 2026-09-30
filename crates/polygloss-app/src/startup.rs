@@ -4,6 +4,7 @@
 //! ```text
 //! Polygloss [--repo <path> (--compare <base> <head> [--direct] | --commit <rev> | --live)] [polygloss://…]
 //! Polygloss --version
+//! Polygloss --dump-keymap --json | --dump-settings --json   (hidden, see `dump`)
 //! POLYGLOSS_TEST=1 Polygloss --perf-scenario …      (test-only, see `perf`)
 //! ```
 //!
@@ -176,6 +177,9 @@ pub fn main() -> ExitCode {
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("Polygloss {}", polygloss_core::VERSION);
         return ExitCode::SUCCESS;
+    }
+    if let Some(code) = crate::dump::run(&args) {
+        return code;
     }
     if let Some((first, rest)) = args.split_first()
         && first == "--perf-scenario"

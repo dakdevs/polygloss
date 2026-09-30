@@ -6,13 +6,15 @@
 //! app), [`app_state`], [`settings`], [`window`] (the one main window and
 //! the menu bar), [`tabs`], [`review_tab`] (toolbar, banner strip, panes),
 //! [`provider`] ([`CoreDiffProvider`]), [`logging`], [`perf`] (test-only
-//! `--perf-scenario`) and [`features`], which wires every feature module in:
+//! `--perf-scenario`), [`dump`] (the hidden `--dump-keymap`/`--dump-settings`)
+//! and [`features`], which wires every feature module in:
 //! each exposes `init(cx)`, review-tab features `attach`, and toolbar and
 //! pane contributors their render functions (plan M3 "App module map").
 
 pub mod app_state;
 pub mod composer;
 pub mod cursor;
+pub mod dump;
 pub mod editor;
 pub mod features;
 pub mod feed;
