@@ -7,15 +7,20 @@
 # Contents/MacOS; Info.plist has the bundle id, main executable, URL scheme,
 # minimum macOS and an explicit CFBundleVersion equal to the crate version
 # (never cargo-packager's timestamp); the signature (ad-hoc or Developer ID)
-# seals the bundle.
+# seals the bundle; Sparkle (T5.3) is embedded exactly when SUFeedURL and
+# SUPublicEDKey are set, without its XPC services; library validation is
+# relaxed (packaging/entitlements-adhoc.plist) only in an ad-hoc bundle that
+# embeds Sparkle, never under a Developer ID.
 #
 # Then it runs the bundle from where it is (never /Applications) in a sandbox:
 # a throwaway HOME, data dir, config and git config (plan: Global constraints,
 # "Test hygiene"), POLYGLOSS_TEST=1 for the `debug_state` op. It records a
 # commit review of a fixture repo with the bundled CLI, launches the app with
 # `open -g`, sends `hello` over the app socket, opens `polygloss://diff/<id>`
-# through LaunchServices and confirms the tab via `debug_state`, then quits the
-# app and unregisters the bundle from LaunchServices again.
+# through LaunchServices and confirms the tab via `debug_state` (whose
+# `updater` must be "idle" when Sparkle is embedded: loaded, never started in
+# test mode, so nothing is checked or prompted; none otherwise), then quits
+# the app and unregisters the bundle from LaunchServices again.
 set -euo pipefail
 
 usage() {
@@ -98,6 +103,32 @@ ok "Info.plist: dev.dak.polygloss $short_version, polygloss:// scheme, macOS 14.
 codesign --verify --deep --strict "$app" 2>/dev/null ||
   fail "the code signature does not seal the bundle (codesign --verify --deep --strict)"
 ok "signature seals the bundle"
+
+sparkle_fw="$contents/Frameworks/Sparkle.framework"
+feed_url="$(plist_get SUFeedURL)"
+public_ed_key="$(plist_get SUPublicEDKey)"
+sparkle=0
+if [ -d "$sparkle_fw" ]; then
+  [ -n "$feed_url" ] && [ -n "$public_ed_key" ] ||
+    fail "Sparkle.framework is embedded but Info.plist lacks SUFeedURL or SUPublicEDKey"
+  [ ! -e "$sparkle_fw/Versions/B/XPCServices" ] ||
+    fail "Sparkle.framework still has its XPC services (only for sandboxed apps)"
+  sparkle=1
+  ok "Sparkle embedded; updates from $feed_url"
+elif [ -n "$feed_url$public_ed_key" ]; then
+  fail "Info.plist has SUFeedURL or SUPublicEDKey but no Sparkle.framework is embedded"
+else
+  ok "no updater (built without an appcast)"
+fi
+
+team="$(codesign --display --verbose=2 "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+entitlements="$(codesign --display --entitlements - --xml "$app" 2>/dev/null || true)"
+if [[ "$entitlements" == *com.apple.security.cs.disable-library-validation* ]]; then
+  [ "$team" = "not set" ] ||
+    fail "the $team signature disables library validation (Developer ID builds use packaging/entitlements.plist)"
+  [ "$sparkle" = 1 ] || fail "library validation is disabled without Sparkle embedded"
+  ok "ad-hoc bundle: library validation relaxed for the ad-hoc Sparkle.framework"
+fi
 
 echo "smoke-bundle: static checks passed"
 [ "$static_only" = 1 ] && exit 0
@@ -250,6 +281,15 @@ for _ in $(seq 300); do
 done
 [ -n "$tab" ] || fail "polygloss://diff/$diff_id opened no tab within 30 s; last debug_state: ${state:-none}"
 ok "polygloss://diff/$diff_id opened review $tab"
+
+updater="$(json_eval "$state" '$j->{result}{updater} // "none"')"
+if [ "$sparkle" = 1 ]; then
+  [ "$updater" = idle ] ||
+    fail "Sparkle is embedded but the app reports updater '$updater', expected 'idle'; app log: $(grep -h -i -e sparkle -e updater "$root"/logs/* 2>/dev/null | tail -n 5)"
+  ok "Sparkle.framework loaded (updater idle in test mode)"
+else
+  [ "$updater" = none ] || fail "no Sparkle embedded, yet the app reports updater '$updater'"
+fi
 
 kill -TERM "$app_pid"
 for _ in $(seq 100); do

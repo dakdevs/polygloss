@@ -6,6 +6,10 @@
   crate version (cargo-packager), and scripts/package-release.sh stamps
   CFBundleVersion from it (cargo-packager's default is a timestamp, and Sparkle
   compares CFBundleVersion).
+  Sparkle's keys are not here either (plan T5.3): package-release.sh adds
+  SUFeedURL and SUPublicEDKey from POLYGLOSS_APPCAST_URL and
+  SPARKLE_PUBLIC_ED_KEY when both are set. SUEnableAutomaticChecks stays unset
+  on purpose, so Sparkle asks before its first automatic check (OQ-16).
 -->
 <plist version="1.0">
 <dict>

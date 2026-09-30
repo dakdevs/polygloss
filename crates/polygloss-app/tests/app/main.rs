@@ -30,6 +30,7 @@ mod submit;
 mod theme;
 mod threads;
 mod tree;
+mod updates;
 mod urls;
 mod version;
 mod view_state;

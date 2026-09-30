@@ -15,6 +15,7 @@ This guide covers the app. For agents (MCP tools, the JSON CLI, the Claude Code 
 - [Finding things](#finding-things)
 - [Open in editor](#open-in-editor)
 - [Notifications and the Dock badge](#notifications-and-the-dock-badge)
+- [Updates](#updates)
 - [Keyboard](#keyboard)
 - [Settings](#settings)
 - [Themes and fonts](#themes-and-fonts)
@@ -113,6 +114,10 @@ The editor is `editor.command` when set, a template such as `"zed {path}:{line}"
 
 When an agent asks for a re-review, Polygloss shows a macOS notification if the app is not focused (it starts in the background to deliver it if needed). Clicking the notification brings up the review's tab. The Dock badge counts reviews awaiting you. Mute a review from its Home row (`m`), or turn notifications off everywhere with `notifications.enabled: false`.
 
+## Updates
+
+Releases built with an update feed check for new versions through [Sparkle](https://sparkle-project.org), the only network access Polygloss makes. Nothing is checked until you agree: Sparkle asks on the second launch whether to check automatically. **Polygloss › Check for Updates…** (also in the command palette) checks now. `updates.automatic_checks` overrides your answer (`true` or `false`); left at `null`, Sparkle's prompt decides. Builds without a feed (from source, or a release built without one) have no updater and no menu item.
+
 ## Keyboard
 
 Every action has a key or a command palette entry, and every key can be remapped. Single-key bindings (`j`, `?`, `⇧R`) never fire while you are typing in a text field or a comment. Keys are shown as key caps: `J` is the J key alone, and `⇧E` adds Shift.
@@ -208,6 +213,7 @@ These are in the command palette (and some in the toolbar or menus); bind them i
 | Next unread reply         | `tab::NextUnreadThread`             |
 | Toggle threads panel      | `tab::ToggleThreadsPanel`           |
 | Zoom                      | `window::Zoom`                      |
+| Check for updates         | `window::CheckForUpdates`           |
 
 ### Remapping keys
 
@@ -247,31 +253,31 @@ A binding replaces the default of the same keys in the same context, and `null` 
 
 ### Settings keys
 
-| Key                                | Default          | Meaning                                                                                                                                                                                           |
-| ---------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `theme.mode`                       | `"system"`       | `"system"` follows the macOS appearance; `"light"` or `"dark"` fixes it                                                                                                                           |
-| `theme.light`                      | `"Pierre Light"` | The theme used in light mode, by name                                                                                                                                                             |
-| `theme.dark`                       | `"Pierre Dark"`  | The theme used in dark mode, by name                                                                                                                                                              |
-| `buffer_font.family`               | `"Lilex"`        | The code font (Lilex is bundled)                                                                                                                                                                  |
-| `buffer_font.size`                 | `13`             | Code font size in points                                                                                                                                                                          |
-| `buffer_font.ligatures`            | `false`          | OpenType ligatures in code. Off, so code shows as typed: `->` is never drawn as an arrow                                                                                                          |
-| `diff.layout`                      | `"auto"`         | `"auto"` (split when wide enough), `"split"` or `"unified"`                                                                                                                                       |
-| `diff.split_min_columns`           | `160`            | In auto layout, split from this many code columns                                                                                                                                                 |
-| `diff.word_diff`                   | `"word"`         | Changed-text highlights by `"word"`, by `"char"`, or `"off"`                                                                                                                                      |
-| `diff.algorithm`                   | `"myers"`        | `"myers"` (like `git diff`) or `"histogram"`                                                                                                                                                      |
-| `diff.hide_whitespace`             | `false`          | Hide whitespace-only changes                                                                                                                                                                      |
-| `diff.style.backgrounds`           | `true`           | Tint added and removed lines                                                                                                                                                                      |
-| `diff.style.indicators`            | `"+-"`           | Line markers: `"+-"`, `"bars"` or `"none"`                                                                                                                                                        |
-| `diff.style.wrap`                  | `false`          | Wrap long lines                                                                                                                                                                                   |
-| `diff.large_file_changed_lines`    | `20000`          | Files with more changed lines start collapsed behind **Load diff**                                                                                                                                |
-| `diff.generated_patterns`          | `[]`             | More generated-file patterns, added to the built-in list: a pattern without `/` matches the file name, one with `/` the whole path; `*` and `?` stay within a directory, `**` crosses directories |
-| `diff.renames`                     | `true`           | Detect renames                                                                                                                                                                                    |
-| `diff.rename_threshold`            | `50`             | Rename similarity threshold, in percent (0 to 100)                                                                                                                                                |
-| `editor.command`                   | `null`           | The editor for [Open in editor](#open-in-editor), e.g. `"zed {path}:{line}"`; `null` detects one                                                                                                  |
-| `agent_notes.hidden`               | `false`          | Hide agent notes by default                                                                                                                                                                       |
-| `notifications.enabled`            | `true`           | macOS notifications for re-review requests (agents' `polygloss mcp` reads it too, and never launches the app to notify when it is off)                                                            |
-| `storage.prune_reviews_after_days` | `null`           | Prune reviews inactive for this many days; `null` never prunes                                                                                                                                    |
-| `updates.automatic_checks`         | `null`           | Automatic update checks; `null` until you answer the first-launch prompt. Update checks are the only network access Polygloss makes                                                               |
+| Key                                | Default          | Meaning                                                                                                                                                                                                      |
+| ---------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `theme.mode`                       | `"system"`       | `"system"` follows the macOS appearance; `"light"` or `"dark"` fixes it                                                                                                                                      |
+| `theme.light`                      | `"Pierre Light"` | The theme used in light mode, by name                                                                                                                                                                        |
+| `theme.dark`                       | `"Pierre Dark"`  | The theme used in dark mode, by name                                                                                                                                                                         |
+| `buffer_font.family`               | `"Lilex"`        | The code font (Lilex is bundled)                                                                                                                                                                             |
+| `buffer_font.size`                 | `13`             | Code font size in points                                                                                                                                                                                     |
+| `buffer_font.ligatures`            | `false`          | OpenType ligatures in code. Off, so code shows as typed: `->` is never drawn as an arrow                                                                                                                     |
+| `diff.layout`                      | `"auto"`         | `"auto"` (split when wide enough), `"split"` or `"unified"`                                                                                                                                                  |
+| `diff.split_min_columns`           | `160`            | In auto layout, split from this many code columns                                                                                                                                                            |
+| `diff.word_diff`                   | `"word"`         | Changed-text highlights by `"word"`, by `"char"`, or `"off"`                                                                                                                                                 |
+| `diff.algorithm`                   | `"myers"`        | `"myers"` (like `git diff`) or `"histogram"`                                                                                                                                                                 |
+| `diff.hide_whitespace`             | `false`          | Hide whitespace-only changes                                                                                                                                                                                 |
+| `diff.style.backgrounds`           | `true`           | Tint added and removed lines                                                                                                                                                                                 |
+| `diff.style.indicators`            | `"+-"`           | Line markers: `"+-"`, `"bars"` or `"none"`                                                                                                                                                                   |
+| `diff.style.wrap`                  | `false`          | Wrap long lines                                                                                                                                                                                              |
+| `diff.large_file_changed_lines`    | `20000`          | Files with more changed lines start collapsed behind **Load diff**                                                                                                                                           |
+| `diff.generated_patterns`          | `[]`             | More generated-file patterns, added to the built-in list: a pattern without `/` matches the file name, one with `/` the whole path; `*` and `?` stay within a directory, `**` crosses directories            |
+| `diff.renames`                     | `true`           | Detect renames                                                                                                                                                                                               |
+| `diff.rename_threshold`            | `50`             | Rename similarity threshold, in percent (0 to 100)                                                                                                                                                           |
+| `editor.command`                   | `null`           | The editor for [Open in editor](#open-in-editor), e.g. `"zed {path}:{line}"`; `null` detects one                                                                                                             |
+| `agent_notes.hidden`               | `false`          | Hide agent notes by default                                                                                                                                                                                  |
+| `notifications.enabled`            | `true`           | macOS notifications for re-review requests (agents' `polygloss mcp` reads it too, and never launches the app to notify when it is off)                                                                       |
+| `storage.prune_reviews_after_days` | `null`           | Prune reviews inactive for this many days; `null` never prunes                                                                                                                                               |
+| `updates.automatic_checks`         | `null`           | Automatic update checks ([Updates](#updates)): `null` leaves it to Sparkle's prompt on the second launch, `true` or `false` overrides your answer. Update checks are the only network access Polygloss makes |
 
 ## Themes and fonts
 

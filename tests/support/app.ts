@@ -43,6 +43,8 @@ export type DebugState = {
   feed_errors: number;
   /** Times the app asked macOS to activate it (macOS may decline). */
   activations: number;
+  /** The Sparkle updater: `"idle"` (loaded in test mode) or none (T5.3). */
+  updater: "started" | "idle" | null;
 };
 
 /** An error the app answered with (`{ok: false, error: {code, message}}`). */

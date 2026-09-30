@@ -32,3 +32,8 @@ hex.workspace = true
 [[test]]
 name = "appkit"
 required-features = ["appkit"]
+
+# The Sparkle loader is objc2 FFI too (T5.3).
+[[test]]
+name = "sparkle"
+required-features = ["appkit"]

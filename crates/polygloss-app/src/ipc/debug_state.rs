@@ -9,11 +9,14 @@
 //!   banners: [{ review_id, kind, text }],
 //!   badge: <Dock badge count>, events_seen: <store events the feed handed out>,
 //!   feed_polls: <polls the feed finished>, feed_errors: <polls that failed>,
-//!   activations: <times the app asked macOS to activate it> }
+//!   activations: <times the app asked macOS to activate it>,
+//!   updater: "started" | "idle" | null }
 //! ```
 //!
 //! `anchor` is the line at the top of the viewport and `cursor` the line
 //! cursor, both `{path, side, line}` with 1-based lines (or `null`).
+//! `updater` is the Sparkle updater's state (`crate::updates`): `null`
+//! without one, `"idle"` when loaded in test mode.
 
 use gpui_kit::App;
 use polygloss_diff::{FileChange, Side};
@@ -33,6 +36,7 @@ pub fn snapshot(cx: &App) -> Value {
     let events_seen = stats.events;
     let activations = crate::window::activation_requests(cx);
     let app_active = cx.active_window().is_some();
+    let updater = crate::updates::state(cx);
     let Some((_, main)) = main_window(cx) else {
         return json!({
             "window_open": false,
@@ -45,6 +49,7 @@ pub fn snapshot(cx: &App) -> Value {
             "feed_polls": stats.polls,
             "feed_errors": stats.errors,
             "activations": activations,
+            "updater": updater,
         });
     };
     let main = main.read(cx);
@@ -94,6 +99,7 @@ pub fn snapshot(cx: &App) -> Value {
         "feed_polls": stats.polls,
         "feed_errors": stats.errors,
         "activations": activations,
+        "updater": updater,
     })
 }
 

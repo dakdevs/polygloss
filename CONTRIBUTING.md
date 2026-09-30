@@ -55,16 +55,19 @@ scripts/cargo.sh deny check licenses bans sources advisories   # no GPL, AGPL or
 
 Other entry points:
 
-| Command                                                            | Does                                                                                                             |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `UPDATE_BASELINE=1 bun run test:e2e`                               | Re-records the screenshot baselines in `crates/polygloss-app/tests/baselines/`; open and check every changed PNG |
-| `bun run test:e2e tests/e2e/cli-app.test.ts`                       | Only the named bun E2E suites (after the GPUI E2E run)                                                           |
-| `POLYGLOSS_BUNDLE_E2E=1 bun run test:e2e`                          | Also packages the release bundle and runs the bundle suite against it                                            |
-| `scripts/package-release.sh`                                       | `dist/Polygloss.app` and the DMG, signed ad-hoc (`--sign` needs release credentials)                             |
-| `scripts/smoke-bundle.sh dist/Polygloss.app`                       | Launches the bundle in a sandbox and checks the socket, CLI link and URL scheme                                  |
-| `bun benches/run-perf.ts --corpus typical --check-budgets --build` | Perf scenarios against the budgets in `benches/budgets.json` (needs an unlocked screen)                          |
-| `bun scripts/git-parity.ts --repo <path> --range <a>..<b>`         | Compares our hunks with `git diff` over a range of commits                                                       |
-| `scripts/wake-gate/prepare.sh`                                     | Sets up the manual agent wake-up gate ([docs/testing/agent-wake-gate.md](docs/testing/agent-wake-gate.md))       |
+| Command                                                                              | Does                                                                                                             |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `UPDATE_BASELINE=1 bun run test:e2e`                                                 | Re-records the screenshot baselines in `crates/polygloss-app/tests/baselines/`; open and check every changed PNG |
+| `bun run test:e2e tests/e2e/cli-app.test.ts`                                         | Only the named bun E2E suites (after the GPUI E2E run)                                                           |
+| `POLYGLOSS_BUNDLE_E2E=1 bun run test:e2e`                                            | Also packages the release bundle and runs the bundle suite against it                                            |
+| `scripts/package-release.sh`                                                         | `dist/Polygloss.app` and the DMG, signed ad-hoc (`--sign` needs release credentials)                             |
+| `scripts/fetch-sparkle.sh`                                                           | Downloads Sparkle 2.10.0 into `vendor/` (checksum-pinned), for release builds with updates                       |
+| `POLYGLOSS_APPCAST_URL=<url> SPARKLE_PUBLIC_ED_KEY=<key> scripts/package-release.sh` | Also embeds Sparkle and its feed keys (both or neither; without them the app has no updater)                     |
+| `scripts/make-appcast.sh dist`                                                       | The Sparkle appcast for the DMG, signed with `SPARKLE_PRIVATE_ED_KEY` (skips without it)                         |
+| `scripts/smoke-bundle.sh dist/Polygloss.app`                                         | Launches the bundle in a sandbox and checks the socket, CLI link and URL scheme                                  |
+| `bun benches/run-perf.ts --corpus typical --check-budgets --build`                   | Perf scenarios against the budgets in `benches/budgets.json` (needs an unlocked screen)                          |
+| `bun scripts/git-parity.ts --repo <path> --range <a>..<b>`                           | Compares our hunks with `git diff` over a range of commits                                                       |
+| `scripts/wake-gate/prepare.sh`                                                       | Sets up the manual agent wake-up gate ([docs/testing/agent-wake-gate.md](docs/testing/agent-wake-gate.md))       |
 
 The user docs are tested too: `tests/scripts/docs.test.ts` holds [`docs/user-guide.md`](docs/user-guide.md) to the app's default key bindings and settings (`Polygloss --dump-keymap --json`, `--dump-settings --json`) and [`docs/agents.md`](docs/agents.md) to the MCP server's tools. When you add an action, a binding, a setting or a tool, update those docs in the same change.
 

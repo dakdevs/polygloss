@@ -196,6 +196,9 @@ pub mod window {
             OpenFlow,
             /// `⌘,`: open `settings.json` in the editor (T3.16).
             OpenSettings,
+            /// Polygloss › Check for Updates… (Sparkle, T5.3); only with an
+            /// updater (`updates`).
+            CheckForUpdates,
         ]
     );
 }
@@ -298,6 +301,7 @@ pub const ACTIONS: &[ActionInfo] = registry![
     window::Minimize => "Minimize",
     window::Zoom => "Zoom",
     window::Quit => "Quit Polygloss",
+    window::CheckForUpdates => "Check for updates",
 ];
 
 /// The registry entry named `name` (`viewport::CursorDown`).
