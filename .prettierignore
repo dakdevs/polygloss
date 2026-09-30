@@ -6,3 +6,5 @@ dist/
 bun.lock
 crates/**/snapshots/
 **/*.png
+# Served verbatim as the MCP server instructions (design §15.4).
+crates/polygloss-mcp/src/instructions.md
