@@ -57,7 +57,7 @@ scripts/cargo.sh deny check licenses bans sources
 | `crates/polygloss-perf`      | Perf harness (dev only)                                                             |
 | `tests/`                     | bun suites                                                                          |
 | `scripts/`                   | `cargo.sh`, `check-deps.sh` and other dev scripts                                   |
-| `docs/`                      | Design, ADRs, research, plan                                                        |
+| `docs/`                      | Design, ADRs, research, plan, manual test procedures                                |
 
 ## Docs
 
@@ -65,6 +65,7 @@ scripts/cargo.sh deny check licenses bans sources
 - [`docs/adr/`](docs/adr/README.md): architecture decision records
 - [`docs/plan.md`](docs/plan.md): the implementation plan
 - [`docs/research/library-choices.md`](docs/research/library-choices.md): pinned libraries and why
+- [`docs/testing/agent-wake-gate.md`](docs/testing/agent-wake-gate.md): the manual agent wake-up gate in real Claude Code (`scripts/wake-gate/prepare.sh` sets it up)
 - [`AGENTS.md`](AGENTS.md): rules for coding agents working in this repo
 
 ## License
