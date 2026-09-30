@@ -428,12 +428,7 @@ impl Shaper<'_> {
         wrap_width: f32,
         words: bool,
     ) -> ShapedText {
-        let max = if wrap_width > 0.0 {
-            MAX_CHARS_WRAPPED
-        } else {
-            MAX_CHARS_UNWRAPPED
-        };
-        let display = DisplayLine::new(file.line(side, line), max);
+        let display = DisplayLine::new(file.line(side, line), max_chars(wrap_width));
         let spans = tokens.map_or(&[][..], |t| t.line(line));
         let runs = code_runs(&display, spans, self.theme, self.font);
         let wrap = (wrap_width > 0.0).then(|| px(wrap_width));
@@ -510,37 +505,64 @@ fn word_rects(
     };
     let mut rects = Vec::with_capacity(ranges.len());
     for r in ranges {
-        let (start, end) = (display.map(r.start), display.map(r.end));
-        if end <= start {
-            continue;
-        }
-        let (x0, row0) = shaped.position(start, geometry.row_height);
-        let (x1, row1) = shaped.position(end, geometry.row_height);
-        if row0 == row1 {
-            rects.push(WordRect { x0, x1, row: row0 });
-        } else {
-            // Across wrap boundaries: to the end of the first row, whole rows
-            // in between, from the start of the last row.
-            rects.push(WordRect {
-                x0,
-                x1: wrap_width,
-                row: row0,
-            });
-            for row in row0 + 1..row1 {
-                rects.push(WordRect {
-                    x0: 0.0,
-                    x1: wrap_width,
-                    row,
-                });
-            }
-            rects.push(WordRect {
-                x0: 0.0,
-                x1,
-                row: row1,
-            });
-        }
+        span_rects(
+            r.start, r.end, display, shaped, geometry, wrap_width, &mut rects,
+        );
     }
     rects
+}
+
+/// Appends the rectangles covering source bytes `start..end` of a line
+/// displayed as `display` and shaped as `shaped`: one per visual row it
+/// spans. Nothing for a span that shows nothing (empty, or past a cut).
+pub(crate) fn span_rects(
+    start: u32,
+    end: u32,
+    display: &DisplayLine,
+    shaped: &Shaped,
+    geometry: Geometry,
+    wrap_width: f32,
+    rects: &mut Vec<WordRect>,
+) {
+    let (start, end) = (display.map(start), display.map(end));
+    if end <= start {
+        return;
+    }
+    let (x0, row0) = shaped.position(start, geometry.row_height);
+    let (x1, row1) = shaped.position(end, geometry.row_height);
+    if row0 == row1 {
+        rects.push(WordRect { x0, x1, row: row0 });
+    } else {
+        // Across wrap boundaries: to the end of the first row, whole rows in
+        // between, from the start of the last row.
+        rects.push(WordRect {
+            x0,
+            x1: wrap_width,
+            row: row0,
+        });
+        for row in row0 + 1..row1 {
+            rects.push(WordRect {
+                x0: 0.0,
+                x1: wrap_width,
+                row,
+            });
+        }
+        rects.push(WordRect {
+            x0: 0.0,
+            x1,
+            row: row1,
+        });
+    }
+}
+
+/// Chars a code line is shaped with at most: [`MAX_CHARS_WRAPPED`] when it
+/// wraps (`wrap_width` > 0), else [`MAX_CHARS_UNWRAPPED`].
+pub(crate) fn max_chars(wrap_width: f32) -> usize {
+    if wrap_width > 0.0 {
+        MAX_CHARS_WRAPPED
+    } else {
+        MAX_CHARS_UNWRAPPED
+    }
 }
 
 #[cfg(test)]

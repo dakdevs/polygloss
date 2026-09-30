@@ -240,6 +240,21 @@ fn forward_to_running_app(args: &LaunchArgs, paths: &DataPaths) -> ExitCode {
     }
 }
 
+/// Whether startup asks macOS to bring the app to the front (design §13.4).
+///
+/// Never for the bundled app: LaunchServices already activates it when the
+/// user launches it (Finder, the Dock, `open`, a clicked `polygloss://`
+/// link), while `open -g` (the CLI's and the MCP server's lazy launches,
+/// a re-review notification's) asks it to stay behind, and activating here
+/// would steal focus anyway. An unbundled build (a dev run from a terminal,
+/// which nothing activates) comes forward, unless its launcher says it was
+/// a background launch: `polygloss_platform::launch::ACTIVATE_ENV` = `0`,
+/// which the unbundled launch override sets where the bundle would get
+/// `open -g`.
+pub fn activate_on_launch(bundled: bool, launch_activate: Option<&std::ffi::OsStr>) -> bool {
+    !bundled && launch_activate.is_none_or(|v| v != "0")
+}
+
 /// Everything the app sets up before its first window: [`AppState`], the
 /// settings, the bundled Lilex font, gpui-kit (through
 /// `polygloss_viewport::kit::init_kit`, never `gpui_kit::init`, T2.10.2),
@@ -339,7 +354,13 @@ pub fn run(launch: Launch) -> ExitCode {
         let window_opened = Instant::now();
         // Socket requests may now open tabs in the window.
         crate::ipc::serve_app(cx);
-        crate::window::activate_app(cx);
+        let launch_activate = std::env::var_os(polygloss_platform::launch::ACTIVATE_ENV);
+        if activate_on_launch(
+            polygloss_platform::bundle::is_bundled(),
+            launch_activate.as_deref(),
+        ) {
+            crate::window::activate_app(cx);
+        }
         let opening = opening.and_then(|opening| {
             window
                 .update(cx, |_, window, cx| {

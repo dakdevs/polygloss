@@ -14,6 +14,7 @@
 //!   line counts of every file.
 //! - [`blocks`]: host elements (threads, composers, notes) below their
 //!   anchored line, measured near the viewport, with split spacers.
+//! - [`find`]: the host's find matches marked in the code (⌘F).
 //! - The line cursor and ranges ([`CursorPos`], `j`/`k`, `⇧↑`/`⇧↓`, `]`/`[`,
 //!   `n`/`p`, `e`/`E`, `c`), the "+" on hovered line numbers, dragging
 //!   across them for a range, and text selection with copy.
@@ -29,6 +30,7 @@ pub mod debug;
 pub mod document;
 mod element;
 mod file_flags;
+pub mod find;
 pub mod gap;
 mod gutter;
 mod header;
@@ -53,9 +55,13 @@ pub use document::{
     PlacedBlock, RowKey, ScrollAnchor, SizeHint,
 };
 pub use file_flags::FileFlags;
+pub use find::{FindCurrent, FindHighlights, FindMatcher};
 pub use layout::{LayoutMode, resolve_layout};
 pub use materialize::{LoadError, LoadOptions, Loaded, MaterializedFile};
 pub use pipeline::{FileCounts, PipelineStats};
 pub use provider::DiffProvider;
 pub use style::{DiffStyle, Indicators, ViewportTheme};
-pub use view::{DiffViewport, FrameStats, ScrollTarget, ViewportEvent, ViewportOptions};
+pub use view::{
+    DiffViewport, FrameStats, ScrollTarget, ViewportEvent, ViewportOptions, code_font,
+    code_font_features,
+};

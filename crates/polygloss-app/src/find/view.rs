@@ -13,9 +13,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledText, Window, div, px, uniform_list,
+    AnyElement, Context, Div, Font, FontWeight, HighlightStyle, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, StyledText, Window, div, px, uniform_list,
 };
 use polygloss_diff::Side;
 
@@ -23,6 +23,17 @@ use super::{CONTEXT, FindBar, ListRow, ToggleCaseSensitive, ToggleRegex, file_la
 
 /// A result row's height.
 const ROW_HEIGHT: f32 = 24.0;
+
+impl FindBar {
+    /// A result-list cell (line number or preview) in `font`: its family and
+    /// its features, so previews draw `->` as typed when the diff does
+    /// (ligatures off).
+    pub fn preview_cell(font: &Font) -> Div {
+        div()
+            .font_family(font.family.clone())
+            .font_features(font.features.clone())
+    }
+}
 
 impl Render for FindBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -281,7 +292,7 @@ impl FindBar {
                     return div().into_any_element();
                 };
                 let selected = self.current == Some(ix);
-                let code_font = self.viewport.read(cx).options().code_font.clone();
+                let code_font = self.preview_font(cx);
                 let (number, number_color) = match m.side {
                     Side::Old => (format!("−{}", m.line + 1), theme.red),
                     Side::New => (format!("{}", m.line + 1), theme.muted_foreground),
@@ -307,20 +318,18 @@ impl FindBar {
                     .when(!selected, |el| el.hover(|s| s.bg(theme.list_hover)))
                     .on_click(cx.listener(move |bar, _, _, cx| bar.go_to(ix, cx)))
                     .child(
-                        div()
+                        FindBar::preview_cell(&code_font)
                             .flex_none()
                             .w(px(40.))
                             .text_right()
-                            .font_family(code_font.clone())
                             .text_color(number_color)
                             .child(SharedString::from(number)),
                     )
                     .child(
-                        div()
+                        FindBar::preview_cell(&code_font)
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .font_family(code_font)
                             .text_color(theme.foreground)
                             .child(text),
                     )

@@ -73,6 +73,15 @@ pub fn code_font(cx: &App) -> (SharedString, f32) {
     }
 }
 
+/// The code font's OpenType features (settings `buffer_font.ligatures`,
+/// `polygloss_viewport::code_font_features`), for the same code.
+pub fn code_font_features(cx: &App) -> gpui_kit::FontFeatures {
+    let ligatures = cx
+        .try_global::<SettingsStore>()
+        .is_some_and(|store| store.settings().buffer_font.ligatures);
+    polygloss_viewport::code_font_features(ligatures)
+}
+
 /// Bodies prepared so far, by content (thread blocks render every frame).
 const PREPARED_CAP: usize = 1024;
 

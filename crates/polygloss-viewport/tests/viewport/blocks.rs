@@ -68,6 +68,7 @@ fn describe(layout: &FileLayout) -> Vec<String> {
             BodyRow::NoNewline { side, .. } => format!("nl {side:?}").to_lowercase(),
             BodyRow::NoNewlineBoth { .. } => "nl both".to_owned(),
             BodyRow::Block(id) => format!("[{}]", id.0),
+            BodyRow::BlockPair { old, new } => format!("[{}|{}]", old.0, new.0),
             BodyRow::Placeholder => "placeholder".to_owned(),
         })
         .collect()
@@ -243,7 +244,8 @@ fn placement_puts_blocks_below_their_line_in_host_order() {
     assert_eq!(placed_unified.block_rows(), &[0, 2, 7, 9, 10, 13, 16]);
 
     // Split: a changed pair is one row, so blocks on either of its lines
-    // follow it in host order.
+    // follow it in host order; the first old-side and the first new-side
+    // block share a row, side by side, where the first of them goes.
     let split = layout_of(&a, &b, Layout::Split).with_blocks(&blocks);
     assert_eq!(
         describe(&split),
@@ -255,8 +257,7 @@ fn placement_puts_blocks_below_their_line_in_host_order() {
             "o8 n8",
             "o9 n9",
             "o10 n10",
-            "[1]",
-            "[2]",
+            "[2|1]",
             "[7]",
             "o11 n11",
             "o12 n12",
@@ -287,7 +288,7 @@ fn placement_keeps_no_newline_markers_with_their_line() {
     let placed_split = split.with_blocks(&[placed(1, old(1), 20.0), placed(2, new(1), 20.0)]);
     assert_eq!(
         describe(&placed_split),
-        strs(&["o0 n0", "o1 n1", "nl both", "[1]", "[2]"])
+        strs(&["o0 n0", "o1 n1", "nl both", "[1|2]"])
     );
 }
 
@@ -306,6 +307,134 @@ fn placement_on_bodies_without_rows() {
     // the end.
     let added = layout_of("", "x\ny\n", Layout::Unified).with_blocks(&[placed(3, old(0), 5.0)]);
     assert_eq!(describe(&added), strs(&["o- n0", "o- n1", "[3]"]));
+}
+
+#[test]
+fn placement_pairs_old_and_new_blocks_of_one_split_row() {
+    let (a, b) = twenty_lines();
+    let split = layout_of(&a, &b, Layout::Split);
+    assert!(split.is_split());
+    let blocks = [
+        // Line 10 changed: its old and new lines are one split row.
+        placed(1, new(10), 30.0),
+        placed(2, old(10), 90.0),
+        // Context line 8 is one row too (old 8 = new 8).
+        placed(3, old(8), 40.0),
+        placed(4, new(8), 25.0),
+        placed(5, old(8), 15.0),
+        // Different rows never pair.
+        placed(6, old(11), 10.0),
+        placed(7, new(12), 10.0),
+        // A file-level block spans the width.
+        placed(8, BlockAnchor::FileTop, 10.0),
+    ];
+    let placed_split = split.with_blocks(&blocks);
+    assert!(placed_split.is_split());
+    assert_eq!(
+        describe(&placed_split),
+        strs(&[
+            "[8]",
+            "gap o0+7",
+            "o7 n7",
+            "o8 n8",
+            "[3|4]",
+            "[5]",
+            "o9 n9",
+            "o10 n10",
+            "[2|1]",
+            "o11 n11",
+            "[6]",
+            "o12 n12",
+            "[7]",
+            "o13 n13",
+            "gap o14+6",
+        ])
+    );
+    // A pair's row is as tall as its taller block; both ids find it.
+    let row = |id: u64| placed_split.find(RowKey::Block(BlockId(id))).unwrap();
+    assert_eq!(row(3), row(4));
+    assert_eq!(row(1), row(2));
+    assert_eq!(placed_split.row_height(row(3)), 40.0);
+    assert_eq!(placed_split.row_height(row(1)), 90.0);
+    assert_eq!(placed_split.row_height(row(5)), 15.0);
+    assert_eq!(
+        placed_split.rows()[row(1)].block_ids(),
+        [Some(BlockId(2)), Some(BlockId(1))]
+    );
+    assert_eq!(placed_split.block_rows().len(), 6);
+    // Scroll anchors on a pair name its old side's block.
+    let y = placed_split.row_top(row(1)) + 5.0;
+    assert_eq!(
+        placed_split.key_at(y),
+        Some((RowKey::Block(BlockId(2)), 5.0))
+    );
+    let paired: f64 = 40.0 + 15.0 + 90.0 + 10.0 + 10.0 + 10.0;
+    assert_eq!(placed_split.height(), split.height() + paired);
+    // Placing again (new heights) re-pairs from the rows alone.
+    let again = placed_split.with_blocks(&[placed(4, new(8), 70.0), placed(3, old(8), 40.0)]);
+    assert_eq!(describe(&again)[3], "[3|4]");
+    assert_eq!(again.row_height(3), 70.0);
+    assert_eq!(again.with_blocks(&[]), split);
+
+    // Unified never pairs: each block below its own line.
+    let unified = layout_of(&a, &b, Layout::Unified);
+    assert!(!unified.is_split());
+    let placed_unified = unified.with_blocks(&blocks[2..4]);
+    assert_eq!(
+        describe(&placed_unified)[1..5],
+        strs(&["o7 n7", "o8 n8", "[3]", "[4]"])
+    );
+}
+
+#[test]
+fn new_heights_keep_split_rows_pairing() {
+    let (a, b) = twenty_lines();
+    let split = layout_of(&a, &b, Layout::Split);
+    // Wrapped heights (taller rows) keep the rows and the split flag, so
+    // old- and new-side blocks of one row still pair.
+    let heights: Vec<f32> = (0..split.len()).map(|i| 20.0 + i as f32).collect();
+    let wrapped = split.with_heights(&heights);
+    assert!(wrapped.is_split());
+    assert_eq!(wrapped.rows(), split.rows());
+    assert_eq!(wrapped.row_height(1), 21.0);
+    let placed_wrapped = wrapped.with_blocks(&[placed(1, new(10), 30.0), placed(2, old(10), 90.0)]);
+    assert!(describe(&placed_wrapped).contains(&"[2|1]".to_owned()));
+    // Unified stays unified.
+    let unified = layout_of(&a, &b, Layout::Unified);
+    let heights = vec![20.0; unified.len()];
+    assert!(!unified.with_heights(&heights).is_split());
+    // A layout marked split by its mode stays split when rebuilt, even with
+    // no split rows in it (a file of gaps alone).
+    let gaps = FileLayout::new(Vec::new(), &[]).with_split(true);
+    assert!(gaps.with_heights(&[]).is_split());
+}
+
+#[test]
+fn document_pair_row_follows_the_taller_block() {
+    let files = Arc::new((0..1).map(text_change).collect::<Vec<_>>());
+    let mut d = Document::new(files, Metrics::default());
+    d.set_viewport_height(400.0);
+    let (a, b) = twenty_lines();
+    d.set_file_layout(0, layout_of(&a, &b, Layout::Split));
+    d.set_blocks(0, vec![placed(1, old(8), 40.0), placed(2, new(8), 60.0)]);
+    let layout = d.file_layout(0).unwrap();
+    let row = layout.find(RowKey::Block(BlockId(1))).unwrap();
+    assert_eq!(layout.row_height(row), 60.0);
+    let height = d.file_height(0);
+    // Growing the shorter one past the other grows the row.
+    assert!(d.set_block_height(0, BlockId(1), 90.0));
+    assert_eq!(d.file_layout(0).unwrap().row_height(row), 90.0);
+    assert_eq!(d.file_height(0), height + 30.0);
+    // Shrinking the taller one shrinks the row to the other's height.
+    assert!(d.set_block_height(0, BlockId(1), 10.0));
+    assert_eq!(d.file_layout(0).unwrap().row_height(row), 60.0);
+    assert_eq!(d.file_height(0), height);
+    assert_eq!(d.blocks(0)[0].height, 10.0);
+    // A relayout keeps the pair and its heights.
+    d.set_file_layout(0, layout_of(&a, &b, Layout::Split));
+    let layout = d.file_layout(0).unwrap();
+    assert_eq!(layout.row_height(row), 60.0);
+    assert_eq!(describe(layout)[3], "[1|2]");
 }
 
 #[test]
@@ -601,12 +730,13 @@ fn blocks_survive_layout_toggle(cx: &mut TestAppContext) {
         ],
     );
     let split_rows = debug(&view, cx).visible_rows;
+    // The old- and new-side blocks of the changed row share a row.
     assert_eq!(
         split_rows
             .iter()
             .filter(|r| r.starts_with("[block"))
-            .count(),
-        3
+            .collect::<Vec<_>>(),
+        ["[block 3]", "[block 1 │ block 2]"]
     );
 
     set_options(&view, cx, |o| o.layout = LayoutMode::Unified);
@@ -630,11 +760,95 @@ fn blocks_survive_layout_toggle(cx: &mut TestAppContext) {
 
     set_options(&view, cx, |o| o.layout = LayoutMode::Split);
     assert_eq!(debug(&view, cx).visible_rows, split_rows);
-    let (y1, _) = bounds_of(&view, cx, "[block 1]");
-    let (y2, _) = bounds_of(&view, cx, "[block 2]");
-    // The left-side block is back in the left column.
-    assert_quads(&quads_of(cx, l), &[(0.0, y1, 499.0, 40.0)]);
-    assert_quads(&quads_of(cx, r), &[(500.0, y2, 500.0, 50.0)]);
+    let (y, h) = bounds_of(&view, cx, "[block 1 │ block 2]");
+    assert_eq!(h, 50.0);
+    // The left-side block is back in the left column, beside the other.
+    assert_quads(&quads_of(cx, l), &[(0.0, y, 499.0, 40.0)]);
+    assert_quads(&quads_of(cx, r), &[(500.0, y, 500.0, 50.0)]);
+}
+
+#[gpui_kit::test]
+fn split_blocks_on_one_row_sit_side_by_side(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![one_change()]);
+    let opts = options(LayoutMode::Split);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, provider, opts, 1000., 600.);
+    let (left, right, below) = (color(0.1), color(0.4), color(0.6));
+    let (tall, grow) = resizable(2, new(4), 60.0, right);
+    set_blocks(
+        &view,
+        cx,
+        0,
+        vec![
+            // The changed line's old and new sides: one row.
+            boxed(1, old(4), 120.0, left),
+            tall,
+            // A second new-side block on it: a row of its own below.
+            boxed(3, new(4), 30.0, below),
+        ],
+    );
+
+    let d = debug(&view, cx);
+    let ctx = |n: u32, t: &str| split(Some((n, ' ', t)), Some((n, ' ', t)));
+    assert_eq!(
+        d.visible_rows,
+        vec![
+            "== src/a.rs".to_owned(),
+            "⋯ 1 unchanged line".to_owned(),
+            ctx(2, "line 1"),
+            ctx(3, "line 2"),
+            ctx(4, "line 3"),
+            split(Some((5, '-', "line 4")), Some((5, '+', "LINE 4"))),
+            "[block 1 │ block 2]".to_owned(),
+            "[block 3]".to_owned(),
+            ctx(6, "line 5"),
+            ctx(7, "line 6"),
+            ctx(8, "line 7"),
+            "⋯ 2 unchanged lines".to_owned(),
+        ]
+    );
+    // The taller block sets the row's height; each is measured at its own.
+    let y = HEADER_H + 32.0 + 4.0 * ROW_H;
+    assert_eq!(d.row_bounds[6], (y, 120.0));
+    assert_eq!(d.row_bounds[7], (y + 120.0, 30.0));
+    assert_quads(&quads_of(cx, left), &[(0.0, y, 499.0, 120.0)]);
+    assert_quads(&quads_of(cx, right), &[(500.0, y, 500.0, 60.0)]);
+    assert_quads(&quads_of(cx, below), &[(500.0, y + 120.0, 500.0, 30.0)]);
+    // Below the shorter one, a spacer to the row's bottom; the lone block's
+    // row gets its usual spacer on the other side.
+    assert_quads(
+        &quads_of(cx, theme.empty_cell),
+        &[
+            (500.0, y + 60.0, 500.0, 60.0),
+            (0.0, y + 120.0, 500.0, 30.0),
+        ],
+    );
+    view.read_with(cx, |v, _| {
+        let heights: Vec<f32> = v.document().blocks(0).iter().map(|b| b.height).collect();
+        assert_eq!(heights, [120.0, 60.0, 30.0]);
+    });
+
+    // The right one grows past the left: the row follows, nothing above moves.
+    grow.set(150.0);
+    view.update(cx, |v, cx| v.invalidate_block(BlockId(2), cx));
+    settle(cx);
+    let d = debug(&view, cx);
+    assert_eq!(d.row_bounds[6], (y, 150.0));
+    assert_eq!(d.row_bounds[7], (y + 150.0, 30.0));
+    assert_quads(&quads_of(cx, right), &[(500.0, y, 500.0, 150.0)]);
+    assert_quads(
+        &quads_of(cx, theme.empty_cell),
+        &[(0.0, y + 120.0, 499.0, 30.0), (0.0, y + 150.0, 500.0, 30.0)],
+    );
+    // The divider runs through the shared row.
+    let dividers = quads_of(cx, theme.border);
+    assert!(
+        dividers
+            .iter()
+            .any(|q| (q.0 - 499.0).abs() <= 0.5 && (q.1 - y).abs() <= 0.5 && q.3 >= 149.5),
+        "no divider through the pair: {dividers:?}"
+    );
 }
 
 #[gpui_kit::test]
@@ -995,4 +1209,33 @@ fn new_block_is_measured_in_the_first_frame_and_rendered_once(cx: &mut TestAppCo
     // Every later frame renders it once more (elements live for one frame).
     redraw(cx);
     assert_eq!(renders.get(), 2);
+}
+
+#[gpui_kit::test]
+fn split_blocks_pair_up_with_wrap_on(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![one_change()]);
+    let mut opts = options(LayoutMode::Split);
+    opts.style.wrap = true;
+    let (view, cx) = open(cx, provider, opts, 1000., 600.);
+    let (left, right) = (color(0.1), color(0.4));
+    set_blocks(
+        &view,
+        cx,
+        0,
+        vec![boxed(1, old(4), 40.0, left), boxed(2, new(4), 50.0, right)],
+    );
+    // Wrapped layouts are rebuilt with measured heights; they stay split rows,
+    // so the old- and new-side blocks of the changed row still share one.
+    let rows = debug(&view, cx).visible_rows;
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.starts_with("[block"))
+            .collect::<Vec<_>>(),
+        ["[block 1 │ block 2]"]
+    );
+    let (y, h) = bounds_of(&view, cx, "[block 1 │ block 2]");
+    assert_eq!(h, 50.0);
+    assert_quads(&quads_of(cx, left), &[(0.0, y, 499.0, 40.0)]);
+    assert_quads(&quads_of(cx, right), &[(500.0, y, 500.0, 50.0)]);
 }

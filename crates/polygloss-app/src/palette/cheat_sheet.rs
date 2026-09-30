@@ -1,7 +1,6 @@
 //! The keyboard shortcuts cheat sheet (`?`, design §11.8): every binding in
 //! effect, `keymap.json` included, grouped by where it works.
 
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, Global, IntoElement, Keystroke, ParentElement as _,
@@ -9,6 +8,7 @@ use gpui_kit::{
 };
 
 use crate::keymap::{KeymapStore, Resolved, actions};
+use crate::palette::key_cap::key_cap;
 
 /// One row: an action and every key bound to it in the section's context.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +128,7 @@ fn section(heading: &'static str, rows: &[CheatRow], cx: &App) -> impl IntoEleme
                                     .next()
                                     .and_then(|k| Keystroke::parse(k).ok())
                             })
-                            .map(Kbd::new),
+                            .map(|k| key_cap(&k, cx)),
                     ),
                 )
         }))

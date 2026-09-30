@@ -919,22 +919,22 @@ JSON Lines over the unix socket. Request `{"v":1,"id":7,"op":"…",…}`; respon
 
 The server answers every connection on its own thread and runs ops concurrently, so a slow `open` or `focus` never delays a `store_changed` nudge. It closes a connection idle for 60 s; a client whose connection was closed that way reconnects once and sends the request again.
 
-| Op              | Params                                                         | Effect                                             |
-| --------------- | -------------------------------------------------------------- | -------------------------------------------------- |
-| `hello`         | `client`                                                       | Returns app version, pid and protocol version      |
-| `open`          | `review_id` or `diff_id`, `activate: bool`                     | Open or focus the tab                              |
-| `focus`         | `diff_id`/`review_id`, `path?`, `side?`, `line?`, `thread_id?` | Scroll to the location, opening the tab if needed  |
-| `store_changed` | `seq`                                                          | Nudge: read events now instead of at the next poll |
+| Op              | Params                                                         | Effect                                                                                                       |
+| --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `hello`         | `client`                                                       | Returns app version, pid and protocol version                                                                |
+| `open`          | `review_id` or `diff_id`, `activate: bool`                     | Open or focus the tab; with neither, only show the window (`status` `shown`, or `activated` with `activate`) |
+| `focus`         | `diff_id`/`review_id`, `path?`, `side?`, `line?`, `thread_id?` | Scroll to the location, opening the tab if needed                                                            |
+| `store_changed` | `seq`                                                          | Nudge: read events now instead of at the next poll                                                           |
 
 ### 13.4 Launch and single instance
 
-| Situation                   | Behavior                                                                                                                                                                                                                               |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bundled app                 | LaunchServices guarantees one instance.                                                                                                                                                                                                |
-| CLI or MCP needs the app    | Connect to the socket. If it is absent, run `open -g -b dev.dak.polygloss` (the background launch does not steal focus), poll the socket for up to 10 s (**Provisional**), then send the op. Human CLI commands send `activate: true`. |
-| URL scheme                  | `open -g "polygloss://…"` works too. GPUI `App::on_open_urls` plus `CFBundleURLTypes` handle it.                                                                                                                                       |
-| Dev (unbundled `cargo run`) | Socket liveness plus an `app.lock` flock. A second instance forwards its argv and exits.                                                                                                                                               |
-| MCP startup                 | **Never** launches the app. Only `open_diff` (with `show`), `focus` and `request_rereview` (to deliver the notification) launch it lazily.                                                                                             |
+| Situation                   | Behavior                                                                                                                                                                                                                                                                                     |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bundled app                 | LaunchServices guarantees one instance, and activates user launches itself; the app never activates itself at startup, so a background launch (`open -g`) never steals focus. An unbundled dev build activates at startup unless launched in the background (`POLYGLOSS_LAUNCH_ACTIVATE=0`). |
+| CLI or MCP needs the app    | Connect to the socket. If it is absent, run `open -g -b dev.dak.polygloss` (the background launch does not steal focus), poll the socket for up to 10 s (**Provisional**), then send the op. Human CLI commands send `activate: true`.                                                       |
+| URL scheme                  | `open -g "polygloss://…"` works too. GPUI `App::on_open_urls` plus `CFBundleURLTypes` handle it.                                                                                                                                                                                             |
+| Dev (unbundled `cargo run`) | Socket liveness plus an `app.lock` flock. A second instance forwards its argv and exits.                                                                                                                                                                                                     |
+| MCP startup                 | **Never** launches the app. Only `open_diff` (with `show`), `focus` and `request_rereview` (to deliver the notification) launch it lazily.                                                                                                                                                   |
 
 ### 13.5 URL scheme
 
@@ -1193,6 +1193,7 @@ The `timeout` value is **Provisional** (OQ-12). Claude Code's hooks reference (c
 | -------------------------------------------------- | ------------------------------------------------------ |
 | `theme.mode` / `theme.light` / `theme.dark`        | `"system"` / `"Pierre Light"` / `"Pierre Dark"`        |
 | `buffer_font.family` / `.size`                     | `"Lilex"` / `13`                                       |
+| `buffer_font.ligatures`                            | `false` (code shows as typed: `->` is never `→`)       |
 | `diff.layout`                                      | `"auto"` (`auto`, `split`, `unified`)                  |
 | `diff.split_min_columns`                           | `160`                                                  |
 | `diff.word_diff`                                   | `"word"` (`word`, `char`, `off`)                       |

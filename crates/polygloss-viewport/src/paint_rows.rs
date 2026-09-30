@@ -24,6 +24,7 @@ use crate::controls::{Control, ControlAction, ControlLayer};
 use crate::cursor::CursorPos;
 use crate::document::{BodyRow, Document, FileState};
 use crate::file_flags::FileFlags;
+use crate::find::FindState;
 use crate::gap::Gaps;
 use crate::layout::{Columns, Geometry, Pane, digits};
 use crate::materialize::MaterializedFile;
@@ -162,6 +163,8 @@ pub(crate) enum DebugContent {
         right: Option<(u32, char, Rc<ShapedText>)>,
     },
     Block(u64),
+    /// Two blocks side by side (split): the old side's, then the new side's.
+    BlockPair(u64, u64),
 }
 
 #[cfg(feature = "debug-inspect")]
@@ -203,6 +206,8 @@ pub(crate) struct Painter<'a> {
     pub pipeline: &'a Pipeline,
     /// Host blocks, for their columns and render functions.
     pub blocks: &'a Blocks,
+    /// Find matches to mark in the code.
+    pub find: Option<&'a mut FindState>,
     pub text_system: Arc<WindowTextSystem>,
     /// Cursor, range, selection and pointer.
     pub marks: Marks,
@@ -343,6 +348,7 @@ impl Painter<'_> {
             BodyRow::NoNewline { side, .. } => self.no_newline(f, &[side], y, h),
             BodyRow::NoNewlineBoth { .. } => self.no_newline(f, &[Side::Old, Side::New], y, h),
             BodyRow::Block(id) => self.block(f, id, y, h),
+            BodyRow::BlockPair { old, new } => self.block_pair(f, old, new, y, h),
             BodyRow::Placeholder => self.placeholder_row(f, y, h),
         }
     }
@@ -704,6 +710,29 @@ impl Painter<'_> {
                 row_h,
                 color,
             );
+        }
+        let geometry = self.geometry;
+        let found = self.find.as_deref_mut().map(|find| {
+            let rects = find.rects(key, file, side, line, &shaped, geometry, wrap_width);
+            (rects, find.current_in(f, side, line))
+        });
+        if let Some((rects, current)) = found {
+            for m in rects.iter() {
+                let color = if current.as_ref() == Some(&m.range) {
+                    self.theme.find_match_current
+                } else {
+                    self.theme.find_match
+                };
+                let w = &m.rect;
+                self.quad(
+                    layer,
+                    x + w.x0,
+                    y + w.row as f32 * row_h,
+                    (w.x1 - w.x0).max(0.0),
+                    row_h,
+                    color,
+                );
+            }
         }
         self.text(layer, x, y, shaped.clone());
         let rows = shaped.shaped.visual_rows();

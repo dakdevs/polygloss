@@ -5,7 +5,7 @@ use gpui_kit::TestAppContext;
 use gpui_kit::component::WindowExt as _;
 use polygloss_app::keymap::{KeymapStore, actions};
 use polygloss_app::palette::view_toggles::{self, LayoutChoices};
-use polygloss_app::palette::{cheat_sheet, command};
+use polygloss_app::palette::{cheat_sheet, command, key_cap};
 use polygloss_app::settings::SettingsStore;
 use polygloss_core::git::Source;
 use polygloss_core::review::OpenRequest;
@@ -112,6 +112,49 @@ fn palette_lists_every_action_with_binding_hint(cx: &mut TestAppContext) {
             .and_then(|r| r.hint())
     });
     assert_eq!(hint, Some(command::format_keys("alt-s")));
+    shell.cx.simulate_keystrokes("escape");
+    draw(shell.cx);
+    assert!(!has_dialog(&mut shell));
+}
+
+#[test]
+fn key_caps_spell_escape_out() {
+    let label = |k: &str| key_cap::key_label(&gpui_kit::Keystroke::parse(k).unwrap());
+    // `⎋` reads like a reload arrow: Escape is `Esc`, modifiers first.
+    assert_eq!(label("escape"), "Esc");
+    assert_eq!(label("cmd-escape"), "⌘Esc");
+    assert_eq!(label("shift-escape"), "⇧Esc");
+    // Everything else as gpui-kit's `Kbd` spells it.
+    assert_eq!(label("cmd-k"), "⌘K");
+    assert_eq!(label("cmd-shift-enter"), "⇧⌘⏎");
+    assert_eq!(label("down"), "↓");
+    assert_eq!(command::format_keys("escape"), "Esc");
+    assert_eq!(command::format_keys("g g"), "G G");
+    assert!(!command::format_keys("escape").contains('⎋'));
+}
+
+#[gpui_kit::test]
+fn cheat_sheet_shows_esc_as_text(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    shell.cx.simulate_keystrokes("?");
+    draw(shell.cx);
+    let sheet = shell
+        .cx
+        .update(|_, cx| cheat_sheet::current(cx))
+        .expect("the cheat sheet is open");
+    // The composer's Cancel is bound to Escape…
+    let sections = sheet.read_with(shell.cx, |s, _| s.sections().to_vec());
+    let cancel = sections
+        .iter()
+        .flat_map(|(_, rows)| rows)
+        .find(|r| r.action == "composer::Cancel")
+        .expect("composer::Cancel is listed");
+    assert_eq!(cancel.keys, ["escape"]);
+    // …and its key cap is drawn with the label `Esc`: the palette's own cap,
+    // not gpui-kit's `Kbd` (`kbd:escape`, drawn `⎋`).
+    assert!(shell.cx.debug_bounds("key-cap:escape=Esc").is_some());
+    assert!(shell.cx.debug_bounds("kbd:escape").is_none());
     shell.cx.simulate_keystrokes("escape");
     draw(shell.cx);
     assert!(!has_dialog(&mut shell));

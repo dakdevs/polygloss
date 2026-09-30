@@ -4,6 +4,7 @@
 mod blocks;
 mod cursor;
 mod document;
+mod find;
 mod headers_gaps;
 mod kit;
 mod pipeline;

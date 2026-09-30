@@ -34,7 +34,12 @@ impl FileLayout {
     /// These rows with `blocks` placed in them, replacing any blocks placed
     /// before. Rows keep their heights. A block goes below its anchor row and
     /// below the `\ No newline` markers right after it (they belong to that
-    /// line); blocks with the same place keep the order of `blocks`.
+    /// line); blocks with the same place keep the order of `blocks`. In split
+    /// rows ([`FileLayout::is_split`]), the old-side and new-side line blocks
+    /// of one place pair up in that order, the first old one with the first
+    /// new one and so on: each pair shares a row ([`BodyRow::BlockPair`], as
+    /// tall as the taller block) where the earlier of the two would go, and
+    /// the blocks left over get rows of their own.
     pub fn with_blocks(&self, blocks: &[PlacedBlock]) -> FileLayout {
         let rows = self.rows();
         let block_rows = self.block_rows();
@@ -60,6 +65,7 @@ impl FileLayout {
                                         BodyRow::NoNewline { .. }
                                             | BodyRow::NoNewlineBoth { .. }
                                             | BodyRow::Block(_)
+                                            | BodyRow::BlockPair { .. }
                                     )
                                 {
                                     end += 1;
@@ -78,25 +84,88 @@ impl FileLayout {
         let len = base_len + blocks.len();
         let mut out_rows = Vec::with_capacity(len);
         let mut heights = Vec::with_capacity(len);
-        let mut next = places.iter().peekable();
+        let mut group = Vec::new();
+        let mut at = 0;
         let mut base = 0;
+        let mut place_rows = |place: usize, out: &mut Vec<BodyRow>, h: &mut Vec<f32>| {
+            group.clear();
+            while at < places.len() && places[at].0 == place {
+                group.push(places[at].2);
+                at += 1;
+            }
+            push_group(&group, blocks, self.is_split(), out, h);
+        };
         for (i, row) in rows.iter().enumerate() {
-            if let BodyRow::Block(_) = row {
+            if let BodyRow::Block(_) | BodyRow::BlockPair { .. } = row {
                 continue;
             }
-            while let Some(&(_, _, k)) = next.next_if(|(place, _, _)| *place == base) {
-                out_rows.push(BodyRow::Block(blocks[k].id));
-                heights.push(block_height(blocks[k].height));
-            }
+            place_rows(base, &mut out_rows, &mut heights);
             out_rows.push(*row);
             heights.push(self.row_height(i));
             base += 1;
         }
-        for &(_, _, k) in next {
-            out_rows.push(BodyRow::Block(blocks[k].id));
-            heights.push(block_height(blocks[k].height));
+        place_rows(base, &mut out_rows, &mut heights);
+        debug_assert_eq!(at, places.len(), "every block is placed");
+        FileLayout::new(out_rows, &heights).with_split(self.is_split())
+    }
+}
+
+/// The side of a block anchored to a line.
+fn line_side(block: &PlacedBlock) -> Option<Side> {
+    match block.anchor {
+        BlockAnchor::Line { side, .. } => Some(side),
+        BlockAnchor::FileTop => None,
+    }
+}
+
+/// Appends the rows of the blocks `group` (indexes into `blocks`, in order)
+/// that share one place: one row each, except that in `split` the `i`-th
+/// old-side and `i`-th new-side line blocks share a row.
+fn push_group(
+    group: &[usize],
+    blocks: &[PlacedBlock],
+    split: bool,
+    rows: &mut Vec<BodyRow>,
+    heights: &mut Vec<f32>,
+) {
+    // `partner[j]`: the index in `group` of the block `group[j]` pairs with.
+    let mut partner = vec![None; group.len()];
+    if split {
+        let side_of = |side| {
+            (0..group.len())
+                .filter(move |&j| line_side(&blocks[group[j]]) == Some(side))
+                .collect::<Vec<_>>()
+        };
+        for (o, n) in side_of(Side::Old).into_iter().zip(side_of(Side::New)) {
+            partner[o] = Some(n);
+            partner[n] = Some(o);
         }
-        FileLayout::new(out_rows, &heights)
+    }
+    let mut done = vec![false; group.len()];
+    for j in 0..group.len() {
+        if done[j] {
+            continue;
+        }
+        let block = &blocks[group[j]];
+        match partner[j] {
+            Some(p) => {
+                done[p] = true;
+                let other = &blocks[group[p]];
+                let (old, new) = match line_side(block) {
+                    Some(Side::Old) => (block, other),
+                    _ => (other, block),
+                };
+                rows.push(BodyRow::BlockPair {
+                    old: old.id,
+                    new: new.id,
+                });
+                heights.push(block_height(old.height).max(block_height(new.height)));
+            }
+            None => {
+                rows.push(BodyRow::Block(block.id));
+                heights.push(block_height(block.height));
+            }
+        }
     }
 }
 

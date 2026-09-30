@@ -17,6 +17,7 @@ mod find;
 mod home;
 mod iterations;
 mod kit_fonts;
+mod ligatures;
 mod live;
 mod open_flow;
 mod palette;
@@ -43,6 +44,7 @@ fn main() -> std::process::ExitCode {
     support::harness::run(&[
         HARNESS,
         kit_fonts::TESTS,
+        ligatures::TESTS,
         viewport_screenshots::TESTS,
         shell::TESTS,
         palette::TESTS,

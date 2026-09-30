@@ -35,8 +35,24 @@ pub enum BodyRow {
     NoNewlineBoth { diff_row: u32 },
     /// A host block below the previous row (T2.7).
     Block(BlockId),
+    /// Split only: an old-side and a new-side block hung from the same row,
+    /// side by side, each in its own column; the row is as tall as the
+    /// taller one.
+    BlockPair { old: BlockId, new: BlockId },
     /// A body that is a single message (special files, "Load diff").
     Placeholder,
+}
+
+impl BodyRow {
+    /// The blocks a block row shows: `[block, None]`, `[old, new]` for a
+    /// pair, `[None, None]` for any other row.
+    pub fn block_ids(&self) -> [Option<BlockId>; 2] {
+        match *self {
+            BodyRow::Block(id) => [Some(id), None],
+            BodyRow::BlockPair { old, new } => [Some(old), Some(new)],
+            _ => [None, None],
+        }
+    }
 }
 
 /// The exact layout of a file body: rows, their heights and the indexes that
@@ -54,8 +70,11 @@ pub struct FileLayout {
     new_owners: Vec<u32>,
     /// Gap rows, in order.
     gaps: Vec<u32>,
-    /// Block rows, in order.
+    /// Block rows (single and paired), in order.
     blocks: Vec<u32>,
+    /// Split rows: blocks on the two sides of one row pair up
+    /// ([`FileLayout::with_blocks`]).
+    split: bool,
 }
 
 impl FileLayout {
@@ -76,7 +95,7 @@ impl FileLayout {
             }
             match row {
                 BodyRow::Gap { .. } => layout.gaps.push(i),
-                BodyRow::Block(_) => layout.blocks.push(i),
+                BodyRow::Block(_) | BodyRow::BlockPair { .. } => layout.blocks.push(i),
                 _ => {}
             }
         }
@@ -89,6 +108,9 @@ impl FileLayout {
     pub fn from_rows(rows: &[Row], metrics: &Metrics) -> FileLayout {
         let mut body = Vec::with_capacity(rows.len());
         let mut heights = Vec::with_capacity(rows.len());
+        let split = rows
+            .iter()
+            .any(|r| matches!(r, Row::Split { .. } | Row::NoNewlineBoth));
         for (i, row) in rows.iter().enumerate() {
             let diff_row = i as u32;
             let (body_row, height) = match row {
@@ -130,7 +152,26 @@ impl FileLayout {
             body.push(body_row);
             heights.push(height);
         }
-        FileLayout::new(body, &heights)
+        FileLayout::new(body, &heights).with_split(split)
+    }
+
+    /// These rows, marked as split rows (or not): in split, an old-side and a
+    /// new-side block on the same row share it ([`BodyRow::BlockPair`]).
+    /// [`FileLayout::from_rows`] marks layouts of split rows itself.
+    pub fn with_split(mut self, split: bool) -> FileLayout {
+        self.split = split;
+        self
+    }
+
+    /// The same rows (split or not) at new `heights`, one per row. Panics if
+    /// the lengths differ.
+    pub fn with_heights(&self, heights: &[f32]) -> FileLayout {
+        FileLayout::new(self.rows.clone(), heights).with_split(self.split)
+    }
+
+    /// Whether these are split rows (see [`FileLayout::with_split`]).
+    pub fn is_split(&self) -> bool {
+        self.split
     }
 
     /// A body that is one placeholder row of `height`.
@@ -203,11 +244,16 @@ impl FileLayout {
                 RowKey::Gap(gap) => self.gaps.iter().copied().find(
                     |&r| matches!(self.rows[r as usize], BodyRow::Gap { id, .. } if id == gap),
                 ),
-                RowKey::Block(block) => self
-                    .blocks
-                    .iter()
-                    .copied()
-                    .find(|&r| self.rows[r as usize] == BodyRow::Block(block)),
+                RowKey::Block(block) => {
+                    self.blocks
+                        .iter()
+                        .copied()
+                        .find(|&r| match self.rows[r as usize] {
+                            BodyRow::Block(id) => id == block,
+                            BodyRow::BlockPair { old, new } => old == block || new == block,
+                            _ => false,
+                        })
+                }
                 RowKey::Placeholder => self
                     .rows
                     .iter()
@@ -248,6 +294,8 @@ impl FileLayout {
                     line: old_start,
                 },
                 BodyRow::Block(id) => RowKey::Block(id),
+                // Either id resolves to the row; the old side's comes first.
+                BodyRow::BlockPair { old, .. } => RowKey::Block(old),
                 BodyRow::Placeholder => RowKey::Placeholder,
                 BodyRow::Line {
                     old: None,
