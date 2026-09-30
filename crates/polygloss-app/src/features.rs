@@ -31,6 +31,7 @@ pub fn init(cx: &mut App) {
     crate::view_state::init(cx);
     crate::find::init(cx);
     crate::editor::init(cx);
+    crate::install_cli::init(cx);
     crate::notify::init(cx);
     crate::ipc::init(cx);
     crate::urls::init(cx);

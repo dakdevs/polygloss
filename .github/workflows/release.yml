@@ -145,10 +145,6 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
         run: |
-          if [ ! -f scripts/bump-tap.ts ]; then
-            echo "tap bump skipped: scripts/bump-tap.ts arrives with T5.4"
-            exit 0
-          fi
           if [ -z "$HOMEBREW_TAP_TOKEN" ] || [ -z "$HOMEBREW_TAP_REPO" ]; then
             echo "tap bump skipped: HOMEBREW_TAP_TOKEN or HOMEBREW_TAP_REPO is not set"
             exit 0

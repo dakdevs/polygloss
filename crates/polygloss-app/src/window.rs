@@ -68,6 +68,8 @@ pub fn init(cx: &mut App) {
         vec![
             // Handled by `editor` (T3.16).
             MenuItem::action("Settings…", crate::keymap::actions::window::OpenSettings),
+            // Handled by `install_cli` (T5.4).
+            MenuItem::action("Install CLI…", crate::keymap::actions::window::InstallCli),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),

@@ -207,6 +207,7 @@ These are in the command palette (and some in the toolbar or menus); bind them i
 | Changes since last review | `tab::ToggleChangesSinceLastReview` |
 | Next unread reply         | `tab::NextUnreadThread`             |
 | Toggle threads panel      | `tab::ToggleThreadsPanel`           |
+| Install CLI               | `window::InstallCli`                |
 | Zoom                      | `window::Zoom`                      |
 
 ### Remapping keys
@@ -287,6 +288,7 @@ A theme colors the interface, the syntax highlighting and the diff (its created,
 | `~/Library/Caches/polygloss/`              | Unpinned live snapshots and read-only copies for Open in editor                                                |
 | `~/Library/Logs/polygloss/`                | The app's log                                                                                                  |
 | `~/.config/polygloss/`                     | `settings.json`, `keymap.json`, `themes/`                                                                      |
+| `/usr/local/bin/polygloss`                 | Made by **Install CLI** (command palette or the Polygloss menu): a link to the app's CLI, for DMG installs     |
 | `refs/polygloss/` in each repository       | Refs that keep pinned snapshots alive                                                                          |
 
 `POLYGLOSS_DATA_DIR` moves the data directory (the cache and logs then go inside it, unless `POLYGLOSS_CACHE_DIR` or `POLYGLOSS_LOG_DIR` say otherwise), and `XDG_CONFIG_HOME` moves the config directory. `POLYGLOSS_LOG` sets the app's log filter (for example `POLYGLOSS_LOG=debug`).

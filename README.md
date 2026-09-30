@@ -18,7 +18,7 @@ Polygloss needs macOS 14 or later on Apple Silicon, and git 2.39 or later (the s
 brew install --cask dakdevs/tap/polygloss
 ```
 
-**DMG:** download `Polygloss_<version>_aarch64.dmg` from [GitHub Releases](https://github.com/dakdevs/polygloss/releases), drag Polygloss to Applications and launch it once. For the CLI, run **Install CLI** from the command palette (`⌘K`); it links `/usr/local/bin/polygloss` to the app's CLI, asking for your password if needed. Polygloss can check for updates (it asks on first launch; the check is its only network access).
+**DMG:** download `Polygloss_<version>_aarch64.dmg` from [GitHub Releases](https://github.com/dakdevs/polygloss/releases), drag Polygloss to Applications and launch it once. For the CLI, run **Install CLI** from the command palette (`⌘K`) or the Polygloss menu; it links `/usr/local/bin/polygloss` to the app's CLI, asking for your password if needed. Polygloss can check for updates (it asks on first launch; the check is its only network access).
 
 ### Claude Code plugin
 

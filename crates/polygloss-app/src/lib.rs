@@ -20,6 +20,7 @@ pub mod features;
 pub mod feed;
 pub mod find;
 pub mod home;
+pub mod install_cli;
 pub mod ipc;
 pub mod iterations;
 pub mod keyboard;

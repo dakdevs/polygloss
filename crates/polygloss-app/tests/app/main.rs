@@ -13,6 +13,7 @@ mod editor;
 mod feed;
 mod find;
 mod home;
+mod install_cli;
 mod ipc;
 mod iterations;
 mod keymap;

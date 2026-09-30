@@ -358,7 +358,8 @@ fn cmd_comma_opens_settings_file_creating_defaults(cx: &mut gpui_kit::TestAppCon
 fn app_menu_has_settings_first(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();
     let shell = start(cx);
-    // macOS order: Polygloss › Settings… (⌘,), then Services, then Quit.
+    // macOS order: Polygloss › Settings… (⌘,) and Install CLI… (T5.4),
+    // then Services, then Quit.
     let items: Vec<String> = shell.cx.update(|_, cx| {
         let menus = cx.get_menus().expect("a menu bar");
         menus[0]
@@ -378,6 +379,7 @@ fn app_menu_has_settings_first(cx: &mut gpui_kit::TestAppContext) {
         items,
         [
             "Settings… → window::OpenSettings",
+            "Install CLI… → window::InstallCli",
             "—",
             "Services",
             "—",
