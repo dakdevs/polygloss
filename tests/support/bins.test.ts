@@ -5,6 +5,7 @@ import { appBin, cliBin } from "./bins";
 const repoRoot = resolve(import.meta.dir, "../..");
 const saved = {
   POLYGLOSS_CLI_BIN: process.env.POLYGLOSS_CLI_BIN,
+  POLYGLOSS_APP_BIN: process.env.POLYGLOSS_APP_BIN,
   CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,
 };
 
@@ -34,6 +35,7 @@ describe("test binaries", () => {
 
   test("binaries follow a caller-provided CARGO_TARGET_DIR", () => {
     delete process.env.POLYGLOSS_CLI_BIN;
+    delete process.env.POLYGLOSS_APP_BIN;
     process.env.CARGO_TARGET_DIR = "/tmp/elsewhere";
     expect(cliBin()).toBe("/tmp/elsewhere/debug/polygloss-cli");
     expect(appBin()).toBe("/tmp/elsewhere/debug/Polygloss");
@@ -41,6 +43,15 @@ describe("test binaries", () => {
 
   test("appBin is the built Polygloss app", () => {
     delete process.env.CARGO_TARGET_DIR;
+    delete process.env.POLYGLOSS_APP_BIN;
     expect(appBin()).toBe(join(repoRoot, "target", "debug", "Polygloss"));
+  });
+
+  test("appBin honors POLYGLOSS_APP_BIN (the bundle E2E run)", () => {
+    process.env.POLYGLOSS_APP_BIN =
+      "dist/Polygloss.app/Contents/MacOS/Polygloss";
+    expect(appBin()).toBe(
+      join(repoRoot, "dist", "Polygloss.app", "Contents", "MacOS", "Polygloss"),
+    );
   });
 });

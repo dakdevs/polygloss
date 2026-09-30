@@ -36,7 +36,7 @@ pub const BUNDLE_ID: &str = "dev.dak.polygloss";
 /// Where notifications and the Dock badge go.
 pub trait Notifier {
     /// Whether system notifications can be posted: the app runs from an app
-    /// bundle ([`polygloss_platform::bundle::is_bundled`]).
+    /// bundle ([`polygloss_platform::bundle::is_bundled`]), outside test mode.
     fn bundled(&self) -> bool;
     /// Posts `notification` (only called when [`Notifier::bundled`]).
     fn show(&self, notification: SystemNotification, cx: &mut App);
@@ -48,13 +48,25 @@ pub trait Notifier {
 
 /// The real platform: GPUI's system notifications and the AppKit Dock tile.
 pub struct SystemNotifier {
+    /// Whether notifications may be posted (see [`SystemNotifier::for_process`]).
     bundled: bool,
 }
 
 impl SystemNotifier {
+    /// For this process: bundled ([`polygloss_platform::bundle::is_bundled`])
+    /// and in test mode when `POLYGLOSS_TEST=1`.
     pub fn new() -> SystemNotifier {
+        let test_mode = std::env::var_os(polygloss_core::ipc::TEST_ENV).is_some_and(|v| v == "1");
+        SystemNotifier::for_process(polygloss_platform::bundle::is_bundled(), test_mode)
+    }
+
+    /// Posts notifications only from a bundle outside test mode: a bundle run
+    /// by the E2E suites (`POLYGLOSS_TEST=1`) must never reach the user's
+    /// Notification Center, whose authorization prompt and settings `HOME`
+    /// does not sandbox (plan T5.7). The Dock badge is unaffected.
+    pub fn for_process(bundled: bool, test_mode: bool) -> SystemNotifier {
         SystemNotifier {
-            bundled: polygloss_platform::bundle::is_bundled(),
+            bundled: bundled && !test_mode,
         }
     }
 }

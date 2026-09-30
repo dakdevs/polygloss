@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -22,6 +23,14 @@ printf '%s\\n' "$*" >>"$FAKE_CARGO_LOG"
 case "$*" in *"$FAKE_CARGO_FAIL"*) echo "fake failure: $*" >&2; exit 101 ;; esac
 if [ "$1" = build ] && [ -n "\${FAKE_CARGO_MAKE_APP-}" ]; then
   mkdir -p "$CARGO_TARGET_DIR/debug" && : >"$CARGO_TARGET_DIR/debug/Polygloss"
+fi
+if [ "$1" = packager ] && [ -n "\${FAKE_CARGO_MAKE_BUNDLE-}" ]; then
+  out=""
+  while [ $# -gt 0 ]; do [ "$1" = --out-dir ] && out="$2"; shift; done
+  mkdir -p "$out/Polygloss.app/Contents/MacOS" "$out/Polygloss.app/Contents/Resources"
+  cp /usr/bin/true "$out/Polygloss.app/Contents/MacOS/Polygloss"
+  cp /usr/bin/true "$out/Polygloss.app/Contents/MacOS/polygloss-cli"
+  cp "$FAKE_CARGO_MAKE_BUNDLE" "$out/Polygloss.app/Contents/Info.plist"
 fi
 `;
 
@@ -124,6 +133,70 @@ describe("scripts/test-e2e.sh", () => {
       `packager --release --formats app --out-dir ${dist}`,
     ]);
   });
+
+  test("with POLYGLOSS_BUNDLE_E2E=1 the E2E suites run again against the bundle's executables", () => {
+    // A fake cargo whose packager lays out a bundle (real Mach-O stand-ins,
+    // so package-release.sh signs, stamps and checks it for real) and a fake
+    // bun that records each suite run and the binaries it would test.
+    const bin = join(sandbox.home, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "bun"),
+      `#!/usr/bin/env bash
+printf 'bun %s app=%s cli=%s bundle=%s e2e=%s\\n' "$*" "\${POLYGLOSS_APP_BIN-}" "\${POLYGLOSS_CLI_BIN-}" "\${POLYGLOSS_BUNDLE-}" "\${POLYGLOSS_E2E-}" >>"$FAKE_CARGO_LOG"
+`,
+    );
+    chmodSync(join(bin, "bun"), 0o755);
+    const plistJson = join(sandbox.home, "packager-info.json");
+    const plist = join(sandbox.home, "packager-info.plist");
+    const ours = JSON.parse(
+      Bun.spawnSync([
+        "plutil",
+        "-convert",
+        "json",
+        "-o",
+        "-",
+        join(repoRoot, "packaging", "Info.plist"),
+      ]).stdout.toString(),
+    );
+    const version = (
+      Bun.TOML.parse(
+        readFileSync(join(repoRoot, "Cargo.toml"), "utf8"),
+      ) as Record<string, any>
+    ).workspace.package.version as string;
+    writeFileSync(
+      plistJson,
+      JSON.stringify({
+        CFBundleExecutable: "Polygloss",
+        CFBundlePackageType: "APPL",
+        CFBundleShortVersionString: version,
+        ...ours,
+      }),
+    );
+    Bun.spawnSync(["plutil", "-convert", "xml1", "-o", plist, plistJson]);
+    const dist = join(sandbox.home, "dist-bundle-run");
+    const r = runE2e({
+      FAKE_CARGO_MAKE_APP: "1",
+      FAKE_CARGO_MAKE_BUNDLE: plist,
+      POLYGLOSS_BUNDLE_E2E: "1",
+      POLYGLOSS_DIST_DIR: dist,
+      PATH: `${bin}:${process.env.PATH}`,
+    });
+    expect(r.output).toContain("package-release: done");
+    expect(r.exitCode).toBe(0);
+    const macos = join(
+      realpathSync(dist),
+      "Polygloss.app",
+      "Contents",
+      "MacOS",
+    );
+    expect(r.log.filter((l) => l.startsWith("bun "))).toEqual([
+      `bun test ${SMOKE} app= cli= bundle= e2e=1`,
+      `bun test tests/scripts/package.test.ts app= cli= bundle=${realpathSync(dist)}/Polygloss.app e2e=`,
+      // The same suites (the path filter carries over), now on the bundle.
+      `bun test ${SMOKE} app=${macos}/Polygloss cli=${macos}/polygloss-cli bundle= e2e=1`,
+    ]);
+  }, 120_000);
 
   test("stops at the first failing step", () => {
     const r = runE2e({ FAKE_CARGO_MAKE_APP: "1", FAKE_CARGO_FAIL: "nextest" });

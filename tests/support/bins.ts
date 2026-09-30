@@ -15,7 +15,13 @@ export function cliBin(): string {
   return resolve(targetDir(), "debug", "polygloss-cli");
 }
 
-/** The debug `Polygloss` app (E2E only; built by scripts/test-e2e.sh). */
+/**
+ * The `Polygloss` app under test (E2E only): `$POLYGLOSS_APP_BIN` when set
+ * (scripts/test-e2e.sh points it at the release bundle's executable with
+ * POLYGLOSS_BUNDLE_E2E=1), else the debug build scripts/test-e2e.sh made.
+ */
 export function appBin(): string {
+  const override = process.env.POLYGLOSS_APP_BIN;
+  if (override) return resolve(repoRoot, override);
   return resolve(targetDir(), "debug", "Polygloss");
 }

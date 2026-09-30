@@ -27,8 +27,9 @@ const jobCommands: Record<string, string> = {
   unit: "scripts/cargo.sh nextest run --workspace --no-tests=warn --profile ci",
   bun: "bun test",
   e2e: "bun run test:e2e",
+  // Plan T5.7: crate rules, licenses + advisories, current third-party notices.
   audit:
-    "scripts/check-deps.sh && scripts/cargo.sh deny check licenses bans sources advisories",
+    "scripts/check-deps.sh && scripts/cargo.sh deny check licenses bans sources advisories && bun scripts/third-party-notices.ts --check",
 };
 
 describe("ci workflow", () => {
