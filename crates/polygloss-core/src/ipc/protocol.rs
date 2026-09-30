@@ -64,7 +64,8 @@ pub enum Op {
     /// Nudge: the store changed (up to event `seq`); read events now.
     StoreChanged { seq: i64 },
     /// Test-only (`POLYGLOSS_TEST=1`): the app's state as
-    /// `{tabs: [{review_id, diff_id, anchor, cursor}], focused_tab, banners, badge, events_seen}`.
+    /// `{window_open, app_active, tabs: [{review_id, diff_id, title, active, anchor, cursor}],
+    /// focused_tab, banners, badge, events_seen, feed_polls, feed_errors, activations}`.
     DebugState,
 }
 

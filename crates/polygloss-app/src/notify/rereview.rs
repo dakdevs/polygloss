@@ -98,7 +98,7 @@ pub(super) fn on_response(response: SystemNotificationResponse, cx: &mut App) {
 /// closed) with `review_id`'s tab active, opening the review when it has
 /// no tab.
 pub fn focus_review(review_id: String, cx: &mut App) {
-    cx.activate(true);
+    crate::window::activate_app(cx);
     crate::window::reopen(cx);
     let Some((handle, main)) = crate::window::main_window(cx) else {
         return;

@@ -142,7 +142,7 @@ fn tab_result(status: &str, tab: &Entity<ReviewTab>, cx: &App) -> Value {
 fn bring_forward(activate: bool, cx: &mut App) {
     crate::window::reopen(cx);
     if activate {
-        cx.activate(true);
+        crate::window::activate_app(cx);
         if let Some((handle, _)) = main_window(cx) {
             handle
                 .update(cx, |_, window, _| window.activate_window())
