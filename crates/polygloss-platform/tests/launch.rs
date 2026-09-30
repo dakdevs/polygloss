@@ -236,10 +236,44 @@ fn app_bin_override_only_in_test_mode() {
         env(Some("1"), Some("/x/Polygloss")),
         SystemLauncher::AppBin(PathBuf::from("/x/Polygloss"))
     );
-    assert_eq!(env(None, Some("/x/Polygloss")), SystemLauncher::Open);
-    assert_eq!(env(Some("0"), Some("/x/Polygloss")), SystemLauncher::Open);
     assert_eq!(env(Some("1"), None), SystemLauncher::Open);
     assert_eq!(env(Some("1"), Some("")), SystemLauncher::Open);
+    assert_eq!(env(None, None), SystemLauncher::Open);
+}
+
+#[test]
+fn app_bin_without_test_mode_refuses_to_launch() {
+    // `POLYGLOSS_APP_BIN` outside test mode is a misconfigured test or gate
+    // run: launching the installed bundle instead would start the real app
+    // on the real data dir, so nothing launches and the reason is reported.
+    let dir = short_tempdir();
+    let paths = paths_in(dir.path());
+    for test in [None, Some("0")] {
+        let launcher = SystemLauncher::from_env_with(|k| match k {
+            "POLYGLOSS_TEST" => test.map(OsString::from),
+            "POLYGLOSS_APP_BIN" => Some(OsString::from("/x/Polygloss")),
+            _ => None,
+        });
+        assert!(
+            matches!(&launcher, SystemLauncher::Refused(m) if m.contains("POLYGLOSS_TEST=1")),
+            "{launcher:?}"
+        );
+        assert!(
+            launcher
+                .argv(Some("polygloss://review/r"), false)
+                .is_empty()
+        );
+        let err = launcher.launch(None, false).unwrap_err();
+        assert!(err.to_string().contains("POLYGLOSS_APP_BIN"), "{err}");
+
+        let start = Instant::now();
+        let outcome = ensure_app(&paths, None, false, &launcher);
+        assert!(
+            matches!(&outcome, LaunchOutcome::Unavailable(m) if m.contains("POLYGLOSS_TEST=1")),
+            "{outcome:?}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(2), "no wait");
+    }
 }
 
 #[test]

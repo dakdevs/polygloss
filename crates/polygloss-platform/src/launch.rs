@@ -10,6 +10,8 @@
 //! (LaunchServices: one instance, no focus stolen with `-g`; `activate` drops
 //! the `-g`). Under `POLYGLOSS_TEST=1`, `$POLYGLOSS_APP_BIN` names an unbundled
 //! app binary to spawn instead (OQ-P4), detached, with the URL as its argument.
+//! `$POLYGLOSS_APP_BIN` without `POLYGLOSS_TEST=1` launches nothing
+//! ([`SystemLauncher::Refused`]) rather than the installed bundle.
 
 use std::ffi::OsString;
 use std::io;
@@ -125,6 +127,11 @@ pub enum SystemLauncher {
     Open,
     /// An unbundled app binary (`$POLYGLOSS_APP_BIN` under `POLYGLOSS_TEST=1`).
     AppBin(PathBuf),
+    /// Launches nothing and fails with this reason: `$POLYGLOSS_APP_BIN` is
+    /// set without `POLYGLOSS_TEST=1`. That is a misconfigured test or gate
+    /// run, and falling back to the installed bundle would start the real app
+    /// on the real data dir.
+    Refused(String),
 }
 
 impl SystemLauncher {
@@ -134,16 +141,23 @@ impl SystemLauncher {
     }
 
     /// [`SystemLauncher::AppBin`] when `POLYGLOSS_TEST=1` and
-    /// `POLYGLOSS_APP_BIN` is set, else [`SystemLauncher::Open`].
+    /// `POLYGLOSS_APP_BIN` is set, [`SystemLauncher::Refused`] when only
+    /// `POLYGLOSS_APP_BIN` is, else [`SystemLauncher::Open`].
     pub fn from_env_with(env: impl Fn(&str) -> Option<OsString>) -> SystemLauncher {
         let test = env("POLYGLOSS_TEST").is_some_and(|v| v == "1");
         match env("POLYGLOSS_APP_BIN").filter(|v| !v.is_empty()) {
             Some(bin) if test => SystemLauncher::AppBin(bin.into()),
-            _ => SystemLauncher::Open,
+            Some(_) => SystemLauncher::Refused(
+                "POLYGLOSS_APP_BIN is set but POLYGLOSS_TEST=1 is not; \
+                 not launching the installed app instead"
+                    .to_owned(),
+            ),
+            None => SystemLauncher::Open,
         }
     }
 
-    /// The command line that starts the app.
+    /// The command line that starts the app (empty for
+    /// [`SystemLauncher::Refused`]).
     pub fn argv(&self, url: Option<&str>, activate: bool) -> Vec<OsString> {
         let mut argv: Vec<OsString> = match self {
             SystemLauncher::Open => {
@@ -155,6 +169,7 @@ impl SystemLauncher {
                 argv
             }
             SystemLauncher::AppBin(bin) => vec![bin.clone().into_os_string()],
+            SystemLauncher::Refused(_) => return Vec::new(),
         };
         argv.extend(url.map(OsString::from));
         argv
@@ -167,6 +182,7 @@ impl Launcher for SystemLauncher {
         match self {
             SystemLauncher::Open => run_open(&argv),
             SystemLauncher::AppBin(_) => spawn_detached(&argv),
+            SystemLauncher::Refused(reason) => Err(io::Error::other(reason.clone())),
         }
     }
 }

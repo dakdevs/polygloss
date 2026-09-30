@@ -208,6 +208,39 @@ fn url_thread_focus_waits_for_threads_to_load(cx: &mut gpui_kit::TestAppContext)
 }
 
 #[gpui_kit::test]
+fn url_reopens_the_closed_window(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let shell = start(cx);
+    let opened = shell.core.open(&compare_req(repo.path())).unwrap();
+    // The last window closed; the app lives on (T3.1).
+    shell.cx.update(|window, _| window.remove_window());
+    shell.cx.run_until_parked();
+    assert!(
+        cx.update(|cx| polygloss_app::window::main_window(cx))
+            .is_none()
+    );
+
+    let task = cx.update(|cx| urls::open_url(&review_url(&opened.review_id), cx));
+    cx.run_until_parked();
+    futures::FutureExt::now_or_never(task)
+        .expect("the URL open finished")
+        .unwrap();
+
+    let (_, main) = cx
+        .update(|cx| polygloss_app::window::main_window(cx))
+        .expect("the window is back");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    let active = main.read_with(cx, |m, cx| {
+        m.tabs()
+            .get(m.tabs().active())
+            .and_then(|t| t.review())
+            .map(|t| t.read(cx).review_id.clone())
+    });
+    assert_eq!(active.as_deref(), Some(opened.review_id.as_str()));
+}
+
+#[gpui_kit::test]
 fn url_errors_show_in_the_window(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();
     let mut shell = start(cx);
