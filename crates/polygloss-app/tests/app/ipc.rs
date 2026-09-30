@@ -132,7 +132,10 @@ fn ipc_open_request_opens_tab(cx: &mut gpui_kit::TestAppContext) {
             "diff_id": opened.diff_id.as_str(),
         })
     );
-    assert_eq!(review_tabs(&mut shell), [opened.review_id.clone()]);
+    assert_eq!(
+        review_tabs(&mut shell),
+        std::slice::from_ref(&opened.review_id)
+    );
     assert_eq!(shell.tabs(), (2, 1));
 
     // Back to Home, then the same review by diff id: its tab is focused,

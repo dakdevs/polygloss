@@ -909,7 +909,7 @@ flowchart LR
   settings.json, keymap.json, themes/*.json
 ```
 
-macOS limits `sun_path` to 104 bytes. If the socket path would be longer, fall back to `$TMPDIR/polygloss-<uid>/polygloss.sock` inside a per-user `0700` directory (**Provisional**).
+macOS limits `sun_path` to 104 bytes. If the socket path would be longer, fall back to `$TMPDIR/polygloss-<uid>/polygloss-<hash>.sock` (the hash is the first 16 hex digits of the SHA-256 of the data dir, so two long data dirs never share a socket; `/tmp` when `$TMPDIR` is unusable) inside a per-user `0700` directory (**Provisional**).
 
 ### 13.3 App socket protocol
 

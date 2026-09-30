@@ -28,9 +28,12 @@ fn paths() -> DataPaths {
     DataPaths::resolve().expect("sandbox paths")
 }
 
+/// The ops a [`recording`] handler has seen.
+type Seen = Arc<Mutex<Vec<Op>>>;
+
 /// A handler that records every op and answers `{"handled": <op name>}`.
 fn recording() -> (
-    Arc<Mutex<Vec<Op>>>,
+    Seen,
     impl Fn(Op) -> Result<Value, IpcError> + Send + 'static,
 ) {
     let seen = Arc::new(Mutex::new(Vec::new()));
