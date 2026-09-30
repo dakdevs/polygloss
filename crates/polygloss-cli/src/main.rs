@@ -34,33 +34,25 @@ fn main() -> ExitCode {
         None => return report(mode, commands::live::run(cli.live, &global)),
         Some(command) => command,
     };
-    let json = match command {
-        Command::Show(args) => return report(mode, commands::show::run(args, &global)),
-        Command::Compare(args) => return report(mode, commands::compare::run(args, &global)),
-        Command::Open(args) => return report(mode, commands::open::run(args, &global)),
-        Command::Snapshot(args) => return report(mode, commands::snapshot::run(args, &global)),
-        Command::Mcp(args) => {
-            return on_stderr(commands::mcp::run(args).map(|()| ExitCode::SUCCESS));
-        }
-        Command::Wait(args) => return on_stderr(commands::wait::run(args, &global)),
-        Command::Debug(args) => {
-            return on_stderr(debug::run(args, &global).map(|()| ExitCode::SUCCESS));
-        }
-        Command::Reviews(a) => JsonCommand::Reviews(a),
-        Command::Threads(a) => JsonCommand::Threads(a),
-        Command::Thread(a) => JsonCommand::Thread(a),
-        Command::Reply(a) => JsonCommand::Reply(a),
-        Command::Resolve(a) => JsonCommand::Resolve(a),
-        Command::Unresolve(a) => JsonCommand::Unresolve(a),
-        Command::Edit(a) => JsonCommand::Edit(a),
-        Command::Delete(a) => JsonCommand::Delete(a),
-        Command::Comment(a) => JsonCommand::Comment(a),
-        Command::WaitReview(a) => JsonCommand::WaitReview(a),
-        Command::Rereview(a) => JsonCommand::Rereview(a),
-        Command::Focus(a) => JsonCommand::Focus(a),
+    let other = match JsonCommand::from_command(command) {
+        Ok(json) => return run_json(json, &global),
+        Err(other) => *other,
     };
-    // The JSON CLI always prints JSON.
-    match commands::json::run(json, &global) {
+    match other {
+        Command::Show(args) => report(mode, commands::show::run(args, &global)),
+        Command::Compare(args) => report(mode, commands::compare::run(args, &global)),
+        Command::Open(args) => report(mode, commands::open::run(args, &global)),
+        Command::Snapshot(args) => report(mode, commands::snapshot::run(args, &global)),
+        Command::Mcp(args) => on_stderr(commands::mcp::run(args).map(|()| ExitCode::SUCCESS)),
+        Command::Wait(args) => on_stderr(commands::wait::run(args, &global)),
+        Command::Debug(args) => on_stderr(debug::run(args, &global).map(|()| ExitCode::SUCCESS)),
+        other => unreachable!("{other:?} is a JSON command"),
+    }
+}
+
+/// Runs a JSON CLI command, which always prints JSON.
+fn run_json(json: JsonCommand, global: &cli::GlobalArgs) -> ExitCode {
+    match commands::json::run(json, global) {
         Ok(value) => {
             output::print_json(&value);
             ExitCode::SUCCESS
