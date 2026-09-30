@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 
 use polygloss_core::paths::DataPaths;
 use polygloss_platform::launch::{
-    self, BUNDLE_ID, LaunchOutcome, Launcher, SystemLauncher, app_socket_path, ensure_app,
-    ensure_app_within,
+    self, BUNDLE_ID, LaunchOutcome, Launcher, SystemLauncher, app_socket_path,
+    app_socket_path_with, ensure_app, ensure_app_within,
 };
+use sha2::{Digest as _, Sha256};
 
 /// Paths under `root` (its own `HOME` and data dir).
 fn paths_in(root: &Path) -> DataPaths {
@@ -236,9 +237,37 @@ fn app_bin_override_only_in_test_mode() {
         env(Some("1"), Some("/x/Polygloss")),
         SystemLauncher::AppBin(PathBuf::from("/x/Polygloss"))
     );
-    assert_eq!(env(Some("1"), None), SystemLauncher::Open);
-    assert_eq!(env(Some("1"), Some("")), SystemLauncher::Open);
     assert_eq!(env(None, None), SystemLauncher::Open);
+    assert_eq!(env(Some("0"), None), SystemLauncher::Open);
+    assert_eq!(env(None, Some("")), SystemLauncher::Open);
+}
+
+#[test]
+fn test_mode_without_app_bin_refuses_to_launch() {
+    // A test (or gate run) in test mode that forgot `POLYGLOSS_APP_BIN` must
+    // not start the installed bundle: LaunchServices ignores the caller's
+    // environment, so it would run on the real data dir.
+    let dir = short_tempdir();
+    let paths = paths_in(dir.path());
+    for bin in [None, Some("")] {
+        let launcher = SystemLauncher::from_env_with(|k| match k {
+            "POLYGLOSS_TEST" => Some(OsString::from("1")),
+            "POLYGLOSS_APP_BIN" => bin.map(OsString::from),
+            _ => None,
+        });
+        assert!(
+            matches!(&launcher, SystemLauncher::Refused(m) if m.contains("POLYGLOSS_APP_BIN is not")),
+            "{launcher:?}"
+        );
+        assert!(launcher.argv(None, true).is_empty());
+        let start = Instant::now();
+        let outcome = ensure_app(&paths, None, false, &launcher);
+        assert!(
+            matches!(&outcome, LaunchOutcome::Unavailable(m) if m.contains("POLYGLOSS_APP_BIN")),
+            "{outcome:?}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(2), "no wait");
+    }
 }
 
 #[test]
@@ -315,20 +344,46 @@ fn app_socket_path_falls_back_to_tmpdir_when_too_long() {
     let paths = paths_in(dir.path());
     assert_eq!(app_socket_path(&paths), paths.socket);
 
-    let long = dir.path().join("d".repeat(120));
-    let long_paths = DataPaths::resolve_with(|k| match k {
-        "HOME" => Some(dir.path().as_os_str().to_owned()),
-        "POLYGLOSS_DATA_DIR" => Some(long.clone().into_os_string()),
-        _ => None,
-    })
-    .unwrap();
-    let socket = app_socket_path(&long_paths);
-    assert_ne!(socket, long_paths.socket);
+    let long_paths = |name: &str| {
+        let long = dir.path().join(name.repeat(120));
+        DataPaths::resolve_with(|k| match k {
+            "HOME" => Some(dir.path().as_os_str().to_owned()),
+            "POLYGLOSS_DATA_DIR" => Some(long.clone().into_os_string()),
+            _ => None,
+        })
+        .unwrap()
+    };
+    let a = long_paths("a");
+    let tmpdir = Path::new("/var/folders/xy/T");
+    let socket = app_socket_path_with(&a, Some(tmpdir));
+    assert_ne!(socket, a.socket);
     assert!(socket.as_os_str().len() <= polygloss_core::paths::SOCKET_PATH_MAX);
-    assert_eq!(socket.file_name().unwrap(), "polygloss.sock");
+    // `<tmpdir>/polygloss-<euid>/polygloss-<16 hex of sha256(data_dir)>.sock`,
+    // as T4.1's `ipc::socket_path` binds it.
+    let hash = hex::encode(Sha256::digest(a.data_dir.as_os_str().as_encoded_bytes()));
+    assert_eq!(
+        socket.file_name().unwrap().to_str().unwrap(),
+        format!("polygloss-{}.sock", &hash[..16])
+    );
     let parent = socket.parent().unwrap();
-    assert!(parent.starts_with(std::env::temp_dir()));
+    assert_eq!(parent.parent().unwrap(), tmpdir);
     let name = parent.file_name().unwrap().to_str().unwrap();
     assert!(name.starts_with("polygloss-"), "{name}");
     assert!(name["polygloss-".len()..].parse::<u32>().is_ok(), "{name}");
+
+    // Two sandboxes that both need the fallback never share a socket.
+    let b = long_paths("b");
+    assert_ne!(app_socket_path_with(&b, Some(tmpdir)), socket);
+
+    // `/tmp` when `$TMPDIR` is unset, relative or too long itself.
+    let long_tmp = PathBuf::from("/").join("t".repeat(100));
+    for tmp in [None, Some(Path::new("rel/tmp")), Some(long_tmp.as_path())] {
+        let s = app_socket_path_with(&a, tmp);
+        assert_eq!(
+            s.parent().unwrap().parent().unwrap(),
+            Path::new("/tmp"),
+            "{tmp:?}"
+        );
+        assert_eq!(s.file_name(), socket.file_name());
+    }
 }

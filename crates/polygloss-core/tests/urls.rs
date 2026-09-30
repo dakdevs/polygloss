@@ -11,7 +11,9 @@ use polygloss_core::review::{
 };
 use polygloss_core::store::events::Actor;
 use polygloss_core::testing::{FixtureRepo, Sandbox};
-use polygloss_core::urls::{PolyglossUrl, UrlError, UrlFocus, UrlTarget, format_url, parse_url};
+use polygloss_core::urls::{
+    PolyglossUrl, UrlDiff, UrlError, UrlFocus, UrlTarget, format_url, parse_url,
+};
 use polygloss_core::{DiffId, ObjectFormat};
 use polygloss_diff::Side;
 
@@ -60,6 +62,18 @@ fn url_roundtrip_all_forms() {
     for (url, text) in cases {
         assert_eq!(format_url(&url), text, "format {url:?}");
         assert_eq!(parse_url(&text).unwrap(), url, "parse {text}");
+    }
+
+    // `side` and `line` need a path: without one they are dropped, so every
+    // formatted URL parses (as the diff alone).
+    for (side, line) in [
+        (Some(Side::Old), None),
+        (None, Some(3)),
+        (Some(Side::New), Some(3)),
+    ] {
+        let text = format_url(&diff(None, side, line));
+        assert_eq!(text, format!("polygloss://diff/{DIFF}"));
+        assert_eq!(parse_url(&text).unwrap(), diff(None, None, None));
     }
 }
 
@@ -227,6 +241,7 @@ fn url_resolves_review_diff_and_thread_targets() {
         review,
         UrlTarget {
             review_id: review_id.clone(),
+            diff: None,
             focus: None,
         }
     );
@@ -240,6 +255,13 @@ fn url_resolves_review_diff_and_thread_targets() {
         })
         .unwrap();
     assert_eq!(plain.review_id, review_id);
+    assert_eq!(
+        plain.diff,
+        Some(UrlDiff {
+            diff_id: diff_id.clone(),
+            seq: 1,
+        })
+    );
     assert_eq!(plain.focus, None);
 
     // A line defaults to the new side; a path alone focuses the file.
@@ -304,6 +326,7 @@ fn url_resolves_review_diff_and_thread_targets() {
         thread,
         UrlTarget {
             review_id,
+            diff: None,
             focus: Some(UrlFocus::Thread(thread_id)),
         }
     );
@@ -337,6 +360,79 @@ fn url_diff_opens_its_most_recent_review() {
     tick();
     core.open(&req(&repo, "main", "feature")).unwrap();
     assert_eq!(core.resolve_url(&url).unwrap().review_id, first.review_id);
+}
+
+#[test]
+fn url_diff_names_the_iteration_showing_it() {
+    let _sb = Sandbox::isolate();
+    let repo = repo();
+    let core = Core::open_default().unwrap();
+    let first = core.open(&req(&repo, "main", "feature")).unwrap();
+    // `feature` moves on: opening again records iteration 2, another diff.
+    repo.checkout("feature");
+    repo.write("a.txt", b"one\nTWO\nTHREE\n");
+    repo.commit("f2");
+    let second = core.open(&req(&repo, "main", "feature")).unwrap();
+    assert_eq!(first.review_id, second.review_id);
+    assert_ne!(first.diff_id, second.diff_id);
+    let target = |diff_id: &DiffId| {
+        core.resolve_url(&PolyglossUrl::Diff {
+            diff_id: diff_id.to_string(),
+            path: None,
+            side: None,
+            line: None,
+        })
+        .unwrap()
+    };
+    for (diff_id, seq) in [(&first.diff_id, 1), (&second.diff_id, 2)] {
+        let t = target(diff_id);
+        assert_eq!(t.review_id, first.review_id);
+        assert_eq!(
+            t.diff,
+            Some(UrlDiff {
+                diff_id: diff_id.clone(),
+                seq,
+            })
+        );
+    }
+
+    // Back to the first state: iteration 3 shows the first diff again, the
+    // latest of the two iterations that show it.
+    repo.write("a.txt", b"one\nTWO\nthree\n");
+    repo.commit("f3");
+    let third = core.open(&req(&repo, "main", "feature")).unwrap();
+    assert_eq!(third.diff_id, first.diff_id);
+    assert_eq!(target(&first.diff_id).diff.map(|d| d.seq), Some(3));
+}
+
+#[test]
+fn url_diff_prefers_reviews_not_archived() {
+    let _sb = Sandbox::isolate();
+    let repo = repo();
+    let core = Core::open_default().unwrap();
+    let first = core.open(&req(&repo, "main", "feature")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let main = repo.oid("main").to_string();
+    let feature = repo.oid("feature").to_string();
+    let second = core.open(&req(&repo, &main, &feature)).unwrap();
+    assert_eq!(first.diff_id, second.diff_id);
+    let url = PolyglossUrl::Diff {
+        diff_id: first.diff_id.to_string(),
+        path: None,
+        side: None,
+        line: None,
+    };
+    assert_eq!(core.resolve_url(&url).unwrap().review_id, second.review_id);
+
+    // The most recent one is archived: the other one opens.
+    core.archive_review(&second.review_id, &Actor::human())
+        .unwrap();
+    assert_eq!(core.resolve_url(&url).unwrap().review_id, first.review_id);
+
+    // Only archived reviews show it: the most recent of them still opens.
+    core.archive_review(&first.review_id, &Actor::human())
+        .unwrap();
+    assert_eq!(core.resolve_url(&url).unwrap().review_id, second.review_id);
 }
 
 #[test]

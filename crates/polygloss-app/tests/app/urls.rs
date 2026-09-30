@@ -9,19 +9,25 @@ use std::sync::Arc;
 
 use gpui_kit::Entity;
 use polygloss_app::CoreDiffProvider;
+use polygloss_app::iterations::{self, Showing};
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::startup::LaunchArgs;
 use polygloss_app::tabs::TabItem;
 use polygloss_app::threads;
 use polygloss_app::urls::{self, UrlInbox};
+use polygloss_core::DiffId;
+use polygloss_core::git::{Since, Source};
 use polygloss_core::objects::BlobReader;
-use polygloss_core::review::{Author, AuthorKind, NewThread, OpenedDiff, Subject, ThreadKind};
+use polygloss_core::review::{
+    Author, AuthorKind, NewThread, OpenRequest, OpenedDiff, Subject, ThreadKind,
+};
+use polygloss_core::store::events::Actor;
 use polygloss_core::urls::{PolyglossUrl, UrlFocus, format_url};
 use polygloss_diff::Side;
 use polygloss_viewport::CursorPos;
 
 use crate::shell::{Shell, compare_req, draw, start};
-use crate::support::{Sandbox, code_change_repo, strings};
+use crate::support::{FixtureRepo, Sandbox, code_change_repo, strings};
 
 /// Opens `url` and waits for it; the task's result.
 fn open(shell: &mut Shell, url: &str) -> anyhow::Result<()> {
@@ -131,6 +137,148 @@ fn url_diff_opens_review_and_focuses_line(cx: &mut gpui_kit::TestAppContext) {
         }),
         "1-based line 5 is row 4"
     );
+}
+
+/// Moves tag `head` of [`code_change_repo`] to a new commit: `src/config.rs`
+/// changes again and `src/main.rs` is gone, so opening the compare records
+/// iteration 2, a diff without `src/main.rs`.
+fn move_head(repo: &FixtureRepo) {
+    repo.git(&["checkout", "-q", "refs/tags/head"]);
+    let config = std::fs::read_to_string(repo.path().join("src/config.rs")).unwrap();
+    repo.write("src/config.rs", format!("// moved on\n{config}").as_bytes());
+    repo.git(&["rm", "-q", "src/main.rs"]);
+    repo.commit("head 2");
+    repo.git(&["tag", "-f", "head"]);
+}
+
+fn diff_url(diff_id: &DiffId, path: &str, line: u32) -> String {
+    format_url(&PolyglossUrl::Diff {
+        diff_id: diff_id.to_string(),
+        path: Some(path.to_owned()),
+        side: Some(Side::New),
+        line: Some(line),
+    })
+}
+
+fn shown_diff(shell: &mut Shell, tab: &Entity<ReviewTab>) -> DiffId {
+    tab.read_with(shell.cx, |t, _| t.opened.diff_id.clone())
+}
+
+fn main_rs_line(shell: &mut Shell, tab: &Entity<ReviewTab>, line: u32) -> Option<CursorPos> {
+    let file_idx = tab.read_with(shell.cx, |t, _| {
+        t.opened
+            .files
+            .iter()
+            .find(|f| f.display_path() == "src/main.rs")
+            .map(|f| f.idx)
+    })?;
+    Some(CursorPos {
+        file_idx,
+        side: Side::New,
+        line,
+        range_start: None,
+    })
+}
+
+#[gpui_kit::test]
+fn url_diff_of_an_older_iteration_shows_that_iteration(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    // An agent links iteration 1; the head then moves on (iteration 2).
+    let first = shell.core.open(&compare_req(repo.path())).unwrap();
+    move_head(&repo);
+    let second = shell.core.open(&compare_req(repo.path())).unwrap();
+    assert_eq!(first.review_id, second.review_id);
+    assert_ne!(first.diff_id, second.diff_id);
+    assert!(
+        !second
+            .files
+            .iter()
+            .any(|f| f.display_path() == "src/main.rs")
+    );
+
+    // No tab yet: the review opens (its current state is iteration 2), then
+    // shows iteration 1, the linked diff, focused on its line.
+    open(&mut shell, &diff_url(&first.diff_id, "src/main.rs", 3)).unwrap();
+    assert_eq!(shell.tabs(), (2, 1));
+    let tab = shell.active_review().unwrap();
+    assert_eq!(shown_diff(&mut shell, &tab), first.diff_id);
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| iterations::showing(t)),
+        Showing::Iteration(1)
+    );
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| iterations::current(t).diff_id.clone()),
+        second.diff_id,
+        "the review's current state is still iteration 2"
+    );
+    let expected = main_rs_line(&mut shell, &tab, 2);
+    assert!(expected.is_some());
+    assert_eq!(
+        cursor(&mut shell, &tab),
+        expected,
+        "1-based line 3 is row 2"
+    );
+    let viewport_files = tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).document().files().len()
+    });
+    assert_eq!(
+        viewport_files,
+        first.files.len(),
+        "the viewport shows iteration 1"
+    );
+
+    // The open tab follows links: to iteration 2 (its current state)…
+    go_home(&mut shell);
+    open(&mut shell, &diff_url(&second.diff_id, "src/config.rs", 1)).unwrap();
+    assert_eq!(shell.tabs(), (2, 1), "the same tab");
+    assert_eq!(shown_diff(&mut shell, &tab), second.diff_id);
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| iterations::showing(t)),
+        Showing::Current
+    );
+    // …and back to iteration 1, where `src/main.rs` is.
+    open(&mut shell, &diff_url(&first.diff_id, "src/main.rs", 1)).unwrap();
+    assert_eq!(shown_diff(&mut shell, &tab), first.diff_id);
+    let expected = main_rs_line(&mut shell, &tab, 0);
+    assert_eq!(cursor(&mut shell, &tab), expected);
+}
+
+#[gpui_kit::test]
+fn url_diff_of_an_unpinned_live_state_focuses_its_tab(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    repo.write("src/config.rs", b"// uncommitted\n");
+    let mut shell = start(cx);
+    let tab = shell
+        .open(OpenRequest {
+            worktree: repo.path().to_path_buf(),
+            source: Source::Live { since: Since::Head },
+            label: None,
+            pin: None,
+            actor: Actor::human(),
+        })
+        .unwrap();
+    let diff_id = shown_diff(&mut shell, &tab);
+    // Not pinned: the store has no iteration showing it.
+    let err = shell
+        .core
+        .resolve_url(&PolyglossUrl::Diff {
+            diff_id: diff_id.to_string(),
+            path: None,
+            side: None,
+            line: None,
+        })
+        .unwrap_err();
+    assert_eq!(err.code(), "not_found");
+    go_home(&mut shell);
+
+    open(&mut shell, &diff_url(&diff_id, "src/config.rs", 1)).unwrap();
+
+    assert_eq!(shell.tabs(), (2, 1), "the tab showing it");
+    let at = cursor(&mut shell, &tab).expect("the cursor on the line");
+    assert_eq!((at.side, at.line), (Side::New, 0));
 }
 
 #[gpui_kit::test]

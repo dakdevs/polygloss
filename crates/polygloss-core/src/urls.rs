@@ -43,6 +43,29 @@ pub enum PolyglossUrl {
     Thread(String),
 }
 
+impl PolyglossUrl {
+    /// What a diff URL focuses: a line (`side` defaults to `new`) or a file.
+    /// `None` for the diff alone and for review and thread URLs (a thread's
+    /// focus is resolved with its review, [`Core::resolve_url`]).
+    pub fn focus(&self) -> Option<UrlFocus> {
+        let PolyglossUrl::Diff {
+            path, side, line, ..
+        } = self
+        else {
+            return None;
+        };
+        let path = path.clone()?;
+        Some(match line {
+            Some(line) => UrlFocus::Line {
+                path,
+                side: side.unwrap_or(Side::New),
+                line: *line,
+            },
+            None => UrlFocus::File { path },
+        })
+    }
+}
+
 /// Why a string is not a valid `polygloss://` URL.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UrlError {
@@ -123,6 +146,9 @@ pub fn parse_url(s: &str) -> Result<PolyglossUrl, UrlError> {
 }
 
 /// Formats `u` as a `polygloss://` URL; [`parse_url`] reads it back unchanged.
+///
+/// `side` and `line` need `path` (a location is a file first): a diff URL
+/// without `path` drops them, so the result always parses (as the diff alone).
 pub fn format_url(u: &PolyglossUrl) -> String {
     match u {
         PolyglossUrl::Diff {
@@ -142,12 +168,12 @@ pub fn format_url(u: &PolyglossUrl) -> String {
             };
             if let Some(path) = path {
                 push("path", &percent_encode(path));
-            }
-            if let Some(side) = side {
-                push("side", side_str(*side));
-            }
-            if let Some(line) = line {
-                push("line", &line.to_string());
+                if let Some(side) = side {
+                    push("side", side_str(*side));
+                }
+                if let Some(line) = line {
+                    push("line", &line.to_string());
+                }
             }
             s
         }
@@ -156,12 +182,24 @@ pub fn format_url(u: &PolyglossUrl) -> String {
     }
 }
 
-/// Where a URL points once resolved: the review whose tab shows it, and what to
-/// focus there.
+/// Where a URL points once resolved: the review whose tab shows it, the diff
+/// that tab must show, and what to focus there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UrlTarget {
     pub review_id: String,
+    /// A diff URL's diff and the review's latest iteration showing it: the
+    /// tab shows that diff (switching to the iteration when its current
+    /// state is another diff), not whatever the review shows now.
+    pub diff: Option<UrlDiff>,
     pub focus: Option<UrlFocus>,
+}
+
+/// The diff a diff URL names, as an iteration of the review it opens in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrlDiff {
+    pub diff_id: DiffId,
+    /// The review's latest iteration whose diff is `diff_id`.
+    pub seq: u32,
 }
 
 /// What to scroll to in the review tab.
@@ -182,8 +220,11 @@ pub enum UrlFocus {
 
 impl Core {
     /// The review tab `url` opens: the review itself; for a diff, the most
-    /// recently active review with an iteration showing it; for a thread, the
-    /// thread's review. `not_found` when there is none.
+    /// recently active review with an iteration showing it (reviews that are
+    /// not archived first) and that iteration; for a thread, the thread's
+    /// review. `not_found` when there is none (a diff only ever shown as an
+    /// unpinned live state has no iteration: the app looks for an open tab
+    /// showing it first).
     pub fn resolve_url(&self, url: &PolyglossUrl) -> Result<UrlTarget, CoreError> {
         match url {
             PolyglossUrl::Review(id) => {
@@ -196,38 +237,33 @@ impl Core {
                 found.ok_or_else(|| CoreError::not_found("review", id))?;
                 Ok(UrlTarget {
                     review_id: id.clone(),
+                    diff: None,
                     focus: None,
                 })
             }
-            PolyglossUrl::Diff {
-                diff_id,
-                path,
-                side,
-                line,
-            } => {
+            PolyglossUrl::Diff { diff_id, .. } => {
                 let diff_id = DiffId::parse(diff_id)?;
-                let review_id = self.store.read(|c| {
+                // The review first, then its latest iteration of the diff.
+                let found = self.store.read(|c| {
                     Ok(c.query_row(
-                        "SELECT i.review_id FROM iterations i \
+                        "SELECT i.review_id, i.seq FROM iterations i \
                          JOIN reviews r ON r.id = i.review_id \
                          WHERE i.diff_id = ?1 \
-                         ORDER BY r.updated_at DESC, i.id DESC LIMIT 1",
+                         ORDER BY r.archived_at IS NOT NULL, r.updated_at DESC, r.id DESC, \
+                         i.seq DESC LIMIT 1",
                         [diff_id.as_str()],
-                        |r| r.get::<_, String>(0),
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)),
                     )
                     .optional()?)
                 })?;
-                let review_id =
-                    review_id.ok_or_else(|| CoreError::not_found("diff", diff_id.as_str()))?;
-                let focus = path.clone().map(|path| match line {
-                    Some(line) => UrlFocus::Line {
-                        path,
-                        side: side.unwrap_or(Side::New),
-                        line: *line,
-                    },
-                    None => UrlFocus::File { path },
-                });
-                Ok(UrlTarget { review_id, focus })
+                let (review_id, seq) =
+                    found.ok_or_else(|| CoreError::not_found("diff", diff_id.as_str()))?;
+                let focus = url.focus();
+                Ok(UrlTarget {
+                    review_id,
+                    diff: Some(UrlDiff { diff_id, seq }),
+                    focus,
+                })
             }
             PolyglossUrl::Thread(id) => {
                 let review_id = self.store.read(|c| {
@@ -243,6 +279,7 @@ impl Core {
                     .ok_or_else(|| CoreError::not_found("thread", id))?;
                 Ok(UrlTarget {
                     review_id,
+                    diff: None,
                     focus: Some(UrlFocus::Thread(id.clone())),
                 })
             }

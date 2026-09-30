@@ -433,8 +433,26 @@ pub fn changes_since_hint(tab: &ReviewTab) -> String {
 
 /// Shows `choice` in the tab (same viewport; module docs).
 pub fn show(tab: &mut ReviewTab, choice: Choice, window: &mut Window, cx: &mut Context<ReviewTab>) {
+    // Nothing waits for it.
+    drop(show_then(tab, choice, window, cx));
+}
+
+/// [`show`], and a future that resolves once the switch is done (shown or
+/// failed; at once when there is nothing to switch or another switch is
+/// running). The switch runs on whether or not the future is awaited.
+pub fn show_then(
+    tab: &mut ReviewTab,
+    choice: Choice,
+    window: &mut Window,
+    cx: &mut Context<ReviewTab>,
+) -> impl Future<Output = ()> + use<> {
+    let (done, finished) = futures::channel::oneshot::channel::<()>();
+    let finished = async move {
+        // Dropped unsent when nothing switched.
+        let _ = finished.await;
+    };
     let Some(s) = state(tab) else {
-        return;
+        return finished;
     };
     let target = match choice {
         Choice::Current => Showing::Current,
@@ -442,7 +460,7 @@ pub fn show(tab: &mut ReviewTab, choice: Choice, window: &mut Window, cx: &mut C
         Choice::Iteration(k) => Showing::Iteration(k),
     };
     if s.switching || s.showing == target {
-        return;
+        return finished;
     }
     let current = s.current.clone();
     let core = AppState::global(cx).core.clone();
@@ -459,9 +477,11 @@ pub fn show(tab: &mut ReviewTab, choice: Choice, window: &mut Window, cx: &mut C
                 pinned: None,
             }),
         },
+        Some(done),
         window,
         cx,
     );
+    finished
 }
 
 /// `tab::ToggleChangesSinceLastReview`: shows the changes since the last
@@ -511,6 +531,7 @@ pub fn toggle_changes_since(tab: &mut ReviewTab, window: &mut Window, cx: &mut C
                 .ok_or_else(|| anyhow::anyhow!("the review has no submission"))?;
             Ok(Switched { opened, pinned })
         },
+        None,
         window,
         cx,
     );
@@ -524,11 +545,13 @@ struct Switched {
 }
 
 /// Opens what `work` names off the main thread, then swaps it into the tab
-/// like a refresh (module docs) and records `target`.
+/// like a refresh (module docs) and records `target`; `done` hears when it
+/// is over (dropped unsent when the tab is gone).
 fn switch(
     tab: &mut ReviewTab,
     target: Showing,
     work: impl FnOnce() -> anyhow::Result<Switched> + Send + 'static,
+    done: Option<futures::channel::oneshot::Sender<()>>,
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) {
@@ -559,6 +582,9 @@ fn switch(
         let _ = tab.update_in(cx, |tab, window, cx| {
             switched(tab, target, prepared, window, cx)
         });
+        if let Some(done) = done {
+            let _ = done.send(());
+        }
     })
     .detach();
 }

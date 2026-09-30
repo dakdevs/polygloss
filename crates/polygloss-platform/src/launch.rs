@@ -10,8 +10,8 @@
 //! (LaunchServices: one instance, no focus stolen with `-g`; `activate` drops
 //! the `-g`). Under `POLYGLOSS_TEST=1`, `$POLYGLOSS_APP_BIN` names an unbundled
 //! app binary to spawn instead (OQ-P4), detached, with the URL as its argument.
-//! `$POLYGLOSS_APP_BIN` without `POLYGLOSS_TEST=1` launches nothing
-//! ([`SystemLauncher::Refused`]) rather than the installed bundle.
+//! Either one without the other launches nothing ([`SystemLauncher::Refused`])
+//! rather than the installed bundle on the real data dir.
 
 use std::ffi::OsString;
 use std::io;
@@ -22,6 +22,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use polygloss_core::paths::{DataPaths, socket_path_fits};
+use sha2::{Digest as _, Sha256};
 
 /// The app's bundle id.
 pub const BUNDLE_ID: &str = "dev.dak.polygloss";
@@ -101,23 +102,40 @@ pub fn app_is_running(paths: &DataPaths) -> bool {
     UnixStream::connect(app_socket_path(paths)).is_ok()
 }
 
-/// Where the app listens: `paths.socket`, or `$TMPDIR/polygloss-<uid>/polygloss.sock`
-/// when that is too long for `sun_path` (design §13.2). The same rule as T4.1's
-/// `polygloss_core::ipc::socket_path`, which binds it.
+/// Where the app listens: `paths.socket` when it fits in `sun_path`, else a
+/// per-user fallback (design §13.2; see [`app_socket_path_with`]).
 pub fn app_socket_path(paths: &DataPaths) -> PathBuf {
+    app_socket_path_with(
+        paths,
+        std::env::var_os("TMPDIR").map(PathBuf::from).as_deref(),
+    )
+}
+
+/// [`app_socket_path`] with an explicit `$TMPDIR`: `paths.socket`, else
+/// `<tmpdir>/polygloss-<euid>/polygloss-<16 hex of sha256(data_dir)>.sock`
+/// (`/tmp` when `tmpdir` is unset, relative or too long), so two data dirs
+/// that both need the fallback never share a socket. The same rule as T4.1's
+/// `polygloss_core::ipc::socket_path`, which the server binds (merge note:
+/// delegate to it once both are in).
+pub fn app_socket_path_with(paths: &DataPaths, tmpdir: Option<&Path>) -> PathBuf {
     if socket_path_fits(&paths.socket) {
         return paths.socket.clone();
     }
-    std::env::temp_dir()
-        .join(format!("polygloss-{}", current_uid()))
-        .join("polygloss.sock")
+    let hash = Sha256::digest(paths.data_dir.as_os_str().as_encoded_bytes());
+    let name = format!("polygloss-{}.sock", &hex::encode(hash)[..16]);
+    let dir = format!("polygloss-{}", current_uid());
+    let in_tmpdir = tmpdir
+        .filter(|t| t.is_absolute())
+        .map(|t| t.join(&dir).join(&name))
+        .filter(|p| socket_path_fits(p));
+    in_tmpdir.unwrap_or_else(|| Path::new("/tmp").join(dir).join(name))
 }
 
-/// The real user id.
+/// This process's effective uid.
 #[allow(unsafe_code)]
 fn current_uid() -> u32 {
-    // SAFETY: getuid(2) takes no arguments, cannot fail and touches no memory.
-    unsafe { libc::getuid() }
+    // SAFETY: `geteuid` takes no arguments, cannot fail and touches no memory.
+    unsafe { libc::geteuid() }
 }
 
 /// Starts the real app.
@@ -127,10 +145,12 @@ pub enum SystemLauncher {
     Open,
     /// An unbundled app binary (`$POLYGLOSS_APP_BIN` under `POLYGLOSS_TEST=1`).
     AppBin(PathBuf),
-    /// Launches nothing and fails with this reason: `$POLYGLOSS_APP_BIN` is
-    /// set without `POLYGLOSS_TEST=1`. That is a misconfigured test or gate
-    /// run, and falling back to the installed bundle would start the real app
-    /// on the real data dir.
+    /// Launches nothing and fails with this reason: only one of
+    /// `POLYGLOSS_TEST=1` and `$POLYGLOSS_APP_BIN` is set. That is a
+    /// misconfigured test or gate run, and falling back to the installed
+    /// bundle would start the real app on the real data dir (LaunchServices
+    /// ignores the caller's environment, so a sandbox's
+    /// `POLYGLOSS_DATA_DIR` never reaches it).
     Refused(String),
 }
 
@@ -141,18 +161,24 @@ impl SystemLauncher {
     }
 
     /// [`SystemLauncher::AppBin`] when `POLYGLOSS_TEST=1` and
-    /// `POLYGLOSS_APP_BIN` is set, [`SystemLauncher::Refused`] when only
-    /// `POLYGLOSS_APP_BIN` is, else [`SystemLauncher::Open`].
+    /// `POLYGLOSS_APP_BIN` (not empty) are both set,
+    /// [`SystemLauncher::Refused`] when only one of them is, else
+    /// [`SystemLauncher::Open`].
     pub fn from_env_with(env: impl Fn(&str) -> Option<OsString>) -> SystemLauncher {
         let test = env("POLYGLOSS_TEST").is_some_and(|v| v == "1");
-        match env("POLYGLOSS_APP_BIN").filter(|v| !v.is_empty()) {
-            Some(bin) if test => SystemLauncher::AppBin(bin.into()),
-            Some(_) => SystemLauncher::Refused(
+        match (env("POLYGLOSS_APP_BIN").filter(|v| !v.is_empty()), test) {
+            (Some(bin), true) => SystemLauncher::AppBin(bin.into()),
+            (Some(_), false) => SystemLauncher::Refused(
                 "POLYGLOSS_APP_BIN is set but POLYGLOSS_TEST=1 is not; \
                  not launching the installed app instead"
                     .to_owned(),
             ),
-            None => SystemLauncher::Open,
+            (None, true) => SystemLauncher::Refused(
+                "POLYGLOSS_TEST=1 is set but POLYGLOSS_APP_BIN is not; \
+                 not launching the installed app on the real data dir"
+                    .to_owned(),
+            ),
+            (None, false) => SystemLauncher::Open,
         }
     }
 
