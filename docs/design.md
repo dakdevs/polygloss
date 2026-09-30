@@ -1085,13 +1085,13 @@ Ships in this repo as a plugin marketplace. Install with `claude plugin marketpl
 .claude-plugin/marketplace.json
 plugins/polygloss/
   .claude-plugin/plugin.json
-  .mcp.json                 # "polygloss": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/polygloss-shim", "args": ["mcp"] }
+  .mcp.json                 # { "mcpServers": { "polygloss": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/polygloss-shim", "args": ["mcp"] } } }
   hooks/hooks.json          # Stop -> asyncRewake waiter
   bin/polygloss-shim        # finds the stable CLI path (below)
   skills/review-loop/SKILL.md
 ```
 
-The plugin calls the CLI through a stable path, because stdio clients do not respawn servers after an app update. `polygloss-shim` tries `~/Library/Application Support/polygloss/bin/polygloss` (a symlink the app refreshes at launch), then `polygloss` on `PATH`, then `/Applications/Polygloss.app/Contents/MacOS/polygloss-cli` (**Provisional** order).
+The plugin calls the CLI through a stable path, because stdio clients do not respawn servers after an app update. `polygloss-shim` tries `~/Library/Application Support/polygloss/bin/polygloss` (a symlink the app refreshes at launch; under `$POLYGLOSS_DATA_DIR` when that is set, like every data-dir path), then `polygloss` on `PATH`, then `/Applications/Polygloss.app/Contents/MacOS/polygloss-cli` (**Provisional** order), and `exec`s the first executable one. With none, it exits 127 with a message on stderr (never stdout, the MCP channel).
 
 ### 16.2 Wake-up flow
 

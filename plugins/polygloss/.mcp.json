@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "polygloss": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/polygloss-shim",
+      "args": ["mcp"]
+    }
+  }
+}
