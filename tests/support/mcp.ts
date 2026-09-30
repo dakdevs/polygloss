@@ -28,7 +28,11 @@ export async function connectMcp(opts: {
   clientName?: string;
   clientVersion?: string;
   cwd?: string;
-}): Promise<{ client: Client; stderr: () => string; close: () => Promise<void> }> {
+}): Promise<{
+  client: Client;
+  stderr: () => string;
+  close: () => Promise<void>;
+}> {
   const transport = new StdioClientTransport({
     command: cliBin(),
     args: ["mcp", ...(opts.args ?? [])],
@@ -120,4 +124,42 @@ export async function rawMcpSession(opts: {
   const exitCode = await proc.exited;
   const stderr = await new Response(proc.stderr).text();
   return { stdout, stderr, exitCode };
+}
+
+/**
+ * Milliseconds from spawning `polygloss-cli mcp` to reading its `initialize`
+ * response on stdout (the M4 gate's cold-start measure). Closes stdin and waits
+ * for the process to exit before returning.
+ */
+export async function timeToInitialize(
+  env: Record<string, string>,
+): Promise<number> {
+  const started = performance.now();
+  const proc = Bun.spawn([cliBin(), "mcp"], {
+    env,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  proc.stdin.write(`${initializeRequest(1)}\n`);
+  await proc.stdin.flush();
+  const decoder = new TextDecoder();
+  const reader = proc.stdout.getReader();
+  let stdout = "";
+  let elapsed = Number.NaN;
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    stdout += decoder.decode(chunk.value, { stream: true });
+    if (stdout.includes("\n")) {
+      elapsed = performance.now() - started;
+      break;
+    }
+  }
+  proc.stdin.end();
+  await proc.exited;
+  const first = JSON.parse(stdout.split("\n")[0] ?? "") as { id?: number };
+  if (first.id !== 1 || Number.isNaN(elapsed))
+    throw new Error(`no initialize response: ${stdout}`);
+  return elapsed;
 }

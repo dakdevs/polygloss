@@ -20,7 +20,12 @@ fn repo_default_prefers_param_then_worktree_root_then_project_dir_then_cwd() {
 
     // An explicit repo wins; a relative one is relative to the cwd.
     assert_eq!(
-        resolve_repo(Some("/elsewhere"), &[repo.path().into()], Some(project), cwd),
+        resolve_repo(
+            Some("/elsewhere"),
+            &[repo.path().into()],
+            Some(project),
+            cwd
+        ),
         PathBuf::from("/elsewhere")
     );
     assert_eq!(
@@ -83,9 +88,8 @@ fn root_uris_decode_to_local_paths() {
 
 #[test]
 fn session_id_uses_claude_env_or_a_fresh_pg_uuid() {
-    let from_env = session_id_from(|k| {
-        (k == "CLAUDE_CODE_SESSION_ID").then(|| "4f1c7e2a-session".to_owned())
-    });
+    let from_env =
+        session_id_from(|k| (k == "CLAUDE_CODE_SESSION_ID").then(|| "4f1c7e2a-session".to_owned()));
     assert_eq!(from_env, "4f1c7e2a-session");
 
     for env in [None, Some(""), Some("   ")] {

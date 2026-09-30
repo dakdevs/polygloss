@@ -91,7 +91,11 @@ fn cursor_roundtrip_and_tamper_rejected() {
         "not a cursor",
         "e30",
     ] {
-        assert_eq!(decode_cursor(bad).unwrap_err().code, ApiErrorCode::Conflict, "{bad:?}");
+        assert_eq!(
+            decode_cursor(bad).unwrap_err().code,
+            ApiErrorCode::Conflict,
+            "{bad:?}"
+        );
     }
 }
 
@@ -217,12 +221,27 @@ fn error_codes_map_to_is_error_results() {
             },
             ApiErrorCode::NotFound,
         ),
-        (CoreError::RepoNotFound("d".into()), ApiErrorCode::RepoNotFound),
-        (CoreError::InvalidAnchor("line 9".into()), ApiErrorCode::InvalidAnchor),
-        (CoreError::CapExceeded { cap: 50 }, ApiErrorCode::CapExceeded),
-        (CoreError::Forbidden("not yours".into()), ApiErrorCode::Forbidden),
+        (
+            CoreError::RepoNotFound("d".into()),
+            ApiErrorCode::RepoNotFound,
+        ),
+        (
+            CoreError::InvalidAnchor("line 9".into()),
+            ApiErrorCode::InvalidAnchor,
+        ),
+        (
+            CoreError::CapExceeded { cap: 50 },
+            ApiErrorCode::CapExceeded,
+        ),
+        (
+            CoreError::Forbidden("not yours".into()),
+            ApiErrorCode::Forbidden,
+        ),
         (CoreError::Conflict("x".into()), ApiErrorCode::Conflict),
-        (CoreError::InvalidRequest("empty body".into()), ApiErrorCode::Conflict),
+        (
+            CoreError::InvalidRequest("empty body".into()),
+            ApiErrorCode::Conflict,
+        ),
     ];
     for (core, code) in cases {
         let msg = core.to_string();

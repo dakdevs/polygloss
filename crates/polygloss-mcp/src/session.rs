@@ -11,8 +11,6 @@
 //! - It is upserted with the MCP `clientInfo` name and version on `initialize`
 //!   (or on the first tool call from a client that never sent one).
 
-use std::path::PathBuf;
-
 use polygloss_core::review::{Core, CoreError, SessionInfo};
 
 /// The environment variable Claude Code may set to the conversation's id.
@@ -49,7 +47,7 @@ pub fn session_info(id: &str, client_name: &str, client_version: Option<&str>) -
         client_name: client_name.to_owned(),
         client_version: client_version.map(str::to_owned),
         owner_pid: owner_pid(),
-        cwd: std::env::current_dir().ok().map(PathBuf::from),
+        cwd: std::env::current_dir().ok(),
     }
 }
 

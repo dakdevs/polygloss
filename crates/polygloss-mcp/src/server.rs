@@ -30,7 +30,9 @@ use rmcp::model::{
     ProgressNotificationParam, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{NotificationContext, RequestContext};
-use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use rmcp::{
+    ErrorData, Peer, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router,
+};
 use serde::Serialize;
 use serde_json::json;
 
@@ -144,9 +146,8 @@ impl PolyglossServer {
         if let Some(core) = slot.as_ref() {
             return Ok(core.clone());
         }
-        let core = Core::open_default().map_err(|e| {
-            ApiError::internal(format!("opening the Polygloss store: {e}"))
-        })?;
+        let core = Core::open_default()
+            .map_err(|e| ApiError::internal(format!("opening the Polygloss store: {e}")))?;
         *slot = Some(core.clone());
         Ok(core)
     }
@@ -165,7 +166,11 @@ impl PolyglossServer {
 
     /// Opens the store and upserts the session (blocking). Idempotent once it
     /// succeeded.
-    fn record_session_blocking(state: &State, name: &str, version: Option<&str>) -> Result<Core, ApiError> {
+    fn record_session_blocking(
+        state: &State,
+        name: &str,
+        version: Option<&str>,
+    ) -> Result<Core, ApiError> {
         let core = Self::core_blocking(state)?;
         if !state.session_recorded.load(Ordering::SeqCst) {
             let info = session::session_info(&state.session_id, name, version);
@@ -238,7 +243,11 @@ impl PolyglossServer {
     }
 
     /// Runs `f` with a fresh context on the blocking pool and maps the result.
-    async fn run<T, F>(&self, rc: &RequestContext<RoleServer>, f: F) -> Result<CallToolResult, ErrorData>
+    async fn run<T, F>(
+        &self,
+        rc: &RequestContext<RoleServer>,
+        f: F,
+    ) -> Result<CallToolResult, ErrorData>
     where
         T: Serialize + Send + 'static,
         F: FnOnce(&ApiContext) -> Result<T, ApiError> + Send + 'static,
@@ -378,7 +387,8 @@ impl PolyglossServer {
         Parameters(req): Parameters<api::CreateCommentRequest>,
         rc: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(&rc, move |ctx| api::create_comment(ctx, req)).await
+        self.run(&rc, move |ctx| api::create_comment(ctx, req))
+            .await
     }
 
     #[tool(description = "Edit one of your own comments.")]
@@ -398,7 +408,8 @@ impl PolyglossServer {
         Parameters(req): Parameters<api::DeleteCommentRequest>,
         rc: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(&rc, move |ctx| api::delete_comment(ctx, req)).await
+        self.run(&rc, move |ctx| api::delete_comment(ctx, req))
+            .await
     }
 
     #[tool(
@@ -411,7 +422,8 @@ impl PolyglossServer {
         rc: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let ctl = wait_control(&rc);
-        self.run(&rc, move |ctx| api::wait_for_review(ctx, req, &ctl)).await
+        self.run(&rc, move |ctx| api::wait_for_review(ctx, req, &ctl))
+            .await
     }
 
     #[tool(
@@ -422,7 +434,8 @@ impl PolyglossServer {
         Parameters(req): Parameters<api::RequestRereviewRequest>,
         rc: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(&rc, move |ctx| api::request_rereview(ctx, req)).await
+        self.run(&rc, move |ctx| api::request_rereview(ctx, req))
+            .await
     }
 
     #[tool(
@@ -478,7 +491,12 @@ impl ServerHandler for PolyglossServer {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
         if let Some(core) = core {
-            crate::channel::start(&self.state.opts, &core, &self.state.session_id, &context.peer);
+            crate::channel::start(
+                &self.state.opts,
+                &core,
+                &self.state.session_id,
+                &context.peer,
+            );
         }
     }
 
@@ -490,7 +508,8 @@ impl ServerHandler for PolyglossServer {
 /// Serves MCP over stdin/stdout until the client disconnects. Never launches or
 /// contacts the app at startup.
 pub async fn serve_stdio(opts: ServeOptions) -> anyhow::Result<()> {
-    let launcher: Arc<dyn Launcher + Send + Sync> = Arc::new(polygloss_platform::launch::SystemLauncher::from_env());
+    let launcher: Arc<dyn Launcher + Send + Sync> =
+        Arc::new(polygloss_platform::launch::SystemLauncher::from_env());
     serve_stdio_with(opts, launcher).await
 }
 

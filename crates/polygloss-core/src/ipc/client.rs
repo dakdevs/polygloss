@@ -50,8 +50,8 @@ impl IpcClient {
         stream.write_all(line.as_bytes()).map_err(io)?;
         let mut resp = String::new();
         self.reader.read_line(&mut resp).map_err(io)?;
-        let v: Value =
-            serde_json::from_str(&resp).map_err(|e| IpcError::new("bad_response", e.to_string()))?;
+        let v: Value = serde_json::from_str(&resp)
+            .map_err(|e| IpcError::new("bad_response", e.to_string()))?;
         if v["ok"] == json!(true) {
             Ok(v["result"].clone())
         } else {
