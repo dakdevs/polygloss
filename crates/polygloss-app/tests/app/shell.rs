@@ -41,6 +41,15 @@ pub fn start(cx: &mut TestAppContext) -> Shell<'_> {
             polygloss_app::editor::EditorHost::new(Arc::new(NoEditors), || None),
             cx,
         );
+        // Nor install the CLI anywhere (T5.4): `tests/app/install_cli.rs`
+        // installs a recording installer.
+        polygloss_app::install_cli::set_installer(
+            polygloss_app::install_cli::CliInstaller::new(
+                || None,
+                |target: &std::path::Path| panic!("a test tried to install the CLI: {target:?}"),
+            ),
+            cx,
+        );
         window::open_main_window(cx).expect("open the main window")
     });
     let vcx = VisualTestContext::from_window(window, cx).into_mut();

@@ -1,0 +1,29 @@
+# Homebrew cask for Polygloss (design §21, ADR-0019). Template: rendered into
+# the tap's Casks/polygloss.rb by scripts/bump-tap.ts, which fills
+# {{version}}, {{sha256}} and {{repo}} (GitHub owner/name of the app).
+cask "polygloss" do
+  version "{{version}}"
+  sha256 "{{sha256}}"
+
+  url "https://github.com/{{repo}}/releases/download/v#{version}/Polygloss_#{version}_aarch64.dmg"
+  name "Polygloss"
+  desc "Native diff reviewer for code written by coding agents"
+  homepage "https://github.com/{{repo}}"
+
+  # Sparkle updates the app in place (opt-in, design §21).
+  auto_updates true
+  depends_on arch: :arm64
+  depends_on macos: ">= :sonoma"
+
+  app "Polygloss.app"
+  binary "#{appdir}/Polygloss.app/Contents/MacOS/polygloss-cli", target: "polygloss"
+
+  zap trash: [
+    "~/.config/polygloss",
+    "~/Library/Application Support/polygloss",
+    "~/Library/Caches/polygloss",
+    "~/Library/Logs/polygloss",
+    "~/Library/Preferences/dev.dak.polygloss.plist",
+    "~/Library/Saved Application State/dev.dak.polygloss.savedState",
+  ]
+end

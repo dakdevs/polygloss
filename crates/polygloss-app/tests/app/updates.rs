@@ -112,13 +112,15 @@ fn menu_item_checks_for_updates_with_updater(cx: &mut TestAppContext) {
     assert_eq!(shell.cx.update(|_, cx| updates::state(cx)), Some("started"));
     let state = shell.cx.update(|_, cx| debug_state::snapshot(cx));
     assert_eq!(state["updater"], "started");
-    // macOS order: Check for Updates… comes before Settings….
+    // macOS order: Check for Updates… comes before Settings… and Install
+    // CLI… (T5.4).
     assert_eq!(
         app_menu(&mut shell),
         [
             "Check for Updates… → window::CheckForUpdates",
             "—",
             "Settings… → window::OpenSettings",
+            "Install CLI… → window::InstallCli",
             "—",
             "Services",
             "—",

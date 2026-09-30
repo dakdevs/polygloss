@@ -199,6 +199,8 @@ pub mod window {
             /// Polygloss › Check for Updates… (Sparkle, T5.3); only with an
             /// updater (`updates`).
             CheckForUpdates,
+            /// Link `/usr/local/bin/polygloss` to the app's CLI (T5.4).
+            InstallCli,
         ]
     );
 }
@@ -295,6 +297,7 @@ pub const ACTIONS: &[ActionInfo] = registry![
     window::FileFinder => "Go to file",
     window::OpenFlow => "Open review",
     window::OpenSettings => "Open settings",
+    window::InstallCli => "Install CLI",
     window::CloseTab => "Close tab",
     window::NextTab => "Next tab",
     window::PrevTab => "Previous tab",
