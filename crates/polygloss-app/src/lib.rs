@@ -22,6 +22,7 @@ pub mod find;
 pub mod home;
 pub mod ipc;
 pub mod iterations;
+pub mod keyboard;
 pub mod keymap;
 pub mod live;
 pub mod logging;

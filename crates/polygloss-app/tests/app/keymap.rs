@@ -56,6 +56,22 @@ const DESIGN_11_9: &[(&str, &str, &str)] = &[
     ("cmd-,", "window::OpenSettings", "Window"),
     ("cmd-q", "window::Quit", ""),
     ("cmd-m", "window::Minimize", ""),
+    // Keyboard-only use (T5.6, OQ-23).
+    ("tab", "tab::FocusNextPane", "Tab"),
+    ("shift-tab", "tab::FocusPrevPane", "Tab"),
+    ("i", "tab::ChooseIteration", "Tab"),
+    ("m", "viewport::FileMenu", "Viewport"),
+    ("z", "viewport::ToggleCollapse", "Viewport"),
+    ("/", "tree::FocusFilter", "Tree"),
+    ("f", "tree::FilterMenu", "Tree"),
+    ("j", "threads::SelectNext", "ThreadsPanel"),
+    ("down", "threads::SelectNext", "ThreadsPanel"),
+    ("k", "threads::SelectPrev", "ThreadsPanel"),
+    ("up", "threads::SelectPrev", "ThreadsPanel"),
+    ("enter", "threads::Open", "ThreadsPanel"),
+    ("r", "threads::Reply", "ThreadsPanel"),
+    ("x", "threads::ToggleResolved", "ThreadsPanel"),
+    ("e", "threads::EditComment", "ThreadsPanel"),
 ];
 
 /// The key context stack focus has in `context` (outermost first).
@@ -67,6 +83,7 @@ pub fn stack(context: &str) -> Vec<KeyContext> {
         "Viewport" => &["Window", "Tab", "Viewport"],
         "Tree" => &["Window", "Tab", "Tree"],
         "Composer" => &["Window", "Tab", "Viewport", "Composer"],
+        "ThreadsPanel" => &["Window", "Tab", "ThreadsPanel"],
         "TreeFilter" => &["Window", "Tab", "Tree", "Input"],
         other => panic!("no stack for {other}"),
     };

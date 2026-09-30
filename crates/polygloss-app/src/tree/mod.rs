@@ -25,21 +25,22 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _,
-    IntoElement, MenuItem, ParentElement as _, Render, ScrollStrategy, SharedString, Styled as _,
-    Subscription, WeakEntity, Window, div, px,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+    Focusable as _, InteractiveElement as _, IntoElement, MenuItem, ParentElement as _, Render,
+    ScrollStrategy, SharedString, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
 use polygloss_diff::FileChange;
 use polygloss_viewport::{DiffViewport, FileFlags, ScrollTarget, ViewportEvent};
 
+use crate::keyboard::menu::KeyMenu;
 use crate::keymap::actions::{tree as tree_actions, window as window_actions};
 use crate::keymap::handlers;
 use crate::live::DiffRefreshed;
@@ -63,6 +64,22 @@ pub fn init(cx: &mut App) {
         |tab: &mut ReviewTab, _: &tree_actions::PrevFile, _, cx| {
             if let Some(tree) = file_tree(tab) {
                 tree.update(cx, |t, cx| t.prev_file(cx));
+            }
+        },
+    );
+    handlers::on_action(
+        cx,
+        |tab: &mut ReviewTab, _: &tree_actions::FocusFilter, window, cx| {
+            if let Some(tree) = file_tree(tab) {
+                tree.update(cx, |t, cx| t.focus_filter(window, cx));
+            }
+        },
+    );
+    handlers::on_action(
+        cx,
+        |tab: &mut ReviewTab, _: &tree_actions::FilterMenu, window, cx| {
+            if let Some(tree) = file_tree(tab) {
+                tree.update(cx, |t, cx| t.open_filter_menu(window, cx));
             }
         },
     );
@@ -157,8 +174,14 @@ pub struct FileTree {
     current: Option<u32>,
     /// The file last jumped to from the tree, while the viewport shows it.
     jumped: Option<u32>,
+    /// The filter menu, when opened from the keyboard (`f`).
+    key_menu: Option<KeyMenu>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// The file tree's own key context, around its list, filter box and
+/// filter menu (no bindings use it: [`FileTree::contains_focus`] does).
+pub const KEY_CONTEXT: &str = "FileTree";
 
 impl EventEmitter<FileTreeEvent> for FileTree {}
 
@@ -215,6 +238,7 @@ impl FileTree {
             viewport,
             state,
             filter_input,
+            key_menu: None,
             full,
             filtered: None,
             flags,
@@ -248,6 +272,41 @@ impl FileTree {
     /// The fuzzy filter box.
     pub fn filter_input(&self) -> &Entity<InputState> {
         &self.filter_input
+    }
+
+    /// The filter box's focus handle.
+    pub fn filter_focus(&self, cx: &App) -> FocusHandle {
+        self.filter_input.focus_handle(cx)
+    }
+
+    /// Whether the filter menu opened from the keyboard (`f`) is open (the
+    /// button's own dropdown, opened with the mouse, is gpui-kit's).
+    pub fn filter_menu_open(&self) -> bool {
+        self.key_menu.is_some()
+    }
+
+    /// `/`: the keyboard to the filter box, its text selected.
+    pub fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter_input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+    }
+
+    /// `f`: the filter menu, opened from the keyboard under its button.
+    pub fn open_filter_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tree = cx.entity().downgrade();
+        // Counted when the menu opens, not on every render.
+        let (f, extensions) = (self.filters.clone(), filters::extensions(&self.files));
+        let menu = KeyMenu::open(
+            |t: &mut FileTree| Some(&mut t.key_menu),
+            self.key_menu.take(),
+            move |menu, _, _| build_filter_menu(&tree, f, extensions, menu),
+            window,
+            cx,
+        );
+        self.key_menu = Some(menu);
+        cx.notify();
     }
 
     /// The visible rows, top to bottom.
@@ -484,6 +543,22 @@ impl FileTree {
         self.step(-1, cx);
     }
 
+    /// Whether the keyboard is in the tree: its list, its filter box or its
+    /// filter menu. gpui-kit's `TreeState` does not expose its focus handle,
+    /// so the list is found by this widget's own key context
+    /// ([`KEY_CONTEXT`]), not gpui-kit's `Tree` (any tree widget has that).
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        window
+            .context_stack()
+            .iter()
+            .any(|c| c.contains(KEY_CONTEXT))
+            || self.filter_input.focus_handle(cx).is_focused(window)
+            || self
+                .key_menu
+                .as_ref()
+                .is_some_and(|m| m.view().focus_handle(cx).contains_focused(window, cx))
+    }
+
     /// Focuses the tree (its keys: arrows, `n`/`p`, `v`).
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         self.state.update(cx, |s, cx| s.focus(window, cx));
@@ -698,78 +773,92 @@ impl FileTree {
             .selected(active)
             .tooltip("Filter files")
             .debug_selector(|| "tree-filters".into())
-            .dropdown_menu(move |mut menu, _, cx| {
+            .dropdown_menu(move |menu, _, cx| {
                 let Some(tree) = this.upgrade() else {
                     return menu;
                 };
-                let f = tree.read(cx).filters.clone();
+                let t = tree.read(cx);
                 // Counted when the menu opens, not on every render.
-                let extensions = filters::extensions(&tree.read(cx).files);
-                let item = |label: &str, checked: bool, act: FilterToggle| {
-                    let tree = tree.downgrade();
-                    PopupMenuItem::new(label.to_owned())
-                        .checked(checked)
-                        .on_click(move |_, _, cx| {
-                            if let Some(tree) = tree.upgrade() {
-                                tree.update(cx, |t, cx| act(t, cx));
-                            }
-                        })
-                };
-                menu = menu
-                    .item(item(
-                        "Unviewed",
-                        f.unviewed,
-                        Box::new(|t, cx| t.toggle_unviewed(cx)),
-                    ))
-                    .item(item(
-                        "Has comments",
-                        f.has_comments,
-                        Box::new(|t, cx| t.toggle_has_comments(cx)),
-                    ))
-                    .separator()
-                    .label("Status");
-                for status in StatusFilter::ALL {
-                    menu = menu.item(item(
-                        status.label(),
-                        f.statuses.contains(&status),
-                        Box::new(move |t, cx| t.toggle_status(status, cx)),
-                    ));
-                }
-                if extensions.len() > 1 {
-                    menu = menu.separator().label("Extension");
-                    for (ext, count) in &extensions {
-                        let label = if ext.is_empty() {
-                            format!("No extension ({count})")
-                        } else {
-                            format!(".{ext} ({count})")
-                        };
-                        let e = ext.clone();
-                        menu = menu.item(item(
-                            &label,
-                            f.extensions.contains(ext),
-                            Box::new(move |t, cx| t.toggle_extension(&e, cx)),
-                        ));
-                    }
-                }
-                if f.menu_active() {
-                    let tree = tree.downgrade();
-                    menu = menu
-                        .separator()
-                        .item(PopupMenuItem::new("Clear filters").on_click(
-                            move |_, window, cx| {
-                                if let Some(tree) = tree.upgrade() {
-                                    tree.update(cx, |t, cx| t.clear_filters(window, cx));
-                                }
-                            },
-                        ));
-                }
-                menu.max_h(px(420.)).scrollable(true)
+                let (f, extensions) = (t.filters.clone(), filters::extensions(&t.files));
+                build_filter_menu(&this, f, extensions, menu)
             })
     }
 }
 
 /// A filter menu item's effect.
 type FilterToggle = Box<dyn Fn(&mut FileTree, &mut Context<FileTree>)>;
+
+/// The filter menu of `tree` (the funnel button's, and `f`'s): Unviewed,
+/// Has comments, the statuses and, with more than one, the extensions, each
+/// checked when on; "Clear filters" while any is on.
+/// `f` and `extensions` are the tree's filters and file extensions as the
+/// menu opens.
+fn build_filter_menu(
+    tree: &WeakEntity<FileTree>,
+    f: TreeFilters,
+    extensions: Vec<(String, usize)>,
+    mut menu: PopupMenu,
+) -> PopupMenu {
+    let item = |label: &str, checked: bool, act: FilterToggle| {
+        let tree = tree.clone();
+        PopupMenuItem::new(label.to_owned())
+            .checked(checked)
+            .on_click(move |_, _, cx| {
+                if let Some(tree) = tree.upgrade() {
+                    tree.update(cx, |t, cx| act(t, cx));
+                }
+            })
+    };
+    menu = menu
+        .item(item(
+            "Unviewed",
+            f.unviewed,
+            Box::new(|t, cx| t.toggle_unviewed(cx)),
+        ))
+        .item(item(
+            "Has comments",
+            f.has_comments,
+            Box::new(|t, cx| t.toggle_has_comments(cx)),
+        ))
+        .separator()
+        .label("Status");
+    for status in StatusFilter::ALL {
+        menu = menu.item(item(
+            status.label(),
+            f.statuses.contains(&status),
+            Box::new(move |t, cx| t.toggle_status(status, cx)),
+        ));
+    }
+    if extensions.len() > 1 {
+        menu = menu.separator().label("Extension");
+        for (ext, count) in &extensions {
+            let label = if ext.is_empty() {
+                format!("No extension ({count})")
+            } else {
+                format!(".{ext} ({count})")
+            };
+            let e = ext.clone();
+            menu = menu.item(item(
+                &label,
+                f.extensions.contains(ext),
+                Box::new(move |t, cx| t.toggle_extension(&e, cx)),
+            ));
+        }
+    }
+    if f.menu_active() {
+        let tree = tree.clone();
+        menu = menu
+            .separator()
+            .item(
+                PopupMenuItem::new("Clear filters").on_click(move |_, window, cx| {
+                    if let Some(tree) = tree.upgrade() {
+                        tree.update(cx, |t, cx| t.clear_filters(window, cx));
+                    }
+                }),
+            );
+    }
+    menu.max_h(px(420.)).scrollable(true)
+}
 
 /// gpui-kit tree items for `model`, directories expanded unless in
 /// `collapsed`.
@@ -847,6 +936,7 @@ impl Render for FileTree {
                 .into_any_element()
         };
         v_flex()
+            .key_context(KEY_CONTEXT)
             .size_full()
             .bg(theme.sidebar)
             .child(
@@ -869,19 +959,32 @@ impl Render for FileTree {
                             .child(count),
                     )
                     .child(div().flex_1())
-                    .child(self.filter_menu(cx)),
+                    .child(
+                        div()
+                            .relative()
+                            .child(self.filter_menu(cx))
+                            .when_some(self.key_menu.as_ref(), |el, menu| {
+                                el.child(menu.element(Anchor::TopRight))
+                            }),
+                    ),
             )
             .child(
-                div().flex_none().px_2().py_1p5().child(
-                    Input::new(&self.filter_input)
-                        .small()
-                        .cleanable(true)
-                        .prefix(
-                            Icon::new(IconName::Search)
-                                .xsmall()
-                                .text_color(theme.muted_foreground),
-                        ),
-                ),
+                // Esc in the filter box: back to the list.
+                div()
+                    .flex_none()
+                    .px_2()
+                    .py_1p5()
+                    .on_action(cx.listener(|t, _: &Escape, window, cx| t.focus(window, cx)))
+                    .child(
+                        Input::new(&self.filter_input)
+                            .small()
+                            .cleanable(true)
+                            .prefix(
+                                Icon::new(IconName::Search)
+                                    .xsmall()
+                                    .text_color(theme.muted_foreground),
+                            ),
+                    ),
             )
             .child(body)
     }

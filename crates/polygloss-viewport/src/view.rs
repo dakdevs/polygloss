@@ -214,6 +214,9 @@ pub struct DiffViewport {
     pub(crate) special: Specials,
     /// The open ⋯ menu.
     pub(crate) menu: Option<HeaderMenu>,
+    /// A ⋯ menu asked for from the keyboard while its header was off
+    /// screen: it opens once the header is painted.
+    pub(crate) pending_menu: Option<u32>,
     /// The control a mouse button went down on (a click needs the release
     /// there too).
     pub(crate) pressed: Option<Pressed>,
@@ -292,6 +295,7 @@ impl DiffViewport {
             gaps: Gaps::default(),
             special,
             menu: None,
+            pending_menu: None,
             pressed: None,
             blocks: Blocks::default(),
             cursor: Cursor::default(),

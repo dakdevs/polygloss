@@ -33,11 +33,15 @@ use crate::window::MenuKind;
 pub fn init(cx: &mut App) {
     // The dialog's own key (not a keymap action, like the find bar's
     // toggles): ⌘⏎ submits wherever the keyboard is in it.
-    cx.bind_keys([KeyBinding::new(
-        "cmd-enter",
-        ConfirmSubmit,
-        Some(dialog::CONTEXT),
-    )]);
+    // ⌘1 / ⌘2 / ⌘3 pick the verdict (T5.6; ⇥ and Space reach the radios
+    // too).
+    let ctx = Some(dialog::CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("cmd-enter", ConfirmSubmit, ctx),
+        KeyBinding::new("cmd-1", dialog::VerdictComment, ctx),
+        KeyBinding::new("cmd-2", dialog::VerdictApprove, ctx),
+        KeyBinding::new("cmd-3", dialog::VerdictRequestChanges, ctx),
+    ]);
     handlers::on_action(
         cx,
         |tab: &mut ReviewTab, _: &tab_actions::SubmitReview, window, cx| {

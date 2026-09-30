@@ -836,7 +836,7 @@ fn find_comment<'a>(
 
 /// A comment the human may edit and delete: a human's, not deleted
 /// (humans own every human comment, T1.13).
-fn own_comment(c: &CommentView) -> bool {
+pub(crate) fn own_comment(c: &CommentView) -> bool {
     c.author.kind == AuthorKind::Human && !c.deleted
 }
 

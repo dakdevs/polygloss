@@ -31,8 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::component::input::{Escape, InputEvent, InputState};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Font, IntoElement as _,
-    KeyBinding, ScrollStrategy, SharedString, Subscription, Task, UniformListScrollHandle, Window,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, Font,
+    IntoElement as _, KeyBinding, ScrollStrategy, SharedString, Subscription, Task,
+    UniformListScrollHandle, Window,
 };
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::{FileChange, Side};
@@ -226,6 +227,11 @@ impl FindBar {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Whether the keyboard is in the bar (its field).
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.open && self.input.focus_handle(cx).contains_focused(window, cx)
     }
 
     /// Shows the bar and focuses its field, the previous query selected.

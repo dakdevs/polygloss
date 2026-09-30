@@ -4,6 +4,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod a11y_keyboard;
 mod composer;
 mod cursor;
 mod dump;

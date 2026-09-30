@@ -67,6 +67,11 @@ pub mod viewport {
             OpenInEditor,
             /// `⌘C`: copy the selected source text (T3.8, provisional).
             Copy,
+            /// `m`: open the ⋯ menu of the cursor's file (T5.6).
+            FileMenu,
+            /// `z`: collapse the cursor's file to its header, or expand it
+            /// (T5.6).
+            ToggleCollapse,
         ]
     );
 }
@@ -84,6 +89,10 @@ pub mod tree {
             ToggleViewed,
             /// Mark every file of the selected folder viewed (T3.7).
             MarkFolderViewed,
+            /// `/`: the keyboard to the tree's filter box (T5.6).
+            FocusFilter,
+            /// `f`: open the tree's filter menu (T5.6).
+            FilterMenu,
         ]
     );
 }
@@ -99,6 +108,32 @@ pub mod composer {
             Cancel,
             /// Switch between Write and Preview (T3.10).
             TogglePreview,
+        ]
+    );
+}
+
+/// Actions of the threads panel (key context `ThreadsPanel`, T5.6). The
+/// thread they act on is the panel's selected row, or, from the diff, the
+/// thread under the cursor.
+pub mod threads {
+    gpui_kit::actions!(
+        threads,
+        [
+            /// `j` / `↓`: select the next row of the threads panel.
+            SelectNext,
+            /// `k` / `↑`: select the previous row.
+            SelectPrev,
+            /// `⏎`: go to the thread in the diff (or open it in the panel).
+            Open,
+            /// `r`: reply to the thread.
+            Reply,
+            /// `x`: resolve the thread, or unresolve it.
+            ToggleResolved,
+            /// `e`: edit your latest comment in the thread.
+            EditComment,
+            /// Delete your latest comment in the thread (asks first when it
+            /// was published).
+            DeleteComment,
         ]
     );
 }
@@ -132,6 +167,13 @@ pub mod tab {
             ToggleChangesSinceLastReview,
             /// Jump to the next unread agent reply (T3.13).
             NextUnreadThread,
+            /// `⇥`: the keyboard to the next pane (tree → viewport → threads
+            /// panel → composers, T5.6).
+            FocusNextPane,
+            /// `⇧⇥`: the keyboard to the previous pane (T5.6).
+            FocusPrevPane,
+            /// `i`: open the iteration menu (T5.6).
+            ChooseIteration,
         ]
     );
 }
@@ -169,7 +211,8 @@ pub struct ActionInfo {
 }
 
 impl ActionInfo {
-    /// The namespace (`viewport`, `tree`, `composer`, `tab`, `window`).
+    /// The namespace (`viewport`, `tree`, `composer`, `threads`, `tab`,
+    /// `window`).
     pub fn namespace(&self) -> &'static str {
         self.name.split_once("::").map_or("", |(ns, _)| ns)
     }
@@ -211,13 +254,24 @@ pub const ACTIONS: &[ActionInfo] = registry![
     viewport::WordDiffOff => "Word diff: off",
     viewport::OpenInEditor => "Open in editor",
     viewport::Copy => "Copy selection",
+    viewport::FileMenu => "File menu",
+    viewport::ToggleCollapse => "Collapse or expand file",
     tree::NextFile => "Next file in tree",
     tree::PrevFile => "Previous file in tree",
     tree::ToggleViewed => "Toggle viewed in tree",
     tree::MarkFolderViewed => "Mark folder viewed",
+    tree::FocusFilter => "Filter files",
+    tree::FilterMenu => "File filters",
     composer::SaveDraft => "Save draft",
     composer::Cancel => "Cancel comment",
     composer::TogglePreview => "Toggle comment preview",
+    threads::SelectNext => "Next thread in panel",
+    threads::SelectPrev => "Previous thread in panel",
+    threads::Open => "Go to thread",
+    threads::Reply => "Reply to thread",
+    threads::ToggleResolved => "Resolve or unresolve thread",
+    threads::EditComment => "Edit my comment",
+    threads::DeleteComment => "Delete my comment",
     tab::Refresh => "Refresh",
     tab::Snapshot => "Snapshot",
     tab::ChooseBase => "Choose base",
@@ -230,6 +284,9 @@ pub const ACTIONS: &[ActionInfo] = registry![
     tab::ToggleChangesSinceLastReview => "Changes since last review",
     tab::NextUnreadThread => "Next unread reply",
     tab::ToggleThreadsPanel => "Toggle threads panel",
+    tab::FocusNextPane => "Focus next pane",
+    tab::FocusPrevPane => "Focus previous pane",
+    tab::ChooseIteration => "Choose iteration",
     window::CommandPalette => "Command palette",
     window::CheatSheet => "Keyboard shortcuts",
     window::FileFinder => "Go to file",

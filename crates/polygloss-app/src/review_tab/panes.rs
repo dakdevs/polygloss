@@ -11,6 +11,7 @@ use gpui_kit::{
     ParentElement as _, SharedString, Styled as _, Window, div, px,
 };
 
+use crate::keyboard::Pane;
 use crate::review_tab::ReviewTab;
 
 gpui_kit::actions!(
@@ -59,6 +60,21 @@ pub(crate) fn render(
     });
     let border = cx.theme().border;
     let focus = tab.viewport_focus().clone();
+    // The pane with the keyboard shows a focus ring (T5.6; a composer draws
+    // its own) while the keyboard is in use, like macOS's and the web's
+    // focus-visible: a click does not light it up.
+    let focused = window
+        .last_input_was_keyboard()
+        .then(|| crate::keyboard::focused_pane(tab, window, cx))
+        .flatten();
+    let ring = |pane: Pane, selector: &'static str| {
+        (focused.as_ref() == Some(&pane)).then(|| focus_ring(selector, cx))
+    };
+    let (tree_ring, viewport_ring, threads_ring) = (
+        ring(Pane::Tree, "focus-ring-tree"),
+        ring(Pane::Viewport, "focus-ring-viewport"),
+        ring(Pane::Threads, "focus-ring-threads"),
+    );
     h_resizable("review-panes")
         .with_state(&tab.panes.state)
         .child(
@@ -69,10 +85,12 @@ pub(crate) fn render(
                 .child(
                     div()
                         .debug_selector(|| "file-tree-pane".into())
+                        .relative()
                         .size_full()
                         .border_r_1()
                         .border_color(border)
-                        .child(tree),
+                        .child(tree)
+                        .children(tree_ring),
                 ),
         )
         .child(
@@ -83,9 +101,11 @@ pub(crate) fn render(
                     .track_focus(tab.viewport_focus())
                     // A click anywhere in the diff gives it the keyboard.
                     .capture_any_mouse_down(move |_, window, cx| window.focus(&focus, cx))
+                    .relative()
                     .size_full()
                     .overflow_hidden()
-                    .child(tab.viewport.clone()),
+                    .child(tab.viewport.clone())
+                    .children(viewport_ring),
             ),
         )
         .child(
@@ -98,13 +118,27 @@ pub(crate) fn render(
                     panel.child(
                         div()
                             .debug_selector(|| "threads-pane".into())
+                            .relative()
                             .size_full()
                             .border_l_1()
                             .border_color(border)
-                            .child(threads),
+                            .child(threads)
+                            .children(threads_ring),
                     )
                 }),
         )
+        .into_any_element()
+}
+
+/// The ring around the pane that has the keyboard: drawn over the pane's
+/// edge, and it takes no clicks.
+fn focus_ring(selector: &'static str, cx: &Context<ReviewTab>) -> AnyElement {
+    div()
+        .debug_selector(move || selector.into())
+        .absolute()
+        .inset_0()
+        .border_2()
+        .border_color(cx.theme().ring.opacity(0.7))
         .into_any_element()
 }
 

@@ -497,6 +497,53 @@ impl DiffViewport {
         cx.notify();
     }
 
+    /// The file whose ⋯ menu is open.
+    pub fn menu_file(&self) -> Option<u32> {
+        self.menu.as_ref().map(|m| m.file_idx)
+    }
+
+    /// The file the keyboard's file actions act on (`m`, `z`): the
+    /// cursor's, else the one at the top.
+    pub fn current_file(&self) -> u32 {
+        self.cursor
+            .pos
+            .map_or(self.doc.anchor().file_idx, |p| p.file_idx)
+    }
+
+    /// Opens file `f`'s ⋯ menu from the keyboard (`m`), under its button as
+    /// last painted. When the file's header is off screen it is scrolled
+    /// in first and the menu opens with the frame that paints it.
+    pub fn open_file_menu(&mut self, f: u32, window: &mut Window, cx: &mut Context<Self>) {
+        if f >= self.doc.len() {
+            return;
+        }
+        match self.menu_button(f) {
+            Some(button) => self.open_menu(f, button, window, cx),
+            None => {
+                self.pending_menu = Some(f);
+                self.scroll_to(crate::ScrollTarget::File(f), cx);
+            }
+        }
+    }
+
+    /// Collapses file `f` to its header, or expands it (`z`).
+    pub fn toggle_collapsed(&mut self, f: u32, cx: &mut Context<Self>) {
+        if f < self.doc.len() {
+            let collapsed = self.doc.is_collapsed(f);
+            self.set_collapsed(f, !collapsed, cx);
+        }
+    }
+
+    /// File `f`'s ⋯ button as the last frame painted it.
+    fn menu_button(&self, f: u32) -> Option<Bounds<Pixels>> {
+        self.frame_pool
+            .as_ref()?
+            .controls
+            .iter()
+            .find(|c| c.action == ControlAction::Menu(f))
+            .map(|c| c.bounds)
+    }
+
     /// Closes the ⋯ menu, if open, and hands focus back once the current
     /// update is done (this has no window to focus with).
     pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
@@ -524,6 +571,16 @@ impl DiffViewport {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(f) = self.pending_menu.take() {
+            let button = frame
+                .controls
+                .iter()
+                .find(|c| c.action == ControlAction::Menu(f))
+                .map(|c| c.bounds);
+            if let Some(button) = button {
+                self.open_menu(f, button, window, cx);
+            }
+        }
         let Some(menu) = &mut self.menu else {
             return;
         };
