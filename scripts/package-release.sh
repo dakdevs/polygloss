@@ -13,7 +13,9 @@
 #   4. signs ad-hoc with the hardened runtime, inside out (polygloss-cli, then
 #      the bundle), so the bundle is sealed even without credentials; with
 #      --sign, scripts/sign-and-notarize.sh (T5.2) then re-signs it with the
-#      Developer ID from the environment, notarizes and staples it;
+#      Developer ID from the environment, notarizes and staples it (without
+#      credentials it prints "signing skipped: no credentials" and keeps the
+#      ad-hoc signature);
 #   5. makes Polygloss_<version>_aarch64.dmg (the app plus an /Applications
 #      link) with hdiutil, which --sign also hands to sign-and-notarize.sh;
 #   6. runs scripts/smoke-bundle.sh --static on the result.
@@ -50,9 +52,6 @@ if [ "${POLYGLOSS_PACKAGE_RELEASE_LOCKED-}" != 1 ]; then
 fi
 
 signer="$repo_root/scripts/sign-and-notarize.sh"
-if [ "$sign" = 1 ] && [ ! -x "$signer" ]; then
-  die "--sign needs scripts/sign-and-notarize.sh (T5.2)"
-fi
 
 dist="${POLYGLOSS_DIST_DIR:-$repo_root/dist}"
 mkdir -p "$dist"
@@ -66,7 +65,16 @@ scripts/cargo.sh build --release -p polygloss-cli
 
 say "packaging $app"
 rm -rf "$app"
-scripts/cargo.sh packager --release --formats app --out-dir "$dist" ||
+# cargo-packager reads APPLE_* credentials (it imports the certificate into its
+# own keychain, rewriting the user's search list, then signs and notarizes)
+# whenever a signing identity reaches its config. None is configured, and it
+# never sees the credentials either: signing is scripts/sign-and-notarize.sh's.
+packager_env=()
+for var in $(compgen -e); do
+  case "$var" in APPLE_*) packager_env+=(-u "$var") ;; esac
+done
+env ${packager_env[@]+"${packager_env[@]}"} \
+  scripts/cargo.sh packager --release --formats app --out-dir "$dist" ||
   die "cargo packager failed (needs: cargo install cargo-packager --version =0.11.8 --locked)"
 [ -d "$app" ] || die "cargo packager made no $app"
 
