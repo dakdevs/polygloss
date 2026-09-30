@@ -27,11 +27,9 @@ use serde_json::{Value, json};
 pub const TEST_ENV: &str = "POLYGLOSS_TEST";
 
 /// `debug seed`: open a review and print `{review_id, review_key, diff_id, iteration}`.
+/// The worktree or repository is the global `--repo` (required).
 #[derive(Debug, Args)]
 pub struct SeedArgs {
-    /// Any path inside the worktree or repository.
-    #[arg(long)]
-    pub repo: PathBuf,
     /// Review one commit against its first parent.
     #[arg(long, conflicts_with_all = ["base", "head"])]
     pub commit: Option<String>,
@@ -130,7 +128,7 @@ fn human() -> Author {
     }
 }
 
-pub fn seed(args: SeedArgs) -> anyhow::Result<Value> {
+pub fn seed(repo: PathBuf, args: SeedArgs) -> anyhow::Result<Value> {
     require_test_env("seed")?;
     let core = core()?;
     let source = match (&args.commit, &args.base, &args.head) {
@@ -154,7 +152,7 @@ pub fn seed(args: SeedArgs) -> anyhow::Result<Value> {
     };
     let live = matches!(source, Source::Live { .. });
     let opened = core.open(&OpenRequest {
-        worktree: args.repo,
+        worktree: repo,
         source,
         label: args.label,
         pin: live.then_some(PinnedBy::Comment),

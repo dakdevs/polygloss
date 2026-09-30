@@ -974,7 +974,9 @@ MCP resource URIs (§15.3) use the same forms, so any of them also works as a de
 | `polygloss focus <diff_id\|review_id> [--path … --line …]`                                                      | `focus`                           |
 | `polygloss snapshot [<path>]`                                                                                   | pin the live state                |
 
-Global flags: `--repo <path>`, `--json` (the default when stdout is not a TTY), `--no-open` (resolve and print ids without launching the app), `--agent <name>` (author name for writes; default `$POLYGLOSS_AGENT`, else `agent`), and `--session <id>`.
+Global flags: `--repo <path>`, `--json` (the default when stdout is not a TTY), `--no-open` (resolve and print ids without launching the app), `--agent <name>` (author name for writes; default `$POLYGLOSS_AGENT`, else `agent`), and `--session <id>`. They go before or after the subcommand. The live review's `--since` and `<path>` never combine with a subcommand; a directory named like a subcommand needs `./`.
+
+Errors exit 1, in JSON mode as `{"error": {"code", "message"}}` on stdout with the §15.1 codes. Usage errors (unknown or missing arguments) exit 2, in JSON mode with the CLI-only code `invalid_args`; `polygloss wait` exits 1 instead, because its exit 2 wakes the session.
 
 ---
 
