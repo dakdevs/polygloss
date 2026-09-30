@@ -91,6 +91,12 @@ pub struct ViewportTheme {
     /// Behind the lines of a range and selected text (Zed's
     /// `players[0].selection`).
     pub selection: Hsla,
+    /// Behind every find match (`terminal.ansi.yellow`, translucent, like the
+    /// find bar's result list).
+    pub find_match: Hsla,
+    /// Behind the current find match (`search.active_match_background`, else
+    /// a stronger yellow).
+    pub find_match_current: Hsla,
     /// Syntax styles for the highlighter; token `StyleId`s index into it.
     pub syntax: Arc<SyntaxTheme>,
     /// Per `StyleId`: color (the foreground when the style has none), weight
@@ -153,6 +159,14 @@ impl ViewportTheme {
             .and_then(|c| c.as_str())
             .and_then(Rgba::parse)
             .map_or(accent.opacity(0.18), hsla);
+        // Yellow, as the find bar's result list marks matches (gpui-kit's
+        // yellow comes from `terminal.ansi.yellow` too): it stays visible on
+        // added and removed rows, where a translucent accent blue fades.
+        let yellow = pick(&["terminal.ansi.yellow", "warning"], 0xffca00ff);
+        let find_match = yellow.opacity(0.35);
+        let find_match_current = t
+            .color("search.active_match_background")
+            .map_or(yellow.opacity(0.8), hsla);
         let syntax = Arc::new(SyntaxTheme::from_zed(t));
         let syntax_styles = syntax
             .styles()
@@ -200,6 +214,8 @@ impl ViewportTheme {
             badge_background,
             cursor_line,
             selection,
+            find_match,
+            find_match_current,
             syntax,
             syntax_styles,
         }

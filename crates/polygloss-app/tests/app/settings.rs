@@ -14,6 +14,33 @@ use crate::shell::{compare_req, draw, start};
 use crate::support::{Sandbox, code_change_repo};
 
 #[test]
+fn buffer_font_ligatures_setting_reaches_the_viewport_font() {
+    // Off by default: the code font turns contextual alternates and
+    // standard ligatures off, so `->` is drawn as typed.
+    let off = Settings::default().viewport_options();
+    assert!(!off.ligatures);
+    let features = polygloss_viewport::code_font_features(off.ligatures);
+    assert_eq!(
+        features.tag_value_list(),
+        [("calt".to_owned(), 0), ("liga".to_owned(), 0)]
+    );
+    assert_eq!(features.is_calt_enabled(), Some(false));
+    let font = polygloss_viewport::code_font("Lilex", off.ligatures);
+    assert_eq!(font.family.as_ref(), "Lilex");
+    assert_eq!(font.features, features);
+    // `"ligatures": true` leaves the font's own defaults alone.
+    let on = Settings::parse(r#"{ "buffer_font": { "ligatures": true } }"#)
+        .unwrap()
+        .viewport_options();
+    assert!(on.ligatures);
+    assert!(
+        polygloss_viewport::code_font_features(on.ligatures)
+            .tag_value_list()
+            .is_empty()
+    );
+}
+
+#[test]
 fn settings_defaults_match_design_table() {
     let s = Settings::default();
     assert_eq!(s.theme.mode, ThemeMode::System);
@@ -21,6 +48,7 @@ fn settings_defaults_match_design_table() {
     assert_eq!(s.theme.dark, "Pierre Dark");
     assert_eq!(s.buffer_font.family, "Lilex");
     assert_eq!(s.buffer_font.size, 13.0);
+    assert!(!s.buffer_font.ligatures, "ligatures are off by default");
     assert_eq!(s.diff.layout, LayoutSetting::Auto);
     assert_eq!(s.diff.split_min_columns, 160);
     assert_eq!(s.diff.word_diff, WordDiffSetting::Word);
@@ -85,6 +113,7 @@ fn settings_defaults_match_design_table() {
     assert_eq!(defaults.layout, LayoutMode::Auto);
     assert_eq!(defaults.split_min_columns, 160);
     assert_eq!(defaults.code_font, "Lilex");
+    assert!(!defaults.ligatures);
     assert_eq!(defaults.large_file_changed_lines, 20_000);
 
     // Wrong types or unknown enum values make the file invalid.

@@ -14,7 +14,10 @@
 //! result: the file is expanded if
 //! collapsed, a generated or large file loads its diff, hidden context
 //! around the match is revealed, and the line cursor lands on the match.
-//! `Esc` closes the bar and gives the keyboard back to the diff.
+//! `Esc` closes the bar and gives the keyboard back to the diff. While the
+//! bar is open the diff marks every visible match of the query, the match
+//! gone to in a stronger color (`DiffViewport::set_find_highlights`); closing
+//! it clears the marks.
 //!
 //! ⌥⌘C and ⌥⌘R toggle match case and regex while the bar has focus (the
 //! bar's own bindings, like a text field's; key context `FindBar`).
@@ -33,7 +36,9 @@ use gpui_kit::{
 };
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::{FileChange, Side};
-use polygloss_viewport::{BodyRow, CursorPos, DiffViewport, FileState, RowKey, ScrollTarget};
+use polygloss_viewport::{
+    BodyRow, CursorPos, DiffViewport, FileState, FindCurrent, FindHighlights, RowKey, ScrollTarget,
+};
 use regex::bytes::Regex;
 
 use crate::keymap::actions::tab::Find;
@@ -132,6 +137,8 @@ pub struct FindBar {
     options: FindOptions,
     /// Why the query is not searched (an invalid pattern).
     error: Option<String>,
+    /// The compiled query (`None` when empty or invalid): the diff's marks.
+    regex: Option<Regex>,
     matches: Vec<FindMatch>,
     rows: Vec<ListRow>,
     /// Matches per file.
@@ -198,6 +205,7 @@ impl FindBar {
             query: String::new(),
             options: FindOptions::default(),
             error: None,
+            regex: None,
             matches: Vec::new(),
             rows: Vec::new(),
             file_counts: HashMap::new(),
@@ -222,19 +230,52 @@ impl FindBar {
 
     /// Shows the bar and focuses its field, the previous query selected.
     pub fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open = true;
+        let was_open = std::mem::replace(&mut self.open, true);
         self.input.update(cx, |input, cx| {
             input.focus(window, cx);
             input.select_all(window, cx);
         });
+        if !was_open {
+            self.sync_highlights(cx);
+        }
         cx.notify();
     }
 
-    /// Hides the bar (its query and results stay) and focuses the diff.
+    /// Hides the bar (its query and results stay) and focuses the diff; the
+    /// diff's find marks go away until it opens again.
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
+        self.sync_highlights(cx);
         window.focus(&self.diff_focus, cx);
         cx.notify();
+    }
+
+    /// Gives the diff the marks for the query while the bar is open (every
+    /// match, the current one emphasized), else none.
+    fn sync_highlights(&self, cx: &mut Context<Self>) {
+        let highlights = match (&self.regex, self.open) {
+            (Some(re), true) => {
+                let re = re.clone();
+                Some(FindHighlights {
+                    matcher: Arc::new(move |line: &[u8]| search::line_matches(&re, line).collect()),
+                    current: self.current_highlight(),
+                })
+            }
+            _ => None,
+        };
+        self.viewport
+            .update(cx, |v, cx| v.set_find_highlights(highlights, cx));
+    }
+
+    /// The match gone to, as the diff emphasizes it.
+    fn current_highlight(&self) -> Option<FindCurrent> {
+        let m = self.matches.get(self.current?)?;
+        Some(FindCurrent {
+            file_idx: m.file_idx,
+            side: m.side,
+            line: m.line,
+            range: m.range.clone(),
+        })
     }
 
     /// The find field.
@@ -380,7 +421,11 @@ impl FindBar {
         if let Some(row) = self.rows.iter().position(|r| *r == ListRow::Match(ix)) {
             self.list_scroll.scroll_to_item(row, ScrollStrategy::Center);
         }
-        self.viewport.update(cx, |v, cx| reveal_match(v, &m, cx));
+        let current = self.current_highlight();
+        self.viewport.update(cx, |v, cx| {
+            reveal_match(v, &m, cx);
+            v.set_find_current(current, cx);
+        });
         cx.notify();
     }
 
@@ -450,11 +495,16 @@ impl FindBar {
         self.capped = false;
         self.searched = 0;
         self.total = 0;
+        self.regex = None;
         match search::compile(&self.query, self.options) {
             Err(e) => self.error = Some(e),
             Ok(None) => {}
-            Ok(Some(re)) => self.start(re, cx),
+            Ok(Some(re)) => {
+                self.regex = Some(re.clone());
+                self.start(re, cx);
+            }
         }
+        self.sync_highlights(cx);
         cx.notify();
     }
 

@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::{
-    Bounds, Context, EventEmitter, Font, IntoElement, ParentElement as _, Pixels, Render,
-    SharedString, Styled as _, Window, div, font, px,
+    Bounds, Context, EventEmitter, Font, FontFeatures, IntoElement, ParentElement as _, Pixels,
+    Render, SharedString, Styled as _, Window, div, font, px,
 };
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::Layout;
@@ -29,6 +29,7 @@ use crate::document::{
 };
 use crate::element::DiffElement;
 use crate::file_flags::FileFlags;
+use crate::find::{FindCurrent, FindHighlights, FindState};
 use crate::gap::Gaps;
 use crate::header::HeaderMenu;
 use crate::layout::{Columns, Geometry, LayoutMode, Pane, digits, resolve_layout, wrapped_heights};
@@ -65,6 +66,9 @@ pub struct ViewportOptions {
     /// Code font family (design §18: Lilex; Menlo when it is not installed).
     pub code_font: SharedString,
     pub code_font_size: f32,
+    /// OpenType ligatures in the code font (settings `buffer_font.ligatures`,
+    /// default off): off, `->` shows as the two characters it is.
+    pub ligatures: bool,
     pub theme: Arc<ViewportTheme>,
     /// Files with more changed lines show a placeholder instead of rows
     /// (design §12.3: 20,000).
@@ -90,6 +94,7 @@ impl Default for ViewportOptions {
             style: DiffStyle::default(),
             code_font: SharedString::new_static("Lilex"),
             code_font_size: 13.0,
+            ligatures: false,
             theme: Arc::new(ViewportTheme::default()),
             large_file_changed_lines: 20_000,
             syntax: true,
@@ -225,6 +230,8 @@ pub struct DiffViewport {
     /// Old-side lines may be commented on (the host turns it off, e.g. for
     /// "Changes since last review", OQ-9).
     pub(crate) old_side_comments: bool,
+    /// Find matches marked in the code ([`crate::find`]).
+    pub(crate) find: Option<FindState>,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
@@ -292,6 +299,7 @@ impl DiffViewport {
             drag: None,
             pointer_inside: false,
             old_side_comments: true,
+            find: None,
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
             #[cfg(feature = "debug-inspect")]
@@ -303,6 +311,39 @@ impl DiffViewport {
 
     pub fn options(&self) -> &ViewportOptions {
         &self.opts
+    }
+
+    /// Marks every match of `highlights.matcher` in the code painted, the
+    /// current one emphasized (⌘F); `None` clears the marks.
+    pub fn set_find_highlights(
+        &mut self,
+        highlights: Option<FindHighlights>,
+        cx: &mut Context<Self>,
+    ) {
+        self.find = highlights.map(FindState::new);
+        cx.notify();
+    }
+
+    /// Emphasizes another match, keeping the matcher (and the lines it
+    /// already matched). Does nothing without highlights.
+    pub fn set_find_current(&mut self, current: Option<FindCurrent>, cx: &mut Context<Self>) {
+        if let Some(find) = &mut self.find
+            && find.highlights.current != current
+        {
+            find.highlights.current = current;
+            cx.notify();
+        }
+    }
+
+    /// The find highlights in effect.
+    pub fn find_highlights(&self) -> Option<&FindHighlights> {
+        self.find.as_ref().map(|f| &f.highlights)
+    }
+
+    /// The font code is drawn in: the configured family (or the fallback)
+    /// with the [`code_font_features`] of the options.
+    pub fn code_font(&self) -> &Font {
+        &self.code_font
     }
 
     pub fn provider(&self) -> &Arc<dyn DiffProvider> {
@@ -320,8 +361,9 @@ impl DiffViewport {
     pub fn set_options(&mut self, opts: ViewportOptions, cx: &mut Context<Self>) {
         let old = std::mem::replace(&mut self.opts, opts);
         let theme_changed = !Arc::ptr_eq(&old.theme, &self.opts.theme);
-        let font_changed =
-            old.code_font != self.opts.code_font || old.code_font_size != self.opts.code_font_size;
+        let font_changed = old.code_font != self.opts.code_font
+            || old.code_font_size != self.opts.code_font_size
+            || old.ligatures != self.opts.ligatures;
         // Large files get no word ranges and no rows, so a new threshold
         // means loading again too.
         let data_changed = old.diff != self.opts.diff
@@ -663,6 +705,7 @@ impl DiffViewport {
                 cache: &mut self.text_cache,
                 pipeline: &self.pipeline,
                 blocks: &self.blocks,
+                find: self.find.as_mut(),
                 text_system: window.text_system().clone(),
                 marks,
                 frame: &mut frame,
@@ -927,6 +970,26 @@ fn same_change(a: &FileChange, b: &FileChange) -> bool {
         && a.generated == b.generated
 }
 
+/// The OpenType features the code font is drawn with: none with `ligatures`
+/// (the font's defaults), else contextual alternates (`calt`, where fonts
+/// like Lilex keep their programming ligatures) and standard ligatures
+/// (`liga`) off, so a diff shows `->`, `!=` and `>=` as typed.
+pub fn code_font_features(ligatures: bool) -> FontFeatures {
+    if ligatures {
+        FontFeatures::default()
+    } else {
+        FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)]))
+    }
+}
+
+/// Code font `family` with the [`code_font_features`] for `ligatures`.
+pub fn code_font(family: impl Into<SharedString>, ligatures: bool) -> Font {
+    Font {
+        features: code_font_features(ligatures),
+        ..font(family)
+    }
+}
+
 /// The code font (the configured family, or Menlo when it is missing) and its
 /// geometry.
 ///
@@ -936,11 +999,12 @@ fn same_change(a: &FileChange, b: &FileChange) -> bool {
 /// installed family.
 fn resolve_font(opts: &ViewportOptions, window: &Window) -> (Font, Geometry) {
     let text_system = window.text_system();
-    let code = if crate::kit::is_installed(text_system, &opts.code_font) {
-        font(opts.code_font.clone())
+    let family = if crate::kit::is_installed(text_system, &opts.code_font) {
+        opts.code_font.clone()
     } else {
-        font(FALLBACK_CODE_FONT)
+        SharedString::new_static(FALLBACK_CODE_FONT)
     };
+    let code = code_font(family, opts.ligatures);
     let font_id = text_system.resolve_font(&code);
     let size = opts.code_font_size.max(1.0);
     let advance = text_system

@@ -564,6 +564,115 @@ fn open_composer_follows_its_file_across_iterations(cx: &mut gpui_kit::TestAppCo
 }
 
 #[gpui_kit::test]
+fn reply_text_survives_its_thread_leaving_with_an_iteration_switch(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    let (review_id, diff, repo_info) = tab.read_with(shell.cx, |t, _| {
+        (
+            t.review_id.clone(),
+            t.opened.diff_id.clone(),
+            t.opened.repo.clone(),
+        )
+    });
+    let blobs = BlobReader::open(&repo_info).unwrap();
+    let human = Author {
+        kind: AuthorKind::Human,
+        name: "you".into(),
+        session_id: None,
+    };
+    let thread_on = |shell: &mut Shell, line: u32| {
+        shell
+            .core
+            .create_thread(
+                &NewThread {
+                    review_id: review_id.clone(),
+                    diff_id: diff.clone(),
+                    subject: Subject::Line {
+                        path: "src/c.rs".into(),
+                        side: Side::New,
+                        start_line: line,
+                        line,
+                    },
+                    kind: ThreadKind::Comment,
+                    body_md: format!("About line {line}"),
+                    author: human.clone(),
+                },
+                &blobs,
+            )
+            .expect("create the thread")
+    };
+    let (kept, dropped) = (thread_on(&mut shell, 11), thread_on(&mut shell, 12));
+    tab.update(shell.cx, threads::reload);
+    draw(shell.cx);
+    let root = |shell: &mut Shell, id: &str| {
+        shell
+            .core
+            .thread(id, polygloss_core::review::Viewer::Human)
+            .unwrap()
+            .comments[0]
+            .id
+            .clone()
+    };
+    let (kept_root, dropped_root) = (root(&mut shell, &kept), root(&mut shell, &dropped));
+    let reply_to = |shell: &mut Shell, id: &str, text: &str| {
+        let opened = tab.update_in(shell.cx, |t, window, cx| {
+            composer::open_reply(t, id, window, cx)
+        });
+        assert!(opened);
+        draw(shell.cx);
+        shell.cx.simulate_input(text);
+        draw(shell.cx);
+    };
+    let open_keys = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            composer::composers(t)
+                .map(|c| c.read(cx).keys())
+                .unwrap_or_default()
+        })
+    };
+    let saved = |shell: &mut Shell, id: &str| {
+        tab.read_with(shell.cx, |t, _| {
+            polygloss_app::view_state::composer_text(t, &format!("reply:{id}")).map(str::to_owned)
+        })
+    };
+
+    // A thread gone on the diff shown (deleted): its reply goes with it.
+    reply_to(&mut shell, &dropped, "never mind");
+    assert_eq!(saved(&mut shell, &dropped).as_deref(), Some("never mind"));
+    shell.core.delete_comment(&dropped_root, &human).unwrap();
+    tab.update(shell.cx, threads::reload);
+    draw(shell.cx);
+    assert!(open_keys(&mut shell).is_empty());
+    assert_eq!(saved(&mut shell, &dropped), None);
+
+    // A thread that is not listed any more once the tab shows the next
+    // iteration: the reply closes, but its text is kept (close, not cancel).
+    reply_to(&mut shell, &kept, "half a reply");
+    assert_eq!(
+        open_keys(&mut shell),
+        [ComposerKey::Reply {
+            thread_id: kept.clone()
+        }]
+    );
+    shell.core.delete_comment(&kept_root, &human).unwrap();
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+    draw(shell.cx);
+    assert_ne!(diff_id(&mut shell, &tab), diff.as_str());
+    let listed = tab.read_with(shell.cx, |t, cx| {
+        threads::threads(t)
+            .is_some_and(|m| m.read(cx).is_loaded() && m.read(cx).thread(&kept).is_none())
+    });
+    assert!(listed, "the threads reloaded without it");
+    assert!(open_keys(&mut shell).is_empty(), "the reply closed");
+    assert_eq!(saved(&mut shell, &kept).as_deref(), Some("half a reply"));
+}
+
+#[gpui_kit::test]
 fn no_submission_disables_toggle(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = review_repo();

@@ -156,6 +156,7 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
             hide_agent_notes: hide,
             setting_hidden: hide,
             loaded: false,
+            loaded_diff: None,
             generation: 0,
             loading: None,
             stats: ThreadsStats::default(),
@@ -323,6 +324,8 @@ pub struct ReviewThreads {
     /// `agent_notes.hidden` as last applied from the settings.
     setting_hidden: bool,
     loaded: bool,
+    /// The diff the last load listed the threads for.
+    loaded_diff: Option<DiffId>,
     generation: u64,
     loading: Option<Task<()>>,
     stats: ThreadsStats,
@@ -503,6 +506,12 @@ impl ReviewThreads {
         &self.diff_id
     }
 
+    /// The diff the threads were last loaded for (right after a `set_diff`
+    /// the list is still the previous diff's until the reload lands).
+    pub fn loaded_diff(&self) -> Option<&DiffId> {
+        self.loaded_diff.as_ref()
+    }
+
     /// Loads the threads and positions again on the background executor.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
@@ -599,6 +608,9 @@ impl ReviewThreads {
             .collect();
         self.expanded.retain(|id| self.index.contains_key(id));
         self.loaded = true;
+        // A load that lands is the latest one, started after the last
+        // `set_diff`: its list is the one for the diff shown.
+        self.loaded_diff = Some(self.diff_id.clone());
         self.stats.loads += 1;
         self.update_blocks(&changed, cx);
         cx.emit(ThreadsEvent::Changed);

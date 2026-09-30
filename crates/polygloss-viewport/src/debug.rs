@@ -20,7 +20,7 @@ use crate::paint_rows::{DebugContent, DebugRow};
 /// | Unified line | `format!("{:>5} {:>5} {} {}", old, new, marker, text)`   |
 /// | Split line   | `"<cell> │ <cell>"`, a cell `format!("{:>5} {} {}", n, marker, text)` (blank for an empty side) |
 /// | Markers      | `\ No newline at end of file`, both sides' joined with ` │ ` in split |
-/// | Other        | the label shown (`⋯ 3 unchanged lines`, `Binary file`, `Loading…`) or `[block <id>]` |
+/// | Other        | the label shown (`⋯ 3 unchanged lines`, `Binary file`, `Loading…`), `[block <id>]`, or `[block <old> │ block <new>]` for split blocks side by side |
 ///
 /// Numbers are 1-based; markers are `-`, `+` or a space; text is as displayed
 /// (tabs expanded, cut with `…`).
@@ -128,6 +128,7 @@ pub(crate) fn format_rows(rows: &[DebugRow]) -> (Vec<String>, Vec<(f32, f32)>, u
             ),
             DebugContent::Split { left, right } => format!("{} │ {}", cell(left), cell(right)),
             DebugContent::Block(id) => format!("[block {id}]"),
+            DebugContent::BlockPair(old, new) => format!("[block {old} │ block {new}]"),
         })
         .collect();
     let bounds = rows.iter().map(|r| (r.y, r.height)).collect();

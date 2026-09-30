@@ -221,6 +221,37 @@ fn ipc_open_by_diff_id_opens_its_latest_review(cx: &mut gpui_kit::TestAppContext
     assert_eq!(activations(&mut shell), before + 1);
     let state = run(&mut shell, Op::DebugState).unwrap();
     assert_eq!(state["activations"], json!(before + 1));
+
+    // No target and no activation: the window is shown, the app stays
+    // behind, and the status says so.
+    let r = run(
+        &mut shell,
+        Op::Open {
+            review_id: None,
+            diff_id: None,
+            activate: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(r, json!({ "status": "shown" }));
+    assert_eq!(activations(&mut shell), before + 1);
+}
+
+#[test]
+fn startup_activates_only_foreground_launches_of_an_unbundled_app() {
+    use polygloss_app::startup::activate_on_launch;
+    use std::ffi::OsStr;
+    // A dev run from a terminal: nothing else brings it forward.
+    assert!(activate_on_launch(false, None));
+    assert!(activate_on_launch(false, Some(OsStr::new("1"))));
+    // The unbundled launch override's background launch (`open -g`'s
+    // stand-in): stays behind.
+    assert!(!activate_on_launch(false, Some(OsStr::new("0"))));
+    // The bundle: LaunchServices activates user launches itself and keeps
+    // `open -g` launches behind; startup never asks.
+    assert!(!activate_on_launch(true, None));
+    assert!(!activate_on_launch(true, Some(OsStr::new("1"))));
+    assert!(!activate_on_launch(true, Some(OsStr::new("0"))));
 }
 
 #[gpui_kit::test]

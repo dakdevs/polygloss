@@ -245,6 +245,68 @@ fn find_next_prev_wraps(cx: &mut TestAppContext) {
     assert_eq!(cursor(&mut shell, &tab), Some(pos(last, Side::New, 100)));
 }
 
+#[gpui_kit::test]
+fn find_marks_matches_in_the_diff_while_open(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = case_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let bar = bar(&mut shell, &tab);
+    let highlights = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            t.viewport.read(cx).find_highlights().cloned()
+        })
+    };
+    assert!(highlights(&mut shell).is_none(), "no marks before ⌘F");
+
+    // A query marks its matches: the viewport gets the search's own matcher
+    // (case-insensitive by default), nothing is current yet.
+    find_text(&mut shell, "foo");
+    let h = highlights(&mut shell).expect("marks while find is open");
+    assert!(h.current.is_none());
+    assert_eq!((h.matcher)(b"Foo bar foo"), vec![0..3, 8..11]);
+    assert!((h.matcher)(b"bar").is_empty());
+    // Every match found has its byte range in its line.
+    let ranges: Vec<(u32, std::ops::Range<usize>)> = bar.read_with(shell.cx, |b, _| {
+        b.matches()
+            .iter()
+            .map(|m| (m.line, m.range.clone()))
+            .collect()
+    });
+    assert_eq!(ranges, [(1, 0..3), (2, 0..3), (3, 0..3)]);
+
+    // ⏎ emphasizes the match gone to.
+    keys(&mut shell, "enter");
+    keys(&mut shell, "enter");
+    let current = highlights(&mut shell).and_then(|h| h.current);
+    let current = current.expect("the current match is emphasized");
+    assert_eq!(
+        (current.file_idx, current.side, current.line, current.range),
+        (0, Side::New, 2, 0..3)
+    );
+
+    // A case-sensitive search marks what it finds.
+    bar.update(shell.cx, |b, cx| b.set_case_sensitive(true, cx));
+    draw(shell.cx);
+    let h = highlights(&mut shell).unwrap();
+    assert_eq!((h.matcher)(b"Foo bar foo"), vec![8..11]);
+    assert!(h.current.is_none(), "a new search starts over");
+
+    // Esc closes find and clears the marks; ⌘F brings them back.
+    keys(&mut shell, "escape");
+    assert!(highlights(&mut shell).is_none());
+    keys(&mut shell, "cmd-f");
+    assert!(highlights(&mut shell).is_some());
+    // An empty or invalid query marks nothing.
+    bar.update_in(shell.cx, |b, window, cx| b.set_query("", window, cx));
+    draw(shell.cx);
+    assert!(highlights(&mut shell).is_none());
+    bar.update(shell.cx, |b, cx| b.set_regex(true, cx));
+    bar.update_in(shell.cx, |b, window, cx| b.set_query("(", window, cx));
+    draw(shell.cx);
+    assert!(highlights(&mut shell).is_none());
+}
+
 /// `x.rs`, 100 lines, lines 10 and 80 changed: old lines 14..77 are hidden
 /// between the hunks.
 fn long_gap_repo() -> FixtureRepo {

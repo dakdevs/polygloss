@@ -3,12 +3,14 @@
 //!
 //! - [`command`]: the palette, every action with its binding.
 //! - [`cheat_sheet`]: every binding in effect, by context.
+//! - [`key_cap`]: how both show a key (`Esc` spelled out).
 //! - [`view_toggles`]: split/unified (`s`, remembered per diff), hide
 //!   whitespace (`w`), word diff by words, characters or off; the toolbar's
 //!   controls for them are [`toolbar_items`].
 
 pub mod cheat_sheet;
 pub mod command;
+pub mod key_cap;
 pub mod view_toggles;
 
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};

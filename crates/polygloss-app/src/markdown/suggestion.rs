@@ -200,6 +200,7 @@ fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> imp
     let theme = cx.theme();
     let diff = crate::theme::viewport_theme(cx);
     let (family, size) = super::code_font(cx);
+    let features = super::code_font_features(cx);
     let rows = mini_diff(ctx, replacement);
     let widest = rows
         .iter()
@@ -253,6 +254,7 @@ fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> imp
                 .items_start()
                 .bg(bg)
                 .font_family(family.clone())
+                .font_features(features.clone())
                 .text_size(px(size))
                 .line_height(px((size * 1.54).round()))
                 .child(

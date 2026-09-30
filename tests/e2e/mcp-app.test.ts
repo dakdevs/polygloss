@@ -404,6 +404,10 @@ describe.skipIf(!process.env.POLYGLOSS_E2E)("MCP without a running app", () => {
       expect(
         state.tabs.find((t) => t.review_id === opened.review_id),
       ).toMatchObject({ diff_id: opened.diff_id, active: true });
+      // A background launch (`open -g`; here the launch override with
+      // POLYGLOSS_LAUNCH_ACTIVATE=0) never brings the app forward, not even
+      // at startup (design §13.4).
+      expect(state.activations).toBe(0);
 
       // A second open_diff finds it running.
       const again = await call("open_diff", { repo, show: true });

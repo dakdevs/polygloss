@@ -4,7 +4,6 @@
 //! was before it opened, so it acts on that tab exactly as its key would.
 
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{ActiveTheme as _, IndexPath, WindowExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -14,6 +13,7 @@ use gpui_kit::{
 
 use crate::keymap::KeymapStore;
 use crate::keymap::actions::{ACTIONS, ActionInfo};
+use crate::palette::key_cap::{key_cap, key_label};
 
 /// One row of the palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,11 +33,12 @@ impl PaletteRow {
 }
 
 /// `keys` as macOS shows shortcuts (`cmd-shift-enter` → `⌘⇧⏎`… as gpui-kit's
-/// `Kbd` spells them); strokes of a sequence are separated by spaces.
+/// `Kbd` spells them, Escape as `Esc`); strokes of a sequence are separated
+/// by spaces.
 pub fn format_keys(keys: &str) -> String {
     keys.split_whitespace()
         .filter_map(|k| Keystroke::parse(k).ok())
-        .map(|k| Kbd::format(&k))
+        .map(|k| key_label(&k))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -200,7 +201,7 @@ impl Render for CommandPalette {
                                 h_flex().flex_none().gap_1().text_color(muted).children(
                                     keys.split_whitespace()
                                         .filter_map(|k| Keystroke::parse(k).ok())
-                                        .map(Kbd::new),
+                                        .map(|k| key_cap(&k, cx)),
                                 ),
                             )
                         })

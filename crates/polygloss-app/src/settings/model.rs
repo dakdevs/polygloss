@@ -59,6 +59,9 @@ impl Default for ThemeSettings {
 pub struct FontSettings {
     pub family: String,
     pub size: f32,
+    /// OpenType ligatures (`calt`, `liga`). Off by default: a diff shows
+    /// code as typed, so `->` is never drawn as `→`.
+    pub ligatures: bool,
 }
 
 impl Default for FontSettings {
@@ -66,6 +69,7 @@ impl Default for FontSettings {
         FontSettings {
             family: "Lilex".to_owned(),
             size: 13.0,
+            ligatures: false,
         }
     }
 }
@@ -275,6 +279,7 @@ impl Settings {
             },
             code_font: self.buffer_font.family.clone().into(),
             code_font_size: self.buffer_font.size,
+            ligatures: self.buffer_font.ligatures,
             large_file_changed_lines: d.large_file_changed_lines,
             ..ViewportOptions::default()
         }

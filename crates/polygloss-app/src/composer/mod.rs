@@ -38,6 +38,7 @@ use gpui_kit::{
     MenuItem, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, WeakEntity, Window, div, px,
 };
+use polygloss_core::ids::DiffId;
 use polygloss_core::review::{AuthorKind, CommentView, OpenRequest, ThreadStatus, ThreadView};
 use polygloss_core::store::events::Actor;
 use polygloss_diff::Side;
@@ -102,6 +103,10 @@ struct Open {
     /// Saved: closes once the threads show the save (the reload count it
     /// waits past).
     saved_at_load: Option<u32>,
+    /// The diff whose thread list last had this composer's thread (or the
+    /// diff shown when it opened): a reply whose thread is missing from the
+    /// list of another diff (after an iteration switch) keeps its text.
+    seen_on: DiffId,
     _subscription: Subscription,
 }
 
@@ -438,6 +443,7 @@ fn open(
             view: view.clone(),
             block,
             saved_at_load: None,
+            seen_on: tab.opened.diff_id.clone(),
             _subscription: subscription,
         });
         cx.notify();
@@ -602,7 +608,11 @@ fn saved(
 /// comment shows now), composers whose thread or comment is gone close and
 /// drop their text, replies restored onto another review's thread close
 /// but keep their text (it is that review's draft, in the shared per-diff
-/// view state), and other reviews' threads get their review's title.
+/// view state), and other reviews' threads get their review's title. A
+/// reply whose thread is missing only since the tab moved to another diff
+/// (an iteration switch: another review's thread shown through the old diff
+/// is not listed for the new one) closes but keeps its text too, like a
+/// line composer whose file left the diff.
 fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     let (Some(entity), Some(model)) = (composers(tab).cloned(), threads::threads(tab).cloned())
     else {
@@ -612,8 +622,12 @@ fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Re
         let m = model.read(cx);
         (m.stats().loads, m.is_loaded())
     };
+    // The diff the threads were listed for (still the previous one right
+    // after a switch, until the reload lands).
+    let listed = model.read(cx).loaded_diff().cloned();
     let mut done: Vec<ComposerKey> = Vec::new();
     let mut gone: Vec<ComposerKey> = Vec::new();
+    let mut seen: Vec<ComposerKey> = Vec::new();
     {
         let c = entity.read(cx);
         let m = model.read(cx);
@@ -627,6 +641,10 @@ fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Re
             }
             match &o.key {
                 ComposerKey::Reply { thread_id } => match m.thread(thread_id) {
+                    // Gone with the diff the tab left: its text stays.
+                    None if listed.as_ref().is_some_and(|l| o.seen_on != *l) => {
+                        done.push(o.key.clone());
+                    }
                     None => gone.push(o.key.clone()),
                     // A reply autosaved in another review's tab on the same
                     // diff (its view state is per diff) is not this
@@ -635,7 +653,7 @@ fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Re
                     Some(t) if t.review_id.as_deref() != Some(tab.review_id.as_str()) => {
                         done.push(o.key.clone());
                     }
-                    Some(_) => {}
+                    Some(_) => seen.push(o.key.clone()),
                 },
                 ComposerKey::Edit { comment_id } if find_comment(m, comment_id).is_none() => {
                     gone.push(o.key.clone());
@@ -643,6 +661,15 @@ fn threads_changed(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Re
                 _ => {}
             }
         }
+    }
+    if let Some(listed) = listed.filter(|_| !seen.is_empty()) {
+        entity.update(cx, |c, _| {
+            for o in &mut c.open {
+                if seen.contains(&o.key) {
+                    o.seen_on = listed.clone();
+                }
+            }
+        });
     }
     // `close` leaves the view state alone; `cancel` drops the text.
     for key in done {

@@ -360,6 +360,7 @@ fn snippet(thread: &ThreadView, cx: &App) -> impl IntoElement + use<> {
         .border_color(theme.border)
         .bg(diff.background)
         .font_family(family)
+        .font_features(markdown::code_font_features(cx))
         .text_size(px(size - 1.0))
         .line_height(px(((size - 1.0) * 1.54).round()))
         .children(lines.into_iter().enumerate().map(move |(i, l)| {

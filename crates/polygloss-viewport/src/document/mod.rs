@@ -343,7 +343,15 @@ impl Document {
         match &mut entry.body {
             Body::Laid(layout) => {
                 if let Some(row) = layout.find(RowKey::Block(id)) {
-                    layout.set_row_height(row, h);
+                    // A pair's row is as tall as its taller block.
+                    let row_h = layout.rows()[row]
+                        .block_ids()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|b| entry.blocks.iter().find(|p| p.id == b))
+                        .map(|b| b.height)
+                        .fold(h, f32::max);
+                    layout.set_row_height(row, row_h);
                 }
             }
             Body::Explicit(body) => *body = (*body - old + h).max(0.0),
@@ -360,7 +368,9 @@ impl Document {
 
     /// Changes one row's height in a laid-out file (a measured block, a wrapped
     /// line); the anchor stays put. Ignored when the file has no layout. A
-    /// block row's new height is kept by later relayouts.
+    /// single block row's new height is kept by later relayouts (a pair's
+    /// row is re-derived from its blocks' heights: set those with
+    /// [`Document::set_block_height`]).
     pub fn set_row_height(&mut self, idx: u32, row: u32, h: f32) {
         let entry = &mut self.entries[idx as usize];
         if let Body::Laid(layout) = &mut entry.body

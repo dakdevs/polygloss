@@ -9,6 +9,9 @@
 //! was closed). The tab keeps showing what it shows; positions of `focus`
 //! apply to that diff (design §15.2: the review's latest iteration).
 //!
+//! `open` without a target only shows the main window: `"activated"` when it
+//! brought the app forward (`activate`), `"shown"` when it did not.
+//!
 //! Lines are 1-based, as on the wire.
 
 use std::time::Duration;
@@ -102,7 +105,10 @@ struct Place {
 async fn open(target: Target, activate: bool, cx: &mut AsyncApp) -> Result<Value, IpcError> {
     cx.update(|cx| bring_forward(activate, cx));
     if target.is_empty() {
-        return Ok(json!({ "status": "activated" }));
+        // Only the window: brought to the front, or just shown (reopened
+        // when it was closed) without taking focus.
+        let status = if activate { "activated" } else { "shown" };
+        return Ok(json!({ "status": status }));
     }
     let (tab, status) = show_tab(target, cx).await?;
     Ok(cx.update(|cx| tab_result(status, &tab, cx)))

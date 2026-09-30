@@ -819,3 +819,31 @@ fn split_no_newline_markers_of_both_sides_share_one_row(cx: &mut TestAppContext)
         ]
     );
 }
+
+#[gpui_kit::test]
+fn code_font_draws_without_ligatures_unless_asked(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![Spec::modified(
+        "src/a.rs",
+        "fn a() -> u8 { 1 }\n",
+        "fn a() -> u16 { 1 }\n",
+    )]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 600.);
+    // Off by default: `->` stays two characters.
+    let font = view.read_with(cx, |v, _| v.code_font().clone());
+    assert!(!view.read_with(cx, |v, _| v.options().ligatures));
+    assert_eq!(font.features, polygloss_viewport::code_font_features(false));
+    assert_eq!(font.features.is_calt_enabled(), Some(false));
+    assert!(
+        font.features
+            .tag_value_list()
+            .contains(&("liga".to_owned(), 0))
+    );
+    // Turning them on re-resolves the font and shapes the lines again.
+    let misses = debug(&view, cx).shaped_cache_misses;
+    set_options(&view, cx, |o| o.ligatures = true);
+    let font = view.read_with(cx, |v, _| v.code_font().clone());
+    assert!(font.features.tag_value_list().is_empty());
+    assert_eq!(font, polygloss_viewport::code_font("Lilex", true));
+    assert!(debug(&view, cx).shaped_cache_misses > misses);
+}

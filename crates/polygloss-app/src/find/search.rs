@@ -65,6 +65,9 @@ pub struct FindMatch {
     pub preview: SharedString,
     /// The match's byte range in `preview`.
     pub preview_match: Range<usize>,
+    /// The match's byte range in the line (without its `\r\n` / `\n`), as
+    /// [`line_matches`] finds it: the viewport's current find highlight.
+    pub range: Range<usize>,
 }
 
 /// The regex for `query`: `None` for an empty query, an error message for
@@ -236,7 +239,7 @@ pub fn search_blobs(
                 },
                 Side::Old => None,
             };
-            let (preview, preview_match) = preview(h.text, h.range);
+            let (preview, preview_match) = preview(h.text, h.range.clone());
             FindMatch {
                 file_idx,
                 side: h.side,
@@ -245,6 +248,7 @@ pub fn search_blobs(
                 hidden: old_line.is_some_and(|o| is_hidden(&fd, &[], o)),
                 preview,
                 preview_match,
+                range: h.range,
             }
         })
         .collect()
@@ -302,8 +306,9 @@ fn removed_blocks(fd: &FileDiff) -> impl Iterator<Item = (Range<u32>, u32)> + '_
         })
 }
 
-/// The non-empty matches of `re` in one line (without its `\r`).
-fn line_matches<'a>(re: &'a Regex, line: &'a [u8]) -> impl Iterator<Item = Range<usize>> + 'a {
+/// The non-empty matches of `re` in one line (without its `\n`; a trailing
+/// `\r` is not searched), as byte ranges.
+pub fn line_matches<'a>(re: &'a Regex, line: &'a [u8]) -> impl Iterator<Item = Range<usize>> + 'a {
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     re.find_iter(line)
         .filter(|m| !m.is_empty())

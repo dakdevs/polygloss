@@ -6,7 +6,9 @@
 //! to the [`crate::Document`], which places them as rows of their own
 //! ([`crate::FileLayout::with_blocks`]) and re-lays out only that file. In
 //! split a block sits in its side's column with a same-height spacer on the
-//! other side; in unified, and for file-level blocks, it spans the full width.
+//! other side, and an old-side and a new-side block hung from the same row
+//! share one row side by side (the taller one setting its height); in
+//! unified, and for file-level blocks, a block spans the full width.
 //!
 //! Heights are measured, never guessed for long: every frame renders the
 //! visible blocks (GPUI elements live for one frame), lays them out at their
@@ -31,11 +33,11 @@ use polygloss_diff::Side;
 use polygloss_diff::rows::Layout;
 
 pub use crate::document::{BlockAnchor, BlockId, PlacedBlock};
-use crate::document::{BodyRow, DEFAULT_WINDOW_SCREENS, RowKey, ScrollAnchor};
+use crate::document::{DEFAULT_WINDOW_SCREENS, RowKey, ScrollAnchor};
 use crate::layout::Pane;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::{DebugContent, DebugRow};
-use crate::paint_rows::{Frame, Painter};
+use crate::paint_rows::{Frame, Painter, pane_layer};
 use crate::view::DiffViewport;
 
 /// Height of a block before it is first measured, in code rows.
@@ -133,7 +135,8 @@ pub(crate) struct BlockSlot {
     /// Top-left corner in window coordinates.
     pub origin: Point<Pixels>,
     pub width: f32,
-    /// The row's height in the layout.
+    /// The block's height in the layout (its row's, unless it shares the
+    /// row with a taller block).
     pub height: f32,
     /// The row, cut to the viewport: the element never paints outside it.
     pub clip: Bounds<Pixels>,
@@ -167,19 +170,65 @@ impl<'a> Painter<'a> {
             }
             self.quad(1, half - 1.0, y, 1.0, h, theme.border);
         }
+        self.block_slot(f, id, pane, y, h, h);
+    }
+
+    /// A split row with an old-side and a new-side block side by side: each
+    /// in its column at its own height, the space below the shorter one
+    /// filled like a spacer.
+    pub(crate) fn block_pair(&mut self, f: u32, old: BlockId, new: BlockId, y: f32, h: f32) {
+        #[cfg(feature = "debug-inspect")]
+        self.debug.push(DebugRow {
+            y,
+            height: h,
+            styled: false,
+            content: DebugContent::BlockPair(old.0, new.0),
+        });
+        let width = self.bounds.size.width.as_f32();
+        let theme = self.theme;
+        for (k, id) in [(0u8, old), (1, new)] {
+            if self.blocks.spec(id).is_none() {
+                continue;
+            }
+            let pane = Pane::Half(k);
+            let own = self
+                .doc
+                .blocks(f)
+                .iter()
+                .find(|b| b.id == id)
+                .map_or(h, |b| b.height)
+                .min(h);
+            if own < h {
+                let (x, w) = block_column(pane, width);
+                self.quad(pane_layer(pane), x, y + own, w, h - own, theme.empty_cell);
+            }
+            self.block_slot(f, id, pane, y, own, h);
+        }
+        let half = (width / 2.0).floor();
+        self.quad(1, half - 1.0, y, 1.0, h, theme.border);
+    }
+
+    /// Queues the element slot of block `id` in `pane` of a row at `y`,
+    /// `row_h` tall: the block is `height` tall (its size in the layout, which
+    /// measuring checks) and clipped to its column of the row.
+    fn block_slot(&mut self, f: u32, id: BlockId, pane: Pane, y: f32, height: f32, row_h: f32) {
+        let blocks: &'a Blocks = self.blocks;
+        let Some(spec) = blocks.spec(id) else {
+            return;
+        };
+        let width = self.bounds.size.width.as_f32();
         let (x, w) = block_column(pane, width);
         let o = self.bounds.origin;
         let origin = point(o.x + px(x), o.y + px(y));
-        let render = spec.render.clone();
-        let clip = Bounds::new(origin, size(px(w), px(h))).intersect(&self.bounds);
+        let clip = Bounds::new(origin, size(px(w), px(row_h))).intersect(&self.bounds);
         self.frame.blocks.push(BlockSlot {
             id,
             file: f,
             origin,
             width: w,
-            height: h,
+            height,
             clip,
-            render,
+            render: spec.render.clone(),
         });
     }
 }
@@ -292,14 +341,31 @@ impl DiffViewport {
                 continue;
             }
             let anchor = *self.doc.anchor();
+            // The anchor's row holds this block (alone, or paired with the
+            // block the anchor names).
+            let row_of = |doc: &crate::document::Document, id: BlockId| {
+                doc.file_layout(m.file)
+                    .and_then(|l| l.find(RowKey::Block(id)).map(|r| (r, l.row_height(r))))
+            };
+            let before = row_of(&self.doc, m.id);
+            let anchored = match anchor.row {
+                RowKey::Block(a) => {
+                    a == m.id || (before.is_some() && row_of(&self.doc, a) == before)
+                }
+                _ => false,
+            };
             let keep_bottom = anchor.file_idx == m.file
-                && anchor.row == RowKey::Block(m.id)
+                && anchored
                 && anchor.offset_px > 0.0
                 && !self.blocks.painted.contains(&m.id);
             self.doc.set_block_height(m.file, m.id, m.height);
             if keep_bottom {
+                let grew = match (before, row_of(&self.doc, m.id)) {
+                    (Some((_, b)), Some((_, a))) => a - b,
+                    _ => m.height - old,
+                };
                 self.doc.scroll_to_anchor(ScrollAnchor {
-                    offset_px: (anchor.offset_px + m.height - old).max(0.0),
+                    offset_px: (anchor.offset_px + grew).max(0.0),
                     ..anchor
                 });
             }
@@ -336,28 +402,27 @@ impl DiffViewport {
                 if y + f64::from(layout.row_height(r)) <= top {
                     continue;
                 }
-                let BodyRow::Block(id) = layout.rows()[r] else {
-                    continue;
-                };
-                if visible.iter().any(|s| s.id == id) {
-                    continue;
+                for id in layout.rows()[r].block_ids().into_iter().flatten() {
+                    if visible.iter().any(|s| s.id == id) {
+                        continue;
+                    }
+                    let Some(spec) = self.blocks.spec(id) else {
+                        continue;
+                    };
+                    let (_, width) = block_column(block_pane(spec.anchor, self.layout), self.width);
+                    if self.blocks.measured.get(&id) == Some(&width) {
+                        continue;
+                    }
+                    if out.len() == max {
+                        return (out, true);
+                    }
+                    out.push(ToMeasure {
+                        file: f,
+                        id,
+                        width,
+                        render: spec.render.clone(),
+                    });
                 }
-                let Some(spec) = self.blocks.spec(id) else {
-                    continue;
-                };
-                let (_, width) = block_column(block_pane(spec.anchor, self.layout), self.width);
-                if self.blocks.measured.get(&id) == Some(&width) {
-                    continue;
-                }
-                if out.len() == max {
-                    return (out, true);
-                }
-                out.push(ToMeasure {
-                    file: f,
-                    id,
-                    width,
-                    render: spec.render.clone(),
-                });
             }
         }
         (out, false)
