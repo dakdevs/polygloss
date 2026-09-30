@@ -43,7 +43,7 @@ pub use request_rereview::{RequestRereviewRequest, RequestRereviewResult, reques
 pub use resolve::{
     ResolveRequest, ResolveResult, UnresolveRequest, UnresolveResult, resolve, unresolve,
 };
-pub use wait_for_review::{WaitForReviewRequest, wait_for_review};
+pub use wait_for_review::{WaitForReviewRequest, WaitForReviewResult, wait_for_review};
 
 /// A progress callback: `(elapsed, total)` since the wait started.
 pub type ProgressFn = Box<dyn Fn(Duration, Duration) + Send + Sync>;

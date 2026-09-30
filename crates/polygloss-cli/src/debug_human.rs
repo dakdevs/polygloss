@@ -11,6 +11,8 @@
 //!   agents until `human-submit`.
 //! - `human-viewed` marks a file of the latest iteration viewed.
 //! - `human-submit` publishes the drafts with a verdict and summary.
+//! - `human-archive` archives the review as Home's "Archive" does, or with
+//!   `--prune` deletes it as pruning does (both append `review.archived`).
 //! - `agent-comment` adds a published agent thread (note, question or comment)
 //!   on the latest iteration, or an agent reply with `--reply-to`; the author
 //!   name is the global `--agent` (default `claude-code`) and the session the
@@ -104,6 +106,16 @@ pub struct HumanSubmitArgs {
     pub verdict: VerdictArg,
     #[arg(long, default_value = "")]
     pub summary: String,
+}
+
+/// `debug human-archive`: archive the review, or prune it.
+#[derive(Debug, Args)]
+pub struct HumanArchiveArgs {
+    #[arg(long)]
+    pub review: String,
+    /// Delete the review for good instead (as `storage.prune_reviews_after_days`).
+    #[arg(long)]
+    pub prune: bool,
 }
 
 /// `debug agent-comment`: a published agent thread or reply. The author is the
@@ -399,4 +411,15 @@ pub fn human_submit(args: HumanSubmitArgs) -> anyhow::Result<Value> {
         "comment_count": s.comment_count,
         "seq": s.seq,
     }))
+}
+
+pub fn human_archive(args: HumanArchiveArgs) -> anyhow::Result<Value> {
+    require_test_env("human-archive")?;
+    let core = core()?;
+    if args.prune {
+        core.prune_review(&args.review)?;
+    } else {
+        core.archive_review(&args.review, &Actor::human())?;
+    }
+    Ok(json!({ "review_id": args.review, "pruned": args.prune }))
 }

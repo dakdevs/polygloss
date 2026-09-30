@@ -61,6 +61,7 @@ describe("polygloss-cli debug human commands", () => {
       ["human-submit", "--review", "r"],
       ["agent-comment", "--review", "r", "--body", "x"],
       ["assign", "--review", "r", "--session", "s"],
+      ["human-archive", "--review", "r"],
     ]) {
       const r = debug(args, sandbox.env);
       expect(r.exitCode).toBe(1);
@@ -335,5 +336,44 @@ describe("polygloss-cli debug human commands", () => {
     } finally {
       conn.close();
     }
+  });
+
+  test("human-archive archives or prunes the review", () => {
+    const repo = liveRepo("archive-review");
+    const seeded = debug(["seed", "--repo", repo]);
+    const reviewId = seeded.json.review_id as string;
+    const archived = debug(["human-archive", "--review", reviewId]);
+    expect(archived.exitCode).toBe(0);
+    expect(archived.json).toEqual({ review_id: reviewId, pruned: false });
+    const conn = db();
+    try {
+      const row = conn
+        .query("SELECT archived_at FROM reviews WHERE id = ?")
+        .get(reviewId) as { archived_at: number | null };
+      expect(row.archived_at).not.toBeNull();
+      const events = conn
+        .query(
+          "SELECT payload FROM events WHERE kind = 'review.archived' AND review_id = ?",
+        )
+        .all(reviewId) as { payload: string }[];
+      expect(events.length).toBe(1);
+    } finally {
+      conn.close();
+    }
+
+    const pruned = debug(["human-archive", "--review", reviewId, "--prune"]);
+    expect(pruned.exitCode).toBe(0);
+    expect(pruned.json).toEqual({ review_id: reviewId, pruned: true });
+    const after = db();
+    try {
+      expect(
+        after.query("SELECT id FROM reviews WHERE id = ?").get(reviewId),
+      ).toBeNull();
+    } finally {
+      after.close();
+    }
+
+    const missing = debug(["human-archive", "--review", reviewId]);
+    expect(missing.exitCode).toBe(1);
   });
 });
