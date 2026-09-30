@@ -13,3 +13,5 @@ pub mod dock;
 pub mod editor;
 pub mod install;
 pub mod launch;
+#[cfg(feature = "appkit")]
+pub mod sparkle;

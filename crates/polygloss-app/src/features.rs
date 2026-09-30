@@ -10,6 +10,8 @@ use crate::review_tab::ReviewTab;
 /// and gpui-kit before, and builds the menu bar after.
 pub fn init(cx: &mut App) {
     crate::theme::init(cx);
+    // Before `window`: "Check for Updates…" leads the Polygloss menu.
+    crate::updates::init(cx);
     crate::window::init(cx);
     crate::tabs::init(cx);
     crate::keymap::init(cx);

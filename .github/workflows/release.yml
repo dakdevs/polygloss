@@ -5,6 +5,14 @@
 # stapled (scripts/sign-and-notarize.sh); without them the artifacts stay
 # ad-hoc signed. The DMG is uploaded to the tag's GitHub release, then the
 # Sparkle appcast (T5.3) and the Homebrew tap (T5.4) are updated.
+#
+# Sparkle (T5.3): scripts/fetch-sparkle.sh vendors the checksum-pinned
+# framework and tools; package-release.sh embeds it and writes SUFeedURL and
+# SUPublicEDKey only when both variables POLYGLOSS_APPCAST_URL (e.g.
+# https://github.com/<owner>/polygloss/releases/latest/download/appcast.xml)
+# and SPARKLE_PUBLIC_ED_KEY are set; without them the release has no updater.
+# scripts/make-appcast.sh signs the DMG's appcast entry with
+# SPARKLE_PRIVATE_ED_KEY and it is uploaded as the release's appcast.xml.
 # `workflow_dispatch` is a dry run: the same build, with the DMG kept as a run
 # artifact and nothing published.
 #
@@ -67,13 +75,11 @@ jobs:
       - name: Install cargo-packager
         run: scripts/cargo.sh install cargo-packager --version =0.11.8 --locked
 
-      - name: Fetch Sparkle (T5.3)
-        run: |
-          if [ -x scripts/fetch-sparkle.sh ]; then
-            scripts/fetch-sparkle.sh
-          else
-            echo "Sparkle skipped: scripts/fetch-sparkle.sh arrives with T5.3"
-          fi
+      # The job's own token only lifts the API rate limit (not a secret).
+      - name: Fetch Sparkle
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/fetch-sparkle.sh
 
       - name: Write the notarytool API key
         env:
@@ -123,17 +129,14 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" "dist/Polygloss_${GITHUB_REF_NAME#v}_aarch64.dmg" --clobber
 
-      - name: Update the Sparkle appcast (T5.3)
+      # Skips without SPARKLE_PRIVATE_ED_KEY or when the bundle has no appcast.
+      - name: Update the Sparkle appcast
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
-          POLYGLOSS_APPCAST_URL: ${{ vars.POLYGLOSS_APPCAST_URL }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ ! -x scripts/make-appcast.sh ]; then
-            echo "appcast skipped: scripts/make-appcast.sh arrives with T5.3"
-            exit 0
-          fi
+          export SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/"
           scripts/make-appcast.sh dist
           if [ -f dist/appcast.xml ]; then
             gh release upload "$GITHUB_REF_NAME" dist/appcast.xml --clobber

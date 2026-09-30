@@ -57,11 +57,15 @@ pub fn group_title(namespace: &str) -> &'static str {
 }
 
 /// The palette's groups: every registry action, by namespace, with the
-/// binding in effect.
+/// binding in effect. "Check for updates" only shows when this build has an
+/// updater (T5.3).
 pub fn groups(cx: &App) -> Vec<(&'static str, Vec<PaletteRow>)> {
     let resolved = KeymapStore::global(cx).resolved();
     let mut out: Vec<(&'static str, Vec<PaletteRow>)> = Vec::new();
     for info in ACTIONS {
+        if info.name == crate::updates::ACTION_NAME && !crate::updates::available(cx) {
+            continue;
+        }
         let row = PaletteRow {
             action: info.name,
             title: info.title,

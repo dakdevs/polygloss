@@ -9,9 +9,19 @@
 #   2. `cargo packager --release --formats app` lays out Polygloss.app from them
 #      (config: crates/polygloss-app/Cargo.toml, [package.metadata.packager]);
 #   3. stamps CFBundleVersion with the crate version (cargo-packager writes a
-#      timestamp; Sparkle compares CFBundleVersion);
-#   4. signs ad-hoc with the hardened runtime, inside out (polygloss-cli, then
-#      the bundle), so the bundle is sealed even without credentials; with
+#      timestamp; Sparkle compares CFBundleVersion); with an appcast configured
+#      (POLYGLOSS_APPCAST_URL and SPARKLE_PUBLIC_ED_KEY, both or neither, plan
+#      T5.3) it also writes SUFeedURL and SUPublicEDKey and copies
+#      vendor/Sparkle.framework (scripts/fetch-sparkle.sh) into
+#      Contents/Frameworks; without one the bundle has no updater;
+#   4. signs ad-hoc with the hardened runtime, inside out (Sparkle's nested
+#      code via scripts/sign-sparkle.sh, polygloss-cli, then the bundle), so
+#      the bundle is sealed even without credentials. Library validation
+#      rejects an ad-hoc framework in an ad-hoc app (neither has a team ID),
+#      so an ad-hoc bundle that embeds Sparkle is signed with
+#      packaging/entitlements-adhoc.plist (disable-library-validation); a
+#      Developer ID signature replaces it with packaging/entitlements.plist
+#      (no exceptions), and smoke-bundle.sh --static enforces both; with
 #      --sign, scripts/sign-and-notarize.sh (T5.2) then re-signs it with the
 #      Developer ID from the environment, notarizes and staples it (without
 #      credentials it prints "signing skipped: no credentials" and keeps the
@@ -51,6 +61,26 @@ if [ "${POLYGLOSS_PACKAGE_RELEASE_LOCKED-}" != 1 ]; then
   POLYGLOSS_PACKAGE_RELEASE_LOCKED=1 exec scripts/cargo.sh with-lock "$repo_root/scripts/package-release.sh" "$@"
 fi
 
+# Sparkle (T5.3): both appcast values or neither; checked before building.
+appcast_url="${POLYGLOSS_APPCAST_URL-}"
+public_ed_key="${SPARKLE_PUBLIC_ED_KEY-}"
+sparkle_src="${POLYGLOSS_SPARKLE_FRAMEWORK:-$repo_root/vendor/Sparkle.framework}"
+sparkle=0
+if [ -n "$appcast_url" ] || [ -n "$public_ed_key" ]; then
+  [ -n "$appcast_url" ] && [ -n "$public_ed_key" ] ||
+    die "set both POLYGLOSS_APPCAST_URL and SPARKLE_PUBLIC_ED_KEY for updates, or neither"
+  case "$appcast_url" in
+    https://*) ;;
+    *) die "POLYGLOSS_APPCAST_URL must be an https URL, not '$appcast_url'" ;;
+  esac
+  key_bytes="$(printf '%s' "$public_ed_key" | /usr/bin/base64 -D 2>/dev/null | wc -c | tr -d ' ')"
+  [ "$key_bytes" = 32 ] ||
+    die "SPARKLE_PUBLIC_ED_KEY is not a base64 Ed25519 public key (32 bytes; Sparkle's generate_keys prints it)"
+  [ -f "$sparkle_src/Versions/B/Autoupdate" ] ||
+    die "no Sparkle.framework at $sparkle_src: run scripts/fetch-sparkle.sh"
+  sparkle=1
+fi
+
 signer="$repo_root/scripts/sign-and-notarize.sh"
 
 dist="${POLYGLOSS_DIST_DIR:-$repo_root/dist}"
@@ -58,6 +88,7 @@ mkdir -p "$dist"
 dist="$(cd "$dist" && pwd -P)"
 app="$dist/Polygloss.app"
 entitlements="$repo_root/packaging/entitlements.plist"
+app_entitlements="$entitlements"
 
 say "building polygloss-app and polygloss-cli (release)"
 scripts/cargo.sh build --release -p polygloss-app
@@ -85,13 +116,28 @@ version="$(plutil -extract CFBundleShortVersionString raw -o - "$plist")"
 # Dot-separated integers only (LaunchServices, Sparkle): drop any pre-release.
 plutil -replace CFBundleVersion -string "${version%%[-+]*}" "$plist"
 
+sparkle_fw="$app/Contents/Frameworks/Sparkle.framework"
+if [ "$sparkle" = 1 ]; then
+  say "embedding Sparkle (updates from $appcast_url)"
+  plutil -replace SUFeedURL -string "$appcast_url" "$plist"
+  plutil -replace SUPublicEDKey -string "$public_ed_key" "$plist"
+  mkdir -p "$app/Contents/Frameworks"
+  ditto "$sparkle_src" "$sparkle_fw"
+  app_entitlements="$repo_root/packaging/entitlements-adhoc.plist"
+else
+  say "no updater: POLYGLOSS_APPCAST_URL and SPARKLE_PUBLIC_ED_KEY are not set"
+fi
+
 say "signing ad-hoc (hardened runtime)"
-adhoc() { # <path> [<identifier>]
-  codesign --force --sign - --options runtime --entitlements "$entitlements" \
-    ${2:+--identifier "$2"} "$1"
+adhoc() { # <path> <entitlements> [<identifier>]
+  codesign --force --sign - --options runtime --entitlements "$2" \
+    ${3:+--identifier "$3"} "$1"
 }
-adhoc "$app/Contents/MacOS/polygloss-cli" dev.dak.polygloss.cli
-adhoc "$app"
+if [ "$sparkle" = 1 ]; then
+  scripts/sign-sparkle.sh "$sparkle_fw" -
+fi
+adhoc "$app/Contents/MacOS/polygloss-cli" "$entitlements" dev.dak.polygloss.cli
+adhoc "$app" "$app_entitlements"
 codesign --verify --deep --strict "$app"
 if [ "$sign" = 1 ]; then
   say "signing and notarizing $app"

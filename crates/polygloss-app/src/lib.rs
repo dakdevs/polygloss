@@ -40,6 +40,7 @@ pub mod tabs;
 pub mod theme;
 pub mod threads;
 pub mod tree;
+pub mod updates;
 pub mod urls;
 pub mod view_state;
 pub mod viewed;

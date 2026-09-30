@@ -37,6 +37,7 @@ import {
   waitForState,
 } from "../support/app";
 import { makeSandbox } from "../support/sandbox";
+import { makeSparkleFramework } from "../support/sparkle-fixture";
 
 setDefaultTimeout(120_000);
 
@@ -121,14 +122,32 @@ function packagerInfoPlist(overrides: Json = {}): Json {
   };
 }
 
+/** An appcast URL and an Ed25519 public key (32 bytes, base64) for tests. */
+const APPCAST_URL = "https://example.invalid/polygloss/appcast.xml";
+const PUBLIC_ED_KEY = Buffer.alloc(32, 7).toString("base64");
+const sparkleKeys = { SUFeedURL: APPCAST_URL, SUPublicEDKey: PUBLIC_ED_KEY };
+const adhocEntitlements = join(
+  repoRoot,
+  "packaging",
+  "entitlements-adhoc.plist",
+);
+
 /**
  * A bundle as package-release.sh leaves it: copies of /usr/bin/true (a real
  * Mach-O) as both executables, an Info.plist with the stamped version
- * (unless `plist`), ad-hoc signed (unless `sign: false`).
+ * (unless `plist`), with a stand-in Sparkle.framework (`sparkle`, signed
+ * ad-hoc inside out), ad-hoc signed (unless `sign: false`), with
+ * `entitlements` (a plist path) on the bundle.
  */
 function makeBundle(
   dir: string,
-  opts: { omit?: string[]; plist?: Json; sign?: boolean } = {},
+  opts: {
+    omit?: string[];
+    plist?: Json;
+    sign?: boolean;
+    sparkle?: boolean;
+    entitlements?: string;
+  } = {},
 ): string {
   const app = join(dir, "Polygloss.app");
   mkdirSync(join(app, "Contents", "MacOS"), { recursive: true });
@@ -142,6 +161,13 @@ function makeBundle(
     join(app, "Contents", "Info.plist"),
     opts.plist ?? packagerInfoPlist({ CFBundleVersion: workspaceVersion }),
   );
+  if (opts.sparkle) {
+    const frameworks = join(app, "Contents", "Frameworks");
+    mkdirSync(frameworks, { recursive: true });
+    const fw = makeSparkleFramework(frameworks);
+    if (opts.sign !== false)
+      must([join(repoRoot, "scripts", "sign-sparkle.sh"), fw, "-"]);
+  }
   if (opts.sign !== false) {
     for (const exe of ["polygloss-cli"])
       if (!opts.omit?.includes(exe))
@@ -152,7 +178,14 @@ function makeBundle(
           "-",
           join(app, "Contents", "MacOS", exe),
         ]);
-    must(["codesign", "--force", "--sign", "-", app]);
+    must([
+      "codesign",
+      "--force",
+      "--sign",
+      "-",
+      ...(opts.entitlements ? ["--entitlements", opts.entitlements] : []),
+      app,
+    ]);
   }
   return app;
 }
@@ -217,12 +250,30 @@ describe("packaging config", () => {
     // package-release.sh stamps both from the crate version.
     expect(plist.CFBundleVersion).toBeUndefined();
     expect(plist.CFBundleShortVersionString).toBeUndefined();
+    // Sparkle's keys come from the environment at package time (T5.3), and
+    // automatic checks stay unset so Sparkle asks first (OQ-16).
+    expect(plist.SUFeedURL).toBeUndefined();
+    expect(plist.SUPublicEDKey).toBeUndefined();
+    expect(plist.SUEnableAutomaticChecks).toBeUndefined();
   });
 
   test("entitlements are empty: hardened runtime with no exceptions", () => {
     expect(
       readPlist(join(repoRoot, "packaging", "entitlements.plist")),
     ).toEqual({});
+  });
+
+  test("the ad-hoc entitlements only relax library validation", () => {
+    expect(readPlist(adhocEntitlements)).toEqual({
+      "com.apple.security.cs.disable-library-validation": true,
+    });
+    // The Developer ID signer never uses them.
+    const signer = readFileSync(
+      join(repoRoot, "scripts", "sign-and-notarize.sh"),
+      "utf8",
+    );
+    expect(signer).not.toContain("entitlements-adhoc");
+    expect(signer).toContain('/entitlements.plist"');
   });
 
   test("dist/ is gitignored", () => {
@@ -320,6 +371,51 @@ describe("scripts/smoke-bundle.sh --static", () => {
     const r = smokeStatic(makeBundle(scratch("unsigned"), { sign: false }));
     expect(r.exitCode).toBe(1);
     expect(r.output).toContain("signature");
+  });
+
+  test("sparkle is embedded exactly when the feed keys are set", () => {
+    const withBoth = packagerInfoPlist({
+      CFBundleVersion: workspaceVersion,
+      ...sparkleKeys,
+    });
+    const ok = smokeStatic(
+      makeBundle(scratch("sparkle"), {
+        plist: withBoth,
+        sparkle: true,
+        entitlements: adhocEntitlements,
+      }),
+    );
+    expect(ok.output).toContain("smoke-bundle: ok: Sparkle embedded");
+    expect(ok.output).toContain("library validation relaxed");
+    expect(ok.exitCode).toBe(0);
+    expect(smokeStatic(makeBundle(scratch("plain"))).output).toContain(
+      "no updater",
+    );
+
+    const noKeys = smokeStatic(
+      makeBundle(scratch("sparkle-no-keys"), { sparkle: true }),
+    );
+    expect(noKeys.exitCode).toBe(1);
+    expect(noKeys.output).toContain("lacks SUFeedURL or SUPublicEDKey");
+    for (const key of ["SUFeedURL", "SUPublicEDKey"]) {
+      const plist = packagerInfoPlist({
+        CFBundleVersion: workspaceVersion,
+        [key]: (sparkleKeys as Json)[key],
+      });
+      const r = smokeStatic(makeBundle(scratch("keys-only"), { plist }));
+      expect({ key, exitCode: r.exitCode }).toEqual({ key, exitCode: 1 });
+      expect(r.output).toContain("no Sparkle.framework is embedded");
+    }
+  });
+
+  test("library validation is only relaxed for an ad-hoc bundle with sparkle", () => {
+    const r = smokeStatic(
+      makeBundle(scratch("dlv"), { entitlements: adhocEntitlements }),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.output).toContain(
+      "library validation is disabled without Sparkle embedded",
+    );
   });
 
   test("usage errors exit 2", () => {
@@ -569,6 +665,113 @@ describe("scripts/package-release.sh", () => {
     expect(r.exitCode).toBe(0);
     const packager = r.log.find((l) => l.startsWith("env-at-packager:"));
     expect(packager).toBe("env-at-packager:");
+  });
+
+  test("without an appcast the bundle has no updater", () => {
+    const r = packageRun();
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("package-release: no updater");
+    const app = join(r.dist, "Polygloss.app");
+    expect(existsSync(join(app, "Contents", "Frameworks"))).toBe(false);
+    const plist = readPlist(join(app, "Contents", "Info.plist"));
+    expect(plist.SUFeedURL).toBeUndefined();
+    expect(plist.SUPublicEDKey).toBeUndefined();
+    const ents = run([
+      "codesign",
+      "--display",
+      "--entitlements",
+      "-",
+      "--xml",
+      app,
+    ]).output;
+    expect(ents).not.toContain("disable-library-validation");
+  });
+
+  test("with an appcast it embeds Sparkle, writes the feed keys and signs it inside out", () => {
+    const vendor = scratch("vendor");
+    const fw = makeSparkleFramework(vendor);
+    const r = packageRun([], {
+      POLYGLOSS_APPCAST_URL: APPCAST_URL,
+      SPARKLE_PUBLIC_ED_KEY: PUBLIC_ED_KEY,
+      POLYGLOSS_SPARKLE_FRAMEWORK: fw,
+    });
+    expect(r.output).toContain(
+      `package-release: embedding Sparkle (updates from ${APPCAST_URL})`,
+    );
+    expect(r.output).toContain("smoke-bundle: ok: Sparkle embedded");
+    expect(r.exitCode).toBe(0);
+    const app = join(r.dist, "Polygloss.app");
+    const plist = readPlist(join(app, "Contents", "Info.plist"));
+    expect(plist.SUFeedURL).toBe(APPCAST_URL);
+    expect(plist.SUPublicEDKey).toBe(PUBLIC_ED_KEY);
+    expect(plist.SUEnableAutomaticChecks).toBeUndefined();
+    const embedded = join(app, "Contents", "Frameworks", "Sparkle.framework");
+    must(["codesign", "--verify", "--deep", "--strict", app]);
+    for (const nested of [
+      join(embedded, "Versions", "B", "Autoupdate"),
+      join(embedded, "Versions", "B", "Updater.app"),
+      embedded,
+    ]) {
+      const info = run(["codesign", "--display", "--verbose=2", nested]).output;
+      expect(info).toContain("Signature=adhoc");
+      expect(info).toMatch(/flags=0x[0-9a-f]+\([^)]*runtime[^)]*\)/);
+    }
+    // Ad-hoc app + ad-hoc framework: only library validation is relaxed,
+    // and only on the app (the CLI never loads Sparkle).
+    const ents = (path: string) =>
+      run(["codesign", "--display", "--entitlements", "-", "--xml", path])
+        .output;
+    expect(ents(app)).toContain(
+      "com.apple.security.cs.disable-library-validation",
+    );
+    expect(ents(join(app, "Contents", "MacOS", "polygloss-cli"))).not.toContain(
+      "disable-library-validation",
+    );
+  });
+
+  test("appcast settings are checked before anything is built", () => {
+    const fw = makeSparkleFramework(scratch("vendor"));
+    const cases: [Env, string][] = [
+      [
+        { POLYGLOSS_APPCAST_URL: APPCAST_URL },
+        "set both POLYGLOSS_APPCAST_URL and SPARKLE_PUBLIC_ED_KEY",
+      ],
+      [
+        { SPARKLE_PUBLIC_ED_KEY: PUBLIC_ED_KEY },
+        "set both POLYGLOSS_APPCAST_URL and SPARKLE_PUBLIC_ED_KEY",
+      ],
+      [
+        {
+          POLYGLOSS_APPCAST_URL: "http://example.invalid/appcast.xml",
+          SPARKLE_PUBLIC_ED_KEY: PUBLIC_ED_KEY,
+        },
+        "must be an https URL",
+      ],
+      [
+        {
+          POLYGLOSS_APPCAST_URL: APPCAST_URL,
+          SPARKLE_PUBLIC_ED_KEY: "bm90LWEta2V5",
+        },
+        "not a base64 Ed25519 public key",
+      ],
+      [
+        {
+          POLYGLOSS_APPCAST_URL: APPCAST_URL,
+          SPARKLE_PUBLIC_ED_KEY: PUBLIC_ED_KEY,
+          POLYGLOSS_SPARKLE_FRAMEWORK: join(sandbox.home, "no-sparkle"),
+        },
+        "run scripts/fetch-sparkle.sh",
+      ],
+    ];
+    for (const [env, message] of cases) {
+      const r = packageRun([], { POLYGLOSS_SPARKLE_FRAMEWORK: fw, ...env });
+      expect({ env, exitCode: r.exitCode, log: r.log }).toEqual({
+        env,
+        exitCode: 1,
+        log: [],
+      });
+      expect(r.output).toContain(message);
+    }
   });
 
   test("rejects unknown arguments", () => {

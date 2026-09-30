@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Ad-hoc builds that embed Sparkle only (scripts/package-release.sh, plan T5.3).
+  Library validation rejects the ad-hoc Sparkle.framework in an ad-hoc app
+  ("different Team IDs": neither has one). A Developer ID signature replaces
+  these with packaging/entitlements.plist (no exceptions), and
+  scripts/smoke-bundle.sh fails any Developer ID bundle that keeps them.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

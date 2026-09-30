@@ -38,9 +38,14 @@ fn palette_lists_every_action_with_binding_hint(cx: &mut TestAppContext) {
         .expect("the palette is open");
     let rows: Vec<command::PaletteRow> =
         palette.read_with(shell.cx, |p, _| p.rows().cloned().collect());
-    // Every registered action, once, in registry order.
+    // Every registered action, once, in registry order; "Check for updates"
+    // only with an updater, which a test binary never has (T5.3).
     let names: Vec<&str> = rows.iter().map(|r| r.action).collect();
-    let registry: Vec<&str> = actions::ACTIONS.iter().map(|a| a.name).collect();
+    let registry: Vec<&str> = actions::ACTIONS
+        .iter()
+        .map(|a| a.name)
+        .filter(|&name| name != polygloss_app::updates::ACTION_NAME)
+        .collect();
     assert_eq!(names, registry);
     // Each with the binding in effect as its hint (none for palette-only).
     let hint = |name: &str| {
