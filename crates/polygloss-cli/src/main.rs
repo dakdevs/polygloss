@@ -2,7 +2,9 @@
 //! and `polygloss wait`. Never links GPUI, lumis or tree-sitter.
 #![forbid(unsafe_code)]
 
+mod commands;
 mod debug;
+mod debug_human;
 
 use std::process::ExitCode;
 
@@ -18,6 +20,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the stdio MCP server for coding agents.
+    Mcp(commands::mcp::McpArgs),
     /// Developer tools (git parity checks).
     #[command(hide = true)]
     Debug(debug::DebugArgs),
@@ -26,6 +30,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Some(Command::Mcp(args)) => commands::mcp::run(args),
         Some(Command::Debug(args)) => debug::run(args),
         None => Ok(()),
     };
