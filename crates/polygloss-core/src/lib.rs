@@ -14,6 +14,7 @@ pub mod objects;
 pub mod paths;
 pub mod process;
 pub mod review;
+pub mod settings;
 pub mod store;
 pub mod urls;
 

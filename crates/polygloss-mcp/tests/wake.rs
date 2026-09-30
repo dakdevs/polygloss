@@ -183,3 +183,31 @@ fn combined_text_joins_every_wake() {
     ];
     assert_eq!(wake::combined_text(&wakes), "first\n\nsecond");
 }
+
+/// A session is never woken for a submission from before the review was
+/// assigned to it: a new session that opens a review with an old approval
+/// starts from its assignment (T5.9 #6).
+#[test]
+fn submissions_before_the_assignment_do_not_wake_the_session() {
+    let _sb = Sandbox::isolate();
+    let core = Core::open_default().unwrap();
+    let r = repo();
+    let review = open_review(&core, &r, "Old");
+    session(&core, "earlier", None);
+    session(&core, "new", None);
+    core.assign_review(&review, "earlier", AssignedBy::OpenDiff)
+        .unwrap();
+    core.submit_review(&review, Verdict::Approve, "Done long ago.", None)
+        .unwrap();
+    core.assign_review(&review, "new", AssignedBy::OpenDiff)
+        .unwrap();
+    let events = submitted_since(&core, 0);
+    assert!(wake::wakes_for(&core, "new", &events).unwrap().is_empty());
+
+    let later = core
+        .submit_review(&review, Verdict::Comment, "New feedback.", None)
+        .unwrap();
+    let wakes = wake::wakes_for(&core, "new", &submitted_since(&core, 0)).unwrap();
+    assert_eq!(wakes.len(), 1);
+    assert_eq!(wakes[0].submission_id, later.id);
+}

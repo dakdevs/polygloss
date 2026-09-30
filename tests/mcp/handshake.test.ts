@@ -104,6 +104,77 @@ describe("polygloss mcp handshake", () => {
     }
   });
 
+  test("no tool, schema or resource description cites the design", async () => {
+    // Agents never see internal references such as "§15.2" (T5.9 #15).
+    const { env } = mcpSandbox();
+    const mcp = await connectMcp({ env });
+    try {
+      const { tools } = await mcp.client.listTools();
+      for (const tool of tools) {
+        const text = JSON.stringify({
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        });
+        expect({ tool: tool.name, cites: text.includes("§") }).toEqual({
+          tool: tool.name,
+          cites: false,
+        });
+      }
+      const { resourceTemplates } = await mcp.client.listResourceTemplates();
+      expect(JSON.stringify(resourceTemplates)).not.toContain("§");
+      expect(mcp.client.getInstructions() ?? "").not.toContain("§");
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  test("tools that name their target never wait for roots/list", async () => {
+    // A client that declares roots but is slow to answer roots/list must not
+    // hold up get_thread, reply, resolve, … (T5.9 #16): only open_diff needs
+    // the repo default. This raw client never answers roots/list at all.
+    const { env } = mcpSandbox();
+    const init = JSON.parse(initializeRequest(1));
+    init.params.capabilities = { roots: { listChanged: true } };
+    const started = performance.now();
+    const r = await rawMcpSession({
+      env,
+      lines: [
+        JSON.stringify(init),
+        JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "get_thread", arguments: { thread_id: "nope" } },
+        }),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "list_threads",
+            arguments: { review_id: "nope" },
+          },
+        }),
+      ],
+      waitFor: 3,
+    });
+    const ms = performance.now() - started;
+    const messages = r.stdout
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((l) => JSON.parse(l) as Record<string, any>);
+    expect(messages.some((m) => m.method === "roots/list")).toBe(false);
+    const answers = messages.filter((m) => m.id === 2 || m.id === 3);
+    expect(answers).toHaveLength(2);
+    for (const a of answers) {
+      expect(a.result.isError).toBe(true);
+      expect(a.result.structuredContent.code).toBe("not_found");
+    }
+    // Well under the 2 s roots/list timeout.
+    expect(ms).toBeLessThan(1_900);
+  });
+
   test("alwaysLoad meta on open_diff list_threads wait_for_review", async () => {
     const { env } = mcpSandbox();
     const mcp = await connectMcp({ env });

@@ -573,9 +573,11 @@ fn feed_seek_to_latest_skips_the_backlog() {
             .collect::<Vec<_>>(),
         [next]
     );
-    // Never moves the cursor back.
+    // A cursor ahead of the latest seq is clamped when the feed opens (T5.9),
+    // and seeking never moves it back.
     let mut ahead = EventFeed::open(&paths, next + 10, EventFilter::default()).unwrap();
-    assert_eq!(ahead.seek_to_latest().unwrap(), next + 10);
+    assert_eq!(ahead.cursor(), next);
+    assert_eq!(ahead.seek_to_latest().unwrap(), next);
 }
 
 // ---------------------------------------------------------------------------
@@ -658,4 +660,24 @@ fn feed_sees_commit_from_other_process() {
         got[0].payload["pid"].as_u64(),
         Some(u64::from(std::process::id()))
     );
+}
+
+/// A cursor above the latest seq (a stale `since` from another store, or a
+/// typo) is clamped to the latest seq, so events appended later are not
+/// skipped until the seq catches up (T5.9 #8).
+#[test]
+fn feed_clamps_a_cursor_above_the_latest_seq() {
+    let _sb = Sandbox::isolate();
+    let (paths, store) = open_store();
+    let first = append(&store, &event(EventKind::ReviewCreated, Some("r1")));
+    let mut feed = EventFeed::open(&paths, first + 1_000, EventFilter::default()).unwrap();
+    assert_eq!(feed.cursor(), first);
+    assert!(feed.poll().unwrap().is_empty());
+    let next = append(&store, &event(EventKind::ReviewSubmitted, Some("r1")));
+    let got = poll_until_some(&mut feed, Duration::from_secs(5));
+    assert_eq!(got.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![next]);
+    // A negative cursor means "from the start".
+    let mut all = EventFeed::open(&paths, -5, EventFilter::default()).unwrap();
+    assert_eq!(all.cursor(), 0);
+    assert_eq!(all.poll().unwrap().len(), 2);
 }

@@ -7,7 +7,10 @@
 //! - Only `review.submitted` events count (OQ-11: submissions only, never plain
 //!   agent replies or resolves), for any verdict (an approval wakes too).
 //! - The review must be assigned to the session's canonical session now
-//!   (`sessions.canonical_id`, §16.4), so a drifted id sees its root's reviews.
+//!   (`sessions.canonical_id`, §16.4), so a drifted id sees its root's reviews,
+//!   and the submission must come after that assignment began
+//!   (`Core::assignment_seq`): a session that opens a review with an old
+//!   verdict is not woken with it (T5.9).
 //! - A submission the agent already answered with `request_rereview` (a later
 //!   `review.rereview_requested` on the same review) is skipped, so a new
 //!   session opening a long-lived live review is not woken with old feedback.
@@ -66,6 +69,12 @@ pub fn wakes_for(core: &Core, session_id: &str, events: &[Event]) -> Result<Vec<
             Err(err) => return Err(err),
         };
         if assigned.is_none_or(|s| s.id != root) || answered_by_rereview(core, review_id, e.seq)? {
+            continue;
+        }
+        if core
+            .assignment_seq(review_id, &root)?
+            .is_some_and(|since| e.seq < since)
+        {
             continue;
         }
         let Some(review) = core.review_summary(review_id)? else {

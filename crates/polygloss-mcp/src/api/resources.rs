@@ -317,6 +317,7 @@ fn thread_md(ctx: &ApiContext, thread_id: &str) -> Result<String, ApiError> {
         ctx,
         GetThreadRequest {
             thread_id: thread_id.to_owned(),
+            ..GetThreadRequest::default()
         },
     )?;
     let s = &t.summary;
@@ -382,6 +383,15 @@ fn thread_md(ctx: &ApiContext, thread_id: &str) -> Result<String, ApiError> {
             }
         }
     }
+    // `get_thread` already paged the comments to fit the budget.
+    if let Some(cursor) = &t.next_cursor {
+        let _ = write!(
+            md,
+            "\n…more comments follow; call get_thread(thread_id=\"{}\", cursor=\"{cursor}\") \
+             (its next_cursor) for the rest.\n",
+            s.thread_id
+        );
+    }
     Ok(md)
 }
 
@@ -438,7 +448,7 @@ fn status_text(f: &FileChange) -> &'static str {
 /// Added and deleted lines of a text file (`None` for binaries, submodules and
 /// unreadable blobs).
 fn line_counts(f: &FileChange, dc: &DiffContext) -> Option<(u32, u32)> {
-    line_counts_with(f, &dc.blobs)
+    line_counts_with(f, dc.blobs.as_ref()?)
 }
 
 /// [`line_counts`] reading the blobs through `blobs`.

@@ -652,6 +652,32 @@ impl Core {
         actor: &Actor,
         closing_reply: Option<&str>,
     ) -> Result<(), CoreError> {
+        self.resolve_with_reply(thread_id, resolved, actor, closing_reply)
+            .map(|_| ())
+    }
+
+    /// An agent's (or the human's) reply that also resolves the thread, in one
+    /// transaction: either both happen or neither (`reply` with `resolve:
+    /// true`). Returns the reply's id. The rules of [`Core::set_resolved`]
+    /// apply; a thread that is already resolved just gets the reply.
+    pub fn reply_and_resolve(
+        &self,
+        thread_id: &str,
+        body_md: &str,
+        actor: &Actor,
+    ) -> Result<String, CoreError> {
+        self.resolve_with_reply(thread_id, true, actor, Some(body_md))?
+            .ok_or_else(|| CoreError::InvalidRequest("the reply was not added".into()))
+    }
+
+    /// [`Core::set_resolved`], returning the closing reply's id.
+    fn resolve_with_reply(
+        &self,
+        thread_id: &str,
+        resolved: bool,
+        actor: &Actor,
+        closing_reply: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
         let kind = match actor.kind {
             ActorKind::Human => AuthorKind::Human,
             ActorKind::Agent => AuthorKind::Agent,
@@ -683,16 +709,21 @@ impl Core {
                 ))));
             }
             let now = now_ms();
-            if let Some(body) = closing_reply {
-                add_reply(tx, &th, thread_id, &new_uuid(), body, &author, now)?;
-            }
+            let reply_id = match closing_reply {
+                Some(body) => {
+                    let id = new_uuid();
+                    add_reply(tx, &th, thread_id, &id, body, &author, now)?;
+                    Some(id)
+                }
+                None => None,
+            };
             let target = if resolved {
                 ThreadStatus::Resolved
             } else {
                 ThreadStatus::Open
             };
             if th.status == target.as_str() {
-                return Ok(Ok(()));
+                return Ok(Ok(reply_id));
             }
             if resolved {
                 tx.execute(
@@ -726,7 +757,7 @@ impl Core {
                     serde_json::Value::Null,
                 ),
             )?;
-            Ok(Ok(()))
+            Ok(Ok(reply_id))
         })?
     }
 

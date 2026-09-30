@@ -555,3 +555,46 @@ fn progress_interval_override_needs_test_mode() {
         assert_eq!(t.progress_every, PROGRESS_EVERY, "{bad}");
     }
 }
+
+/// A `since` above the latest seq is clamped to it: a submission appended
+/// afterwards is reported, not skipped until the seq catches up (T5.9 #8).
+#[test]
+fn a_since_above_the_latest_seq_is_clamped() {
+    let w = world();
+    let future = w.seq() + 1_000;
+    let core = Core::open_default().unwrap();
+    let review = w.review();
+    let submitter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        core.submit_review(&review, Verdict::Comment, "after", None)
+            .unwrap()
+    });
+    let r = w.wait(Some(future), Some(10));
+    let s = submitter.join().unwrap();
+    assert_eq!(r["outcome"], json!("submitted"), "{r}");
+    assert_eq!(r["submission"]["submission_id"], json!(s.id));
+    assert!(r["next_since"].as_i64().unwrap() < future, "{r}");
+}
+
+/// The review's repo is gone (moved or deleted): the wait still reports the
+/// submission and its threads, positioned `absent` where nothing is cached,
+/// instead of failing with `repo_not_found` (T5.9 #7).
+#[test]
+fn a_review_whose_repo_is_gone_still_reports_its_threads() {
+    let w = world();
+    let since = w.seq();
+    let t = w.thread(5, ThreadKind::Comment, "Why?", human());
+    w.submit(Verdict::RequestChanges, "fix");
+    w.ctx
+        .core
+        .store
+        .write(|tx| Ok(tx.execute("DELETE FROM thread_positions", [])?))
+        .unwrap();
+    std::fs::remove_dir_all(w.repo.path()).unwrap();
+    let r = w.wait(Some(since), Some(5));
+    assert_eq!(r["outcome"], json!("submitted"), "{r}");
+    let threads = r["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 1, "{r}");
+    assert_eq!(threads[0]["thread_id"], json!(t));
+    assert_eq!(threads[0]["position"]["state"], json!("absent"));
+}

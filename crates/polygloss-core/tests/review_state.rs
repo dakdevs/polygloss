@@ -779,15 +779,17 @@ fn waiter_replacement_returns_previous_pid() {
     let deadline = far_future();
 
     assert_eq!(core.register_waiter("s1", 101, deadline).unwrap(), None);
-    assert_eq!(
-        core.register_waiter("s1", 102, deadline).unwrap(),
-        Some(101)
-    );
+    let replaced = core.register_waiter("s1", 102, deadline).unwrap().unwrap();
+    assert_eq!(replaced.pid, 101);
+    let now = polygloss_core::store::events::now_ms();
+    assert!(replaced.started_at <= now && replaced.started_at > now - 60_000);
     // The same pid again replaces nothing.
     assert_eq!(core.register_waiter("s1", 102, deadline).unwrap(), None);
     // A waiter under a drifted id replaces the canonical session's waiter.
     assert_eq!(
-        core.register_waiter("s2", 103, deadline).unwrap(),
+        core.register_waiter("s2", 103, deadline)
+            .unwrap()
+            .map(|w| w.pid),
         Some(102)
     );
     assert_eq!(count(&core, "SELECT count(*) FROM waiters"), 1);
@@ -802,6 +804,86 @@ fn waiter_replacement_returns_previous_pid() {
         core.register_waiter("nobody", 1, deadline),
         Err(CoreError::NotFound { .. })
     ));
+}
+
+/// A waiter row whose pid now belongs to a process that started after the
+/// waiter registered (PID reuse) is not a live waiter (T5.9 #5).
+#[test]
+fn live_waiter_ignores_a_reused_pid() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let opened = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    let review = opened.review_id.as_str();
+    core.upsert_session(&session("s1", None)).unwrap();
+    core.assign_review(review, "s1", AssignedBy::OpenDiff)
+        .unwrap();
+    let mut child = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    core.register_waiter("s1", pid, far_future()).unwrap();
+    assert_eq!(
+        core.live_waiter_for_review(review).unwrap(),
+        Some(("s1".to_owned(), pid))
+    );
+    // The row says the waiter registered a minute before this process began.
+    exec(
+        &core,
+        "UPDATE waiters SET started_at = started_at - 60000 WHERE pid = ?1",
+        params![pid],
+    );
+    assert_eq!(core.live_waiter_for_review(review).unwrap(), None);
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+/// The seq since which a review has been assigned to a session (T5.9 #6):
+/// wake-ups for submissions before it belong to whoever had the review then.
+#[test]
+fn assignment_seq_is_where_the_current_assignment_began() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let opened = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    let review = opened.review_id.as_str();
+    for s in ["a", "b", "b-drift"] {
+        core.upsert_session(&session(s, None)).unwrap();
+    }
+    assert_eq!(core.assignment_seq(review, "a").unwrap(), None);
+    core.assign_review(review, "a", AssignedBy::OpenDiff)
+        .unwrap();
+    let a_seq = latest_seq(&core);
+    assert_eq!(core.assignment_seq(review, "a").unwrap(), Some(a_seq));
+    assert_eq!(core.assignment_seq(review, "b").unwrap(), None);
+    // Re-assigning the same session another way keeps the original point.
+    core.assign_review(review, "a", AssignedBy::Human).unwrap();
+    assert!(latest_seq(&core) > a_seq);
+    assert_eq!(core.assignment_seq(review, "a").unwrap(), Some(a_seq));
+    // Another session takes over: its point is its own assignment.
+    core.assign_review(review, "b", AssignedBy::OpenDiff)
+        .unwrap();
+    let b_seq = latest_seq(&core);
+    assert_eq!(core.assignment_seq(review, "b").unwrap(), Some(b_seq));
+    assert_eq!(core.assignment_seq(review, "a").unwrap(), None);
+    // And back to the first: a fresh point.
+    core.assign_review(review, "a", AssignedBy::OpenDiff)
+        .unwrap();
+    let again = latest_seq(&core);
+    assert_eq!(core.assignment_seq(review, "a").unwrap(), Some(again));
+    assert!(matches!(
+        core.assignment_seq("nope", "a"),
+        Err(CoreError::NotFound { .. })
+    ));
+}
+
+fn latest_seq(core: &Core) -> i64 {
+    count(core, "SELECT MAX(seq) FROM events")
 }
 
 #[test]

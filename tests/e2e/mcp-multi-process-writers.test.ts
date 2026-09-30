@@ -75,9 +75,10 @@ function sql<T>(dataDir: string, query: string, ...params: any[]): T {
   }
 }
 
-/** The app's log files (sandbox HOME/Library/Logs/polygloss), joined. */
-function appLog(home: string): string {
-  const dir = join(home, "Library", "Logs", "polygloss");
+/** The app's log files, joined. With POLYGLOSS_DATA_DIR set (the sandbox),
+ * the logs dir is `<data dir>/logs`, never the real ~/Library/Logs. */
+function appLog(dataDir: string): string {
+  const dir = join(dataDir, "logs");
   if (!existsSync(dir)) return "";
   return readdirSync(dir)
     .map((f) => readFileSync(join(dir, f), "utf8"))
@@ -175,7 +176,7 @@ describe.skipIf(!process.env.POLYGLOSS_E2E)("RF5 multi-process writers", () => {
       expect(
         readdirSync(world.dataDir).filter((f) => f.includes(".bak-")),
       ).toEqual([]);
-      const logs = () => [appLog(world.home), mcpA.stderr(), mcpB.stderr()];
+      const logs = () => [appLog(world.dataDir), mcpA.stderr(), mcpB.stderr()];
       await waitUntil("every logging process to bootstrap the store", () =>
         logs().every((l) => l.includes("store migrated")),
       );
@@ -368,7 +369,7 @@ describe.skipIf(!process.env.POLYGLOSS_E2E)("RF5 multi-process writers", () => {
 
       // Nothing anywhere reported a busy or locked store.
       for (const text of [
-        appLog(world.home),
+        appLog(world.dataDir),
         app.output(),
         mcpA.stderr(),
         mcpB.stderr(),

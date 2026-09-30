@@ -105,11 +105,9 @@ fn canonical(path: &Path) -> PathBuf {
 /// The blob copy `<cache>/blobs/<oid>/<basename>` must be read-only and
 /// hold `content`.
 fn assert_blob_copy(sb: &Sandbox, path: &Path, oid: &str, name: &str, content: &str) {
-    let want = sb
-        .home()
-        .join("Library/Caches/polygloss/blobs")
-        .join(oid)
-        .join(name);
+    // With POLYGLOSS_DATA_DIR set (the sandbox), the cache sits in the data
+    // dir, never in the real ~/Library/Caches.
+    let want = sb.data_dir().join("cache/blobs").join(oid).join(name);
     assert_eq!(path, want);
     assert_eq!(std::fs::read_to_string(path).unwrap(), content);
     let mode = std::fs::metadata(path).unwrap().permissions().mode();

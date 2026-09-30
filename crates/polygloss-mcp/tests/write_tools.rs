@@ -1140,3 +1140,118 @@ fn every_write_nudges_a_running_app_once_and_never_launches() {
     assert!(seqs.windows(2).all(|p| p[0] < p[1]), "{seqs:?}");
     assert!(launcher.calls().is_empty());
 }
+
+// ---- T5.9 hardening ----
+
+/// `reply` with `resolve: true` is one transaction: when resolving fails, the
+/// reply is not published either (T5.9 #11).
+#[test]
+fn reply_with_resolve_rolls_back_as_one() {
+    let w = world();
+    let ctx = w.ctx(no_launch());
+    let r = w.live_review(&ctx);
+    let t = api::create_comment(&ctx, note(&r.review_id, "n", None))
+        .unwrap()
+        .thread_id;
+    w.core
+        .store
+        .write(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER block_resolve BEFORE UPDATE OF status ON threads \
+                 WHEN NEW.status = 'resolved' BEGIN SELECT RAISE(ABORT, 'resolve blocked'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let events_before = w.event_kinds().len();
+    let err = api::reply(
+        &ctx,
+        ReplyRequest {
+            thread_id: t.clone(),
+            body_md: "fixed".into(),
+            resolve: Some(true),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::Internal, "{err:?}");
+    let view = w.core.thread(&t, Viewer::Agent).unwrap();
+    assert_eq!(view.comments.len(), 1, "the reply was rolled back");
+    assert_eq!(view.status, ThreadStatus::Open);
+    assert_eq!(w.event_kinds().len(), events_before);
+}
+
+/// `request_rereview` never launches the app when notifications are off
+/// globally (`notifications.enabled: false` in settings.json, T5.9 #12).
+#[test]
+fn request_rereview_respects_the_global_notifications_setting() {
+    let w = world();
+    let launcher = Arc::new(RecordingLauncher::default());
+    let ctx = w.ctx(launcher.clone());
+    let r = w.live_review(&ctx);
+    let config = &w.core.paths.config_dir;
+    std::fs::create_dir_all(config).unwrap();
+    std::fs::write(
+        config.join("settings.json"),
+        "{\n  // no notifications\n  \"notifications\": { \"enabled\": false },\n}\n",
+    )
+    .unwrap();
+    api::request_rereview(
+        &ctx,
+        RequestRereviewRequest {
+            review_id: r.review_id.clone(),
+            summary_md: "Fixed".into(),
+        },
+    )
+    .unwrap();
+    assert!(launcher.calls().is_empty(), "{:?}", launcher.calls());
+
+    // Back on: the hidden launch happens.
+    std::fs::write(config.join("settings.json"), "{}").unwrap();
+    w.repo.write("b.txt", b"b1\nB2\n");
+    api::request_rereview(
+        &ctx,
+        RequestRereviewRequest {
+            review_id: r.review_id.clone(),
+            summary_md: "Fixed again".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(launcher.calls().len(), 1);
+}
+
+/// `focus` checks the location against the diff before it talks to the app
+/// (T5.9 #3): a path not in the diff is `not_found`, a side the file does not
+/// have is `not_found`, a line past the end of that side is `conflict`.
+#[test]
+fn focus_rejects_missing_sides_and_lines_past_the_end() {
+    let w = world();
+    let launcher = no_launch();
+    let ctx = w.ctx(launcher.clone());
+    w.repo.write("c.txt", b"c1\nc2\n");
+    let r = w.live_review(&ctx);
+    let ops: Ops = Arc::default();
+    let _app = fake_app(&w.core, ops.clone(), None);
+    let req = |path: &str, side: SideParam, line: u32| FocusRequest {
+        review_id: Some(r.review_id.clone()),
+        path: Some(path.into()),
+        side: Some(side),
+        line: Some(line),
+        ..FocusRequest::default()
+    };
+    let code = |req: FocusRequest| api::focus(&ctx, req).unwrap_err();
+    let e = code(req("a.txt", SideParam::New, 11));
+    assert_eq!(e.code, ApiErrorCode::Conflict, "{e:?}");
+    assert!(e.message.contains("10 lines"), "{}", e.message);
+    let e = code(req("c.txt", SideParam::Old, 1));
+    assert_eq!(e.code, ApiErrorCode::NotFound, "{e:?}");
+    let e = code(req("nope.txt", SideParam::New, 1));
+    assert_eq!(e.code, ApiErrorCode::NotFound, "{e:?}");
+    assert!(ops.lock().unwrap().is_empty(), "nothing reached the app");
+    // The same checks without the app (`--no-open focus`).
+    let e = api::focus::check(&ctx, req("a.txt", SideParam::Old, 11)).unwrap_err();
+    assert_eq!(e.code, ApiErrorCode::Conflict);
+    // In range: sent.
+    api::focus(&ctx, req("c.txt", SideParam::New, 2)).unwrap();
+    api::focus(&ctx, req("a.txt", SideParam::Old, 10)).unwrap();
+    assert_eq!(ops.lock().unwrap().len(), 2);
+}

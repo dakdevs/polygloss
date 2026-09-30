@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use polygloss_core::ipc::{
     IpcClient, IpcError, Op, PROTOCOL_VERSION, ServerConfig, ServerHandle, codes, current_uid,
-    serve, serve_at, serve_with, server::check_peer, socket_path, socket_path_with,
+    serve, serve_at, serve_with, server::IDLE_TIMEOUT, server::check_peer, socket_path,
+    socket_path_with,
 };
 use polygloss_core::paths::{DataPaths, SOCKET_PATH_MAX};
 use polygloss_core::testing::Sandbox;
@@ -50,6 +51,7 @@ fn config(allow_debug: bool) -> ServerConfig {
     ServerConfig {
         allow_debug,
         expected_uid: current_uid(),
+        idle_timeout: IDLE_TIMEOUT,
     }
 }
 
@@ -217,6 +219,7 @@ fn ipc_rejects_foreign_uid() {
     let foreign = ServerConfig {
         allow_debug: true,
         expected_uid: current_uid().wrapping_add(1),
+        idle_timeout: IDLE_TIMEOUT,
     };
     let _server = serve_with(&paths, foreign, handler).expect("serve");
     let err = client(&paths)
@@ -470,4 +473,103 @@ fn serve_at_binds_a_fake_app_at_any_path() {
     client(&paths).call(Op::StoreChanged { seq: 9 }, T).unwrap();
     assert_eq!(*seen.lock().unwrap(), [Op::StoreChanged { seq: 9 }]);
     drop(server);
+}
+
+/// A long-lived client (`polygloss mcp`, a waiter) whose connection the
+/// server closed after `idle_timeout` reconnects once and succeeds (T5.9 #1).
+#[test]
+fn call_after_idle_timeout_reconnects() {
+    let _sb = Sandbox::isolate();
+    let paths = paths();
+    let (seen, handler) = recording();
+    let short = ServerConfig {
+        idle_timeout: Duration::from_millis(200),
+        ..config(false)
+    };
+    let _server = serve_with(&paths, short, handler).unwrap();
+    let mut c = client(&paths);
+    c.call(Op::StoreChanged { seq: 1 }, T).unwrap();
+    // Longer than the server's idle timeout: it closes the connection.
+    std::thread::sleep(Duration::from_millis(600));
+    let answer = c.call(Op::StoreChanged { seq: 2 }, T).expect("reconnects");
+    assert_eq!(answer, json!({ "handled": "store_changed" }));
+    // And the reconnected client keeps working.
+    c.call(Op::StoreChanged { seq: 3 }, T).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            Op::StoreChanged { seq: 1 },
+            Op::StoreChanged { seq: 2 },
+            Op::StoreChanged { seq: 3 }
+        ]
+    );
+}
+
+/// A slow `open` must not hold up `store_changed` nudges from other
+/// connections (T5.9 #2): handlers run concurrently.
+#[test]
+fn nudge_answers_while_a_slow_op_is_in_flight() {
+    let _sb = Sandbox::isolate();
+    let paths = paths();
+    let _server = serve(&paths, |op: Op| {
+        if matches!(op, Op::Open { .. }) {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        Ok(json!({ "handled": op.name() }))
+    })
+    .unwrap();
+    let slow = {
+        let paths = paths.clone();
+        std::thread::spawn(move || {
+            client(&paths).call(
+                Op::Open {
+                    review_id: Some("r".into()),
+                    diff_id: None,
+                    activate: false,
+                },
+                T,
+            )
+        })
+    };
+    // Let the slow op reach the handler first.
+    std::thread::sleep(Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    client(&paths)
+        .call(Op::StoreChanged { seq: 1 }, T)
+        .expect("the nudge is answered");
+    let took = started.elapsed();
+    assert!(took < Duration::from_millis(200), "nudge took {took:?}");
+    slow.join().unwrap().expect("the slow op finishes too");
+}
+
+/// The client checks who owns the socket and its directory before it sends
+/// anything (T5.9 #4; the `/tmp` fallback could be planted by someone else).
+#[test]
+fn client_verifies_socket_ownership() {
+    use polygloss_core::ipc::client::check_socket_owner;
+    let _sb = Sandbox::isolate();
+    let paths = paths();
+    let (_seen, handler) = recording();
+    let _server = serve(&paths, handler).unwrap();
+    let path = socket_path(&paths);
+    check_socket_owner(&path, current_uid()).expect("our own socket");
+    let err = check_socket_owner(&path, current_uid().wrapping_add(1)).unwrap_err();
+    assert_eq!(err.code, codes::FORBIDDEN, "{err}");
+
+    // A symlink to our socket is not a socket: refused, nothing is sent.
+    let link = paths.data_dir.join("link.sock");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    let err = check_socket_owner(&link, current_uid()).unwrap_err();
+    assert_eq!(err.code, codes::FORBIDDEN, "{err}");
+    let err = IpcClient::connect_at(&link).unwrap_err();
+    assert_eq!(err.code, codes::FORBIDDEN, "{err}");
+
+    // A group- or world-writable directory is refused too.
+    let open_dir = paths.data_dir.join("open");
+    std::fs::create_dir(&open_dir).unwrap();
+    std::fs::set_permissions(&open_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let planted = open_dir.join("p.sock");
+    let _other = serve_at(&planted, config(false), |_| Ok(Value::Null)).unwrap();
+    let err = IpcClient::connect_at(&planted).unwrap_err();
+    assert_eq!(err.code, codes::FORBIDDEN, "{err}");
 }

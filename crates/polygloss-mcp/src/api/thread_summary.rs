@@ -5,7 +5,10 @@
 //! Positions are relative to the review's latest iteration, or to the diff the
 //! caller names; a thread of a review without iterations falls back to its
 //! origin diff. They come from core's carry-forward cache (`thread_positions`)
-//! and are computed from the repo's objects on a miss.
+//! and are computed from the repo's objects on a miss. When no repo on disk has
+//! the diff's objects any more (the review's repo was deleted or moved), only
+//! cached positions are used and the rest are `absent`, never
+//! `repo_not_found` (T5.9).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,7 +16,7 @@ use std::sync::Arc;
 use polygloss_core::DiffId;
 use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{
-    AuthorKind, CommentView, Position, PositionState, Subject, ThreadView,
+    AuthorKind, CommentView, CoreError, Position, PositionState, Subject, ThreadView,
 };
 use polygloss_diff::FileChange;
 
@@ -28,20 +31,32 @@ use crate::errors::ApiError;
 pub struct DiffContext {
     pub diff_id: DiffId,
     pub files: Arc<Vec<FileChange>>,
-    pub blobs: BlobReader,
+    /// `None` when no repo on disk has both of the diff's trees any more.
+    pub blobs: Option<BlobReader>,
 }
 
 impl DiffContext {
     /// Loads a stored diff: its files, and the objects of a repo that has both
-    /// of its trees (`repo_not_found` when none has).
+    /// of its trees (`blobs: None` when none has).
     pub fn load(ctx: &ApiContext, diff_id: &DiffId) -> Result<DiffContext, ApiError> {
         let files = ctx
             .core
             .files_for_diff(diff_id)?
             .ok_or_else(|| ApiError::not_found(format!("diff not found: {diff_id}")))?;
-        let (repo, _) = ctx.core.find_repo_for_diff(diff_id.as_str(), None)?;
-        let blobs = BlobReader::open(&repo)
-            .map_err(|e| ApiError::from(polygloss_core::review::CoreError::from(e)))?;
+        let blobs = match ctx.core.find_repo_for_diff(diff_id.as_str(), None) {
+            Ok((repo, _)) => Some(
+                BlobReader::open(&repo)
+                    .map_err(|e| ApiError::from(polygloss_core::review::CoreError::from(e)))?,
+            ),
+            Err(CoreError::RepoNotFound(_)) => {
+                tracing::debug!(
+                    diff_id = diff_id.as_str(),
+                    "no repo has this diff's objects"
+                );
+                None
+            }
+            Err(e) => return Err(e.into()),
+        };
         Ok(DiffContext {
             diff_id: diff_id.clone(),
             files,
@@ -86,7 +101,11 @@ pub fn positions(
     let mut diffs = HashMap::new();
     for (diff, ids) in by_diff {
         let dc = DiffContext::load(ctx, &diff)?;
-        out.extend(ctx.core.positions(&diff, &dc.files, &ids, &dc.blobs)?);
+        match &dc.blobs {
+            Some(blobs) => out.extend(ctx.core.positions(&diff, &dc.files, &ids, blobs)?),
+            // The repo is gone: cached positions only, the rest are absent.
+            None => out.extend(ctx.core.cached_positions(&diff, &ids)?),
+        }
         diffs.insert(diff, dc);
     }
     Ok((out, diffs))

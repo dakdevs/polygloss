@@ -284,10 +284,14 @@ impl Core {
     /// [`Core::pin_live_on_base`] / `request_rereview`. `Ok(None)` for commit and
     /// compare reviews; `NotFound` for an unknown review; `Conflict` when the
     /// worktree now belongs to another review (e.g. it is on another branch).
+    ///
+    /// Writes nothing to the store: no review row for the branch the worktree
+    /// is on now, no un-archiving and no `updated_at` bump (`actor` is kept for
+    /// callers that pin next).
     pub fn reopen_live(
         &self,
         review_id: &str,
-        actor: &Actor,
+        _actor: &Actor,
     ) -> Result<Option<OpenedDiff>, CoreError> {
         let row = self
             .store
@@ -305,28 +309,60 @@ impl Core {
                     "live review {review_id} has no worktree path"
                 )))
             })?;
-        let since = match row.since.as_deref().unwrap_or("merge-base") {
+        let since_key = row.since.as_deref().unwrap_or("merge-base");
+        let since = match since_key {
             "merge-base" => Since::MergeBase,
             "HEAD" => Since::Head,
             oid => Since::Commit(oid.to_owned()),
         };
-        let opened = self.open(&OpenRequest {
-            worktree: worktree.clone(),
-            source: Source::Live { since },
-            label: None,
-            pin: None,
-            actor: actor.clone(),
-        })?;
-        if opened.review_id != review_id {
+        // Read-only up to the snapshot: the review is addressed by id, so this
+        // never creates a review for another branch, un-archives it or bumps
+        // its `updated_at` (an iteration pinned later does, T5.9).
+        let repo = discover(&worktree)?;
+        if repo.common_dir != row.common_dir {
             return Err(CoreError::Conflict(format!(
-                "{} now shows review {} ({}), not review {review_id} ({})",
+                "{} is no longer a worktree of {}",
                 worktree.display(),
-                opened.review_id,
-                opened.review_key,
+                row.common_dir.display()
+            )));
+        }
+        let res = resolve(&repo, &worktree, &Source::Live { since })?;
+        if res.review_key != row.key {
+            return Err(CoreError::Conflict(format!(
+                "{} now shows review {}, not review {review_id} ({}); open it with open_diff",
+                worktree.display(),
+                res.review_key,
                 row.key
             )));
         }
-        Ok(Some(opened))
+        let state = self.snapshots.snapshot(&repo, &worktree)?;
+        let fmt = res.object_format;
+        let id = diff_id(fmt, &res.base.tree, &state.head_tree);
+        let files = self.files_or_compute(
+            &repo,
+            fmt,
+            &id,
+            &res.base.tree,
+            &state.head_tree,
+            Some(&state),
+        )?;
+        let latest = self.store.read(|c| latest_iteration(c, review_id))?;
+        Ok(Some(OpenedDiff {
+            repo,
+            repo_id: row.repo_id,
+            review_id: review_id.to_owned(),
+            review_key: row.key,
+            kind: ReviewKind::Live,
+            iteration: latest.filter(|it| it.diff_id == id),
+            diff_id: id,
+            base: res.base.clone(),
+            head_tree: state.head_tree.clone(),
+            head_commit: None,
+            head_ref: None,
+            files,
+            live: Some(state),
+            warnings: res.warnings.clone(),
+        }))
     }
 
     /// The review's iterations in `seq` order (empty for an unpinned live review).

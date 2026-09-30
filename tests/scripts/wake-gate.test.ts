@@ -299,6 +299,31 @@ describe("scripts/wake-gate/prepare.sh", () => {
     );
   });
 
+  test("the root guard normalizes .. and compares case-insensitively", () => {
+    // APFS is case-insensitive, and `..` can climb back into a real location:
+    // neither may slip past the guard (T5.9).
+    mkdirSync(join(sandbox.home, "elsewhere"), { recursive: true });
+    const upper = sandbox.home.replace(/\/home$/, "/HOME");
+    for (const root of [
+      join(sandbox.home, "elsewhere") + "/../Library/Application Support/x",
+      `${sandbox.home}/./.claude/../.claude/gate`,
+      join(sandbox.home, "LIBRARY", "gate"),
+      join(sandbox.home, ".CONFIG", "gate"),
+      `${upper}/Library/gate`,
+      `${sandbox.home}/elsewhere/..`,
+    ]) {
+      const r = runPrepare(["--dry-run"], { root });
+      expect({ root, exitCode: r.exitCode }).toEqual({ root, exitCode: 1 });
+      expect(r.stderr).toContain("refusing");
+    }
+    // A dedicated directory next to them is fine.
+    const ok = runPrepare(["--dry-run"], {
+      root: join(sandbox.home, "elsewhere", "..", "gate-normalized"),
+    });
+    expect(ok.exitCode).toBe(0);
+    expect(ok.stdout).toContain(join(sandbox.home, "gate-normalized", "data"));
+  });
+
   test("--no-build skips cargo and fails clearly when a binary is missing", () => {
     const missing = runPrepare(["--no-build"], {
       env: { CARGO_TARGET_DIR: join(sandbox.home, "no-target") },

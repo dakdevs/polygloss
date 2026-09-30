@@ -147,6 +147,7 @@ impl World {
             &self.ctx,
             GetThreadRequest {
                 thread_id: thread_id.into(),
+                ..GetThreadRequest::default()
             },
         )
         .unwrap();
@@ -187,8 +188,9 @@ fn get_thread_truncates_bodies_over_20k_chars_and_flags_them() {
     let t = w.get(&id);
     let c = &t["comments"][0];
     assert_eq!(c["truncated"], json!(true));
-    assert_eq!(c["body_md"].as_str().unwrap().chars().count(), 20_000);
-    // Suggestions come from the whole body.
+    // Suggestions come from the whole body, and their replacement and
+    // original text count toward the 20k cap (T5.9 #9): "fixed" + "L5".
+    assert_eq!(c["body_md"].as_str().unwrap().chars().count(), 20_000 - 7);
     assert_eq!(t["has_suggestion"], json!(true));
     assert_eq!(c["suggestions"][0]["replacement"], json!("fixed"));
     let excerpt = t["last_comment"]["excerpt"].as_str().unwrap();
@@ -420,6 +422,7 @@ fn list_threads_errors() {
         &w.ctx,
         GetThreadRequest {
             thread_id: "nope".into(),
+            ..GetThreadRequest::default()
         },
     )
     .unwrap_err();
@@ -511,4 +514,156 @@ fn read_resource_rejects_unknown_uris() {
     assert!(md.contains("added"), "{md}");
     assert!(md.contains("gone.txt"), "{md}");
     assert!(md.contains("deleted"), "{md}");
+}
+
+/// A comment whose suggestions alone exceed the cap keeps its (cut) body but
+/// not the suggestions, which would be incomplete; `truncated` says so (T5.9 #9).
+#[test]
+fn suggestions_too_large_for_the_cap_are_left_out() {
+    let w = world();
+    let big = "x".repeat(21_000);
+    let body = format!("Replace it:\n```suggestion\n{big}\n```\n");
+    let id = w.thread(
+        line("a.txt", Side::New, 5, 5),
+        ThreadKind::Note,
+        &body,
+        agent(),
+    );
+    let t = w.get(&id);
+    let c = &t["comments"][0];
+    assert_eq!(c["truncated"], json!(true));
+    assert_eq!(c["suggestions"], json!([]));
+    let chars = c["body_md"].as_str().unwrap().chars().count();
+    assert_eq!(chars, 20_000);
+}
+
+/// `get_thread` stays under the page budget however many long comments a
+/// thread has: it pages its comments with `next_cursor` and flags
+/// `comments_truncated` (T5.9 #9).
+#[test]
+fn get_thread_pages_comments_to_stay_under_the_budget() {
+    let w = world();
+    let id = w.thread(
+        line("a.txt", Side::New, 5, 5),
+        ThreadKind::Note,
+        "Start.",
+        agent(),
+    );
+    for i in 0..12 {
+        w.ctx
+            .core
+            .reply(
+                &id,
+                &format!("{i}: {}", "long reply ".repeat(1_500)),
+                &agent(),
+            )
+            .unwrap();
+    }
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..20 {
+        let r = api::get_thread(
+            &w.ctx,
+            GetThreadRequest {
+                thread_id: id.clone(),
+                cursor: cursor.clone(),
+            },
+        )
+        .unwrap();
+        let v = serde_json::to_value(&r).unwrap();
+        let size = v.to_string().chars().count();
+        assert!(size < polygloss_mcp::PAGE_MAX_CHARS, "{size}");
+        assert_eq!(v["comment_count"], json!(13));
+        for c in v["comments"].as_array().unwrap() {
+            seen.push(c["comment_id"].as_str().unwrap().to_owned());
+        }
+        cursor = v["next_cursor"].as_str().map(str::to_owned);
+        assert_eq!(
+            v["comments_truncated"].as_bool().unwrap_or(false),
+            cursor.is_some()
+        );
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(cursor.is_none(), "paging never ended");
+    assert_eq!(seen.len(), 13);
+    let unique: std::collections::BTreeSet<&String> = seen.iter().collect();
+    assert_eq!(unique.len(), 13);
+
+    // The thread resource stays under the budget too and says how to read on.
+    let md = api::resources::read_resource(&w.ctx, &format!("polygloss://thread/{id}")).unwrap();
+    assert!(md.chars().count() < polygloss_mcp::PAGE_MAX_CHARS);
+    assert!(md.contains("next_cursor"), "{}", &md[md.len() - 300..]);
+
+    // A cursor from another thread is refused.
+    let other = w.thread(Subject::Review, ThreadKind::Note, "Other.", agent());
+    let first = api::get_thread(
+        &w.ctx,
+        GetThreadRequest {
+            thread_id: id.clone(),
+            ..GetThreadRequest::default()
+        },
+    )
+    .unwrap();
+    let err = api::get_thread(
+        &w.ctx,
+        GetThreadRequest {
+            thread_id: other,
+            cursor: first.next_cursor.clone(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::Conflict);
+}
+
+/// The review's repo is gone (deleted or moved): thread reads still answer,
+/// with positions `absent` (or cached ones) instead of `repo_not_found`
+/// (T5.9 #7).
+#[test]
+fn thread_reads_survive_a_deleted_repo() {
+    let w = world();
+    let id = w.thread(
+        line("a.txt", Side::New, 5, 5),
+        ThreadKind::Question,
+        "Why?",
+        agent(),
+    );
+    let cached = w.thread(
+        line("a.txt", Side::New, 4, 4),
+        ThreadKind::Note,
+        "Context.",
+        agent(),
+    );
+    // Cache one thread's position, then forget the other's.
+    assert_eq!(w.get(&cached)["position"]["state"], json!("exact"));
+    w.ctx
+        .core
+        .store
+        .write(|tx| Ok(tx.execute("DELETE FROM thread_positions WHERE thread_id = ?1", [&id])?))
+        .unwrap();
+    std::fs::remove_dir_all(w.repo.path()).unwrap();
+
+    let t = w.get(&id);
+    assert_eq!(t["position"], json!({ "state": "absent" }));
+    assert_eq!(t["anchor"]["original_snippet"], json!("L5"));
+    assert!(t["anchor"].get("current_snippet").is_none(), "{t}");
+    assert_eq!(w.get(&cached)["position"]["state"], json!("exact"));
+
+    let list = w.list(w.review_threads());
+    let states: Vec<&str> = list["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["position"]["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["absent", "exact"]);
+    for uri in [
+        format!("polygloss://thread/{id}"),
+        format!("polygloss://review/{}/threads", w.opened.review_id),
+        format!("polygloss://review/{}", w.opened.review_id),
+    ] {
+        let md = api::resources::read_resource(&w.ctx, &uri).unwrap();
+        assert!(md.contains("Why?") || md.contains("Review"), "{uri}: {md}");
+    }
 }

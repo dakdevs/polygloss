@@ -1,7 +1,9 @@
 //! Small process queries for `polygloss wait` (T4.8, design §16.3, §16.4): the
-//! executable of a pid (to check that a replaced waiter really is
-//! `polygloss-cli` before signaling it), a pid's parent (to find the agent host
-//! behind a hook's shell), liveness, and `SIGTERM`.
+//! executable and start time of a pid (to prove that a replaced waiter really
+//! is our `polygloss-cli` waiter before signaling it, [`is_waiter`]), a pid's
+//! parent (to find the agent host behind a hook's shell), liveness, `SIGTERM`,
+//! and a termination flag set by `SIGTERM`/`SIGINT`/`SIGHUP`
+//! ([`catch_termination`]).
 //!
 //! macOS only (`proc_pidpath`, `proc_pidinfo`); other targets answer `None`.
 //! Each FFI call sits behind a narrow `#[allow(unsafe_code)]` (OQ-P8).
@@ -42,6 +44,46 @@ pub fn terminate(pid: i32) -> std::io::Result<()> {
     }
     imp::terminate(pid)
 }
+
+/// When process `pid` started, in milliseconds since the Unix epoch (`None`
+/// when it does not exist or cannot be inspected).
+pub fn start_time_ms(pid: i32) -> Option<i64> {
+    if pid <= 0 {
+        return None;
+    }
+    imp::start_time_ms(pid)
+}
+
+/// Whether `pid` is provably the waiter that registered at `registered_at_ms`
+/// (ms since the epoch): alive, its executable is named `executable`, and it
+/// started no later than the registration. A process that got the pid after
+/// the waiter exited (PID reuse) started after the registration, so it never
+/// qualifies, whatever its name.
+pub fn is_waiter(pid: i32, registered_at_ms: i64, executable: &str) -> bool {
+    is_alive(pid)
+        && executable_name(pid).as_deref() == Some(executable)
+        && start_time_ms(pid).is_some_and(|started| started <= registered_at_ms)
+}
+
+/// Whether process `pid` is alive and started no later than `at_ms` (it is the
+/// process that was alive then, not a later one with a reused pid).
+pub fn alive_since(pid: i32, at_ms: i64) -> bool {
+    is_alive(pid) && start_time_ms(pid).is_some_and(|started| started <= at_ms)
+}
+
+/// Installs handlers for `SIGTERM`, `SIGINT` and `SIGHUP` that only set a
+/// flag ([`termination_requested`]), so a long-running loop can clean up and
+/// exit normally. Idempotent.
+pub fn catch_termination() {
+    imp::catch_termination();
+}
+
+/// Whether a signal caught by [`catch_termination`] arrived.
+pub fn termination_requested() -> bool {
+    TERMINATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static TERMINATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The file name of process `pid`'s executable, e.g. `polygloss-cli`.
 pub fn executable_name(pid: i32) -> Option<String> {
@@ -96,6 +138,50 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
+    pub fn start_time_ms(pid: i32) -> Option<i64> {
+        let size = std::mem::size_of::<libc::proc_bsdinfo>();
+        // SAFETY: `proc_bsdinfo` is plain old data; all-zero is a valid value.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        // SAFETY: as in `parent_pid`: a writable `proc_bsdinfo` of `size` bytes.
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&raw mut info).cast::<libc::c_void>(),
+                i32::try_from(size).ok()?,
+            )
+        };
+        if usize::try_from(n).ok() != Some(size) {
+            return None;
+        }
+        let secs = i64::try_from(info.pbi_start_tvsec).ok()?;
+        let micros = i64::try_from(info.pbi_start_tvusec).ok()?;
+        Some(secs * 1000 + micros / 1000)
+    }
+
+    extern "C" fn on_signal(_: libc::c_int) {
+        // Async-signal-safe: one atomic store.
+        super::TERMINATION.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[allow(unsafe_code)]
+    pub fn catch_termination() {
+        for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            // SAFETY: `sigaction` is plain old data (all-zero is valid); the
+            // handler only stores to an atomic, which is async-signal-safe;
+            // `sa_mask` is emptied by `sigemptyset` before use.
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as usize;
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigemptyset(&raw mut action.sa_mask);
+                libc::sigaction(sig, &raw const action, std::ptr::null_mut());
+            }
+        }
+    }
+
+    #[allow(unsafe_code)]
     pub fn is_alive(pid: i32) -> bool {
         // SAFETY: signal 0 only checks that `pid` (> 0, checked by the caller)
         // exists and may be signaled; nothing is delivered.
@@ -130,6 +216,12 @@ mod imp {
     pub fn is_alive(_pid: i32) -> bool {
         false
     }
+
+    pub fn start_time_ms(_pid: i32) -> Option<i64> {
+        None
+    }
+
+    pub fn catch_termination() {}
 
     pub fn terminate(_pid: i32) -> std::io::Result<()> {
         Err(std::io::Error::other("unsupported platform"))
@@ -179,6 +271,70 @@ mod tests {
         child.wait().unwrap();
         assert!(!is_alive(pid));
         assert_eq!(executable_path(pid), None);
+    }
+
+    fn now_ms() -> i64 {
+        crate::store::events::now_ms()
+    }
+
+    #[test]
+    fn start_time_of_this_process_is_in_the_past() {
+        let started = start_time_ms(own_pid()).unwrap();
+        assert!(started <= now_ms(), "{started}");
+        assert!(started > now_ms() - 24 * 3_600_000, "{started}");
+        assert_eq!(start_time_ms(0), None);
+    }
+
+    /// A process that got a waiter's pid after the waiter registered is not the
+    /// waiter, even when its executable has the waiter's name (T5.9 #5).
+    #[test]
+    fn a_same_named_process_started_after_registration_is_no_waiter() {
+        let dir = tempfile::tempdir().unwrap();
+        let impostor = dir.path().join("polygloss-cli");
+        std::fs::copy("/bin/sleep", &impostor).unwrap();
+        // A moved platform binary is killed at launch unless re-signed.
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["--sign", "-", "--force"])
+            .arg(&impostor)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(signed.success());
+        let registered_at = now_ms();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut child = Command::new(&impostor)
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        assert_eq!(executable_name(pid).as_deref(), Some("polygloss-cli"));
+        assert!(!is_waiter(pid, registered_at, "polygloss-cli"));
+        assert!(!alive_since(pid, registered_at));
+        // Registered after it started: that is the waiter.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let later = now_ms();
+        assert!(is_waiter(pid, later, "polygloss-cli"));
+        assert!(alive_since(pid, later));
+        // Another name never qualifies.
+        assert!(!is_waiter(pid, later, "Polygloss"));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!is_waiter(pid, later, "polygloss-cli"));
+    }
+
+    #[test]
+    fn caught_sigterm_sets_the_flag_instead_of_killing() {
+        catch_termination();
+        assert!(!termination_requested());
+        // Our own pid: the handler installed above catches it.
+        terminate(own_pid()).unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !termination_requested() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(termination_requested());
     }
 
     #[test]

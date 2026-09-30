@@ -101,8 +101,10 @@ fn user_version(db: &Path) -> u32 {
 fn data_dir_env_override() {
     let root = isolate_process();
 
-    // The real env (set by the sandbox): POLYGLOSS_DATA_DIR wins for the data dir;
-    // cache, logs and config stay under the sandbox HOME / XDG_CONFIG_HOME.
+    // The real env (set by the sandbox): POLYGLOSS_DATA_DIR wins for the data dir
+    // and moves the cache and logs next to it (T5.9 #17: a sandbox never writes
+    // the real ~/Library/Caches or ~/Library/Logs); config stays under
+    // XDG_CONFIG_HOME.
     let p = DataPaths::resolve().unwrap();
     let data = root.join("data");
     let home = root.join("home");
@@ -113,8 +115,9 @@ fn data_dir_env_override() {
     assert_eq!(p.app_lock, data.join("app.lock"));
     assert_eq!(p.bin_dir, data.join("bin"));
     assert_eq!(p.config_dir, home.join(".config").join("polygloss"));
-    assert!(p.cache_dir.starts_with(&home), "{:?}", p.cache_dir);
-    assert!(p.logs_dir.starts_with(&home), "{:?}", p.logs_dir);
+    assert_eq!(p.cache_dir, data.join("cache"));
+    assert_eq!(p.scratch_dir, data.join("cache").join("scratch"));
+    assert_eq!(p.logs_dir, data.join("logs"));
 
     // Without the override: the macOS Application Support layout of §13.2.
     let env = |pairs: &[(&'static str, &str)]| {
@@ -145,10 +148,31 @@ fn data_dir_env_override() {
     assert_eq!(p.data_dir, PathBuf::from("/tmp/pg-data"));
     assert_eq!(p.db, PathBuf::from("/tmp/pg-data/polygloss.db"));
     assert_eq!(p.config_dir, PathBuf::from("/tmp/xdg/polygloss"));
-    assert_eq!(
-        p.cache_dir,
-        PathBuf::from("/Users/u/Library/Caches/polygloss")
-    );
+    assert_eq!(p.cache_dir, PathBuf::from("/tmp/pg-data/cache"));
+    assert_eq!(p.blobs_dir, PathBuf::from("/tmp/pg-data/cache/blobs"));
+    assert_eq!(p.logs_dir, PathBuf::from("/tmp/pg-data/logs"));
+
+    // POLYGLOSS_CACHE_DIR and POLYGLOSS_LOG_DIR win over both layouts.
+    for data in [None, Some("/tmp/pg-data")] {
+        let mut pairs = vec![
+            ("HOME", "/Users/u"),
+            ("POLYGLOSS_CACHE_DIR", "/tmp/pg-cache"),
+            ("POLYGLOSS_LOG_DIR", "/tmp/pg-logs"),
+        ];
+        if let Some(d) = data {
+            pairs.push(("POLYGLOSS_DATA_DIR", d));
+        }
+        let p = env(&pairs).unwrap();
+        assert_eq!(p.cache_dir, PathBuf::from("/tmp/pg-cache"));
+        assert_eq!(p.scratch_dir, PathBuf::from("/tmp/pg-cache/scratch"));
+        assert_eq!(p.logs_dir, PathBuf::from("/tmp/pg-logs"));
+    }
+    for var in ["POLYGLOSS_CACHE_DIR", "POLYGLOSS_LOG_DIR"] {
+        assert!(matches!(
+            env(&[("HOME", "/Users/u"), (var, "rel/dir")]),
+            Err(PathsError::NotAbsolute { .. })
+        ));
+    }
     let p = env(&[
         ("HOME", "/Users/u"),
         ("POLYGLOSS_DATA_DIR", ""),

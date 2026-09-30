@@ -22,8 +22,11 @@
 //! 2. Pending submissions (after `last_woken_seq`) are reported at once; else,
 //!    with no open review assigned, exit 0.
 //! 3. Register in `waiters`. A replaced older waiter notices on its next check
-//!    and exits 0; if it is still alive after [`REPLACE_GRACE`] and its
-//!    executable really is `polygloss-cli`, it gets `SIGTERM`.
+//!    and exits 0; if it is still alive after [`REPLACE_GRACE`] and it provably
+//!    is that waiter (its executable is `polygloss-cli` and it started before
+//!    its row was written, so a process that reused its pid never qualifies,
+//!    `process::is_waiter`), it gets `SIGTERM`. A waiter that gets `SIGTERM`
+//!    (or `SIGINT`/`SIGHUP`) stops listening, removes its row and exits 0.
 //! 4. Poll the event feed (`data_version`, [`POLL`]) for `review.submitted`;
 //!    `polygloss_mcp::wake` decides which concern the session.
 //! 5. On a hit: set `last_woken_seq`, print the summary, exit 2.
@@ -142,7 +145,9 @@ fn wait(args: WaitArgs, session_flag: Option<&str>) -> anyhow::Result<Outcome> {
         return Ok(Outcome::Nothing);
     }
 
-    // Step 3: register, replacing an older waiter.
+    // Step 3: register, replacing an older waiter. From here on a termination
+    // signal ends the wait normally, so the row is removed on the way out.
+    process::catch_termination();
     let pid = i32::try_from(std::process::id()).context("pid out of range")?;
     let deadline_at =
         now_ms().saturating_add(i64::try_from(budget.as_millis()).unwrap_or(i64::MAX));
@@ -152,10 +157,13 @@ fn wait(args: WaitArgs, session_flag: Option<&str>) -> anyhow::Result<Outcome> {
     let mut last_owner_check = Instant::now();
     loop {
         let elapsed = started.elapsed();
-        if elapsed >= budget {
+        if elapsed >= budget || process::termination_requested() {
             return Ok(Outcome::Nothing);
         }
         std::thread::sleep(POLL.min(budget - elapsed));
+        if process::termination_requested() {
+            return Ok(Outcome::Nothing);
+        }
         if last_owner_check.elapsed() >= OWNER_CHECK {
             last_owner_check = Instant::now();
             if core.waiter_pid(&session)? != Some(pid) {
@@ -234,7 +242,7 @@ struct Registration<'a> {
 impl<'a> Registration<'a> {
     fn new(core: &'a Core, session: &str, pid: i32, deadline_at: i64) -> anyhow::Result<Self> {
         if let Some(old) = core.register_waiter(session, pid, deadline_at)? {
-            retire_replaced_waiter(old);
+            retire_replaced_waiter(old.pid, old.started_at);
         }
         Ok(Registration {
             core,
@@ -253,9 +261,11 @@ impl Drop for Registration<'_> {
 }
 
 /// Gives a replaced waiter [`REPLACE_GRACE`] to exit on its own (it polls its
-/// row), then sends `SIGTERM` only if its executable is `polygloss-cli`. Runs
-/// on a detached thread so registration is not delayed.
-fn retire_replaced_waiter(old: i32) {
+/// row), then sends `SIGTERM` only if the process is provably that waiter: its
+/// executable is `polygloss-cli` and it started no later than its registration
+/// at `registered_at` (ms), so a process that reused the pid is never signaled.
+/// Runs on a detached thread so registration is not delayed.
+fn retire_replaced_waiter(old: i32, registered_at: i64) {
     std::thread::spawn(move || {
         let until = Instant::now() + REPLACE_GRACE;
         while Instant::now() < until {
@@ -264,7 +274,7 @@ fn retire_replaced_waiter(old: i32) {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        if process::executable_name(old).as_deref() == Some(WAITER_EXECUTABLE) {
+        if process::is_waiter(old, registered_at, WAITER_EXECUTABLE) {
             let _ = process::terminate(old);
         }
     });

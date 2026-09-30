@@ -142,7 +142,7 @@ pub fn excerpt(body: &str) -> String {
     short
 }
 
-/// What to diff (§15.2 `Source`). The default is `{kind: "live"}`: the working
+/// What to diff. The default is `{kind: "live"}`: the working
 /// tree against the merge-base with the default branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -230,7 +230,7 @@ impl From<Side> for SideParam {
     }
 }
 
-/// Where a comment goes (§15.2 `Anchor`): `{path}` for a file thread, or
+/// Where a comment goes: `{path}` for a file thread, or
 /// `{path, side, line, start_line?}` for a line or range thread. Lines are 1-based
 /// lines of the file on that side.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -423,6 +423,10 @@ impl EventFeed {
     /// Opens a feed that yields matching events with `seq > after_seq`. Creates and
     /// migrates the store first if needed (via [`Store::open`]), so it works against
     /// a missing database. The first [`EventFeed::poll`] always reads.
+    ///
+    /// `after_seq` is clamped to `0..=latest seq`: a cursor from the future (a
+    /// stale or foreign `since`) would otherwise skip every event appended until
+    /// the seq caught up with it.
     pub fn open(
         paths: &DataPaths,
         after_seq: i64,
@@ -438,10 +442,11 @@ impl EventFeed {
         )?;
         bootstrap_connection(&conn)?;
         conn.pragma_update(None, "query_only", "ON")?;
+        let latest = latest_seq(&conn)?;
         Ok(EventFeed {
             conn,
             filter,
-            cursor: after_seq,
+            cursor: after_seq.clamp(0, latest),
             data_version: None,
             scans: 0,
         })

@@ -10,9 +10,10 @@
 //!   protocol}`), so it works while the app's main thread is busy.
 //! - `debug_state` reaches the handler only when [`ServerConfig::allow_debug`]
 //!   (`POLYGLOSS_TEST=1`); otherwise it is an `unknown_op`.
-//! - Every other op goes to the handler. Handler calls run one at a time
-//!   (the handler is `Send`, not `Sync`), in arrival order across
-//!   connections.
+//! - Every other op goes to the handler, called concurrently from each
+//!   connection's thread (the handler is `Fn + Send + Sync`), so a slow `open`
+//!   or `focus` never holds up another connection's `store_changed` nudge.
+//!   Requests on one connection are still answered in order.
 //!
 //! Binding: the socket's directory is created with mode `0700` (a `$TMPDIR`
 //! fallback directory must also be owned by us), and the socket file is set
@@ -28,8 +29,8 @@ use std::os::unix::fs::{
     DirBuilderExt as _, FileTypeExt as _, MetadataExt as _, PermissionsExt as _,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -53,6 +54,9 @@ pub struct ServerConfig {
     pub allow_debug: bool,
     /// The only peer uid accepted (ours; tests inject another).
     pub expected_uid: u32,
+    /// How long a connection may stay idle between requests ([`IDLE_TIMEOUT`];
+    /// tests shorten it).
+    pub idle_timeout: Duration,
 }
 
 impl ServerConfig {
@@ -66,6 +70,7 @@ impl ServerConfig {
         ServerConfig {
             allow_debug: env(TEST_ENV).is_some_and(|v| v == "1"),
             expected_uid: super::current_uid(),
+            idle_timeout: IDLE_TIMEOUT,
         }
     }
 }
@@ -141,7 +146,7 @@ impl Drop for ServerHandle {
 /// [`ServerConfig::from_env`].
 pub fn serve(
     paths: &DataPaths,
-    handler: impl Fn(Op) -> Result<Value, IpcError> + Send + 'static,
+    handler: impl Fn(Op) -> Result<Value, IpcError> + Send + Sync + 'static,
 ) -> Result<ServerHandle, IpcError> {
     serve_with(paths, ServerConfig::from_env(), handler)
 }
@@ -150,12 +155,12 @@ pub fn serve(
 pub fn serve_with(
     paths: &DataPaths,
     config: ServerConfig,
-    handler: impl Fn(Op) -> Result<Value, IpcError> + Send + 'static,
+    handler: impl Fn(Op) -> Result<Value, IpcError> + Send + Sync + 'static,
 ) -> Result<ServerHandle, IpcError> {
     let path = super::socket_path(paths);
     let in_data_dir = path.parent() == Some(paths.data_dir.as_path());
     prepare_dir(&path, !in_data_dir)?;
-    bind_and_run(path, config, Box::new(handler))
+    bind_and_run(path, config, Arc::new(handler))
 }
 
 /// Serves the socket at `path` (its directory must exist; it is not
@@ -164,12 +169,12 @@ pub fn serve_with(
 pub fn serve_at(
     path: &Path,
     config: ServerConfig,
-    handler: impl Fn(Op) -> Result<Value, IpcError> + Send + 'static,
+    handler: impl Fn(Op) -> Result<Value, IpcError> + Send + Sync + 'static,
 ) -> Result<ServerHandle, IpcError> {
-    bind_and_run(path.to_path_buf(), config, Box::new(handler))
+    bind_and_run(path.to_path_buf(), config, Arc::new(handler))
 }
 
-type Handler = Box<dyn Fn(Op) -> Result<Value, IpcError> + Send>;
+type Handler = Arc<dyn Fn(Op) -> Result<Value, IpcError> + Send + Sync>;
 
 /// Creates the socket's directory `0700`. A fallback directory (not the data
 /// dir) must be a real directory owned by us.
@@ -247,7 +252,6 @@ fn bind_and_run(
         .map_err(|e| IpcError::io(&format!("chmod 0600 {}", path.display()), &e))?;
     let bound = file_id(&path);
     let stop = Arc::new(AtomicBool::new(false));
-    let handler = Arc::new(Mutex::new(handler));
     let thread = {
         let stop = stop.clone();
         std::thread::Builder::new()
@@ -288,7 +292,7 @@ fn file_id(path: &Path) -> Option<(u64, u64)> {
         .map(|m| (m.dev(), m.ino()))
 }
 
-fn spawn_connection(stream: Stream, config: ServerConfig, handler: Arc<Mutex<Handler>>) {
+fn spawn_connection(stream: Stream, config: ServerConfig, handler: Handler) {
     let spawned = std::thread::Builder::new()
         .name("polygloss-ipc-conn".into())
         .spawn(move || {
@@ -302,19 +306,15 @@ fn spawn_connection(stream: Stream, config: ServerConfig, handler: Arc<Mutex<Han
 }
 
 /// Serves one connection until the peer closes it, stays idle for
-/// [`IDLE_TIMEOUT`], or sends an oversized line.
-fn connection(
-    stream: Stream,
-    config: ServerConfig,
-    handler: &Mutex<Handler>,
-) -> std::io::Result<()> {
+/// [`ServerConfig::idle_timeout`], or sends an oversized line.
+fn connection(stream: Stream, config: ServerConfig, handler: &Handler) -> std::io::Result<()> {
     let peer = peer_uid(&stream)?;
     if let Err(e) = check_peer(peer, config.expected_uid) {
         tracing::warn!("rejected a socket connection: {e}");
         return write_response(&stream, &Response::failure(0, e));
     }
-    stream.set_recv_timeout(Some(IDLE_TIMEOUT))?;
-    stream.set_send_timeout(Some(IDLE_TIMEOUT))?;
+    stream.set_recv_timeout(Some(config.idle_timeout))?;
+    stream.set_send_timeout(Some(config.idle_timeout))?;
     let mut reader = BufReader::new(&stream);
     loop {
         let mut buf = Vec::new();
@@ -341,7 +341,7 @@ fn connection(
 }
 
 /// The response to one request line.
-fn respond(line: &str, config: ServerConfig, handler: &Mutex<Handler>) -> Response {
+fn respond(line: &str, config: ServerConfig, handler: &Handler) -> Response {
     let req = match parse_request(line) {
         Ok(req) => req,
         Err((id, e)) => return Response::failure(id, e),
@@ -352,13 +352,18 @@ fn respond(line: &str, config: ServerConfig, handler: &Mutex<Handler>) -> Respon
             codes::UNKNOWN_OP,
             format!("debug_state needs {TEST_ENV}=1"),
         )),
-        op => match handler.lock() {
-            Ok(handler) => handler(op),
-            Err(_) => Err(IpcError::new(
-                codes::INTERNAL,
-                "the socket handler panicked",
-            )),
-        },
+        op => {
+            // A panicking handler ends only this connection's thread; answer
+            // instead so the client is not left waiting.
+            let handler = handler.clone();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || handler(op)))
+                .unwrap_or_else(|_| {
+                    Err(IpcError::new(
+                        codes::INTERNAL,
+                        "the socket handler panicked",
+                    ))
+                })
+        }
     };
     match result {
         Ok(value) => Response::success(req.id, value),

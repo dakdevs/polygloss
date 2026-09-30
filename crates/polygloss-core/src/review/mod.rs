@@ -21,7 +21,7 @@ pub use carry_forward::{CARRY_FORWARD_ENGINE_VERSION, Position, PositionState, p
 pub use iterations::{IterationEntry, LastSubmission};
 pub use models::{IterationInfo, OpenRequest, OpenedDiff, PinnedBy};
 pub use open::Core;
-pub use sessions::{AssignedBy, SessionInfo};
+pub use sessions::{AssignedBy, ReplacedWaiter, SessionInfo};
 pub use submit::{Submission, SubmitDraft, Verdict};
 pub use suggestions::parse_suggestions;
 pub use summary::{RecentRepo, ReviewFilter, ReviewSummary, SubmissionSummary, SummaryCursor};

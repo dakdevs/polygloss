@@ -1,6 +1,6 @@
 ---
 name: review-loop
-description: Get your code changes reviewed by the human in Polygloss, their local GitHub-style diff review app, and act on their feedback. Use when the user asks you to open, show or send your work for review, to wait for or address their Polygloss review, or when a "Polygloss: the human submitted their review" reminder arrives.
+description: 'Get your code changes reviewed by the human in Polygloss, their local GitHub-style diff review app, and act on their feedback. Use when the user asks you to open, show or send your work for review, to wait for or address their Polygloss review, or when a "Polygloss: the human submitted their review" reminder arrives.'
 ---
 
 # Polygloss review loop
@@ -46,7 +46,7 @@ The loop ends with the verdict: `approve` means done, so report that and stop. `
 
 ## Line numbers
 
-Lines are 1-based line numbers of the file on that side: `old` is the base, `new` is the head. Thread positions are reported against the latest iteration; a position of `outdated` or `absent` means the code moved or disappeared since the comment was written.
+Lines are 1-based line numbers of the file on that side: `old` is the base, `new` is the head. Thread positions (`position.state`) are reported against the latest iteration: `exact` means the same lines of the same file, `moved` means the commented lines are unchanged but their line numbers moved (use the position's `line`), `outdated` means the commented lines changed since the comment was written (the thread shows at the nearest line; compare `original_snippet` with `current_snippet`), and `absent` means the file, or its side, is not in that diff any more.
 
 ## If the tools are missing
 
