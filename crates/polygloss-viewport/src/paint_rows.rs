@@ -714,15 +714,11 @@ impl Painter<'_> {
         let geometry = self.geometry;
         let found = self.find.as_deref_mut().map(|find| {
             let rects = find.rects(key, file, side, line, &shaped, geometry, wrap_width);
-            let current: Vec<bool> = rects
-                .iter()
-                .map(|m| find.is_current(f, side, line, &m.range))
-                .collect();
-            (rects, current)
+            (rects, find.current_in(f, side, line))
         });
         if let Some((rects, current)) = found {
-            for (m, current) in rects.iter().zip(current) {
-                let color = if current {
+            for m in rects.iter() {
+                let color = if current.as_ref() == Some(&m.range) {
                     self.theme.find_match_current
                 } else {
                     self.theme.find_match

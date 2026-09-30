@@ -1187,3 +1187,32 @@ fn new_block_is_measured_in_the_first_frame_and_rendered_once(cx: &mut TestAppCo
     redraw(cx);
     assert_eq!(renders.get(), 2);
 }
+
+#[gpui_kit::test]
+fn split_blocks_pair_up_with_wrap_on(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![one_change()]);
+    let mut opts = options(LayoutMode::Split);
+    opts.style.wrap = true;
+    let (view, cx) = open(cx, provider, opts, 1000., 600.);
+    let (left, right) = (color(0.1), color(0.4));
+    set_blocks(
+        &view,
+        cx,
+        0,
+        vec![boxed(1, old(4), 40.0, left), boxed(2, new(4), 50.0, right)],
+    );
+    // Wrapped layouts are rebuilt with measured heights; they stay split rows,
+    // so the old- and new-side blocks of the changed row still share one.
+    let rows = debug(&view, cx).visible_rows;
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.starts_with("[block"))
+            .collect::<Vec<_>>(),
+        ["[block 1 │ block 2]"]
+    );
+    let (y, h) = bounds_of(&view, cx, "[block 1 │ block 2]");
+    assert_eq!(h, 50.0);
+    assert_quads(&quads_of(cx, left), &[(0.0, y, 499.0, 40.0)]);
+    assert_quads(&quads_of(cx, right), &[(500.0, y, 500.0, 50.0)]);
+}

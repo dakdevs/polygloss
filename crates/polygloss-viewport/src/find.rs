@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use polygloss_diff::Side;
@@ -60,7 +60,10 @@ pub(crate) struct FindRect {
 pub(crate) struct FindState {
     pub highlights: FindHighlights,
     /// Per shaped line: the line they were computed for and its matches.
-    rects: HashMap<TextKey, (Rc<ShapedText>, Rc<[FindRect]>)>,
+    /// Weak, so a line the text cache evicts is freed rather than kept
+    /// alive here; the allocation it points at stays reserved while the
+    /// weak lives, so pointer equality still identifies the same line.
+    rects: HashMap<TextKey, (Weak<ShapedText>, Rc<[FindRect]>)>,
 }
 
 /// Lines whose rectangles are kept; the cache starts over past it (a screen
@@ -89,7 +92,7 @@ impl FindState {
         wrap_width: f32,
     ) -> Rc<[FindRect]> {
         if let Some((at, rects)) = self.rects.get(&key)
-            && Rc::ptr_eq(at, shaped)
+            && std::ptr::eq(at.as_ptr(), Rc::as_ptr(shaped))
         {
             return rects.clone();
         }
@@ -126,19 +129,18 @@ impl FindState {
         if self.rects.len() >= CAPACITY {
             self.rects.clear();
         }
-        self.rects.insert(key, (shaped.clone(), rects.clone()));
+        self.rects
+            .insert(key, (Rc::downgrade(shaped), rects.clone()));
         rects
     }
 
-    /// Whether `range` of line `line` of `side` in file `f` is the current
-    /// match.
-    pub fn is_current(&self, f: u32, side: Side, line: u32, range: &Range<u32>) -> bool {
-        self.highlights.current.as_ref().is_some_and(|c| {
-            c.file_idx == f
-                && c.side == side
-                && c.line == line
-                && c.range.start == range.start as usize
-                && c.range.end == range.end as usize
-        })
+    /// The current match's range if it is in line `line` of `side` in file
+    /// `f` (compare with [`FindRect::range`]).
+    pub fn current_in(&self, f: u32, side: Side, line: u32) -> Option<Range<u32>> {
+        self.highlights
+            .current
+            .as_ref()
+            .filter(|c| c.file_idx == f && c.side == side && c.line == line)
+            .map(|c| c.range.start as u32..c.range.end as u32)
     }
 }

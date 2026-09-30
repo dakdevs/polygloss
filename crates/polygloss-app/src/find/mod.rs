@@ -31,8 +31,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::component::input::{Escape, InputEvent, InputState};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, IntoElement as _, KeyBinding,
-    ScrollStrategy, SharedString, Subscription, Task, UniformListScrollHandle, Window,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Font, IntoElement as _,
+    KeyBinding, ScrollStrategy, SharedString, Subscription, Task, UniformListScrollHandle, Window,
 };
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::{FileChange, Side};
@@ -319,6 +319,13 @@ impl FindBar {
     /// The matches found so far, in display order.
     pub fn matches(&self) -> &[FindMatch] {
         &self.matches
+    }
+
+    /// The font the result list draws line numbers and previews in: the
+    /// diff's code font, features included, so previews show `->` as typed
+    /// when ligatures are off (settings `buffer_font.ligatures`).
+    pub fn preview_font(&self, cx: &App) -> Font {
+        self.viewport.read(cx).code_font().clone()
     }
 
     /// The result list: each file's heading, then its matches.

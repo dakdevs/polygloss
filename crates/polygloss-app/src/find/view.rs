@@ -281,7 +281,7 @@ impl FindBar {
                     return div().into_any_element();
                 };
                 let selected = self.current == Some(ix);
-                let code_font = self.viewport.read(cx).options().code_font.clone();
+                let code_font = self.preview_font(cx);
                 let (number, number_color) = match m.side {
                     Side::Old => (format!("−{}", m.line + 1), theme.red),
                     Side::New => (format!("{}", m.line + 1), theme.muted_foreground),
@@ -311,7 +311,8 @@ impl FindBar {
                             .flex_none()
                             .w(px(40.))
                             .text_right()
-                            .font_family(code_font.clone())
+                            .font_family(code_font.family.clone())
+                            .font_features(code_font.features.clone())
                             .text_color(number_color)
                             .child(SharedString::from(number)),
                     )
@@ -320,7 +321,8 @@ impl FindBar {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .font_family(code_font)
+                            .font_family(code_font.family)
+                            .font_features(code_font.features)
                             .text_color(theme.foreground)
                             .child(text),
                     )

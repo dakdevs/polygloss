@@ -1031,3 +1031,23 @@ fn search_chunk_stops_when_cancelled_or_at_the_limit() {
         "no file read past the limit"
     );
 }
+
+#[gpui_kit::test]
+fn find_previews_draw_in_the_diff_code_font_without_ligatures(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = case_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let bar = bar(&mut shell, &tab);
+    find_text(&mut shell, "foo");
+    let code_font = tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).code_font().clone());
+    let preview = bar.read_with(shell.cx, |b, cx| b.preview_font(cx));
+    // Result previews use the diff's font, features included, so `->` in a
+    // preview is drawn as typed like it is in the diff (buffer_font.ligatures).
+    assert_eq!(preview, code_font);
+    assert_eq!(
+        preview.features,
+        polygloss_viewport::code_font_features(false),
+        "ligatures are off by default"
+    );
+}

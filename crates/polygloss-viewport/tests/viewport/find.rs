@@ -169,3 +169,39 @@ fn find_marks_both_columns_in_split(cx: &mut TestAppContext) {
     );
     assert!(marks(cx, t.find_match).is_empty());
 }
+
+#[gpui_kit::test]
+fn find_marks_follow_lines_shaped_again(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(vec![one_change()]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 600.);
+    let t = theme(&view, cx);
+    set(
+        &view,
+        cx,
+        Some(FindHighlights {
+            matcher: matcher("line"),
+            current: None,
+        }),
+    );
+    let before = marks(cx, t.find_match);
+    assert_eq!(before.len(), 9);
+    // Lines shaped again (a new font, wrapping on and off) are matched
+    // again, and the marks land where they did.
+    set_options(&view, cx, |o| o.ligatures = true);
+    assert_eq!(marks(cx, t.find_match), before);
+    set_options(&view, cx, |o| o.style.wrap = true);
+    assert_eq!(marks(cx, t.find_match), before);
+    set_options(&view, cx, |o| o.style.wrap = false);
+    assert_eq!(marks(cx, t.find_match), before);
+    // A new matcher replaces the old marks.
+    set(
+        &view,
+        cx,
+        Some(FindHighlights {
+            matcher: matcher("line 4"),
+            current: None,
+        }),
+    );
+    assert_eq!(marks(cx, t.find_match).len(), 2);
+}

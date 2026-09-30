@@ -22,13 +22,16 @@ pub fn key_label(stroke: &Keystroke) -> String {
     }
 }
 
-/// A key cap for `stroke`, styled like gpui-kit's `Kbd` (and with its
-/// `kbd:<keystroke>` debug selector), labeled by [`key_label`].
+/// A key cap for `stroke`, styled like gpui-kit's `Kbd`, labeled by
+/// [`key_label`]. Its debug selector, `key-cap:<keystroke>=<label>` (e.g.
+/// `key-cap:escape=Esc`), names both, so tests can tell it from a `Kbd`
+/// (`kbd:<keystroke>`) and see the label drawn.
 pub fn key_cap(stroke: &Keystroke, cx: &App) -> AnyElement {
     let theme = cx.theme();
-    let unparsed = stroke.unparse();
+    let label = key_label(stroke);
+    let selector = format!("key-cap:{}={label}", stroke.unparse());
     div()
-        .debug_selector(move || format!("kbd:{unparsed}"))
+        .debug_selector(move || selector)
         .text_color(theme.muted_foreground)
         .bg(theme.tokens.muted)
         .py_0p5()
@@ -40,6 +43,6 @@ pub fn key_cap(stroke: &Keystroke, cx: &App) -> AnyElement {
         .text_xs()
         .whitespace_normal()
         .flex_shrink_0()
-        .child(key_label(stroke))
+        .child(label)
         .into_any_element()
 }

@@ -885,7 +885,8 @@ impl DiffViewport {
             return Some(layout);
         }
         let heights = wrapped_heights(&layout, rows, &file, self.geometry.advance, key.wrap as f32);
-        Some(FileLayout::new(layout.rows().to_vec(), &heights))
+        // Keep the split flag: `with_blocks` pairs old- and new-side blocks by it.
+        Some(FileLayout::new(layout.rows().to_vec(), &heights).with_split(layout.is_split()))
     }
 
     /// A worker finished a job (`None`: it found nothing to do). Takes the

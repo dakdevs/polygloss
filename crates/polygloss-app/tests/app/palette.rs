@@ -151,8 +151,10 @@ fn cheat_sheet_shows_esc_as_text(cx: &mut TestAppContext) {
         .find(|r| r.action == "composer::Cancel")
         .expect("composer::Cancel is listed");
     assert_eq!(cancel.keys, ["escape"]);
-    // …and its key cap is drawn (with the label `Esc`).
-    assert!(shell.cx.debug_bounds("kbd:escape").is_some());
+    // …and its key cap is drawn with the label `Esc`: the palette's own cap,
+    // not gpui-kit's `Kbd` (`kbd:escape`, drawn `⎋`).
+    assert!(shell.cx.debug_bounds("key-cap:escape=Esc").is_some());
+    assert!(shell.cx.debug_bounds("kbd:escape").is_none());
     shell.cx.simulate_keystrokes("escape");
     draw(shell.cx);
     assert!(!has_dialog(&mut shell));
