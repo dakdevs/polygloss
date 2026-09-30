@@ -2,7 +2,7 @@
 //! its main window (design §11.1, §13.4).
 //!
 //! ```text
-//! Polygloss [--repo <path> (--compare <base> <head> [--direct] | --commit <rev> | --live)]
+//! Polygloss [--repo <path> (--compare <base> <head> [--direct] | --commit <rev> | --live)] [polygloss://…]
 //! Polygloss --version
 //! POLYGLOSS_TEST=1 Polygloss --perf-scenario …      (test-only, see `perf`)
 //! ```
@@ -36,13 +36,17 @@ use crate::window;
 
 /// Printed (to stderr) with every argument error.
 pub const USAGE: &str = "usage: Polygloss [--repo <path> \
-    (--compare <base> <head> [--direct] | --commit <rev> | --live)]\n       Polygloss --version";
+    (--compare <base> <head> [--direct] | --commit <rev> | --live)] [polygloss://…]\n       \
+    Polygloss --version";
 
 /// What `Polygloss` was asked to do at launch.
 #[derive(Debug, Clone, Default)]
 pub struct LaunchArgs {
     /// A review to open (`--repo` with a source).
     pub open: Option<OpenRequest>,
+    /// `polygloss://` URLs to open (T4.2), as the bundle gets them from
+    /// LaunchServices.
+    pub urls: Vec<String>,
 }
 
 impl LaunchArgs {
@@ -50,6 +54,7 @@ impl LaunchArgs {
         let mut repo = None;
         let mut source = None;
         let mut direct = false;
+        let mut urls = Vec::new();
         let set = |slot: &mut Option<Source>, s: Source| {
             if slot.replace(s).is_some() {
                 return Err("give only one of --compare, --commit or --live".to_owned());
@@ -92,11 +97,12 @@ impl LaunchArgs {
                         since: Since::MergeBase,
                     },
                 )?,
+                url if is_polygloss_url(url) => urls.push(url.to_owned()),
                 other => return Err(format!("unknown argument {other:?}")),
             }
         }
         let (repo, mut source) = match (repo, source) {
-            (None, None) if !direct => return Ok(LaunchArgs::default()),
+            (None, None) if !direct => return Ok(LaunchArgs { open: None, urls }),
             (Some(repo), Some(source)) => (repo, source),
             (None, _) => return Err("--repo <path> is required with a source".to_owned()),
             (Some(_), None) => return Err("give one of --compare, --commit or --live".to_owned()),
@@ -115,8 +121,15 @@ impl LaunchArgs {
                 pin: None,
                 actor: Actor::human(),
             }),
+            urls,
         })
     }
+}
+
+/// True for a `polygloss://…` argument (the scheme is case-insensitive).
+fn is_polygloss_url(arg: &str) -> bool {
+    arg.split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(polygloss_core::urls::SCHEME))
 }
 
 /// When startup reached its milestones.
@@ -145,6 +158,8 @@ pub type LaunchHook = Box<dyn FnOnce(Launched, &mut App)>;
 /// One launch of the app.
 pub struct Launch {
     pub open: Option<OpenRequest>,
+    /// `polygloss://` URLs to open once the window is up (T4.2).
+    pub urls: Vec<String>,
     /// The dirs to use (store, logs, settings); `None`:
     /// `DataPaths::resolve()` (the environment's).
     pub paths: Option<DataPaths>,
@@ -195,6 +210,7 @@ pub fn main() -> ExitCode {
     };
     run(Launch {
         open: args.open,
+        urls: args.urls,
         paths: Some(paths),
         clock,
         before_window: None,
@@ -257,6 +273,11 @@ pub fn run(launch: Launch) -> ExitCode {
     tracing::info!("Polygloss {} starting", polygloss_core::VERSION);
     let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.on_reopen(window::reopen);
+    // Before `run()`: a URL that launched the app arrives right after launch.
+    let url_inbox = crate::urls::register(&app);
+    if !launch.urls.is_empty() {
+        let _ = url_inbox.sender().unbounded_send(launch.urls.clone());
+    }
     app.run(move |cx: &mut App| {
         let app_launched = Instant::now();
         let mut log_guard = log_guard;
@@ -305,6 +326,8 @@ pub fn run(launch: Launch) -> ExitCode {
                 window_opened,
             },
         };
+        // After the launch review: URLs open in the order they came.
+        crate::urls::listen(url_inbox, cx);
         match launch.after_launch {
             Some(hook) => hook(launched, cx),
             None => {
