@@ -106,6 +106,25 @@ describe("scripts/test-e2e.sh", () => {
       expect(r.output).toContain(`tests/e2e/${suite}`);
   });
 
+  test("with POLYGLOSS_BUNDLE_E2E=1 it then packages the release bundle", () => {
+    // The fake packager makes no bundle, so package-release.sh stops there;
+    // the bundle suite itself is tests/scripts/package.test.ts.
+    const dist = join(sandbox.home, "dist-bundle-e2e");
+    const r = runE2e({
+      FAKE_CARGO_MAKE_APP: "1",
+      POLYGLOSS_BUNDLE_E2E: "1",
+      POLYGLOSS_DIST_DIR: dist,
+    });
+    expect(r.output).toContain("app E2E smoke");
+    expect(r.exitCode).not.toBe(0);
+    expect(r.output).toContain("cargo packager made no");
+    expect(r.log.slice(3)).toEqual([
+      "build --release -p polygloss-app",
+      "build --release -p polygloss-cli",
+      `packager --release --formats app --out-dir ${dist}`,
+    ]);
+  });
+
   test("stops at the first failing step", () => {
     const r = runE2e({ FAKE_CARGO_MAKE_APP: "1", FAKE_CARGO_FAIL: "nextest" });
     expect(r.exitCode).not.toBe(0);
