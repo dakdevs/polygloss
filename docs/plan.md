@@ -1753,7 +1753,7 @@ bun run test:unit && bun test && bun run test:e2e
 scripts/check-deps.sh                      # polygloss-cli still has zero gpui/lumis/tree-sitter
 ```
 
-- [ ] `polygloss mcp` reaches initialize-ready in < 100 ms (provisional, §13.1): `scripts/cargo.sh build --release -p polygloss-cli && POLYGLOSS_CLI_BIN=<target>/release/polygloss-cli POLYGLOSS_PERF=1 bun test tests/mcp/handshake.test.ts` runs `initialize-ready median under 100 ms`, which spawns the release binary 10 times and measures spawn → `initialize` response (skipped unless `POLYGLOSS_PERF=1`; `cliBin()` honors `POLYGLOSS_CLI_BIN`).
+- [x] `polygloss mcp` reaches initialize-ready in < 100 ms (provisional, §13.1): `scripts/cargo.sh build --release -p polygloss-cli && POLYGLOSS_CLI_BIN=<target>/release/polygloss-cli POLYGLOSS_PERF=1 bun test tests/mcp/handshake.test.ts` runs `initialize-ready median under 100 ms`, which spawns the release binary 10 times and measures spawn → `initialize` response (skipped unless `POLYGLOSS_PERF=1`; `cliBin()` honors `POLYGLOSS_CLI_BIN`). M4 gate 2026-09-30: median 3.7 ms over 10 spawns (3.3–6.2 ms).
 - [ ] Manual wake gate **W1–W3** passed and recorded by the user in `docs/testing/agent-wake-gate.md` (W4–W8 are the M5 gate).
 
 ---
