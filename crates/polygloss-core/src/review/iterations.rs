@@ -41,6 +41,9 @@ pub struct IterationEntry {
     pub base_ref: Option<String>,
     /// The head commit (`None` for a pinned live state).
     pub head_commit: Option<Oid>,
+    /// Provenance: the full ref the head was resolved from (`None` for a pinned
+    /// live state or a head given by commit id).
+    pub head_ref: Option<String>,
 }
 
 /// The latest submission of a review and the iteration it was made against.
@@ -54,7 +57,7 @@ pub struct LastSubmission {
 }
 
 const ENTRY_COLUMNS: &str = "i.id, i.seq, i.diff_id, i.snapshot_ref, i.pinned_by, i.created_at, \
-     d.base_tree, d.head_tree, i.base_commit, i.base_ref, i.head_commit";
+     d.base_tree, d.head_tree, i.base_commit, i.base_ref, i.head_commit, i.head_ref";
 
 /// Reads [`ENTRY_COLUMNS`] starting at column `at`.
 fn read_entry(r: &Row, at: usize, fmt: ObjectFormat) -> Result<IterationEntry, StoreError> {
@@ -85,6 +88,7 @@ fn read_entry(r: &Row, at: usize, fmt: ObjectFormat) -> Result<IterationEntry, S
         base_commit: opt_oid(8)?,
         base_ref: r.get(at + 9)?,
         head_commit: opt_oid(10)?,
+        head_ref: r.get(at + 11)?,
     })
 }
 
@@ -236,6 +240,7 @@ impl Core {
             },
             head_tree: entry.head_tree,
             head_commit: entry.head_commit,
+            head_ref: entry.head_ref,
             files: std::sync::Arc::new(files),
             live: None,
             warnings: Vec::new(),
@@ -290,6 +295,7 @@ impl Core {
             },
             head_tree: new.clone(),
             head_commit: current.head_commit.clone(),
+            head_ref: current.head_ref.clone(),
             files,
             live: None,
             warnings: Vec::new(),

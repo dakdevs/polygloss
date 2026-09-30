@@ -21,21 +21,30 @@ export const expectedTools = [
   "focus",
 ];
 
-/** Connects an SDK client to a fresh `polygloss-cli mcp` with `env`. */
+/**
+ * Connects an SDK client to a fresh `polygloss-cli mcp` with `env`. With
+ * `viaShell` the server runs under its own `sh`, so its parent pid (the
+ * session's owner pid) is not the test runner's: servers spawned directly by
+ * one runner share an owner and their sessions link (design §16.4).
+ */
 export async function connectMcp(opts: {
   env: Record<string, string>;
   args?: string[];
   clientName?: string;
   clientVersion?: string;
   cwd?: string;
+  viaShell?: boolean;
 }): Promise<{
   client: Client;
   stderr: () => string;
   close: () => Promise<void>;
 }> {
+  const args = ["mcp", ...(opts.args ?? [])];
   const transport = new StdioClientTransport({
-    command: cliBin(),
-    args: ["mcp", ...(opts.args ?? [])],
+    command: opts.viaShell ? "/bin/sh" : cliBin(),
+    args: opts.viaShell
+      ? ["-c", '"$0" "$@"; exit $?', cliBin(), ...args]
+      : args,
     env: opts.env,
     stderr: "pipe",
     cwd: opts.cwd,

@@ -1653,3 +1653,53 @@ fn review_activity_counts_agent_threads_after_last_seen() {
         Err(CoreError::NotFound { .. })
     ));
 }
+
+#[test]
+fn comment_lookup_follows_visibility() {
+    let e = env();
+    let agent_thread = e.agent_thread(ThreadKind::Note, Subject::Review, "note");
+    let root = e
+        .core
+        .thread(&agent_thread, Viewer::Agent)
+        .unwrap()
+        .comments[0]
+        .id
+        .clone();
+    let reply = e.core.reply(&agent_thread, "more", &agent()).unwrap();
+    e.core.edit_comment(&reply, "edited", &agent()).unwrap();
+
+    let seen = e.core.comment(&reply, Viewer::Agent).unwrap();
+    assert_eq!(seen.thread_id, agent_thread);
+    assert_eq!(seen.body_md, "edited");
+    assert!(seen.edited_at.is_some());
+    assert_eq!(
+        e.core.comment(&root, Viewer::Human).unwrap().body_md,
+        "note"
+    );
+
+    // A human draft exists for the human only.
+    let draft_thread = e.human_thread(Subject::Review, "draft");
+    let draft = e
+        .core
+        .thread(&draft_thread, Viewer::Human)
+        .unwrap()
+        .comments[0]
+        .id
+        .clone();
+    assert!(e.core.comment(&draft, Viewer::Human).unwrap().draft);
+    assert_eq!(
+        e.core.comment(&draft, Viewer::Agent).unwrap_err().code(),
+        "not_found"
+    );
+    assert_eq!(
+        e.core.comment("nope", Viewer::Human).unwrap_err().code(),
+        "not_found"
+    );
+
+    // A deleted root with replies stays as a placeholder; a deleted reply is gone.
+    e.core.delete_comment(&reply, &agent()).unwrap();
+    assert_eq!(
+        e.core.comment(&reply, Viewer::Agent).unwrap_err().code(),
+        "not_found"
+    );
+}

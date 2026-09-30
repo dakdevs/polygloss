@@ -1725,3 +1725,78 @@ fn latest_review_for_diff_prefers_most_recent_unarchived_review() {
         Err(CoreError::Id(_))
     ));
 }
+
+#[test]
+fn compare_opens_record_the_head_ref() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let opened = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    assert_eq!(opened.base.ref_name.as_deref(), Some("refs/heads/main"));
+    assert_eq!(opened.head_ref.as_deref(), Some("refs/heads/feature"));
+    let entries = core.iteration_entries(&opened.review_id).unwrap();
+    assert_eq!(entries[0].head_ref.as_deref(), Some("refs/heads/feature"));
+    let again = core
+        .open_iteration(&opened, opened.iteration.as_ref().unwrap().seq)
+        .unwrap();
+    assert_eq!(again.head_ref.as_deref(), Some("refs/heads/feature"));
+
+    let live_open = core.open(&req(repo.path(), live(Since::Head))).unwrap();
+    assert_eq!(live_open.head_ref, None);
+}
+
+#[test]
+fn reopen_live_snapshots_the_review_worktree_unpinned() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let first = core.open(&req(repo.path(), live(Since::Head))).unwrap();
+
+    repo.write("new.txt", b"fresh\n");
+    let again = core
+        .reopen_live(&first.review_id, &agent())
+        .unwrap()
+        .expect("a live review reopens");
+    assert_eq!(again.review_id, first.review_id);
+    assert_ne!(again.diff_id, first.diff_id);
+    assert!(again.iteration.is_none(), "reopening never pins");
+    let paths: Vec<&str> = again.files.iter().map(|f| f.display_path()).collect();
+    assert_eq!(paths, ["new.txt"]);
+    assert_eq!(count(&core, "SELECT count(*) FROM iterations"), 0);
+
+    // The caller pins it on the base it holds.
+    let it = core
+        .pin_live_on_base(
+            &first.review_id,
+            &again.base,
+            again.live.as_ref().unwrap(),
+            PinnedBy::Agent,
+            &agent(),
+        )
+        .unwrap();
+    assert_eq!(it.diff_id, again.diff_id);
+}
+
+#[test]
+fn reopen_live_is_none_for_compare_and_errors_for_unknown_or_moved_reviews() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let cmp = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    assert!(
+        core.reopen_live(&cmp.review_id, &agent())
+            .unwrap()
+            .is_none()
+    );
+    let err = core.reopen_live("no-such-review", &agent()).unwrap_err();
+    assert_eq!(err.code(), "not_found");
+
+    let on_main = core.open(&req(repo.path(), live(Since::Head))).unwrap();
+    repo.checkout("feature");
+    let err = core.reopen_live(&on_main.review_id, &agent()).unwrap_err();
+    assert!(matches!(err, CoreError::Conflict(_)), "{err:?}");
+}

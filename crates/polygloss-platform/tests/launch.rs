@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use polygloss_core::paths::DataPaths;
 use polygloss_platform::launch::{
-    self, BUNDLE_ID, LaunchOutcome, Launcher, SystemLauncher, app_socket_path,
+    self, ACTIVATE_ENV, BUNDLE_ID, LaunchOutcome, Launcher, SystemLauncher, app_socket_path,
     app_socket_path_with, ensure_app, ensure_app_within,
 };
 use sha2::{Digest as _, Sha256};
@@ -314,7 +314,7 @@ fn app_bin_launcher_spawns_detached_with_url() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nsleep 0.3\nprintf '%s\\n' \"$@\" > '{}.tmp' && mv '{0}.tmp' '{0}'\n",
+            "#!/bin/sh\nsleep 0.3\nprintf '%s\\n' \"$@\" \"activate=$POLYGLOSS_LAUNCH_ACTIVATE\" > '{}.tmp' && mv '{0}.tmp' '{0}'\n",
             out.display()
         ),
     )
@@ -322,7 +322,7 @@ fn app_bin_launcher_spawns_detached_with_url() {
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
     let start = Instant::now();
-    SystemLauncher::AppBin(script)
+    SystemLauncher::AppBin(script.clone())
         .launch(Some("polygloss://thread/t"), false)
         .unwrap();
     assert!(start.elapsed() < Duration::from_millis(250), "detached");
@@ -334,8 +334,19 @@ fn app_bin_launcher_spawns_detached_with_url() {
     }
     assert_eq!(
         std::fs::read_to_string(&out).unwrap(),
-        "polygloss://thread/t\n"
+        "polygloss://thread/t\nactivate=0\n",
+        "the URL, and activate = false as {ACTIVATE_ENV}=0"
     );
+
+    // A foreground launch says so.
+    std::fs::remove_file(&out).unwrap();
+    SystemLauncher::AppBin(script).launch(None, true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !out.exists() {
+        assert!(Instant::now() < deadline, "the fake app never ran");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "activate=1\n");
 }
 
 #[test]
