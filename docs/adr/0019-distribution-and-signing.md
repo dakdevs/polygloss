@@ -23,6 +23,7 @@ The user has an Apple Developer ID. A native app with a CLI and git subprocesses
 - **Release blocker:** as of 2026-09-28 the keychain holds only an _Apple Distribution_ cert for 5U7E4UQ5M3. The Developer ID Application certs present belong to team FCSF68W94H and must not be used. Create a Developer ID Application cert for 5U7E4UQ5M3 and a `notarytool` credential before the first release.
 - A Sparkle EdDSA key lives in CI secrets. Sparkle checks are the one network access (OQ-16).
 - Both executables are signed. Install CLI is written from scratch; Zed's is GPL.
+- As built (plan T5.1): cargo-packager lays out the `.app`; `scripts/package-release.sh` stamps `CFBundleVersion`, signs (ad-hoc without credentials) and makes the DMG with `hdiutil`, because cargo-packager's DMG step downloads `create-dmg` at build time and would package the app before it is signed.
 
 ## Alternatives rejected
 

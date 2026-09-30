@@ -326,6 +326,8 @@ Gotchas:
 - The generated `CFBundleVersion` is a UTC timestamp (`YYYYMMDD.HHMMSS`). Sparkle compares against it, so set `CFBundleVersion` explicitly in `info-plist-path`.
 - The log notes that a _Developer ID Application_ cert for team 5U7E4UQ5M3 and a notarytool credential don't exist yet.
 
+As built (plan T5.1): the config lives in `crates/polygloss-app/Cargo.toml` with paths relative to that crate (`../../packaging/…`), `formats = ["app"]`, no `before-packaging-command` (a joint `-p polygloss-app -p polygloss-cli` build unifies features and links `appkit` into the CLI; `scripts/package-release.sh` builds each on its own) and no `signing-identity` (signing is env-only, `scripts/sign-and-notarize.sh`, T5.2). The DMG is made by `scripts/package-release.sh` with `hdiutil`, not cargo-packager's `dmg` format, which downloads the `create-dmg` script from GitHub at build time into `~/Library/Caches/.cargo-packager`, drives Finder over AppleScript (outside `CI=true`) and would package the app before our own version stamp and signature. `--out-dir` must be absolute (a relative one that does not exist yet is resolved after cargo-packager changes into the crate directory). Frameworks (`macos.frameworks`) must exist at package time or packaging fails, so Sparkle is copied in by the script (T5.3).
+
 Rejected: `cargo-bundle` 0.12.0 (actively released: 0.10 in 2026-04, 0.12 on 2026-09-20; per the research verifier we would still script `notarytool` and stapling ourselves), Zed's bundle scripts (GPL), the Tauri bundler (Tauri is rejected), `cargo-packager-updater` (see §14).
 
 ## 14. Auto-update: Sparkle 2.10.0 via our own objc2 FFI

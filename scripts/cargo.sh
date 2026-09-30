@@ -19,6 +19,12 @@
 #   - when the build dir was last used by a different checkout (recorded in
 #     <build dir>/.polygloss-checkout), first runs `cargo clean --workspace` for every
 #     profile dir present, so this checkout's members are rebuilt from its sources.
+#
+# `scripts/cargo.sh with-lock <command> [args…]` runs <command> (not cargo) under
+# that lock, after the same claim; cargo.sh calls inside it from this checkout
+# reuse the lock. Use it when a sequence of cargo calls must see each other's
+# artifacts (scripts/package-release.sh: another checkout claiming the build dir
+# between two builds cleans the first one's binaries from this target dir).
 set -euo pipefail
 
 cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
@@ -72,6 +78,11 @@ trap - EXIT
 export CARGO_TARGET_DIR CARGO_BUILD_BUILD_DIR RUSTC RUSTDOC
 
 run_cargo() {
+  if [ "${1-}" = with-lock ]; then
+    shift
+    [ "$#" -gt 0 ] || die "with-lock needs a command"
+    exec "$@"
+  fi
   exec "$cargo_bin/cargo" "$@"
 }
 

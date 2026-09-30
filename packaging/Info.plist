@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged last over the Info.plist cargo-packager generates (library-choices §13),
+  so these keys win. The versions are not here: CFBundleShortVersionString is the
+  crate version (cargo-packager), and scripts/package-release.sh stamps
+  CFBundleVersion from it (cargo-packager's default is a timestamp, and Sparkle
+  compares CFBundleVersion).
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.dak.polygloss</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>dev.dak.polygloss</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>polygloss</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Polygloss app icon (source of packaging/icon.icns; scripts/make-icon.sh).
+       macOS icon grid: an 824 x 824 rounded square centered on a 1024 canvas.
+       A diff (context, deleted and added lines) with a review comment. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2f3a"/>
+      <stop offset="1" stop-color="#121418"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4c9dff"/>
+      <stop offset="1" stop-color="#2f7cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+
+  <!-- context line -->
+  <rect x="196" y="224" width="456" height="56" rx="28" fill="#6b7280"/>
+
+  <!-- deleted line -->
+  <rect x="172" y="324" width="680" height="120" rx="32" fill="#ff5f56" fill-opacity="0.22"/>
+  <rect x="204" y="370" width="72" height="28" rx="8" fill="#ff6b61"/>
+  <rect x="308" y="356" width="400" height="56" rx="28" fill="#ff6b61"/>
+
+  <!-- added line -->
+  <rect x="172" y="468" width="680" height="120" rx="32" fill="#2fd576" fill-opacity="0.22"/>
+  <rect x="204" y="514" width="72" height="28" rx="8" fill="#35dc7c"/>
+  <rect x="226" y="492" width="28" height="72" rx="8" fill="#35dc7c"/>
+  <rect x="308" y="500" width="336" height="56" rx="28" fill="#35dc7c"/>
+
+  <!-- review comment -->
+  <path d="M452 612 h348 a64 64 0 0 1 64 64 v88 a64 64 0 0 1 -64 64 h-196 l-84 64 v-64 h-68 a64 64 0 0 1 -64 -64 v-88 a64 64 0 0 1 64 -64 z"
+        fill="url(#bubble)"/>
+  <rect x="444" y="676" width="296" height="36" rx="18" fill="#ffffff" fill-opacity="0.95"/>
+  <rect x="444" y="736" width="200" height="36" rx="18" fill="#ffffff" fill-opacity="0.7"/>
+</svg>

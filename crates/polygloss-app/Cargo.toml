@@ -33,6 +33,29 @@ required-features = ["e2e"]
 # tests/e2e/main.rs); scripts/test-e2e.sh runs it.
 e2e = []
 
+# cargo-packager 0.11.8 (library-choices §13, plan T5.1), run by
+# scripts/package-release.sh: it builds `Polygloss` and `polygloss-cli` with one
+# `-p` each first (a joint build would unify features and link
+# polygloss-platform's `appkit` into the CLI, so there is no
+# before-packaging-command), cargo-packager lays out the .app, and the script
+# stamps CFBundleVersion, signs and makes the DMG itself. No signing identity
+# here: signing is env-only (scripts/sign-and-notarize.sh, T5.2). Relative
+# paths are from this crate's directory.
+[package.metadata.packager]
+product-name = "Polygloss"
+identifier = "dev.dak.polygloss"
+category = "DeveloperTool"
+formats = ["app"]
+out-dir = "../../dist"
+binaries = [{ path = "Polygloss", main = true }, { path = "polygloss-cli" }]
+icons = ["../../packaging/icon.icns"]
+deep-link-protocols = [{ schemes = ["polygloss"], role = "viewer" }]
+
+[package.metadata.packager.macos]
+minimum-system-version = "14.0"
+entitlements = "../../packaging/entitlements.plist"
+info-plist-path = "../../packaging/Info.plist"
+
 [dependencies]
 polygloss-core.workspace = true
 polygloss-diff.workspace = true

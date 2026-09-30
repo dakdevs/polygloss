@@ -383,6 +383,54 @@ describe("scripts/cargo.sh", () => {
     expect(parseFakeOutput(r.stdout.toString()).args).toEqual(["build"]);
   });
 
+  test("with-lock runs a command under the lock, never cargo, and its cargo calls reuse the lock", () => {
+    const { buildDir, log } = isolated();
+    const script = join(worktree, "scripts", "cargo.sh");
+    const r = Bun.spawnSync([script, "with-lock", script, "build"], {
+      cwd: root,
+      env: {
+        ...baseEnv,
+        CARGO_HOME: fakeCargoHome,
+        CARGO_BUILD_BUILD_DIR: buildDir,
+        FAKE_CARGO_LOG: log,
+      },
+      timeout: 10_000,
+    });
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(parseFakeOutput(r.stdout.toString()).args).toEqual(["build"]);
+    expect(logLines(log)).toEqual(["cargo build"]);
+  });
+
+  test("with-lock holds the lock for the whole command, so other checkouts wait", async () => {
+    const { buildDir, log } = isolated();
+    const env = {
+      ...baseEnv,
+      CARGO_HOME: fakeCargoHome,
+      CARGO_BUILD_BUILD_DIR: buildDir,
+      FAKE_CARGO_LOG: log,
+    };
+    const a = Bun.spawn(
+      [
+        join(mainCheckout, "scripts", "cargo.sh"),
+        "with-lock",
+        "/bin/sh",
+        "-c",
+        `echo 'start a' >>"$FAKE_CARGO_LOG"; sleep 1; echo 'end a' >>"$FAKE_CARGO_LOG"`,
+      ],
+      { cwd: root, env, stdout: "ignore", stderr: "ignore" },
+    );
+    await Bun.sleep(200);
+    const b = Bun.spawn(
+      [join(worktree, "scripts", "cargo.sh"), "sleep-log", "b"],
+      { cwd: root, env, stdout: "ignore", stderr: "ignore" },
+    );
+    expect(await a.exited).toBe(0);
+    expect(await b.exited).toBe(0);
+    const events = logLines(log).filter((l) => !l.startsWith("cargo "));
+    expect(events).toEqual(["start a", "end a", "start b", "end b"]);
+  }, 20_000);
+
   test("a nested call from another checkout sharing the held build dir fails loudly", () => {
     const { buildDir } = isolated();
     const r = Bun.spawnSync(

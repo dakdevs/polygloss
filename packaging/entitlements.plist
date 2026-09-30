@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime (the codesign runtime option) with no exceptions (plan T5.1,
+  design §21): no JIT, no unsigned executable memory, no library-validation or
+  dyld-environment exceptions, no sandbox (the Mac App Store is ruled out).
+-->
+<plist version="1.0">
+<dict/>
+</plist>
