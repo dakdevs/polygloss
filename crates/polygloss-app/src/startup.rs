@@ -339,7 +339,7 @@ pub fn run(launch: Launch) -> ExitCode {
         let window_opened = Instant::now();
         // Socket requests may now open tabs in the window.
         crate::ipc::serve_app(cx);
-        cx.activate(true);
+        crate::window::activate_app(cx);
         let opening = opening.and_then(|opening| {
             window
                 .update(cx, |_, window, cx| {

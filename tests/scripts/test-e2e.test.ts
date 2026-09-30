@@ -34,7 +34,14 @@ beforeAll(() => {
 
 afterAll(() => sandbox.cleanup());
 
-function runE2e(env: Record<string, string>): {
+// The fake build makes an empty `Polygloss` and no CLI, so only the smoke
+// suite can run against it (the other suites drive the real app).
+const SMOKE = "tests/e2e/smoke.test.ts";
+
+function runE2e(
+  env: Record<string, string>,
+  args: string[] = [SMOKE],
+): {
   exitCode: number;
   output: string;
   log: string[];
@@ -45,7 +52,7 @@ function runE2e(env: Record<string, string>): {
   );
   log = join(sandbox.home, "cargo.log");
   rmSync(log, { force: true });
-  const r = Bun.spawnSync([join(repoRoot, "scripts", "test-e2e.sh")], {
+  const r = Bun.spawnSync([join(repoRoot, "scripts", "test-e2e.sh"), ...args], {
     cwd: sandbox.home,
     env: {
       ...sandbox.env,
@@ -83,6 +90,20 @@ describe("scripts/test-e2e.sh", () => {
     expect(r.exitCode).not.toBe(0);
     expect(r.output).toContain("appBin() points at the built Polygloss app");
     expect(r.log.length).toBe(3);
+  });
+
+  test("without arguments the bun step runs every suite in tests/e2e", () => {
+    // Against the fake (empty, non-executable) app every app suite fails
+    // fast, but each one runs.
+    const r = runE2e({ FAKE_CARGO_MAKE_APP: "1" }, []);
+    expect(r.exitCode).not.toBe(0);
+    for (const suite of [
+      "smoke.test.ts",
+      "mcp-app.test.ts",
+      "cli-app.test.ts",
+      "mcp-multi-process-writers.test.ts",
+    ])
+      expect(r.output).toContain(`tests/e2e/${suite}`);
   });
 
   test("stops at the first failing step", () => {

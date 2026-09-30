@@ -225,6 +225,25 @@ pub fn open_main_window_sized(
     Ok((window, view))
 }
 
+/// How many times the app asked macOS to bring it forward (a GPUI global).
+#[derive(Default)]
+struct ActivationRequests(u64);
+
+impl Global for ActivationRequests {}
+
+/// Asks macOS to make the app active. Whether it does is macOS's call
+/// (cooperative activation, a locked screen), so this also counts the
+/// request for `debug_state` (plan T4.11).
+pub fn activate_app(cx: &mut App) {
+    cx.default_global::<ActivationRequests>().0 += 1;
+    cx.activate(true);
+}
+
+/// How many times [`activate_app`] ran.
+pub fn activation_requests(cx: &App) -> u64 {
+    cx.try_global::<ActivationRequests>().map_or(0, |a| a.0)
+}
+
 /// `on_reopen` (the Dock icon clicked, the app launched again): opens the
 /// main window unless it is open.
 pub fn reopen(cx: &mut App) {

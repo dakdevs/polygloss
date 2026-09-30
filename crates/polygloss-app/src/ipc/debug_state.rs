@@ -7,7 +7,9 @@
 //!   tabs: [{ review_id, diff_id, title, active, anchor, cursor }],
 //!   focused_tab: <review_id of the active tab> | null,
 //!   banners: [{ review_id, kind, text }],
-//!   badge: <Dock badge count>, events_seen: <store events the feed handed out> }
+//!   badge: <Dock badge count>, events_seen: <store events the feed handed out>,
+//!   feed_polls: <polls the feed finished>, feed_errors: <polls that failed>,
+//!   activations: <times the app asked macOS to activate it> }
 //! ```
 //!
 //! `anchor` is the line at the top of the viewport and `cursor` the line
@@ -24,7 +26,12 @@ use crate::window::main_window;
 /// The app's state as JSON (module docs).
 pub fn snapshot(cx: &App) -> Value {
     let badge = crate::notify::badge_count(cx);
-    let events_seen = cx.try_global::<StoreFeed>().map_or(0, |f| f.stats().events);
+    let stats = cx
+        .try_global::<StoreFeed>()
+        .map(StoreFeed::stats)
+        .unwrap_or_default();
+    let events_seen = stats.events;
+    let activations = crate::window::activation_requests(cx);
     let app_active = cx.active_window().is_some();
     let Some((_, main)) = main_window(cx) else {
         return json!({
@@ -35,6 +42,9 @@ pub fn snapshot(cx: &App) -> Value {
             "banners": [],
             "badge": badge,
             "events_seen": events_seen,
+            "feed_polls": stats.polls,
+            "feed_errors": stats.errors,
+            "activations": activations,
         });
     };
     let main = main.read(cx);
@@ -81,6 +91,9 @@ pub fn snapshot(cx: &App) -> Value {
         "banners": banners,
         "badge": badge,
         "events_seen": events_seen,
+        "feed_polls": stats.polls,
+        "feed_errors": stats.errors,
+        "activations": activations,
     })
 }
 

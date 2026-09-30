@@ -23,6 +23,7 @@ use polygloss_app::feed::StoreFeed;
 use polygloss_app::ipc::single_instance::{self, Claim};
 use polygloss_app::ipc::{self, IpcServer};
 use polygloss_app::review_tab::ReviewTab;
+use polygloss_app::window;
 use polygloss_core::ipc::{IpcClient, IpcError, Op, ServerConfig, codes, serve_with};
 use polygloss_core::objects::BlobReader;
 use polygloss_core::paths::DataPaths;
@@ -185,6 +186,8 @@ fn ipc_open_by_diff_id_opens_its_latest_review(cx: &mut gpui_kit::TestAppContext
     let repo = code_change_repo();
     let mut shell = start(cx);
     let opened = stored_review(&shell, repo.path());
+    let activations = |shell: &mut Shell| shell.cx.update(|_, cx| window::activation_requests(cx));
+    let before = activations(&mut shell);
 
     let r = run(
         &mut shell,
@@ -198,6 +201,11 @@ fn ipc_open_by_diff_id_opens_its_latest_review(cx: &mut gpui_kit::TestAppContext
     assert_eq!(r["status"], "opened");
     assert_eq!(r["review_id"], json!(opened.review_id));
     assert_eq!(review_tabs(&mut shell), [opened.review_id]);
+    assert_eq!(
+        activations(&mut shell),
+        before,
+        "activate: false stays behind"
+    );
 
     // No target: the app only comes forward.
     let r = run(
@@ -210,6 +218,9 @@ fn ipc_open_by_diff_id_opens_its_latest_review(cx: &mut gpui_kit::TestAppContext
     )
     .unwrap();
     assert_eq!(r, json!({ "status": "activated" }));
+    assert_eq!(activations(&mut shell), before + 1);
+    let state = run(&mut shell, Op::DebugState).unwrap();
+    assert_eq!(state["activations"], json!(before + 1));
 }
 
 #[gpui_kit::test]
@@ -401,6 +412,12 @@ fn ipc_debug_state_reports_tabs_banners_badge_and_events(cx: &mut gpui_kit::Test
     assert_eq!(tabs[0]["anchor"]["path"], "src/config.rs");
     assert_eq!(tabs[0]["anchor"]["line"], 1);
     assert!(state["events_seen"].is_u64());
+    // The feed's own counters, so E2E suites can tell it has opened (it
+    // starts at the latest event) and never failed to read the store.
+    let stats = shell.cx.update(|_, cx| StoreFeed::global(cx).stats());
+    let polls = state["feed_polls"].as_u64().unwrap();
+    assert!(polls > 0 && polls <= stats.polls, "{polls} vs {stats:?}");
+    assert_eq!(state["feed_errors"], json!(stats.errors));
 }
 
 // ---------------------------------------------------------------------------
