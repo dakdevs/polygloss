@@ -544,3 +544,85 @@ fn second_instance_forwards_argv_and_exits_zero() {
         "the argv's review"
     );
 }
+
+#[test]
+fn url_op_maps_each_url_form_to_a_socket_op() {
+    let diff = "a".repeat(64);
+    let review = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    let thread = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c";
+    assert_eq!(
+        single_instance::url_op(&format!("polygloss://review/{review}")).unwrap(),
+        Op::Open {
+            review_id: Some(review.into()),
+            diff_id: None,
+            activate: false
+        }
+    );
+    assert_eq!(
+        single_instance::url_op(&format!("polygloss://diff/{diff}")).unwrap(),
+        Op::Open {
+            review_id: None,
+            diff_id: Some(diff.clone()),
+            activate: false
+        }
+    );
+    assert_eq!(
+        single_instance::url_op(&format!(
+            "polygloss://diff/{diff}?path=src/a%20b.rs&side=old&line=7"
+        ))
+        .unwrap(),
+        Op::Focus {
+            review_id: None,
+            diff_id: Some(diff.clone()),
+            path: Some("src/a b.rs".into()),
+            side: Some(Side::Old),
+            line: Some(7),
+            thread_id: None
+        }
+    );
+    assert_eq!(
+        single_instance::url_op(&format!("polygloss://thread/{thread}")).unwrap(),
+        Op::Focus {
+            review_id: None,
+            diff_id: None,
+            path: None,
+            side: None,
+            line: None,
+            thread_id: Some(thread.into())
+        }
+    );
+    assert!(single_instance::url_op("polygloss://nope/x").is_err());
+}
+
+#[test]
+fn second_instance_forwards_polygloss_urls_and_exits_zero() {
+    let _sb = Sandbox::isolate();
+    let paths = DataPaths::resolve().unwrap();
+    let Claim::Primary(_lock) = single_instance::claim(&paths).unwrap() else {
+        panic!("the sandbox has no app yet");
+    };
+    let (seen, _server) = fake_app(&paths);
+    let review = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    let thread = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c";
+
+    let out = Command::new(env!("CARGO_BIN_EXE_Polygloss"))
+        .arg(format!("polygloss://review/{review}"))
+        .arg(format!("polygloss://thread/{thread}"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run Polygloss");
+    assert!(
+        out.status.success(),
+        "exit {:?}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Only the URLs, in order: no extra bring-forward `open`.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            single_instance::url_op(&format!("polygloss://review/{review}")).unwrap(),
+            single_instance::url_op(&format!("polygloss://thread/{thread}")).unwrap(),
+        ]
+    );
+}

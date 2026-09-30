@@ -12,15 +12,9 @@ default = []
 appkit = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 
 [dependencies]
-# `DataPaths` and the socket path rule for the launch helper (T4.2). Core links
-# no GPUI or tokio either.
+# `DataPaths` and the socket path rule (`ipc::socket_path`) for the launch
+# helper (T4.2). Core links no GPUI or tokio either.
 polygloss-core.workspace = true
-# The socket fallback `$TMPDIR/polygloss-<euid>/polygloss-<hash>.sock` (§13.2,
-# OQ-P8): `geteuid`, and the data dir's sha256 (already in core's graph). All
-# three go once `app_socket_path` delegates to T4.1's `ipc::socket_path`.
-libc.workspace = true
-sha2.workspace = true
-hex.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true, optional = true }
@@ -30,6 +24,9 @@ objc2-app-kit = { workspace = true, optional = true }
 [dev-dependencies]
 # Temp dirs for the editor tests' fake shims, bundles and scratch files.
 tempfile.workspace = true
+# The launch tests check the socket fallback's name (sha256 of the data dir).
+sha2.workspace = true
+hex.workspace = true
 
 # Bundle detection and the Dock badge need the objc2 FFI.
 [[test]]

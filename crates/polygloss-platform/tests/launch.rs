@@ -357,6 +357,12 @@ fn app_socket_path_falls_back_to_tmpdir_when_too_long() {
     let tmpdir = Path::new("/var/folders/xy/T");
     let socket = app_socket_path_with(&a, Some(tmpdir));
     assert_ne!(socket, a.socket);
+    // One rule for the launcher and the server that binds the socket.
+    assert_eq!(
+        socket,
+        polygloss_core::ipc::socket_path_with(&a, Some(tmpdir))
+    );
+    assert_eq!(app_socket_path(&a), polygloss_core::ipc::socket_path(&a));
     assert!(socket.as_os_str().len() <= polygloss_core::paths::SOCKET_PATH_MAX);
     // `<tmpdir>/polygloss-<euid>/polygloss-<16 hex of sha256(data_dir)>.sock`,
     // as T4.1's `ipc::socket_path` binds it.

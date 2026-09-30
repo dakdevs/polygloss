@@ -7,8 +7,10 @@
 //! another build), this process is [`Claim::Secondary`]: [`forward`] opens
 //! the review its argv names (`Core::open`, like the CLI) and asks the
 //! running app to show it (`open` with `activate: true`; plain `Polygloss`
-//! only brings the app forward), then the process exits 0. A running app
-//! that is still starting gets [`FORWARD_WAIT`] to bind its socket.
+//! only brings the app forward), and [`forward_urls`] hands over its
+//! `polygloss://` arguments as the socket ops they map to ([`url_op`]);
+//! then the process exits 0. A running app that is still starting gets
+//! [`FORWARD_WAIT`] to bind its socket.
 
 use std::fs::{DirBuilder, File, OpenOptions, TryLockError};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
@@ -17,6 +19,7 @@ use std::time::{Duration, Instant};
 use polygloss_core::ipc::{IpcClient, Op};
 use polygloss_core::paths::DataPaths;
 use polygloss_core::review::{Core, OpenRequest};
+use polygloss_core::urls::{PolyglossUrl, UrlError, parse_url};
 use serde_json::Value;
 
 /// How long a second instance waits for the running app's socket.
@@ -94,6 +97,67 @@ pub fn forward(
         diff_id: None,
         activate: true,
     };
+    send(op, paths, wait)
+}
+
+/// The socket op that shows `url` in the running app: `open` for a review
+/// or a diff alone, `focus` for a diff position or a thread. Like a URL the
+/// app gets from LaunchServices, it does not activate the app (a clicked
+/// link comes forward on its own).
+pub fn url_op(url: &str) -> Result<Op, UrlError> {
+    Ok(match parse_url(url)? {
+        PolyglossUrl::Review(review_id) => Op::Open {
+            review_id: Some(review_id),
+            diff_id: None,
+            activate: false,
+        },
+        PolyglossUrl::Diff {
+            diff_id,
+            path: None,
+            ..
+        } => Op::Open {
+            review_id: None,
+            diff_id: Some(diff_id),
+            activate: false,
+        },
+        PolyglossUrl::Diff {
+            diff_id,
+            path,
+            side,
+            line,
+        } => Op::Focus {
+            review_id: None,
+            diff_id: Some(diff_id),
+            path,
+            side,
+            line,
+            thread_id: None,
+        },
+        PolyglossUrl::Thread(thread_id) => Op::Focus {
+            review_id: None,
+            diff_id: None,
+            path: None,
+            side: None,
+            line: None,
+            thread_id: Some(thread_id),
+        },
+    })
+}
+
+/// Hands `urls` to the running app of `paths`, in order ([`url_op`]),
+/// waiting up to `wait` for its socket. Stops at the first URL that does
+/// not parse or that the app rejects.
+pub fn forward_urls(urls: &[String], paths: &DataPaths, wait: Duration) -> Result<(), String> {
+    for url in urls {
+        let op = url_op(url).map_err(|e| e.to_string())?;
+        send(op, paths, wait).map_err(|e| format!("{url}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Sends `op` to the running app of `paths`, waiting up to `wait` for its
+/// socket.
+fn send(op: Op, paths: &DataPaths, wait: Duration) -> Result<Value, String> {
     let deadline = Instant::now() + wait;
     loop {
         match IpcClient::connect(paths) {

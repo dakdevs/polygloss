@@ -199,7 +199,7 @@ pub fn main() -> ExitCode {
     // One app per data dir (design §13.4): held until the process exits.
     let _instance = match single_instance::claim(&paths) {
         Ok(Claim::Primary(lock)) => Some(lock),
-        Ok(Claim::Secondary) => return forward_to_running_app(args.open.as_ref(), &paths),
+        Ok(Claim::Secondary) => return forward_to_running_app(&args, &paths),
         Err(err) => {
             eprintln!(
                 "Polygloss: cannot lock {} ({err}); starting anyway",
@@ -218,10 +218,18 @@ pub fn main() -> ExitCode {
     })
 }
 
-/// A second instance: the running app shows `open` (or just comes forward).
-fn forward_to_running_app(open: Option<&OpenRequest>, paths: &DataPaths) -> ExitCode {
-    match single_instance::forward(open, paths, single_instance::FORWARD_WAIT) {
-        Ok(_) => {
+/// A second instance: the running app shows `open` and the `polygloss://`
+/// URLs (or, given neither, just comes forward).
+fn forward_to_running_app(args: &LaunchArgs, paths: &DataPaths) -> ExitCode {
+    let wait = single_instance::FORWARD_WAIT;
+    let result = if args.open.is_some() || args.urls.is_empty() {
+        single_instance::forward(args.open.as_ref(), paths, wait).map(|_| ())
+    } else {
+        Ok(())
+    }
+    .and_then(|()| single_instance::forward_urls(&args.urls, paths, wait));
+    match result {
+        Ok(()) => {
             eprintln!("Polygloss is already running; handed the request to it.");
             ExitCode::SUCCESS
         }

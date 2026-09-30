@@ -21,8 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use polygloss_core::paths::{DataPaths, socket_path_fits};
-use sha2::{Digest as _, Sha256};
+use polygloss_core::paths::DataPaths;
 
 /// The app's bundle id.
 pub const BUNDLE_ID: &str = "dev.dak.polygloss";
@@ -103,39 +102,19 @@ pub fn app_is_running(paths: &DataPaths) -> bool {
 }
 
 /// Where the app listens: `paths.socket` when it fits in `sun_path`, else a
-/// per-user fallback (design §13.2; see [`app_socket_path_with`]).
+/// per-user fallback (design §13.2): `polygloss_core::ipc::socket_path`,
+/// the path the app's server binds.
 pub fn app_socket_path(paths: &DataPaths) -> PathBuf {
-    app_socket_path_with(
-        paths,
-        std::env::var_os("TMPDIR").map(PathBuf::from).as_deref(),
-    )
+    polygloss_core::ipc::socket_path(paths)
 }
 
 /// [`app_socket_path`] with an explicit `$TMPDIR`: `paths.socket`, else
 /// `<tmpdir>/polygloss-<euid>/polygloss-<16 hex of sha256(data_dir)>.sock`
 /// (`/tmp` when `tmpdir` is unset, relative or too long), so two data dirs
-/// that both need the fallback never share a socket. The same rule as T4.1's
-/// `polygloss_core::ipc::socket_path`, which the server binds (merge note:
-/// delegate to it once both are in).
+/// that both need the fallback never share a socket
+/// (`polygloss_core::ipc::socket_path_with`).
 pub fn app_socket_path_with(paths: &DataPaths, tmpdir: Option<&Path>) -> PathBuf {
-    if socket_path_fits(&paths.socket) {
-        return paths.socket.clone();
-    }
-    let hash = Sha256::digest(paths.data_dir.as_os_str().as_encoded_bytes());
-    let name = format!("polygloss-{}.sock", &hex::encode(hash)[..16]);
-    let dir = format!("polygloss-{}", current_uid());
-    let in_tmpdir = tmpdir
-        .filter(|t| t.is_absolute())
-        .map(|t| t.join(&dir).join(&name))
-        .filter(|p| socket_path_fits(p));
-    in_tmpdir.unwrap_or_else(|| Path::new("/tmp").join(dir).join(name))
-}
-
-/// This process's effective uid.
-#[allow(unsafe_code)]
-fn current_uid() -> u32 {
-    // SAFETY: `geteuid` takes no arguments, cannot fail and touches no memory.
-    unsafe { libc::geteuid() }
+    polygloss_core::ipc::socket_path_with(paths, tmpdir)
 }
 
 /// Starts the real app.
