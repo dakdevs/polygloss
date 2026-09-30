@@ -117,52 +117,69 @@ When an agent asks for a re-review, Polygloss shows a macOS notification if the 
 
 Every action has a key or a command palette entry, and every key can be remapped. Single-key bindings (`j`, `?`, `⇧R`) never fire while you are typing in a text field or a comment. Keys are shown as key caps: `J` is the J key alone, and `⇧E` adds Shift.
 
-A binding's context says where it works: **Viewport** (the diff has focus), **Tree** (the file tree has focus), **Composer** (a comment box has focus), **Tab** (anywhere in a review tab), **Window** (anywhere in the main window) or **Anywhere**.
+A binding's context says where it works: **Viewport** (the diff has focus), **Tree** (the file tree has focus), **Composer** (a comment box has focus), **ThreadsPanel** (the threads panel has focus), **Tab** (anywhere in a review tab), **Window** (anywhere in the main window) or **Anywhere**.
+
+Everything works without a mouse. In a review tab, `⇥` and `⇧⇥` move the keyboard between panes: file tree, diff, threads panel (when shown), then any open comment boxes. The pane with the keyboard shows a focus ring while you use the keyboard. In a comment box and the Submit review summary, `⇥` moves on instead of indenting; `⌘]` and `⌘[` indent and outdent. In the Submit review dialog, `⌘1`, `⌘2` and `⌘3` pick **Comment**, **Approve** and **Request changes**. On Home, `⇧R` reloads the list. `Esc` closes every dialog, popover and menu and gives the keyboard back.
 
 ### Default key bindings
 
-| Keys    | `keymap.json`     | Action                       | Name                            | Context  |
-| ------- | ----------------- | ---------------------------- | ------------------------------- | -------- |
-| `J`     | `j`               | Move cursor down             | `viewport::CursorDown`          | Viewport |
-| `↓`     | `down`            | Move cursor down             | `viewport::CursorDown`          | Viewport |
-| `K`     | `k`               | Move cursor up               | `viewport::CursorUp`            | Viewport |
-| `↑`     | `up`              | Move cursor up               | `viewport::CursorUp`            | Viewport |
-| `⇧↓`    | `shift-down`      | Extend selection down        | `viewport::ExtendSelectionDown` | Viewport |
-| `⇧↑`    | `shift-up`        | Extend selection up          | `viewport::ExtendSelectionUp`   | Viewport |
-| `N`     | `n`               | Next file                    | `viewport::NextFile`            | Viewport |
-| `P`     | `p`               | Previous file                | `viewport::PrevFile`            | Viewport |
-| `N`     | `n`               | Next file in tree            | `tree::NextFile`                | Tree     |
-| `P`     | `p`               | Previous file in tree        | `tree::PrevFile`                | Tree     |
-| `]`     | `]`               | Next change                  | `viewport::NextChange`          | Viewport |
-| `[`     | `[`               | Previous change              | `viewport::PrevChange`          | Viewport |
-| `V`     | `v`               | Toggle viewed                | `viewport::ToggleViewed`        | Viewport |
-| `V`     | `v`               | Toggle viewed in tree        | `tree::ToggleViewed`            | Tree     |
-| `C`     | `c`               | Comment on line or selection | `viewport::Comment`             | Viewport |
-| `⌘⏎`    | `cmd-enter`       | Save draft                   | `composer::SaveDraft`           | Composer |
-| `.`     | `.`               | Next open thread             | `viewport::NextOpenThread`      | Viewport |
-| `,`     | `,`               | Previous open thread         | `viewport::PrevOpenThread`      | Viewport |
-| `E`     | `e`               | Expand context               | `viewport::ExpandContext`       | Viewport |
-| `⇧E`    | `shift-e`         | Expand whole file            | `viewport::ExpandFile`          | Viewport |
-| `S`     | `s`               | Toggle split / unified       | `viewport::ToggleLayout`        | Viewport |
-| `W`     | `w`               | Toggle hide whitespace       | `viewport::ToggleWhitespace`    | Viewport |
-| `⇧R`    | `shift-r`         | Refresh                      | `tab::Refresh`                  | Tab      |
-| `O`     | `o`               | Open in editor               | `viewport::OpenInEditor`        | Viewport |
-| `⌘P`    | `cmd-p`           | Go to file                   | `window::FileFinder`            | Window   |
-| `⌘K`    | `cmd-k`           | Command palette              | `window::CommandPalette`        | Window   |
-| `⌘O`    | `cmd-o`           | Open review                  | `window::OpenFlow`              | Window   |
-| `⌘F`    | `cmd-f`           | Find in all files            | `tab::Find`                     | Tab      |
-| `⇧⌘⏎`   | `cmd-shift-enter` | Submit review                | `tab::SubmitReview`             | Tab      |
-| `?`     | `?`               | Keyboard shortcuts           | `window::CheatSheet`            | Window   |
-| `Esc`   | `escape`          | Cancel comment               | `composer::Cancel`              | Composer |
-| `⌘C`    | `cmd-c`           | Copy selection               | `viewport::Copy`                | Viewport |
-| `⌘W`    | `cmd-w`           | Close tab                    | `window::CloseTab`              | Anywhere |
-| `⌘}`    | `cmd-}`           | Next tab                     | `window::NextTab`               | Anywhere |
-| `⌘{`    | `cmd-{`           | Previous tab                 | `window::PrevTab`               | Anywhere |
-| `⌃Tab`  | `ctrl-tab`        | Next tab                     | `window::NextTab`               | Anywhere |
-| `⌃⇧Tab` | `ctrl-shift-tab`  | Previous tab                 | `window::PrevTab`               | Anywhere |
-| `⌘,`    | `cmd-,`           | Open settings                | `window::OpenSettings`          | Window   |
-| `⌘Q`    | `cmd-q`           | Quit Polygloss               | `window::Quit`                  | Anywhere |
-| `⌘M`    | `cmd-m`           | Minimize                     | `window::Minimize`              | Anywhere |
+| Keys    | `keymap.json`     | Action                       | Name                            | Context      |
+| ------- | ----------------- | ---------------------------- | ------------------------------- | ------------ |
+| `J`     | `j`               | Move cursor down             | `viewport::CursorDown`          | Viewport     |
+| `↓`     | `down`            | Move cursor down             | `viewport::CursorDown`          | Viewport     |
+| `K`     | `k`               | Move cursor up               | `viewport::CursorUp`            | Viewport     |
+| `↑`     | `up`              | Move cursor up               | `viewport::CursorUp`            | Viewport     |
+| `⇧↓`    | `shift-down`      | Extend selection down        | `viewport::ExtendSelectionDown` | Viewport     |
+| `⇧↑`    | `shift-up`        | Extend selection up          | `viewport::ExtendSelectionUp`   | Viewport     |
+| `N`     | `n`               | Next file                    | `viewport::NextFile`            | Viewport     |
+| `P`     | `p`               | Previous file                | `viewport::PrevFile`            | Viewport     |
+| `N`     | `n`               | Next file in tree            | `tree::NextFile`                | Tree         |
+| `P`     | `p`               | Previous file in tree        | `tree::PrevFile`                | Tree         |
+| `]`     | `]`               | Next change                  | `viewport::NextChange`          | Viewport     |
+| `[`     | `[`               | Previous change              | `viewport::PrevChange`          | Viewport     |
+| `V`     | `v`               | Toggle viewed                | `viewport::ToggleViewed`        | Viewport     |
+| `V`     | `v`               | Toggle viewed in tree        | `tree::ToggleViewed`            | Tree         |
+| `C`     | `c`               | Comment on line or selection | `viewport::Comment`             | Viewport     |
+| `⌘⏎`    | `cmd-enter`       | Save draft                   | `composer::SaveDraft`           | Composer     |
+| `.`     | `.`               | Next open thread             | `viewport::NextOpenThread`      | Viewport     |
+| `,`     | `,`               | Previous open thread         | `viewport::PrevOpenThread`      | Viewport     |
+| `E`     | `e`               | Expand context               | `viewport::ExpandContext`       | Viewport     |
+| `⇧E`    | `shift-e`         | Expand whole file            | `viewport::ExpandFile`          | Viewport     |
+| `S`     | `s`               | Toggle split / unified       | `viewport::ToggleLayout`        | Viewport     |
+| `W`     | `w`               | Toggle hide whitespace       | `viewport::ToggleWhitespace`    | Viewport     |
+| `⇧R`    | `shift-r`         | Refresh                      | `tab::Refresh`                  | Tab          |
+| `O`     | `o`               | Open in editor               | `viewport::OpenInEditor`        | Viewport     |
+| `⌘P`    | `cmd-p`           | Go to file                   | `window::FileFinder`            | Window       |
+| `⌘K`    | `cmd-k`           | Command palette              | `window::CommandPalette`        | Window       |
+| `⌘O`    | `cmd-o`           | Open review                  | `window::OpenFlow`              | Window       |
+| `⌘F`    | `cmd-f`           | Find in all files            | `tab::Find`                     | Tab          |
+| `⇧⌘⏎`   | `cmd-shift-enter` | Submit review                | `tab::SubmitReview`             | Tab          |
+| `?`     | `?`               | Keyboard shortcuts           | `window::CheatSheet`            | Window       |
+| `Esc`   | `escape`          | Cancel comment               | `composer::Cancel`              | Composer     |
+| `⌘C`    | `cmd-c`           | Copy selection               | `viewport::Copy`                | Viewport     |
+| `⌘W`    | `cmd-w`           | Close tab                    | `window::CloseTab`              | Anywhere     |
+| `⌘}`    | `cmd-}`           | Next tab                     | `window::NextTab`               | Anywhere     |
+| `⌘{`    | `cmd-{`           | Previous tab                 | `window::PrevTab`               | Anywhere     |
+| `⌃Tab`  | `ctrl-tab`        | Next tab                     | `window::NextTab`               | Anywhere     |
+| `⌃⇧Tab` | `ctrl-shift-tab`  | Previous tab                 | `window::PrevTab`               | Anywhere     |
+| `⌘,`    | `cmd-,`           | Open settings                | `window::OpenSettings`          | Window       |
+| `⌘Q`    | `cmd-q`           | Quit Polygloss               | `window::Quit`                  | Anywhere     |
+| `⌘M`    | `cmd-m`           | Minimize                     | `window::Minimize`              | Anywhere     |
+| `Tab`   | `tab`             | Focus next pane              | `tab::FocusNextPane`            | Tab          |
+| `⇧Tab`  | `shift-tab`       | Focus previous pane          | `tab::FocusPrevPane`            | Tab          |
+| `I`     | `i`               | Choose iteration             | `tab::ChooseIteration`          | Tab          |
+| `M`     | `m`               | File menu                    | `viewport::FileMenu`            | Viewport     |
+| `Z`     | `z`               | Collapse or expand file      | `viewport::ToggleCollapse`      | Viewport     |
+| `/`     | `/`               | Filter files                 | `tree::FocusFilter`             | Tree         |
+| `F`     | `f`               | File filters                 | `tree::FilterMenu`              | Tree         |
+| `J`     | `j`               | Next thread in panel         | `threads::SelectNext`           | ThreadsPanel |
+| `↓`     | `down`            | Next thread in panel         | `threads::SelectNext`           | ThreadsPanel |
+| `K`     | `k`               | Previous thread in panel     | `threads::SelectPrev`           | ThreadsPanel |
+| `↑`     | `up`              | Previous thread in panel     | `threads::SelectPrev`           | ThreadsPanel |
+| `⏎`     | `enter`           | Go to thread                 | `threads::Open`                 | ThreadsPanel |
+| `R`     | `r`               | Reply to thread              | `threads::Reply`                | ThreadsPanel |
+| `X`     | `x`               | Resolve or unresolve thread  | `threads::ToggleResolved`       | ThreadsPanel |
+| `E`     | `e`               | Edit my comment              | `threads::EditComment`          | ThreadsPanel |
 
 Popovers and dialogs also close with `Esc`.
 
@@ -180,6 +197,7 @@ These are in the command palette (and some in the toolbar or menus); bind them i
 | Word diff: off            | `viewport::WordDiffOff`             |
 | Mark folder viewed        | `tree::MarkFolderViewed`            |
 | Toggle comment preview    | `composer::TogglePreview`           |
+| Delete my comment         | `threads::DeleteComment`            |
 | Snapshot                  | `tab::Snapshot`                     |
 | Choose base               | `tab::ChooseBase`                   |
 | Comment on file           | `tab::CommentOnFile`                |
