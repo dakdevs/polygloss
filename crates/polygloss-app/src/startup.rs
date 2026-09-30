@@ -260,6 +260,27 @@ pub fn init(core: Core, cx: &mut App) {
     window::install_menus(cx);
 }
 
+/// Points `<data_dir>/bin/polygloss` at this bundle's `polygloss-cli`
+/// (design §13.2, T4.3) so the plugin's shim finds the installed CLI. Does
+/// nothing for an unbundled build; a failure is logged, never fatal.
+fn refresh_cli_link(paths: &DataPaths) {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            tracing::warn!("cannot locate the app executable: {err}");
+            return;
+        }
+    };
+    match polygloss_platform::install::refresh_for_exe(&paths.bin_dir, &exe) {
+        Ok(Some(outcome)) => tracing::info!("CLI link {}: {outcome:?}", paths.bin_dir.display()),
+        Ok(None) => {}
+        Err(err) => tracing::warn!(
+            "refreshing the CLI link in {}: {err}",
+            paths.bin_dir.display()
+        ),
+    }
+}
+
 /// Runs the app until it quits.
 pub fn run(launch: Launch) -> ExitCode {
     let paths = match launch.paths.clone().map_or_else(DataPaths::resolve, Ok) {
@@ -270,6 +291,7 @@ pub fn run(launch: Launch) -> ExitCode {
         }
     };
     let log_guard = crate::logging::init(&paths.logs_dir);
+    refresh_cli_link(&paths);
     let core = match Core::with_paths(paths) {
         Ok(core) => core,
         Err(err) => {

@@ -11,4 +11,5 @@ pub mod bundle;
 #[cfg(feature = "appkit")]
 pub mod dock;
 pub mod editor;
+pub mod install;
 pub mod launch;

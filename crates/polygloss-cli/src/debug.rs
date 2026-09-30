@@ -11,7 +11,7 @@
 //! enforces the parity rate.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context as _, bail};
@@ -24,6 +24,7 @@ use polygloss_diff::unified_text::{strip_git_headers, unified_text};
 use polygloss_diff::{FileChange, FileKind, FileStatus, ObjectFormat, Oid};
 use serde::Serialize;
 
+use crate::cli::GlobalArgs;
 use crate::debug_human;
 
 /// Developer tools; hidden from `--help`.
@@ -47,11 +48,10 @@ pub enum DebugCommand {
     HumanSubmit(debug_human::HumanSubmitArgs),
 }
 
+/// `debug parity` arguments. `--repo` (any path inside the repository, required)
+/// and `--json` are the global flags.
 #[derive(Debug, Args)]
 pub struct ParityArgs {
-    /// Any path inside the repository.
-    #[arg(long)]
-    pub repo: PathBuf,
     /// Base revision (anything `git rev-parse` accepts that names a tree).
     #[arg(long)]
     pub base: String,
@@ -61,9 +61,6 @@ pub struct ParityArgs {
     /// Our line diff algorithm. git always runs Myers.
     #[arg(long, value_enum, default_value_t = AlgorithmArg::Myers)]
     pub algorithm: AlgorithmArg,
-    /// Print the report as JSON.
-    #[arg(long)]
-    pub json: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -97,11 +94,12 @@ pub struct Mismatch {
     pub git: String,
 }
 
-pub fn run(args: DebugArgs) -> anyhow::Result<()> {
+pub fn run(args: DebugArgs, global: &GlobalArgs) -> anyhow::Result<()> {
     match args.command {
         DebugCommand::Parity(args) => {
-            let report = parity(&args)?;
-            if args.json {
+            let repo = required_repo(global)?;
+            let report = parity(&repo, &args)?;
+            if global.json {
                 println!("{}", serde_json::to_string(&report)?);
             } else {
                 println!("files      {}", report.files);
@@ -112,11 +110,19 @@ pub fn run(args: DebugArgs) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        DebugCommand::Seed(args) => print_json(debug_human::seed(args)?),
+        DebugCommand::Seed(args) => print_json(debug_human::seed(required_repo(global)?, args)?),
         DebugCommand::HumanComment(args) => print_json(debug_human::human_comment(args)?),
         DebugCommand::HumanViewed(args) => print_json(debug_human::human_viewed(args)?),
         DebugCommand::HumanSubmit(args) => print_json(debug_human::human_submit(args)?),
     }
+}
+
+/// The global `--repo`, which `parity` and `seed` require.
+fn required_repo(global: &GlobalArgs) -> anyhow::Result<PathBuf> {
+    global
+        .repo
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--repo <PATH> is required"))
 }
 
 fn print_json(v: serde_json::Value) -> anyhow::Result<()> {
@@ -126,9 +132,9 @@ fn print_json(v: serde_json::Value) -> anyhow::Result<()> {
 
 /// Runs the comparison. Pairs are checked on a few worker threads; the report
 /// keeps `diff-tree` order.
-pub fn parity(args: &ParityArgs) -> anyhow::Result<ParityReport> {
+pub fn parity(repo_path: &Path, args: &ParityArgs) -> anyhow::Result<ParityReport> {
     let repo =
-        git::discover(&args.repo).with_context(|| format!("opening {}", args.repo.display()))?;
+        git::discover(repo_path).with_context(|| format!("opening {}", repo_path.display()))?;
     let git = Git::new(
         repo.toplevel
             .clone()
