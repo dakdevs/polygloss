@@ -1840,6 +1840,7 @@ scripts/check-deps.sh                      # polygloss-cli still has zero gpui/l
 - [ ] Run the M5 exit gate on a clean clone.
 - [ ] `POLYGLOSS_BUNDLE_E2E=1 bun run test:e2e` against a release bundle.
 - [ ] Final perf run on the release bundle; update `benches/baseline.json` if improved.
+- [ ] Verify T5.10's perf acceptance (still owed after the M5 wave 1 merge, where the screen was locked again): with the screen unlocked (`ioreg -n Root -d1` shows `CGSSessionScreenIsLocked` absent or `No`), `bun benches/run-perf.ts --corpus typical,synthetic --layouts split,unified --check-budgets --build` exits 0 on `polygloss-v1` (needs ≈ 5 GB of disk for the perf profile).
 - [ ] Record cold-launch time of the release bundle (`open -g` → socket `hello` answered; median of 5 launches), since gpui-kit forces runtime shader compilation (OQ-P12). Report it; it is not a budget.
 - [ ] The user runs the manual wake gate **W1–W8** and records results.
 - [ ] Human smoke of the release bundle's launch activation (T5.10 item 6): a Finder double-click, a Dock click and `open dist/Polygloss.app` bring the window to the front; `open -g dist/Polygloss.app` leaves it behind.
