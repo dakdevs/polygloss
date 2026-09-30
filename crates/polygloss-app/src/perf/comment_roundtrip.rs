@@ -179,6 +179,7 @@ pub fn run(args: PerfArgs, spec: CorpusSpec, clock: Clock) -> ExitCode {
     let (before_args, before_state) = (args.clone(), state.clone());
     let (after_args, after_state) = (args.clone(), state.clone());
     startup::run(Launch {
+        urls: Vec::new(),
         open: Some(req),
         paths: Some(paths),
         clock,

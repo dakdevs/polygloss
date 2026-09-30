@@ -190,6 +190,7 @@ flowchart LR
   viewport --> app
   highlight --> app
   platform[polygloss-platform] --> app
+  core --> platform
   platform --> cli[polygloss-cli]
   mcp --> cli
   core --> cli
@@ -1535,6 +1536,15 @@ App registers `on_open_urls` before `run()` and routes URLs to open/focus.
 
 **Tests:** `url_roundtrip_all_forms`, `url_rejects_unknown_host_and_bad_ids`, `url_percent_encodes_paths`, `ensure_app_already_running_skips_launch`, `ensure_app_launches_and_waits_for_socket` (mock launcher binds a socket after 300 ms), `ensure_app_times_out_as_unavailable`, `activate_false_uses_background_flag`.
 
+**As built (T4.2):**
+
+- `polygloss-platform` now depends on `polygloss-core` (for `DataPaths`) and `libc` (`getuid`, OQ-P8; one function-level `#[allow(unsafe_code)]`). Core links no GPUI or tokio, so `check-deps.sh` still passes; the dependency diagram above shows the new edge.
+- `polygloss_platform::launch` also exports `BUNDLE_ID`, `LAUNCH_TIMEOUT` (10 s), `ensure_app_within(…, timeout)` (tests), `app_is_running(paths)` (a `UnixStream::connect` probe: a stale socket file refuses connections) and `app_socket_path(paths)`, and `SystemLauncher { Open, AppBin(PathBuf) }` with `from_env()`: `AppBin` only when `POLYGLOSS_TEST=1` **and** `POLYGLOSS_APP_BIN` is set (OQ-P4). `AppBin` spawns the binary detached (own process group, stdio null, reaped on a thread) with the URL as its only argument; `Open` runs `/usr/bin/open [-g] -b dev.dak.polygloss [url]` and waits for `open` itself. The URL only reaches an app that this call launches; callers send their socket op afterwards either way.
+- **Merge note:** `app_socket_path` re-implements the §13.2 rule (`paths.socket`, else `$TMPDIR/polygloss-<uid>/polygloss.sock`) because T4.1 ran in parallel. Once T4.1's `polygloss_core::ipc::socket_path` is merged, `app_socket_path` must delegate to it (and `libc` can leave platform) so the two can never disagree.
+- `polygloss_core::urls` also exports `SCHEME`, `UrlTarget { review_id, focus: Option<UrlFocus> }`, `UrlFocus { File { path }, Line { path, side, line }, Thread(id) }` and `Core::resolve_url(&PolyglossUrl) -> Result<UrlTarget, CoreError>` (`not_found` when nothing matches): a diff opens in the review with an iteration showing it that was active last (`reviews.updated_at`); a thread in its `review_id`. `UrlError` = `NotPolyglossUrl | UnknownTarget | BadId { kind, id } | BadParam { name, reason }`. Parsing: scheme, target and ids case-insensitive (ids normalized to lowercase); full 64-hex diff ids and hyphenated UUIDs only; `line` is 1-based (§8.1) and, like `side`, needs `path`; duplicate or malformed parameters are errors, unknown ones and fragments are ignored; `review/<id>/threads` (the §15.3 resource) parses as the review. `format_url` percent-encodes every byte of `path` except unreserved characters and `/`.
+- App (`polygloss_app::urls`): `register(&Application) -> UrlInbox` wraps `on_open_urls` before `run()`; `listen(inbox, cx)` opens queued URLs in order; `open_url(url, cx) -> Task<anyhow::Result<()>>` resolves off the main thread, focuses or opens the review tab (reopening the window if it was closed, never calling `cx.activate`), then `apply_focus` (file header, line with the cursor on it, or the thread as the threads panel jumps to it, waiting for the tab's threads to load). Errors show in the window like a failed open. `Polygloss` also accepts `polygloss://…` arguments (`LaunchArgs.urls`, `Launch.urls`), which is how `AppBin` delivers the URL. `CFBundleURLTypes` is still T5.1's (cargo-packager `deep-link-protocols`).
+- Tests beyond the card: core `url_parse_is_lenient_where_links_vary`, `url_resolves_review_diff_and_thread_targets`, `url_diff_opens_its_most_recent_review`, `url_unknown_targets_are_not_found`; platform `ensure_app_treats_stale_socket_as_not_running`, `ensure_app_reports_launch_failure_as_unavailable`, `app_bin_override_only_in_test_mode`, `app_bin_launcher_spawns_detached_with_url`, `app_socket_path_falls_back_to_tmpdir_when_too_long`; app `tests/app/urls.rs` (`url_review_focuses_its_open_tab`, `url_diff_opens_review_and_focuses_line`, `url_diff_path_scrolls_to_file`, `url_thread_opens_review_on_thread`, `url_thread_focus_waits_for_threads_to_load`, `url_errors_show_in_the_window`, `url_inbox_routes_system_urls`, `launch_args_accept_polygloss_urls`).
+
 ### T4.3 CLI command tree and human commands
 
 **Files:** `crates/polygloss-cli/src/{main.rs, cli.rs, output.rs, commands/{mod.rs, live.rs, show.rs, compare.rs, open.rs, snapshot.rs, mcp.rs, wait.rs, json.rs}}` (stubs for `mcp`, `wait`, `json`), `crates/polygloss-platform/src/install.rs` (`refresh_stable_symlink`), `crates/polygloss-app/src/main.rs` (call it at launch); tests `tests/cli/open-commands.test.ts`, `crates/polygloss-platform/tests/install.rs`
@@ -1751,6 +1761,7 @@ The build cannot automate this: it needs a real, idle Claude Code session and a 
 
 ```bash
 export POLYGLOSS_DATA_DIR=/tmp/polygloss-wake-gate          # keeps real state untouched (W1–W7)
+export POLYGLOSS_TEST=1                                      # enables the POLYGLOSS_APP_BIN override (OQ-P4); unset for W8
 export POLYGLOSS_APP_BIN=<target>/debug/Polygloss            # dev launch override; unset for W8
 claude plugin marketplace add /Users/dak/projects/polygloss
 claude plugin install polygloss@polygloss

@@ -27,6 +27,7 @@ mod submit;
 mod theme;
 mod threads;
 mod tree;
+mod urls;
 mod version;
 mod view_state;
 mod viewed;

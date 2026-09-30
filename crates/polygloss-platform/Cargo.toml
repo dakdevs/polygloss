@@ -11,6 +11,13 @@ repository.workspace = true
 default = []
 appkit = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 
+[dependencies]
+# `DataPaths` and the socket path rule for the launch helper (T4.2). Core links
+# no GPUI or tokio either.
+polygloss-core.workspace = true
+# `getuid` for the `$TMPDIR/polygloss-<uid>` socket fallback (OQ-P8).
+libc.workspace = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
