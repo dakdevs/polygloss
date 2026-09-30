@@ -538,19 +538,21 @@ impl ServerHandler for PolyglossServer {
     }
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
-        let core = self
-            .state
-            .core
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        if let Some(core) = core {
-            crate::channel::start(
+        if !self.state.opts.channel {
+            return;
+        }
+        // `initialize` normally opened the store; retry once if it could not.
+        let state = self.state.clone();
+        let core = tokio::task::spawn_blocking(move || Self::core_blocking(&state)).await;
+        match core {
+            Ok(Ok(core)) => crate::channel::start(
                 &self.state.opts,
                 &core,
                 &self.state.session_id,
                 &context.peer,
-            );
+            ),
+            Ok(Err(e)) => tracing::warn!("claude/channel disabled: {e}"),
+            Err(e) => tracing::warn!("claude/channel disabled: opening the store panicked: {e}"),
         }
     }
 
