@@ -25,6 +25,7 @@ import {
   loadBudgets,
   percentile,
   planRuns,
+  screenLocked,
   warmupRun,
   withBaseline,
 } from "../../benches/run-perf";
@@ -44,6 +45,18 @@ function row(
 ): Row {
   return { corpus, layout, metrics };
 }
+
+describe("screen lock", () => {
+  test("ioreg's CGSSessionScreenIsLocked = Yes means the screen is locked", () => {
+    const session = (locked: string) =>
+      `    | "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,${locked}"kCGSSessionUserIDKey"=501})`;
+    expect(screenLocked(session('"CGSSessionScreenIsLocked"=Yes,'))).toBe(true);
+    expect(screenLocked(session('"CGSSessionScreenIsLocked"=No,'))).toBe(false);
+    // The key is absent while the screen is unlocked.
+    expect(screenLocked(session(""))).toBe(false);
+    expect(screenLocked("")).toBe(false);
+  });
+});
 
 describe("statistics", () => {
   test("p95 of a known sample", () => {
@@ -545,6 +558,18 @@ printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"rep
 );
 chmodSync(fakeApp, 0o755);
 
+// `ioreg -n Root -d1` (POLYGLOSS_IOREG): the session's lock state comes from
+// FAKE_SCREEN_LOCKED, so the CLI tests do not depend on the real screen.
+const fakeIoreg = join(sandbox.home, "fake-ioreg");
+writeFileSync(
+  fakeIoreg,
+  `#!/bin/sh
+[ "$*" = "-n Root -d1" ] || { echo "fake-ioreg: unexpected $*" >&2; exit 2; }
+echo '  | "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"CGSSessionScreenIsLocked"='"\${FAKE_SCREEN_LOCKED:-No}"'})'
+`,
+);
+chmodSync(fakeIoreg, 0o755);
+
 /** Runs `run-perf.ts` against the fake; `knobs` go to its control file. */
 function runPerf(
   args: string[],
@@ -569,7 +594,12 @@ function runPerf(
     ],
     {
       cwd: repoRoot,
-      env: { ...sandbox.env, POLYGLOSS_CORPORA: corporaRoot, ...extra },
+      env: {
+        ...sandbox.env,
+        POLYGLOSS_CORPORA: corporaRoot,
+        POLYGLOSS_IOREG: fakeIoreg,
+        ...extra,
+      },
     },
   );
   return {
@@ -959,6 +989,25 @@ describe("run-perf CLI", () => {
       expect(r.stdout.split("\n")[0]).toMatch(
         /^warm-up \(not measured\): open linux split: .* --scenario open /,
       );
+    },
+    cliTimeout,
+  );
+
+  test(
+    "a locked screen stops the run before any window opens",
+    () => {
+      rmSync(appLaunches, { force: true });
+      const out = join(sandbox.home, "results", "locked.json");
+      const r = runPerf(
+        ["--corpus", "typical", "--layouts", "split", "--out", out],
+        {},
+        { FAKE_SCREEN_LOCKED: "Yes" },
+      );
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("the screen is locked");
+      expect(r.stderr).not.toContain("warm-up");
+      expect(existsSync(out)).toBe(false);
+      expect(existsSync(appLaunches)).toBe(false);
     },
     cliTimeout,
   );

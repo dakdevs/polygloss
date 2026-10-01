@@ -30,8 +30,10 @@
 // missed, with --compare-baseline when a metric regressed by more than 10%
 // against this machine's baseline entry (a frame-bound metric also by more
 // than one 120 Hz frame, 8.3 ms: OQ-P18), and when
-// --write-baseline refuses; 2 for usage errors, a missing corpus or a missing
-// harness binary.
+// --write-baseline refuses; 2 for usage errors, a missing corpus, a missing
+// harness binary or a locked screen (`ioreg -n Root -d1` reports
+// CGSSessionScreenIsLocked = Yes; the windows would never paint; test seam
+// POLYGLOSS_IOREG).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -668,6 +670,15 @@ function command(argv: string[]): string {
   return r.exitCode === 0 ? r.stdout.toString().trim() : "";
 }
 
+/**
+ * Whether `ioreg -n Root -d1` output says the login session's screen is
+ * locked. The key is absent while it is unlocked; output that cannot be read
+ * counts as unlocked, so a missing ioreg never blocks a run.
+ */
+export function screenLocked(ioregOutput: string): boolean {
+  return /"CGSSessionScreenIsLocked"\s*=\s*Yes\b/.test(ioregOutput);
+}
+
 /** CPU brand and macOS version (recorded in results and baselines). */
 export function currentMachine(): Machine {
   return {
@@ -781,6 +792,16 @@ async function main(argv: string[]): Promise<number> {
       );
     }
   if (missing > 0) return 2;
+  // Every scenario draws in an on-screen window, and macOS does not paint
+  // windows while the session's screen is locked (T5.8): each run would then
+  // wait out its first-paint timeout and fail. Stop before launching anything.
+  const ioreg = process.env.POLYGLOSS_IOREG || "ioreg";
+  if (screenLocked(command([ioreg, "-n", "Root", "-d1"]))) {
+    process.stderr.write(
+      "run-perf: the screen is locked (ioreg: CGSSessionScreenIsLocked = Yes), and windows never paint while it is; unlock it and run again\n",
+    );
+    return 2;
+  }
   const packages = { perf: "polygloss-perf", app: "polygloss-app" } as const;
   if (values.build)
     // One package per build, so features are not unified across them.
