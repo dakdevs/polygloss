@@ -37,6 +37,8 @@ export async function connectMcp(opts: {
 }): Promise<{
   client: Client;
   stderr: () => string;
+  /** The spawned process (`sh` with `viaShell`, else `polygloss-cli`). */
+  pid: () => number | null;
   close: () => Promise<void>;
 }> {
   const args = ["mcp", ...(opts.args ?? [])];
@@ -61,6 +63,7 @@ export async function connectMcp(opts: {
   return {
     client,
     stderr: () => stderr,
+    pid: () => transport.pid,
     close: async () => {
       await client.close();
     },

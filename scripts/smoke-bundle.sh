@@ -6,7 +6,8 @@
 # Static checks (all that --static runs): both executables are Mach-O in
 # Contents/MacOS; Info.plist has the bundle id, main executable, URL scheme,
 # minimum macOS and an explicit CFBundleVersion equal to the crate version
-# (never cargo-packager's timestamp); the signature (ad-hoc or Developer ID)
+# (never cargo-packager's timestamp); the licenses and third-party notices
+# are in Contents/Resources (plan T5.7); the signature (ad-hoc or Developer ID)
 # seals the bundle; Sparkle (T5.3) is embedded exactly when SUFeedURL and
 # SUPublicEDKey are set, without its XPC services; library validation is
 # relaxed (packaging/entitlements-adhoc.plist) only in an ad-hoc bundle that
@@ -99,6 +100,11 @@ done
 [[ " $schemes " == *" polygloss "* ]] ||
   fail "Info.plist CFBundleURLTypes does not register the polygloss scheme"
 ok "Info.plist: dev.dak.polygloss $short_version, polygloss:// scheme, macOS 14.0+"
+
+for f in LICENSE-MIT LICENSE-APACHE NOTICE third-party-notices.md; do
+  [ -s "$contents/Resources/$f" ] || fail "missing Contents/Resources/$f (licenses, plan T5.7)"
+done
+ok "Contents/Resources has the licenses and third-party notices"
 
 codesign --verify --deep --strict "$app" 2>/dev/null ||
   fail "the code signature does not seal the bundle (codesign --verify --deep --strict)"

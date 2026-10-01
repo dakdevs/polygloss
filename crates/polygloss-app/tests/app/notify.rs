@@ -450,3 +450,39 @@ fn review_url_delivers_a_pending_rereview_notification(cx: &mut gpui_kit::TestAp
     open_url(&mut shell, &url).unwrap();
     assert_eq!(shown(&mut shell).len(), 1);
 }
+
+#[test]
+fn system_notifier_never_posts_in_test_mode() {
+    // A bundled app in test mode (POLYGLOSS_TEST=1: bun E2E suites run the
+    // release bundle's executable, plan T5.7) must never reach the user's
+    // Notification Center, whose authorization prompt and settings are not
+    // sandboxed by HOME.
+    use polygloss_app::notify::SystemNotifier;
+    assert!(SystemNotifier::for_process(true, false).bundled());
+    assert!(!SystemNotifier::for_process(true, true).bundled());
+    assert!(!SystemNotifier::for_process(false, false).bundled());
+    assert!(!SystemNotifier::for_process(false, true).bundled());
+}
+
+#[test]
+fn system_notifier_reads_test_mode_from_polygloss_test() {
+    // `SystemNotifier::new()` takes test mode from the process environment:
+    // exactly `POLYGLOSS_TEST=1` (the variable the bun E2E suites set).
+    use polygloss_app::notify::SystemNotifier;
+    use std::ffi::OsString;
+    let with = |pairs: &'static [(&'static str, &'static str)]| {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == k)
+                .map(|(_, v)| OsString::from(v))
+        }
+    };
+    assert!(!SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_TEST", "1")])).bundled());
+    assert!(SystemNotifier::from_lookup(true, with(&[])).bundled());
+    assert!(SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_TEST", "0")])).bundled());
+    assert!(SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_TEST", "")])).bundled());
+    // Another variable does not count.
+    assert!(SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_E2E", "1")])).bundled());
+    assert!(!SystemNotifier::from_lookup(false, with(&[])).bundled());
+}

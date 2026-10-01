@@ -51,23 +51,26 @@ CI runs the same jobs on macOS arm64, plus the dependency audit:
 bun run format:check
 scripts/check-deps.sh                                          # crate-graph rules: slim CLI, no HTTP crates
 scripts/cargo.sh deny check licenses bans sources advisories   # no GPL, AGPL or FSL; advisories
+bun scripts/third-party-notices.ts --check                     # the bundled notices match Cargo.lock
 ```
+
+When a dependency changes (`Cargo.lock`, or lumis's grammar features), regenerate `packaging/third-party-notices.md` with `bun scripts/third-party-notices.ts` and commit it; `package-release.sh` bundles it into `Contents/Resources` with the licenses and `NOTICE`. A new grammar that lumis vendors needs its upstream license added to the script first.
 
 Other entry points:
 
-| Command                                                                              | Does                                                                                                             |
-| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `UPDATE_BASELINE=1 bun run test:e2e`                                                 | Re-records the screenshot baselines in `crates/polygloss-app/tests/baselines/`; open and check every changed PNG |
-| `bun run test:e2e tests/e2e/cli-app.test.ts`                                         | Only the named bun E2E suites (after the GPUI E2E run)                                                           |
-| `POLYGLOSS_BUNDLE_E2E=1 bun run test:e2e`                                            | Also packages the release bundle and runs the bundle suite against it                                            |
-| `scripts/package-release.sh`                                                         | `dist/Polygloss.app` and the DMG, signed ad-hoc (`--sign` needs release credentials)                             |
-| `scripts/fetch-sparkle.sh`                                                           | Downloads Sparkle 2.10.0 into `vendor/` (checksum-pinned), for release builds with updates                       |
-| `POLYGLOSS_APPCAST_URL=<url> SPARKLE_PUBLIC_ED_KEY=<key> scripts/package-release.sh` | Also embeds Sparkle and its feed keys (both or neither; without them the app has no updater)                     |
-| `scripts/make-appcast.sh dist`                                                       | The Sparkle appcast for the DMG, signed with `SPARKLE_PRIVATE_ED_KEY` (skips without it)                         |
-| `scripts/smoke-bundle.sh dist/Polygloss.app`                                         | Launches the bundle in a sandbox and checks the socket, CLI link and URL scheme                                  |
-| `bun benches/run-perf.ts --corpus typical --check-budgets --build`                   | Perf scenarios against the budgets in `benches/budgets.json` (needs an unlocked screen)                          |
-| `bun scripts/git-parity.ts --repo <path> --range <a>..<b>`                           | Compares our hunks with `git diff` over a range of commits                                                       |
-| `scripts/wake-gate/prepare.sh`                                                       | Sets up the manual agent wake-up gate ([docs/testing/agent-wake-gate.md](docs/testing/agent-wake-gate.md))       |
+| Command                                                                              | Does                                                                                                                                              |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UPDATE_BASELINE=1 bun run test:e2e`                                                 | Re-records the screenshot baselines in `crates/polygloss-app/tests/baselines/`; open and check every changed PNG                                  |
+| `bun run test:e2e tests/e2e/cli-app.test.ts`                                         | Only the named bun E2E suites (after the GPUI E2E run)                                                                                            |
+| `POLYGLOSS_BUNDLE_E2E=1 bun run test:e2e`                                            | Also packages the release bundle (into `target/bundle-e2e.noindex`), runs the bundle suite, then the bun E2E suites against the bundle's binaries |
+| `scripts/package-release.sh`                                                         | `dist/Polygloss.app` and the DMG, signed ad-hoc (`--sign` needs release credentials)                                                              |
+| `scripts/fetch-sparkle.sh`                                                           | Downloads Sparkle 2.10.0 into `vendor/` (checksum-pinned), for release builds with updates                                                        |
+| `POLYGLOSS_APPCAST_URL=<url> SPARKLE_PUBLIC_ED_KEY=<key> scripts/package-release.sh` | Also embeds Sparkle and its feed keys (both or neither; without them the app has no updater)                                                      |
+| `scripts/make-appcast.sh dist`                                                       | The Sparkle appcast for the DMG, signed with `SPARKLE_PRIVATE_ED_KEY` (skips without it)                                                          |
+| `scripts/smoke-bundle.sh dist/Polygloss.app`                                         | Launches the bundle in a sandbox and checks the socket, CLI link and URL scheme                                                                   |
+| `bun benches/run-perf.ts --corpus typical --check-budgets --build`                   | Perf scenarios against the budgets in `benches/budgets.json` (needs an unlocked screen)                                                           |
+| `bun scripts/git-parity.ts --repo <path> --range <a>..<b>`                           | Compares our hunks with `git diff` over a range of commits                                                                                        |
+| `scripts/wake-gate/prepare.sh`                                                       | Sets up the manual agent wake-up gate ([docs/testing/agent-wake-gate.md](docs/testing/agent-wake-gate.md))                                        |
 
 The user docs are tested too: `tests/scripts/docs.test.ts` holds [`docs/user-guide.md`](docs/user-guide.md) to the app's default key bindings and settings (`Polygloss --dump-keymap --json`, `--dump-settings --json`) and [`docs/agents.md`](docs/agents.md) to the MCP server's tools. When you add an action, a binding, a setting or a tool, update those docs in the same change.
 
@@ -80,7 +83,7 @@ The user docs are tested too: `tests/scripts/docs.test.ts` holds [`docs/user-gui
 
 ## Code rules
 
-- **Offline:** no network in the app or CLI (no HTTP crates), and never modify a user's index, HEAD or refs outside `refs/polygloss/`. Every git call goes through the core's runner.
+- **Offline:** no network in the app or CLI (no HTTP crates), and never modify a user's index, HEAD or refs outside `refs/polygloss/`. Every git call goes through the core's runner. `tests/e2e/egress.test.ts` checks at runtime (`lsof -i`) that the app and `polygloss mcp` open no inet sockets.
 - **Licenses:** everything is `MIT OR Apache-2.0`. Never add GPL, AGPL or FSL dependencies or code. Zed, GitComet, reviu, GitButler and pierre-native are study-only: never copy from them.
 - **Crate boundaries:** the CLI links no GPUI, lumis or tree-sitter; `scripts/check-deps.sh` enforces the "must not contain" rules in [Workspace layout](docs/plan.md#workspace-layout-and-crate-ownership).
 - **Naming:** kebab-case for files, crates, scripts and docs; snake_case only for Rust module files. TypeScript uses inline parameter types, never `interface`. `tests/scripts/repo-hygiene.test.ts` checks both.

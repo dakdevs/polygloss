@@ -30,6 +30,9 @@
 #      link) with hdiutil, which --sign also hands to sign-and-notarize.sh;
 #   6. runs scripts/smoke-bundle.sh --static on the result.
 #
+# Step 3 also copies LICENSE-MIT, LICENSE-APACHE, NOTICE and
+# packaging/third-party-notices.md (plan T5.7) into Contents/Resources.
+#
 # Outputs go to dist/ (gitignored), or $POLYGLOSS_DIST_DIR. Needs
 # cargo-packager 0.11.8: `cargo install cargo-packager --version =0.11.8 --locked`.
 set -euo pipefail
@@ -115,6 +118,15 @@ version="$(plutil -extract CFBundleShortVersionString raw -o - "$plist")"
   die "CFBundleShortVersionString '$version' is not a crate version"
 # Dot-separated integers only (LaunchServices, Sparkle): drop any pre-release.
 plutil -replace CFBundleVersion -string "${version%%[-+]*}" "$plist"
+
+# Licenses (plan T5.7): ours, the NOTICE and the generated third-party
+# notices (scripts/third-party-notices.ts; CI checks it is current).
+say "bundling the licenses and third-party notices"
+mkdir -p "$app/Contents/Resources"
+for f in LICENSE-MIT LICENSE-APACHE NOTICE packaging/third-party-notices.md; do
+  [ -f "$repo_root/$f" ] || die "missing $f"
+  cp "$repo_root/$f" "$app/Contents/Resources/"
+done
 
 sparkle_fw="$app/Contents/Frameworks/Sparkle.framework"
 if [ "$sparkle" = 1 ]; then

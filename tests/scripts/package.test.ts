@@ -132,12 +132,24 @@ const adhocEntitlements = join(
   "entitlements-adhoc.plist",
 );
 
+/** What package-release.sh copies into Contents/Resources (plan T5.7). */
+const bundledLicenses: [string, string][] = [
+  ["LICENSE-MIT", join(repoRoot, "LICENSE-MIT")],
+  ["LICENSE-APACHE", join(repoRoot, "LICENSE-APACHE")],
+  ["NOTICE", join(repoRoot, "NOTICE")],
+  [
+    "third-party-notices.md",
+    join(repoRoot, "packaging", "third-party-notices.md"),
+  ],
+];
+
 /**
  * A bundle as package-release.sh leaves it: copies of /usr/bin/true (a real
  * Mach-O) as both executables, an Info.plist with the stamped version
  * (unless `plist`), with a stand-in Sparkle.framework (`sparkle`, signed
  * ad-hoc inside out), ad-hoc signed (unless `sign: false`), with
- * `entitlements` (a plist path) on the bundle.
+ * `entitlements` (a plist path) on the bundle. `omit` leaves out
+ * executables or bundled license files by name.
  */
 function makeBundle(
   dir: string,
@@ -161,6 +173,9 @@ function makeBundle(
     join(app, "Contents", "Info.plist"),
     opts.plist ?? packagerInfoPlist({ CFBundleVersion: workspaceVersion }),
   );
+  for (const [name, src] of bundledLicenses)
+    if (!opts.omit?.includes(name))
+      copyFileSync(src, join(app, "Contents", "Resources", name));
   if (opts.sparkle) {
     const frameworks = join(app, "Contents", "Frameworks");
     mkdirSync(frameworks, { recursive: true });
@@ -367,6 +382,16 @@ describe("scripts/smoke-bundle.sh --static", () => {
     }
   });
 
+  test("a bundle without its licenses or third-party notices fails", () => {
+    for (const [name] of bundledLicenses) {
+      const r = smokeStatic(
+        makeBundle(scratch("no-license"), { omit: [name] }),
+      );
+      expect({ name, exitCode: r.exitCode }).toEqual({ name, exitCode: 1 });
+      expect(r.output).toContain(`Contents/Resources/${name}`);
+    }
+  });
+
   test("an unsealed bundle fails the signature check", () => {
     const r = smokeStatic(makeBundle(scratch("unsigned"), { sign: false }));
     expect(r.exitCode).toBe(1);
@@ -525,6 +550,25 @@ describe("scripts/package-release.sh", () => {
       expect(info).toContain("Signature=adhoc");
       expect(info).toMatch(/flags=0x[0-9a-f]+\([^)]*runtime[^)]*\)/);
     }
+  });
+
+  test("bundles the licenses and third-party notices in Contents/Resources", () => {
+    const r = packageRun();
+    expect(r.exitCode).toBe(0);
+    const resources = join(r.dist, "Polygloss.app", "Contents", "Resources");
+    for (const [name, src] of bundledLicenses)
+      expect({
+        name,
+        same: readFileSync(join(resources, name)).equals(readFileSync(src)),
+      }).toEqual({ name, same: true });
+    // Copied before signing: the seal covers them.
+    must([
+      "codesign",
+      "--verify",
+      "--deep",
+      "--strict",
+      join(r.dist, "Polygloss.app"),
+    ]);
   });
 
   test("makes Polygloss_<version>_aarch64.dmg holding the signed app and an Applications link", () => {
@@ -831,6 +875,13 @@ describe.skipIf(process.env.POLYGLOSS_BUNDLE_E2E !== "1")(
       expect(existsSync(join(app, "Contents", "Resources", "icon.icns"))).toBe(
         true,
       );
+      for (const [name, src] of bundledLicenses)
+        expect({
+          name,
+          same: readFileSync(join(app, "Contents", "Resources", name)).equals(
+            readFileSync(src),
+          ),
+        }).toEqual({ name, same: true });
     });
 
     test(
