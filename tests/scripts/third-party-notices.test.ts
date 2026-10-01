@@ -105,6 +105,7 @@ function crateRows(md: string): Map<string, string[]> {
   for (const line of section(md, "Rust crates").split("\n")) {
     if (!line.startsWith("| ") || line.startsWith("| Crate ")) continue;
     const row = cells(line);
+    if (row.every((c) => /^-+$/.test(c))) continue; // header separator
     rows.set(`${row[0]} ${row[1]}`, row);
   }
   return rows;
@@ -122,6 +123,9 @@ describe("packaging/third-party-notices.md", () => {
     expect(shipped.size).toBeGreaterThan(100);
     const missing = [...shipped.keys()].filter((k) => !rows.has(k));
     expect(missing).toEqual([]);
+    // And nothing more: a dev-, build- or perf-only crate is not shipped.
+    const extra = [...rows.keys()].filter((k) => !shipped.has(k));
+    expect(extra).toEqual([]);
     for (const [crate, license] of shipped) {
       const row = rows.get(crate)!;
       expect({ crate, license: row[2] }).toEqual({ crate, license });
@@ -165,13 +169,35 @@ describe("packaging/third-party-notices.md", () => {
     expect(section(md, "Lilex font")).toContain("SIL OPEN FONT LICENSE");
   });
 
-  test("names where nucleo-matcher's MPL-2.0 source is available", () => {
+  test("names where every shipped MPL-2.0 component's source is available", () => {
     const mpl = section(md, "MPL-2.0 components");
     expect(mpl).toContain("nucleo-matcher 0.3.1");
     expect(mpl).toContain("unmodified");
     expect(mpl).toContain("https://crates.io/crates/nucleo-matcher/0.3.1");
     expect(mpl).toContain("https://github.com/helix-editor/nucleo");
     expect(md).toContain("Mozilla Public License Version 2.0");
+    // Every MPL-2.0-only crate `cargo tree` says ships has a line.
+    const shipped = [
+      ...linkedCrates("polygloss-app"),
+      ...linkedCrates("polygloss-cli"),
+    ];
+    const mplOnly = [
+      ...new Set(
+        shipped.filter(([, l]) => l === "MPL-2.0").map(([crate]) => crate),
+      ),
+    ];
+    expect(mplOnly.length).toBeGreaterThan(0);
+    for (const crate of mplOnly)
+      expect({ crate, listed: mpl.includes(`- ${crate} (MPL-2.0)`) }).toEqual({
+        crate,
+        listed: true,
+      });
+    // The MPL-2.0 files lumis compiles in: helix's wat highlight queries.
+    const wat = mpl
+      .split("\n")
+      .find((l) => l.includes("wat highlight queries"));
+    expect(wat).toContain("https://github.com/helix-editor/helix (revision ");
+    expect(wat).toContain("unmodified");
   });
 
   test("lists every lumis grammar with its source and license", () => {
@@ -454,6 +480,58 @@ describe("scripts/third-party-notices.ts", () => {
     ];
     expect(() => buildNotices({ metadata: meta, repoRoot })).toThrow(
       "tree-sitter-klingon",
+    );
+  });
+
+  test("MPL-2.0 highlight queries lumis compiles in get a source-availability notice", () => {
+    const lumis = fakeCrate("lumis", {
+      version: "0.15.0",
+      files: {
+        LICENSE: MIT_TEXT,
+        "languages.toml": [
+          "[queries.default]",
+          'git = "https://github.com/nvim-treesitter/nvim-treesitter.git"',
+          'rev = "f603a2f4da48728f80257fb5fbb90145fd1dc173"',
+          "",
+          "[queries.wat]",
+          'git = "https://github.com/helix-editor/helix.git"',
+          'rev = "079a789e8cb0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+          "",
+          "[parsers.wat]",
+          'git = "https://github.com/wasm-lsp/tree-sitter-wasm.git"',
+          'rev = "2ca28a9f9d70aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+          "",
+          "[parsers.yaml]",
+          'git = "https://github.com/ericmj/tree-sitter-yaml.git"',
+          'rev = "0123456789abcdef0123456789abcdef01234567"',
+          "",
+        ].join("\n"),
+      },
+    });
+    writeFileSync(
+      lumis.manifest_path,
+      '[package]\nname = "lumis"\n\n[features]\nlang-wat = []\nlang-yaml = []\n',
+    );
+    const meta = metadata(
+      [member("polygloss-app"), member("polygloss-cli"), lumis],
+      [["polygloss-app", "lumis", [null]]],
+    );
+    meta.resolve.nodes.find((n) => n.id === lumis.id)!.features = [
+      "lang-wat",
+      "lang-yaml",
+    ];
+    const md = buildNotices({ metadata: meta, repoRoot });
+    const mpl = section(md, "MPL-2.0 components");
+    expect(mpl).not.toContain("None.");
+    expect(mpl).toContain(
+      "The wat highlight queries (MPL-2.0), compiled into Polygloss by lumis, are used unmodified. The Source Code Form is available at https://github.com/helix-editor/helix (revision 079a789e8cb0).",
+    );
+    // nvim-treesitter's queries are Apache-2.0: not listed here.
+    expect(mpl).not.toContain("yaml");
+    expect(mpl).not.toContain("nvim-treesitter");
+    // The MPL text ships.
+    expect(section(md, "License texts")).toContain(
+      "Mozilla Public License Version 2.0",
     );
   });
 

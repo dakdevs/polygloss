@@ -34,11 +34,21 @@ if [ "$1" = packager ] && [ -n "\${FAKE_CARGO_MAKE_BUNDLE-}" ]; then
 fi
 `;
 
+// A fake lsregister (POLYGLOSS_LSREGISTER): logs argv. No test here touches
+// the user's real LaunchServices database.
+let fakeLsregister = "";
+
 beforeAll(() => {
   cargoHome = join(sandbox.home, "cargo-home");
   mkdirSync(join(cargoHome, "bin"), { recursive: true });
   writeFileSync(join(cargoHome, "bin", "cargo"), fakeCargo);
   chmodSync(join(cargoHome, "bin", "cargo"), 0o755);
+  fakeLsregister = join(sandbox.home, "fake-lsregister");
+  writeFileSync(
+    fakeLsregister,
+    `#!/usr/bin/env bash\nprintf 'lsregister %s\\n' "$*" >>"$FAKE_CARGO_LOG"\n`,
+  );
+  chmodSync(fakeLsregister, 0o755);
 });
 
 afterAll(() => sandbox.cleanup());
@@ -70,6 +80,7 @@ function runE2e(
       CARGO_BUILD_BUILD_DIR: join(sandbox.home, "target-shared"),
       FAKE_CARGO_LOG: log,
       FAKE_CARGO_FAIL: "<no-such-step>",
+      POLYGLOSS_LSREGISTER: fakeLsregister,
       ...env,
     },
   });
@@ -134,16 +145,32 @@ describe("scripts/test-e2e.sh", () => {
     ]);
   });
 
-  test("with POLYGLOSS_BUNDLE_E2E=1 the E2E suites run again against the bundle's executables", () => {
-    // A fake cargo whose packager lays out a bundle (real Mach-O stand-ins,
-    // so package-release.sh signs, stamps and checks it for real) and a fake
-    // bun that records each suite run and the binaries it would test.
+  test("by default the test bundle goes to <target>/bundle-e2e.noindex, which Spotlight skips", () => {
+    // Spotlight registers a new app bundle with LaunchServices on its own a
+    // minute or so after it is written; it never looks inside `.noindex`.
+    const r = runE2e({ FAKE_CARGO_MAKE_APP: "1", POLYGLOSS_BUNDLE_E2E: "1" });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.log.at(-1)).toBe(
+      `packager --release --formats app --out-dir ${realpathSync(targetDir)}/bundle-e2e.noindex`,
+    );
+  });
+
+  /**
+   * Env for a bundle run: a fake cargo whose packager lays out a bundle (real
+   * Mach-O stand-ins, so package-release.sh signs, stamps and checks it for
+   * real) and a fake bun that records each suite run and the binaries it
+   * would test, failing on the bundle run when FAKE_BUN_FAIL_BUNDLE is set.
+   */
+  function bundleRunEnv(dist: string): Record<string, string> {
     const bin = join(sandbox.home, "fake-bin");
     mkdirSync(bin, { recursive: true });
     writeFileSync(
       join(bin, "bun"),
       `#!/usr/bin/env bash
 printf 'bun %s app=%s cli=%s bundle=%s e2e=%s\\n' "$*" "\${POLYGLOSS_APP_BIN-}" "\${POLYGLOSS_CLI_BIN-}" "\${POLYGLOSS_BUNDLE-}" "\${POLYGLOSS_E2E-}" >>"$FAKE_CARGO_LOG"
+if [ -n "\${FAKE_BUN_FAIL_BUNDLE-}" ] && [ -n "\${POLYGLOSS_APP_BIN-}" ]; then
+  echo "fake failure: bundle E2E" >&2; exit 1
+fi
 `,
     );
     chmodSync(join(bin, "bun"), 0o755);
@@ -174,27 +201,44 @@ printf 'bun %s app=%s cli=%s bundle=%s e2e=%s\\n' "$*" "\${POLYGLOSS_APP_BIN-}" 
       }),
     );
     Bun.spawnSync(["plutil", "-convert", "xml1", "-o", plist, plistJson]);
-    const dist = join(sandbox.home, "dist-bundle-run");
-    const r = runE2e({
+    return {
       FAKE_CARGO_MAKE_APP: "1",
       FAKE_CARGO_MAKE_BUNDLE: plist,
       POLYGLOSS_BUNDLE_E2E: "1",
       POLYGLOSS_DIST_DIR: dist,
       PATH: `${bin}:${process.env.PATH}`,
-    });
+    };
+  }
+
+  test("with POLYGLOSS_BUNDLE_E2E=1 the E2E suites run again against the bundle's executables", () => {
+    const dist = join(sandbox.home, "dist-bundle-run");
+    const r = runE2e(bundleRunEnv(dist));
     expect(r.output).toContain("package-release: done");
     expect(r.exitCode).toBe(0);
-    const macos = join(
-      realpathSync(dist),
-      "Polygloss.app",
-      "Contents",
-      "MacOS",
-    );
-    expect(r.log.filter((l) => l.startsWith("bun "))).toEqual([
+    const app = join(realpathSync(dist), "Polygloss.app");
+    const macos = join(app, "Contents", "MacOS");
+    expect(
+      r.log.filter((l) => l.startsWith("bun ") || l.startsWith("lsregister ")),
+    ).toEqual([
       `bun test ${SMOKE} app= cli= bundle= e2e=1`,
-      `bun test tests/scripts/package.test.ts app= cli= bundle=${realpathSync(dist)}/Polygloss.app e2e=`,
+      `bun test tests/scripts/package.test.ts app= cli= bundle=${app} e2e=`,
       // The same suites (the path filter carries over), now on the bundle.
       `bun test ${SMOKE} app=${macos}/Polygloss cli=${macos}/polygloss-cli bundle= e2e=1`,
+      // Then the bundle leaves the user's LaunchServices database.
+      `lsregister -u ${app}`,
+    ]);
+  }, 120_000);
+
+  test("a failing bundle run still unregisters the bundle from LaunchServices", () => {
+    const dist = join(sandbox.home, "dist-bundle-fail");
+    const r = runE2e({ ...bundleRunEnv(dist), FAKE_BUN_FAIL_BUNDLE: "1" });
+    expect(r.output).toContain("fake failure: bundle E2E");
+    // The trap keeps the failing step's exit status.
+    expect(r.exitCode).toBe(1);
+    const app = join(realpathSync(dist), "Polygloss.app");
+    expect(r.log.at(-1)).toBe(`lsregister -u ${app}`);
+    expect(r.log.filter((l) => l.startsWith("lsregister "))).toEqual([
+      `lsregister -u ${app}`,
     ]);
   }, 120_000);
 

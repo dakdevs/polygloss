@@ -178,6 +178,7 @@ Pierre Light and Pierre Dark are ported from @pierre/theme 2.0.0 (Apache-2.0); i
 - nucleo-matcher 0.3.1 (MPL-2.0) is used unmodified. Its Source Code Form is available at https://crates.io/crates/nucleo-matcher/0.3.1 and https://github.com/helix-editor/nucleo. The license text is listed with the crate under "Rust crates".
 - option-ext 0.2.0 (MPL-2.0) is used unmodified. Its Source Code Form is available at https://crates.io/crates/option-ext/0.2.0 and https://github.com/soc/option-ext.git. The license text is listed with the crate under "Rust crates".
 - uluru 3.1.0 (MPL-2.0) is used unmodified. Its Source Code Form is available at https://crates.io/crates/uluru/3.1.0 and https://github.com/servo/uluru. The license text is listed with the crate under "Rust crates".
+- The wat highlight queries (MPL-2.0), compiled into Polygloss by lumis, are used unmodified. The Source Code Form is available at https://github.com/helix-editor/helix (revision 079a789e8cb0). License text: [L-a7fae6cb](#l-a7fae6cb).
 
 ## Syntax grammars and highlight queries
 

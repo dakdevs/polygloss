@@ -463,3 +463,26 @@ fn system_notifier_never_posts_in_test_mode() {
     assert!(!SystemNotifier::for_process(false, false).bundled());
     assert!(!SystemNotifier::for_process(false, true).bundled());
 }
+
+#[test]
+fn system_notifier_reads_test_mode_from_polygloss_test() {
+    // `SystemNotifier::new()` takes test mode from the process environment:
+    // exactly `POLYGLOSS_TEST=1` (the variable the bun E2E suites set).
+    use polygloss_app::notify::SystemNotifier;
+    use std::ffi::OsString;
+    let with = |pairs: &'static [(&'static str, &'static str)]| {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == k)
+                .map(|(_, v)| OsString::from(v))
+        }
+    };
+    assert!(!SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_TEST", "1")])).bundled());
+    assert!(SystemNotifier::from_lookup(true, with(&[])).bundled());
+    assert!(SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_TEST", "0")])).bundled());
+    assert!(SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_TEST", "")])).bundled());
+    // Another variable does not count.
+    assert!(SystemNotifier::from_lookup(true, with(&[("POLYGLOSS_E2E", "1")])).bundled());
+    assert!(!SystemNotifier::from_lookup(false, with(&[])).bundled());
+}

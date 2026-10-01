@@ -389,6 +389,20 @@ export function buildNotices(opts: {
   });
 
   const grammars = lumisGrammars(metadata, shipped);
+  // MPL-2.0 files lumis compiles in (e.g. helix's wat queries): source
+  // `url @ rev` → what comes from it.
+  const mplSources = new Map<string, string[]>();
+  const addMpl = (source: string, what: string) =>
+    mplSources.set(source, [...(mplSources.get(source) ?? []), what]);
+  for (const g of grammars) {
+    if (g.vendored && g.license === "MPL-2.0")
+      addMpl(
+        g.grammar.replace(/^vendored in lumis \S+ from /, ""),
+        `the ${g.language} grammar`,
+      );
+    if (g.queriesLicense === "MPL-2.0")
+      addMpl(g.queries, `the ${g.language} highlight queries`);
+  }
   // Vendored grammars and queries ship no license file: standard texts.
   const upstream = new Set(
     grammars.flatMap((g) => [
@@ -436,10 +450,14 @@ export function buildNotices(opts: {
   line();
   line("## MPL-2.0 components");
   line();
-  if (mpl.length === 0) line("None.");
+  if (mpl.length === 0 && mplSources.size === 0) line("None.");
   for (const pkg of mpl)
     line(
       `- ${pkg.name} ${pkg.version} (MPL-2.0) is used unmodified. Its Source Code Form is available at ${crateUrl(pkg)} and ${pkg.repository ?? pkg.homepage ?? crateUrl(pkg)}. The license text is listed with the crate under "Rust crates".`,
+    );
+  for (const [source, what] of mplSources)
+    line(
+      `- ${what.join(", ").replace(/^t/, "T")} (MPL-2.0), compiled into Polygloss by lumis, ${what.length === 1 && what[0]!.endsWith("grammar") ? "is" : "are"} used unmodified. The Source Code Form is available at ${source.replace(" @ ", " (revision ")}${source.includes(" @ ") ? ")" : ""}. License text: ${texts.link(standard["MPL-2.0"]!, "lumis grammars and queries")}.`,
     );
   line();
   line("## Syntax grammars and highlight queries");

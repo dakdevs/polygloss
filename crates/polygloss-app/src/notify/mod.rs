@@ -56,8 +56,20 @@ impl SystemNotifier {
     /// For this process: bundled ([`polygloss_platform::bundle::is_bundled`])
     /// and in test mode when `POLYGLOSS_TEST=1`.
     pub fn new() -> SystemNotifier {
-        let test_mode = std::env::var_os(polygloss_core::ipc::TEST_ENV).is_some_and(|v| v == "1");
-        SystemNotifier::for_process(polygloss_platform::bundle::is_bundled(), test_mode)
+        SystemNotifier::from_lookup(polygloss_platform::bundle::is_bundled(), |k| {
+            std::env::var_os(k)
+        })
+    }
+
+    /// For a process that is `bundled` or not, in test mode when the
+    /// environment lookup `env` (the process environment, or a test's) has
+    /// `POLYGLOSS_TEST=1`.
+    pub fn from_lookup(
+        bundled: bool,
+        env: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> SystemNotifier {
+        let test_mode = env(polygloss_core::ipc::TEST_ENV).is_some_and(|v| v == "1");
+        SystemNotifier::for_process(bundled, test_mode)
     }
 
     /// Posts notifications only from a bundle outside test mode: a bundle run

@@ -101,6 +101,8 @@ describe("cargo deny check licenses", () => {
       const r = denyLicenses(workspace(license));
       expect(r.exitCode).not.toBe(0);
       expect(r.output).toContain("probe-dep");
+      // A policy rejection, not a parse or config error.
+      expect(r.output).toContain("rejected");
     });
 
   test("a permissive crate passes the same policy", () => {
