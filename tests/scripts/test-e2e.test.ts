@@ -227,7 +227,26 @@ fi
       // Then the bundle leaves the user's LaunchServices database.
       `lsregister -u ${app}`,
     ]);
+    // A caller-provided dist dir is the caller's: the bundle stays.
+    expect(existsSync(app)).toBe(true);
   }, 120_000);
+
+  test("the default test bundle is deleted after the run, pass or fail", () => {
+    // macOS 26 registers an unregistered bundle again within a second while
+    // it still exists (plan T5.8), so only deleting it keeps it out of the
+    // LaunchServices database. The DMG stays.
+    for (const fail of [false, true]) {
+      const env = bundleRunEnv(join(sandbox.home, "unused"));
+      delete env.POLYGLOSS_DIST_DIR;
+      const r = runE2e(fail ? { ...env, FAKE_BUN_FAIL_BUNDLE: "1" } : env);
+      expect(r.exitCode).toBe(fail ? 1 : 0);
+      const dist = join(realpathSync(targetDir), "bundle-e2e.noindex");
+      const app = join(dist, "Polygloss.app");
+      expect(r.log.at(-1)).toBe(`lsregister -u ${app}`);
+      expect(existsSync(app)).toBe(false);
+      expect(existsSync(dist)).toBe(true);
+    }
+  }, 240_000);
 
   test("a failing bundle run still unregisters the bundle from LaunchServices", () => {
     const dist = join(sandbox.home, "dist-bundle-fail");

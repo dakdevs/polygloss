@@ -30,11 +30,22 @@ if [ "${POLYGLOSS_BUNDLE_E2E-}" = 1 ]; then
   # hence the default output dir; and launching its Polygloss checks it in,
   # hence the unregister on the way out, pass or fail (plan T5.7).
   # POLYGLOSS_LSREGISTER is a test seam.
+  #
+  # Unregistering alone does not last: on macOS 26 LaunchServices registers a
+  # bundle that still exists again within a second (launch-disabled, yet still
+  # what `dev.dak.polygloss` and polygloss:// resolve to; plan T5.8). So the
+  # default test bundle, a throwaway in the target dir, is deleted after the
+  # unregister; a caller-provided POLYGLOSS_DIST_DIR is left alone.
+  default_dist=0
+  [ -n "${POLYGLOSS_DIST_DIR-}" ] || default_dist=1
   dist="${POLYGLOSS_DIST_DIR:-${CARGO_TARGET_DIR:-$repo_root/target}/bundle-e2e.noindex}"
   POLYGLOSS_DIST_DIR="$dist" scripts/package-release.sh
   bundle="$(cd "$dist" && pwd -P)/Polygloss.app"
   lsregister="${POLYGLOSS_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
-  unregister_bundle() { "$lsregister" -u "$bundle" >/dev/null 2>&1 || true; }
+  unregister_bundle() {
+    "$lsregister" -u "$bundle" >/dev/null 2>&1 || true
+    if [ "$default_dist" = 1 ]; then rm -rf "$bundle"; fi
+  }
   trap unregister_bundle EXIT
   POLYGLOSS_BUNDLE="$bundle" POLYGLOSS_SKIP_BUILD=1 bun test tests/scripts/package.test.ts
   # The same bun E2E suites again, with the bundle's executables as the app
