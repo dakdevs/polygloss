@@ -754,17 +754,14 @@ fn viewed_marks_follow_the_iteration_shown(cx: &mut gpui_kit::TestAppContext) {
 
 #[gpui_kit::test]
 fn refresh_and_iteration_switches_keep_the_top_of_the_document(cx: &mut gpui_kit::TestAppContext) {
-    use gpui_kit::{IntoElement as _, Styled as _};
     let _sb = Sandbox::isolate();
     let repo = review_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(&repo)).expect("open the review");
     let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
-    // A 72 pt prelude (the header card's stand-in) above the first card.
-    let prelude: polygloss_viewport::RenderBlock =
-        std::rc::Rc::new(|_, _| gpui_kit::div().h(gpui_kit::px(72.)).into_any_element());
-    viewport.update(shell.cx, |v, cx| v.set_prelude(Some(prelude), cx));
-    draw(shell.cx);
+    // The header card above the first card, reloaded by every switch.
+    let prelude = viewport.read_with(shell.cx, |v, _| v.document().prelude_height());
+    assert!(prelude.is_some_and(|h| h > 0.0), "{prelude:?}");
     // The scroll position, and whether it is the top anchor (a short
     // document clamps `scroll_top` to 0 whatever the anchor).
     let top = |shell: &mut Shell| {
@@ -798,7 +795,11 @@ fn refresh_and_iteration_switches_keep_the_top_of_the_document(cx: &mut gpui_kit
     assert_eq!(top(&mut shell), (0.0, true));
     assert_eq!(
         viewport.read_with(shell.cx, |v, _| v.document().prelude_height()),
-        Some(72.0)
+        prelude
+    );
+    assert_eq!(
+        crate::shell::bounds(shell.cx, "header-card").top(),
+        crate::shell::bounds(shell.cx, "viewport-pane").top()
     );
 }
 
@@ -845,4 +846,101 @@ fn i_opens_the_iteration_menu_at_the_pill(cx: &mut gpui_kit::TestAppContext) {
     let pill = crate::shell::bounds(shell.cx, "iteration-picker");
     let menu = crate::shell::bounds(shell.cx, "key-menu");
     assert_eq!((menu.left(), menu.top()), (pill.left(), pill.bottom()));
+}
+
+/// Whether the header card's second line reads `text`.
+fn byline(shell: &mut Shell, text: &str) -> bool {
+    crate::toolbar::shows(shell.cx, "header-byline", text)
+}
+
+#[gpui_kit::test]
+fn header_card_reloads_after_refresh_and_iteration_switch(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let mut shell = start(cx);
+    // An hour after the fixture's epoch: "feature 1" (fixture commit 2)
+    // was 58 minutes before, "feature 2" (commit 3) 57.
+    let now = (1_767_225_600 + 3_600) * 1000;
+    shell
+        .cx
+        .update(|_, cx| polygloss_app::review_tab::header::set_clock(move || now, cx));
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    assert!(byline(
+        &mut shell,
+        "1 commit · Polygloss Fixture committed 58m ago"
+    ));
+    assert!(crate::toolbar::shows(
+        shell.cx,
+        "header-stats",
+        "2 files · +2 −2"
+    ));
+
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+    assert!(byline(
+        &mut shell,
+        "2 commits · Polygloss Fixture committed 57m ago"
+    ));
+    assert!(crate::toolbar::shows(
+        shell.cx,
+        "header-stats",
+        "3 files · +8 −3"
+    ));
+
+    show(&mut shell, &tab, Choice::Iteration(1));
+    assert!(byline(
+        &mut shell,
+        "1 commit · Polygloss Fixture committed 58m ago"
+    ));
+    show(&mut shell, &tab, Choice::Current);
+    assert!(byline(
+        &mut shell,
+        "2 commits · Polygloss Fixture committed 57m ago"
+    ));
+}
+
+/// The banner strip's context line, if it shows one.
+fn context(shell: &mut Shell, tab: &Entity<ReviewTab>) -> String {
+    tab.read_with(shell.cx, |t, cx| t.banners.read(cx).context().to_string())
+}
+
+#[gpui_kit::test]
+fn banner_strip_is_empty_on_the_latest_state(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    // What it compares is the header card's now (OQ-39).
+    assert_eq!(context(&mut shell, &tab), "");
+    assert!(crate::shell::painted(shell.cx, "banner-context").is_none());
+    let strip = crate::shell::bounds(shell.cx, "banner-strip");
+    assert_eq!(strip.size.height, gpui_kit::px(32.), "still reserved");
+
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+    assert_eq!(context(&mut shell, &tab), "", "the new latest state");
+    assert!(crate::shell::painted(shell.cx, "banner-context").is_none());
+}
+
+#[gpui_kit::test]
+fn banner_strip_shows_the_iteration_context_off_latest(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let base = repo.git(&["rev-parse", "--short=7", "main"]);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    let first = repo.git(&["rev-parse", "--short=7", "feature"]);
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+
+    show(&mut shell, &tab, Choice::Iteration(1));
+    let line = format!("Iteration 1 of 2 · main ({base}) → {first} · 2 files changed");
+    assert_eq!(context(&mut shell, &tab), line);
+    assert!(crate::shell::painted(shell.cx, &format!("banner-context: {line}")).is_some());
+
+    // Back on the latest state, the strip is empty again.
+    show(&mut shell, &tab, Choice::Current);
+    assert_eq!(context(&mut shell, &tab), "");
+    assert!(crate::shell::painted(shell.cx, "banner-context").is_none());
+    assert!(crate::shell::painted(shell.cx, &format!("banner-context: {line}")).is_none());
 }

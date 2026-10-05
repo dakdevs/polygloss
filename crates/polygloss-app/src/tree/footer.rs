@@ -30,7 +30,7 @@ pub fn footer(files: &[u32], viewport: &Entity<DiffViewport>, cx: &App) -> AnyEl
         .border_color(theme.border)
         .text_sm()
         .child(div().text_color(theme.muted_foreground).child("Total:"));
-    match totals(files, viewport.read(cx)) {
+    match totals(files.iter().copied(), viewport.read(cx)) {
         Some((added, removed)) => {
             let colors = crate::theme::viewport_theme(cx);
             let added = format!("+{}", group_digits(added));
@@ -57,10 +57,13 @@ pub fn footer(files: &[u32], viewport: &Entity<DiffViewport>, cx: &App) -> AnyEl
 }
 
 /// Lines added and removed over `files`; `None` while one of them that has
-/// lines is not counted yet.
-fn totals(files: &[u32], viewport: &DiffViewport) -> Option<(u64, u64)> {
+/// lines is not counted yet (also the header card's stats).
+pub(crate) fn totals(
+    files: impl IntoIterator<Item = u32>,
+    viewport: &DiffViewport,
+) -> Option<(u64, u64)> {
     let changes = viewport.document().files();
-    files.iter().try_fold((0, 0), |(added, removed), &f| {
+    files.into_iter().try_fold((0, 0), |(added, removed), f| {
         match viewport.file_counts(f) {
             Some(c) => Some((
                 added + u64::from(c.additions),

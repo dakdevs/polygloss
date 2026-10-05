@@ -12,6 +12,7 @@ mod e2e_harness;
 mod editor;
 mod feed;
 mod find;
+mod header_card;
 mod home;
 mod install_cli;
 mod ipc;

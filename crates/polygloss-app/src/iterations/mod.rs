@@ -279,9 +279,11 @@ fn loaded_state(
 }
 
 /// A live refresh (`tab::Refresh`) replaced `tab.opened` with the new
-/// current state: the tab shows it now. Called by `live` before it swaps
-/// the new state into the viewport.
+/// current state: the tab shows it now, with its header card and an empty
+/// banner line. Called by `live` before it swaps the new state into the
+/// viewport.
 pub fn refreshed(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
+    crate::review_tab::header::reload(tab, cx);
     let opened = tab.opened.clone();
     let Some(s) = tab.extension_mut::<Iterations>() else {
         return;
@@ -290,6 +292,7 @@ pub fn refreshed(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
     s.showing = Showing::Current;
     tab.viewport
         .update(cx, |v, cx| v.set_old_side_comments(true, cx));
+    update_context(tab, cx);
     reload(tab, cx);
 }
 
@@ -669,6 +672,7 @@ fn switched(
     tab.viewport
         .update(cx, |v, cx| v.set_old_side_comments(!changes_since, cx));
     update_context(tab, cx);
+    crate::review_tab::header::reload(tab, cx);
     if old.diff_id != tab.opened.diff_id {
         refresh::apply(tab, old.diff_id, Arc::new(provider), plan, cx);
     }
@@ -677,7 +681,7 @@ fn switched(
     cx.notify();
 }
 
-/// The banner strip's line when no banner shows: what the tab compares.
+/// The banner strip's line when no banner shows ([`context_line`]).
 fn update_context(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
     let text = context_line(tab);
     tab.banners.update(cx, |b, cx| {
@@ -687,10 +691,12 @@ fn update_context(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
     });
 }
 
-/// The banner strip's line for what the tab shows.
+/// The banner strip's line for what the tab shows: which iteration or
+/// "Changes since your last review" off the latest state; nothing on it,
+/// where the header card says what the review compares (OQ-39).
 pub fn context_line(tab: &ReviewTab) -> SharedString {
     let Some(s) = state(tab) else {
-        return crate::review_tab::description(&tab.opened).into();
+        return SharedString::default();
     };
     let opened = &tab.opened;
     let files = match opened.files.len() {
@@ -699,7 +705,7 @@ pub fn context_line(tab: &ReviewTab) -> SharedString {
     };
     let head = head_name(opened.head_commit.as_ref(), &opened.head_tree);
     match s.showing {
-        Showing::Current => crate::review_tab::description(opened).into(),
+        Showing::Current => SharedString::default(),
         Showing::Iteration(k) => {
             let base = base_name(opened);
             format!(
@@ -723,9 +729,9 @@ pub fn context_line(tab: &ReviewTab) -> SharedString {
     }
 }
 
-/// The base as the banner line names it: its ref and commit, else the
-/// commit, else the tree.
-fn base_name(opened: &OpenedDiff) -> String {
+/// The base as the banner line and a live header card name it: its ref and
+/// commit, else the commit, else the tree.
+pub(crate) fn base_name(opened: &OpenedDiff) -> String {
     match (&opened.base.ref_name, &opened.base.commit) {
         (Some(r), Some(c)) => format!("{} ({})", short_ref(r), c.short()),
         (None, Some(c)) => c.short().to_string(),
