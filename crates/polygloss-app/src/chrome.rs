@@ -118,6 +118,12 @@ impl Chrome {
         }
     }
 
+    /// Whether a review page draws its tree (or the find pane in its
+    /// place): the sidebar shows, on Files.
+    pub fn files_shown(&self) -> bool {
+        self.sidebar_visible && self.segment == Segment::Files
+    }
+
     /// The sidebar | main column split's state (tests resize it as a drag
     /// of the sidebar's edge does).
     pub fn shell(&self) -> &Entity<ResizableState> {

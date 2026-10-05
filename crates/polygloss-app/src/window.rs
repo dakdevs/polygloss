@@ -16,7 +16,9 @@ use gpui_kit::{
     SharedString, Styled as _, SystemMenuType, WeakEntity, Window, div, px, size,
 };
 
+use crate::chrome::Chrome;
 use crate::home::HomeView;
+use crate::keyboard::{self, Pane};
 use crate::review_tab::{ReviewTab, panes::ToggleThreadsPanel};
 use crate::settings::SettingsStore;
 use crate::tabs::{CloseTab, NextTab, PrevTab, TabItem, Tabs};
@@ -258,12 +260,11 @@ impl MainWindow {
             this.toast_settings_error(window, cx)
         })
         .detach();
-        // What had the keyboard stopped being drawn (the sidebar hid or
-        // switched segments under the tree or find field): the active page
-        // takes it, so keys never land where no handler listens.
-        cx.on_focus_lost(window, |this, window, cx| this.focus_active(window, cx))
-            .detach();
-        crate::chrome::Chrome::install(cx);
+        let chrome = Chrome::install(cx);
+        cx.observe_in(&chrome, window, |this, chrome, window, cx| {
+            this.sidebar_changed(&chrome, window, cx)
+        })
+        .detach();
         let mut this = MainWindow {
             focus,
             tabs: Tabs::new(home),
@@ -331,6 +332,27 @@ impl MainWindow {
         if let Some(err) = store.last_error() {
             let message = format!("Invalid settings, keeping the previous ones: {err}");
             self.toast_error(message.into(), window, cx);
+        }
+    }
+
+    /// The sidebar hid or left Files: if the active review's tree or find
+    /// field had the keyboard, the diff takes it before the next frame, so
+    /// keys never go where nothing is drawn. Not `on_focus_lost`: GPUI fires
+    /// that for anything not drawn, so a composer the wheel scrolled out of
+    /// view (the viewport draws only its visible blocks) would lose it too.
+    fn sidebar_changed(
+        &self,
+        chrome: &Entity<Chrome>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let TabItem::Review(tab) = self.tabs.active_item() else {
+            return;
+        };
+        if !chrome.read(cx).files_shown()
+            && keyboard::focused_pane(tab.read(cx), window, cx) == Some(Pane::Tree)
+        {
+            self.focus_active(window, cx);
         }
     }
 

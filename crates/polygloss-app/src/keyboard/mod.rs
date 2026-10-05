@@ -79,10 +79,8 @@ pub fn focused_pane(tab: &ReviewTab, window: &Window, cx: &App) -> Option<Pane> 
 /// The panes `Tab` visits in `tab` now, in order: the tree only while the
 /// sidebar shows it.
 pub fn stops(tab: &ReviewTab, cx: &App) -> Vec<Pane> {
-    let chrome = crate::chrome::chrome(cx).read(cx);
-    let tree_shown = chrome.sidebar_visible() && chrome.segment() == crate::chrome::Segment::Files;
     let mut out = Vec::new();
-    if tree_shown {
+    if crate::chrome::chrome(cx).read(cx).files_shown() {
         out.push(Pane::Tree);
     }
     out.push(Pane::Viewport);

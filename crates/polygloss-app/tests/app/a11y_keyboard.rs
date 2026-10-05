@@ -5,7 +5,7 @@
 //! dialog, handing the keyboard back.
 
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::{Entity, FocusHandle, VisualTestContext};
+use gpui_kit::{Entity, FocusHandle, ScrollDelta, ScrollWheelEvent, VisualTestContext, point, px};
 use polygloss_app::chrome::{self, Segment};
 use polygloss_app::composer::{self, ComposerKey};
 use polygloss_app::iterations;
@@ -577,6 +577,77 @@ fn hiding_the_sidebar_hands_its_keyboard_to_the_diff(cx: &mut gpui_kit::TestAppC
     shell.cx.run_until_parked();
     assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
     assert!(painted(shell.cx, "focus-ring-viewport"));
+}
+
+/// A line composer keeps the keyboard while the wheel scrolls it out of view
+/// and back (the viewport draws only its visible blocks): the next letters
+/// are its text, never the diff's keys.
+#[gpui_kit::test]
+fn composer_scrolled_out_of_view_keeps_the_keyboard(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    let lines = |suffix: &str| -> String {
+        (0..400)
+            .map(|i| format!("let a{i} = {i}{suffix};\n"))
+            .collect()
+    };
+    repo.write("src/long.rs", lines("").as_bytes());
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    repo.write("src/long.rs", lines(" + 1").as_bytes());
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    cursor_at(&mut shell, &tab, 0, 4);
+    keys(&mut shell, "c");
+    let key = ComposerKey::Line {
+        path: "src/long.rs".into(),
+        side: Side::New,
+        start_line: 5,
+        line: 5,
+    };
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Composer(key.clone())));
+    shell.cx.simulate_input("abc");
+    draw(shell.cx);
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let cursor = viewport.read_with(shell.cx, |v, _| v.cursor());
+    let over_diff = shell
+        .cx
+        .debug_bounds("viewport-pane")
+        .expect("the diff is painted")
+        .center();
+    let wheel = |shell: &mut Shell, dy: f32| {
+        shell.cx.simulate_event(ScrollWheelEvent {
+            position: over_diff,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
+            ..Default::default()
+        });
+        draw(shell.cx);
+    };
+    let block = format!("composer-{key}");
+
+    wheel(&mut shell, 4000.);
+    assert!(!painted(shell.cx, &block), "the composer left the screen");
+    wheel(&mut shell, -4000.);
+    assert!(painted(shell.cx, &block), "and came back");
+    assert_eq!(
+        pane_of(&mut shell, &tab),
+        Some(Pane::Composer(key.clone())),
+        "the composer still has the keyboard"
+    );
+    keys(&mut shell, "j");
+    shell.cx.simulate_input("def");
+    draw(shell.cx);
+    let text = tab.read_with(shell.cx, |t, cx| {
+        composer::composer(t, &key, cx).map(|c| c.read(cx).text(cx))
+    });
+    assert_eq!(text.as_deref(), Some("abcjdef"));
+    assert_eq!(
+        viewport.read_with(shell.cx, |v, _| v.cursor()),
+        cursor,
+        "j typed, not moved"
+    );
 }
 
 #[gpui_kit::test]
