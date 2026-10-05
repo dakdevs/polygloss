@@ -6,7 +6,7 @@ use polygloss_diff::rows::{ExpandBy, GapId};
 use polygloss_diff::{FileKind, Mode, ObjectFormat, Oid, Side};
 use polygloss_viewport::{
     BodyRow, ControlAction, FileFlags, FileState, HeaderDebug, LayoutMode, RowKey, ScrollTarget,
-    ViewportEvent,
+    ViewportEvent, ViewportTheme,
 };
 
 use crate::support::*;
@@ -484,7 +484,8 @@ fn large_file_over_threshold_shows_load_diff(cx: &mut TestAppContext) {
             .iter()
             .any(|c| c.action == ControlAction::LoadDiff(0))
     );
-    assert_eq!(d.anchor.row, RowKey::Header);
+    // Still the top of the document.
+    assert_eq!(d.anchor.row, RowKey::Lead);
 }
 
 #[gpui_kit::test]
@@ -1672,4 +1673,116 @@ fn toggle_collapsed_folds_the_file_and_unfolds_it(cx: &mut TestAppContext) {
     // An index past the end changes nothing.
     view.update(cx, |v, cx| v.toggle_collapsed(7, cx));
     assert!(view.read_with(cx, |v, _| v.collapsed()).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// headers and gap rows on cards (T6.5)
+
+/// The header strip of the last frame at `y`: a quad of the header color
+/// with the cards' border color.
+fn header_strip(cx: &mut VisualTestContext, theme: &ViewportTheme, y: f32) -> ShapedQuad {
+    let strips: Vec<ShapedQuad> = shaped_quads(cx)
+        .into_iter()
+        .filter(|q| {
+            q.fill == Some(theme.header_background)
+                && q.border == theme.card_border
+                && q.bounds.1 == y
+                && q.bounds.3 == HEADER_H
+        })
+        .collect();
+    assert_eq!(strips.len(), 1, "one header strip at y={y}: {strips:?}");
+    strips[0]
+}
+
+#[gpui_kit::test]
+fn sticky_header_pins_square_and_flush(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, two_added(), opts, 1000., 400.);
+    // 300 px into a.rs's body: its header pins at the top edge, square,
+    // across the card (16..984), with side and bottom borders only.
+    wheel(cx, 300.);
+    let d = debug(&view, cx);
+    assert_eq!((header(&d, 0).y, header(&d, 0).sticky), (0.0, true));
+    let pinned = header_strip(cx, &theme, 0.0);
+    assert_eq!(pinned.bounds, (16.0, 0.0, 968.0, HEADER_H));
+    assert_eq!(pinned.radii, [0.0; 4]);
+    assert_eq!(pinned.borders, [0.0, 1.0, 1.0, 1.0]);
+    // b.rs's card starts below a.rs's (648 = 40 + 600 + 8) and 12 px of
+    // canvas: its header is in place, with the card's top corners.
+    assert_eq!((header(&d, 1).y, header(&d, 1).sticky), (360.0, false));
+    assert_eq!(header_strip(cx, &theme, 360.0).radii, [8.0, 8.0, 0.0, 0.0]);
+
+    // The end of a.rs's body (640) pushes it up: at 610 it is 10 px up,
+    // still square, while b.rs's card is 50 px below the top.
+    wheel(cx, 310.);
+    let d = debug(&view, cx);
+    assert_eq!((header(&d, 0).y, header(&d, 0).sticky), (-10.0, true));
+    assert_eq!(header_strip(cx, &theme, -10.0).radii, [0.0; 4]);
+    assert_eq!(header(&d, 1).y, 50.0);
+}
+
+#[gpui_kit::test]
+fn header_in_place_has_rounded_top_corners(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, two_added(), opts, 1000., 800.);
+    let top = header_strip(cx, &theme, 0.0);
+    assert_eq!(top.bounds, (16.0, 0.0, 968.0, HEADER_H));
+    assert_eq!(top.radii, [8.0, 8.0, 0.0, 0.0]);
+    assert_eq!(top.borders, [1.0; 4]);
+    // A collapsed card is its header alone: all four corners.
+    view.update(cx, |v, cx| v.set_collapsed(1, true, cx));
+    settle(cx);
+    assert_eq!(header_strip(cx, &theme, 660.0).radii, [8.0; 4]);
+}
+
+#[gpui_kit::test]
+fn gap_rows_paint_inside_the_card_border(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let old = numbered("line", 10);
+    let mut new = old.clone();
+    new[4] = "LINE 4\n".to_owned();
+    let provider = MemProvider::new(vec![Spec::modified(
+        "src/a.rs",
+        &old.concat(),
+        &new.concat(),
+    )]);
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, provider, opts, 1000., 600.);
+    let d = debug(&view, cx);
+    assert_eq!(d.visible_rows[1], "⋯ 1 unchanged line");
+    // The canvas, then each gap row across the card's inner width (17..983):
+    // one above the hunk, one below its 8 rows. (Pierre Light's header strip
+    // has the canvas color too, with a border.)
+    let canvas: Vec<ShapedQuad> = shaped_quads(cx)
+        .into_iter()
+        .filter(|q| q.fill == Some(theme.canvas) && q.borders == [0.0; 4])
+        .collect();
+    // Clipped there too, as every row is (the canvas to the viewport).
+    let clips: Vec<_> = canvas.iter().map(|q| q.clip).collect();
+    let inner = (17.0, 0.0, 966.0, 600.0);
+    assert_eq!(clips, [(0.0, 0.0, 1000.0, 600.0), inner, inner]);
+    let canvas: Vec<_> = canvas.into_iter().map(|q| q.bounds).collect();
+    assert_eq!(
+        canvas,
+        [
+            (0.0, 0.0, 1000.0, 600.0),
+            (17.0, 40.0, 966.0, 32.0),
+            (17.0, 40.0 + 32.0 + 8.0 * ROW_H, 966.0, 32.0)
+        ]
+    );
+    // Its label at the indicator column: 17 + two 4-column number columns.
+    assert!(
+        d.painted_text
+            .iter()
+            .any(|(x, y, t)| t == "⋯ 1 unchanged line"
+                && (*x - (17.0 + 8.0 * ADVANCE)).abs() < 0.01
+                && *y == 46.0),
+        "{:?}",
+        d.painted_text
+    );
 }

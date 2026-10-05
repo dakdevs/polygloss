@@ -462,6 +462,45 @@ fn drag_line_numbers_selects_range(cx: &mut TestAppContext) {
     assert_eq!(comments(&events), [comment(0, Side::New, 4, 5)]);
 }
 
+/// On a card, rows start at its inner edge, 17 px in (a 16 px margin and a
+/// 1 px border); without a prelude the first card's rows are as high as in
+/// the flat layout. The gutter "+" and a text selection hit the same lines
+/// and characters as there, 17 px to the right.
+#[gpui_kit::test]
+fn gutter_plus_and_selection_hit_rows_inside_the_card(cx: &mut TestAppContext) {
+    const INSET: f32 = 17.0;
+    let _sb = sandbox();
+    let opts = card_options(LayoutMode::Unified);
+    let (view, cx) = open(cx, two_files(), opts, 1000., 2000.);
+    let (events, _sub) = record_events(&view, cx);
+    // Hovering context line 3's numbers shows its "+", in the card's gutter.
+    let at = point(px(INSET + 20.), px(row_y(1) + 10.));
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    settle(cx);
+    let plus = debug(&view, cx).plus_button.expect("a + button");
+    assert_eq!((plus.file_idx, plus.side, plus.line), (0, Side::New, 3));
+    let (x, y, w, h) = plus.bounds;
+    assert!(y >= row_y(1) && y + h <= row_y(2), "{:?}", plus.bounds);
+    assert!(
+        x >= INSET && x + w <= INSET + CODE_X + 1.0,
+        "{:?}",
+        plus.bounds
+    );
+    click_at(cx, x + w / 2.0, y + h / 2.0);
+    assert_eq!(comments(&events), [comment(0, Side::New, 3, 3)]);
+
+    // Drag through the code from "a 3" (after "a ") to "A 5" (after "A").
+    let from = point(px(INSET + CODE_X + 2.0 * ADVANCE + 1.0), px(row_y(1) + 10.));
+    let to = point(px(INSET + CODE_X + ADVANCE + 1.0), px(row_y(4) + 10.));
+    cx.simulate_mouse_move(from, None, Modifiers::default());
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    settle(cx);
+    let text = view.read_with(cx, |v, _| v.selected_text());
+    assert_eq!(text.as_deref(), Some("3\na 4\nA"));
+}
+
 #[gpui_kit::test]
 fn copy_excludes_gutters_and_markers(cx: &mut TestAppContext) {
     let _sb = sandbox();
@@ -604,4 +643,64 @@ fn reveal_line_before_the_file_loads_applies_once_it_does(cx: &mut TestAppContex
         view.read_with(cx, |v, _| v.expansions()),
         [(0, vec![[47, 54]])]
     );
+}
+
+#[gpui_kit::test]
+fn cursor_reveal_and_top_row_use_header_top(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Cards with a 72 px prelude: a.rs's header starts at 84 (72 + a 12 px
+    // gap), its body (30 rows) at 124 and ends at 724, its card at 732;
+    // b.rs's header starts at 744, its body (60 rows) at 784.
+    let provider = MemProvider::new(vec![
+        Spec::added("a.rs", &numbered("a", 30).concat()),
+        Spec::added("b.rs", &numbered("b", 60).concat()),
+    ]);
+    let window = cx.open_window(gpui_kit::size(px(1000.), px(400.)), move |window, cx| {
+        let opts = card_options(LayoutMode::Unified);
+        let mut v = DiffViewport::new(provider, opts, window, cx);
+        let prelude: polygloss_viewport::RenderBlock = Rc::new(|_, _| {
+            use gpui_kit::{IntoElement as _, Styled as _};
+            gpui_kit::div().h(px(72.)).into_any_element()
+        });
+        v.set_prelude(Some(prelude), cx);
+        v
+    });
+    let view = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(*window, cx).into_mut();
+    settle(cx);
+
+    // Line 11 of a.rs right below the pinned header (its row starts at
+    // 124 + 200 = 324): without a cursor, `j` puts one on it.
+    view.update(cx, |v, cx| {
+        v.scroll_to(
+            polygloss_viewport::ScrollTarget::Line {
+                file_idx: 0,
+                side: Side::New,
+                line: 10,
+            },
+            cx,
+        )
+    });
+    settle(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.document().scroll_top()),
+        324.0 - HEADER_H as f64
+    );
+    move_cursor(&view, cx, Direction::Down);
+    assert_eq!(cursor(&view, cx), Some(pos(0, Side::New, 10)));
+
+    // A jump to line 16 of b.rs (its row starts at 784 + 300 = 1084) puts it
+    // a third of the way below the header: 40 + 360 / 3 = 160 px down.
+    set_cursor(&view, cx, pos(1, Side::New, 15));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.document().scroll_top()),
+        1084.0 - 160.0
+    );
+    let d = debug(&view, cx);
+    let i = d
+        .visible_rows
+        .iter()
+        .position(|r| *r == unified(None, Some(16), '+', "b 15"))
+        .unwrap();
+    assert_eq!(d.row_bounds[i].0, 160.0);
 }

@@ -542,10 +542,9 @@ impl DiffViewport {
         if self.doc.is_empty() {
             return None;
         }
-        let header = f64::from(self.doc.metrics().header_height);
-        let (f, y) = self.doc.file_at(self.doc.scroll_top() + header);
+        let (f, y) = self.doc.below_header();
         let r = match self.doc.file_layout(f) {
-            Some(layout) if y >= header && !self.doc.is_collapsed(f) => layout.row_at(y - header).0,
+            Some(layout) if y >= 0.0 && !self.doc.is_collapsed(f) => layout.row_at(y).0,
             _ => 0,
         };
         Some(At { f, r })
@@ -658,7 +657,7 @@ impl DiffViewport {
         if view_h <= header {
             return;
         }
-        let top = self.doc.file_top(at.f) + header + layout.row_top(at.r);
+        let top = self.doc.body_top(at.f) + layout.row_top(at.r);
         let bottom = top + f64::from(layout.row_height(at.r));
         let scroll = self.doc.scroll_top();
         let (vis_top, vis_bottom) = (scroll + header, scroll + view_h);

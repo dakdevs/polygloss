@@ -2,12 +2,12 @@
 //!
 //! Per `diff_id` a review tab remembers where the reader was: the scroll
 //! position as a line (the first line shown below the pinned file header,
-//! never pixels, see [`top_line`]), collapsed files, revealed context, the
-//! split/unified choice, the file tree's expansion and unsaved composer
-//! text. It is restored when the diff opens again ([`attach`], before the
-//! first frame) and saved on change, [`SAVE_DEBOUNCE`] after the last one
-//! (trailing), off the main thread; closing the tab or quitting saves what is
-//! pending at once.
+//! never pixels, see [`polygloss_viewport::Document::top_line`]), collapsed
+//! files, revealed context, the split/unified choice, the file tree's
+//! expansion and unsaved composer text. It is restored when the diff opens
+//! again ([`attach`], before the first frame) and saved on change,
+//! [`SAVE_DEBOUNCE`] after the last one (trailing), off the main thread;
+//! closing the tab or quitting saves what is pending at once.
 //!
 //! What changed is found by observing the tab's viewport and file tree (every
 //! scroll, collapse, reveal or layout change notifies them) and comparing a
@@ -33,9 +33,8 @@ use std::time::Duration;
 use gpui_kit::{App, AppContext as _, Context, Global, Subscription, Task, Window};
 use polygloss_core::ids::DiffId;
 use polygloss_core::review::{Core, CoreError, ScrollAnchorState, ViewState};
-use polygloss_diff::Side;
 use polygloss_diff::rows::Layout;
-use polygloss_viewport::{BodyRow, DiffViewport, LayoutMode, RowKey, ScrollTarget};
+use polygloss_viewport::{LayoutMode, ScrollTarget};
 
 use crate::app_state::AppState;
 use crate::review_tab::ReviewTab;
@@ -208,15 +207,18 @@ pub fn snapshot(tab: &ReviewTab, cx: &App) -> ViewState {
     let doc = viewport.document();
     let files = doc.files();
     let path = |idx: u32| files[idx as usize].display_path().to_owned();
-    // At the very top there is nothing to restore.
-    let scroll_anchor = if doc.scroll_top() > 0.0 {
-        top_line(viewport).map(|(idx, side, line)| ScrollAnchorState {
+    // At the very top, or anywhere above the first card (the header card and
+    // the canvas around it), there is nothing to restore: it reopens at the
+    // top.
+    let top = doc.scroll_top();
+    let scroll_anchor = if top <= 0.0 || top < doc.header_top(0) {
+        None
+    } else {
+        doc.top_line().map(|(idx, side, line)| ScrollAnchorState {
             path: path(idx),
             side,
             line: line + 1,
         })
-    } else {
-        None
     };
     let layout = match crate::palette::view_toggles::layout_choice(tab) {
         Some(LayoutMode::Split) => Some(Layout::Split),
@@ -244,69 +246,6 @@ pub fn snapshot(tab: &ReviewTab, cx: &App) -> ViewState {
             .unwrap_or_default(),
         ..ViewState::default()
     }
-}
-
-/// The first line shown below the pinned header of the file at the top, as
-/// `(file_idx, side, line)` with a 0-based line: the new side where a row
-/// has it, else the old one; a gap row counts as its first hidden (old)
-/// line. This is what view state saves, not [`DiffViewport::anchor`], the
-/// row under the pinned header: restoring a line with `ScrollTarget::Line`
-/// puts it right below the header, so the same line is first again at any
-/// width, height or font size. A collapsed file (or one without lines) gives
-/// its first line, which restores to its header at the top; a file not laid
-/// out yet gives the line a pending scroll target aims at, else an
-/// estimate. `None` for an empty diff.
-pub fn top_line(viewport: &DiffViewport) -> Option<(u32, Side, u32)> {
-    let doc = viewport.document();
-    if doc.is_empty() {
-        return None;
-    }
-    let header = f64::from(doc.metrics().header_height);
-    // The header shown at the top covers the viewport's first `header` px.
-    let (f, y) = doc.file_at(doc.scroll_top() + header);
-    let change = &doc.files()[f as usize];
-    let side = if change.new_path.is_none() {
-        Side::Old
-    } else {
-        Side::New
-    };
-    if doc.is_collapsed(f) {
-        return Some((f, side, 0));
-    }
-    let Some(layout) = doc.file_layout(f) else {
-        let anchor = doc.anchor();
-        if anchor.file_idx == f
-            && let RowKey::Line { side, line } = anchor.row
-        {
-            return Some((f, side, line));
-        }
-        let row = f64::from(doc.metrics().row_height).max(1.0);
-        return Some((f, side, ((y - header).max(0.0) / row) as u32));
-    };
-    let rows = layout.rows();
-    if rows.is_empty() {
-        return Some((f, side, 0));
-    }
-    // `y` inside the file's header: its body's first row is below it.
-    let first = if y >= header {
-        layout.row_at(y - header).0.min(rows.len() - 1)
-    } else {
-        0
-    };
-    let line_of = |row: &BodyRow| match *row {
-        BodyRow::Line { new: Some(l), .. } => Some((Side::New, l)),
-        BodyRow::Line { old: Some(l), .. } => Some((Side::Old, l)),
-        BodyRow::Gap { old_start, .. } => Some((Side::Old, old_start)),
-        _ => None,
-    };
-    // Blocks and markers have no line: the next line down, else the one
-    // above them (the end of the file).
-    let (side, line) = rows[first..]
-        .iter()
-        .find_map(line_of)
-        .or_else(|| rows[..first].iter().rev().find_map(line_of))
-        .unwrap_or((side, 0));
-    Some((f, side, line))
 }
 
 /// Unsaved composer text for `key` (T3.10's composer keys), as restored or

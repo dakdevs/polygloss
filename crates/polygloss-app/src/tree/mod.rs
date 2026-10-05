@@ -595,7 +595,7 @@ impl FileTree {
         let landed = self.viewport.update(cx, |v, cx| {
             v.scroll_to(ScrollTarget::File(idx), cx);
             let doc = v.document();
-            doc.scroll_top() + 0.5 >= doc.file_top(idx)
+            doc.scroll_top() + 0.5 >= doc.header_top(idx)
         });
         self.jumped = (!landed).then_some(idx);
         cx.notify();
@@ -660,7 +660,7 @@ impl FileTree {
 
     fn on_screen(&self, idx: u32, cx: &App) -> bool {
         let doc = self.viewport.read(cx).document();
-        doc.file_top(idx) < doc.scroll_top() + f64::from(doc.viewport_height())
+        doc.header_top(idx) < doc.scroll_top() + f64::from(doc.viewport_height())
     }
 
     /// The tree's selection changed (a click or the arrow keys): a file row

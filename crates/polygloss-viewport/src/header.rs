@@ -5,9 +5,11 @@
 //!
 //! Headers are painted in their own layer after every row, so the header of
 //! the first visible file can pin at the top while its body scrolls under it;
-//! the next file's header pushes it up ([`crate::paint_rows::Painter`] picks
-//! the position). The ⋯ menu is a gpui-kit `PopupMenu` (the host initializes
-//! gpui-kit, as every Polygloss window does).
+//! the end of its body pushes it up ([`crate::paint_rows::Painter`] picks the
+//! position). On a card ([`crate::card`]) a header in place takes the card's
+//! top corners; pinned it is square and flush at the top edge, spans the
+//! card and has a bottom border. The ⋯ menu is a gpui-kit `PopupMenu` (the
+//! host initializes gpui-kit, as every Polygloss window does).
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -92,32 +94,30 @@ impl Painter<'_> {
         let files = self.files;
         let change = &files[f as usize];
         let theme = self.theme;
-        let width = self.bounds.size.width.as_f32();
+        // Content goes across the card's inner width (the whole width in the
+        // flat layout).
+        let (x0, width) = self.inner_x_w();
         let a = self.geometry.advance;
         let row_h = self.geometry.row_height;
         let ty = y + (h - row_h) / 2.0;
         self.frame.rows += 1;
-        self.quad(HEADERS, 0.0, y, width, h, theme.header_background);
-        self.quad(HEADERS, 0.0, y, width, 1.0, theme.border);
-        self.quad(HEADERS, 0.0, y + h - 1.0, width, 1.0, theme.border);
-        let area = self.bounds_at(0.0, y, width, h);
-        self.frame.header_areas.push(area);
+        self.header_strip(f, y, h, sticky);
 
         // The chevron, left.
         let collapsed = self.doc.is_collapsed(f);
         let chevron = self.label(if collapsed { "▸" } else { "▾" }, SLOT_MUTED, theme.muted);
-        self.text(HEADERS, a, ty, chevron);
+        self.text(HEADERS, x0 + a, ty, chevron);
         self.control(
             ControlAction::Collapse(f),
             ControlLayer::Header,
-            0.0,
+            x0,
             y,
             3.0 * a,
             h,
         );
 
         // The ⋯ menu, right.
-        let menu_x = width - 3.0 * a;
+        let menu_x = x0 + width - 3.0 * a;
         let dots = self.label("⋯", SLOT_MUTED, theme.muted);
         let dots_x = menu_x + (3.0 * a - dots.shaped.width()) / 2.0;
         self.text(HEADERS, dots_x, ty, dots);
@@ -135,7 +135,7 @@ impl Painter<'_> {
         // flags, dropped in reverse priority until the title keeps some room.
         // At very narrow widths the "Viewed" label gives way too, then the
         // checkbox (when it would not fit right of the chevron).
-        let left = 3.0 * a;
+        let left = x0 + 3.0 * a;
         let title_text = header_title(change);
         let full_title = self.label(&title_text, SLOT_HEADER, theme.header_foreground);
         let min_title = full_title.shaped.width().min(MIN_TITLE_COLUMNS * a);
@@ -271,8 +271,6 @@ impl Painter<'_> {
                 collapsed,
             });
         }
-        #[cfg(not(feature = "debug-inspect"))]
-        let _ = sticky;
     }
 
     /// Additions and deletions of file `f` once known (from its diff, or a
@@ -654,8 +652,8 @@ impl DiffViewport {
     /// scrolled under its header.
     fn first_line_below_header(&self, f: u32, side: Side) -> Option<u32> {
         // The header is pinned at the viewport's top edge, so the body pixel
-        // at its bottom edge is the viewport top's offset into the file.
-        let body_y = self.doc.scroll_top() - self.doc.file_top(f);
+        // at its bottom edge is the viewport top's offset from its own top.
+        let body_y = self.doc.scroll_top() - self.doc.header_top(f);
         let layout = self.doc.file_layout(f)?;
         if self.doc.is_collapsed(f) || body_y <= 0.0 || body_y >= layout.height() {
             return None;

@@ -4,6 +4,7 @@
 use polygloss_diff::Side;
 use polygloss_diff::rows::{Layout, LineKind, Row};
 
+use crate::card::CardStyle;
 use crate::document::{BodyRow, FileLayout, Metrics};
 use crate::materialize::MaterializedFile;
 use crate::style::Indicators;
@@ -80,13 +81,21 @@ impl Geometry {
     }
 
     /// Document metrics for `layout`: a header is two rows, a gap row 1.6 and
-    /// a placeholder 2.4 (20/40/32/48 px at 13 px).
-    pub fn metrics(&self, layout: Layout, load_diff_changed_lines: u32) -> Metrics {
+    /// a placeholder 2.4 (20/40/32/48 px at 13 px); the cards' gap and
+    /// padding when `cards` is set.
+    pub fn metrics(
+        &self,
+        layout: Layout,
+        load_diff_changed_lines: u32,
+        cards: Option<CardStyle>,
+    ) -> Metrics {
         let row = self.row_height;
         Metrics {
             layout,
             row_height: row,
             header_height: 2.0 * row,
+            card_gap: cards.map_or(0.0, |c| c.gap),
+            card_pad_bottom: cards.map_or(0.0, |c| c.pad_bottom),
             gap_height: (1.6 * row).round(),
             placeholder_height: (2.4 * row).round(),
             load_diff_changed_lines,
@@ -101,7 +110,8 @@ pub(crate) fn row_height_for(font_size: f32) -> f32 {
     (font_size * 1.5).round().max(1.0)
 }
 
-/// The columns of a code row, relative to the viewport's left edge.
+/// The columns of a code row, relative to the viewport's left edge: a row
+/// spans `x..x + width` (a card's inner width).
 ///
 /// Unified: `[old number][new number][indicator][code]`. Split: each half is
 /// `[number][indicator][code]`, the old side on the left. Numbers are right
@@ -110,9 +120,11 @@ pub(crate) fn row_height_for(font_size: f32) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Columns {
     pub layout: Layout,
+    /// The row's left edge.
+    pub x: f32,
     pub width: f32,
     pub advance: f32,
-    /// Where the right half starts (split); `width` in unified.
+    /// Where the right half starts (split); `x + width` in unified.
     pub half: f32,
     pub number_width: f32,
     pub indicator_width: f32,
@@ -130,12 +142,13 @@ pub(crate) enum Pane {
 impl Columns {
     pub fn new(
         layout: Layout,
+        x: f32,
         width: f32,
         advance: f32,
         digits: u32,
         indicators: Indicators,
     ) -> Columns {
-        let half = match layout {
+        let half = x + match layout {
             Layout::Split => (width / 2.0).floor(),
             Layout::Unified => width,
         };
@@ -146,6 +159,7 @@ impl Columns {
         };
         Columns {
             layout,
+            x,
             width,
             advance,
             half,
@@ -157,9 +171,9 @@ impl Columns {
     /// Left edge and width of a pane.
     pub fn pane(&self, pane: Pane) -> (f32, f32) {
         match pane {
-            Pane::Full => (0.0, self.width),
-            Pane::Half(0) => (0.0, self.half),
-            Pane::Half(_) => (self.half, (self.width - self.half).max(0.0)),
+            Pane::Full => (self.x, self.width),
+            Pane::Half(0) => (self.x, self.half - self.x),
+            Pane::Half(_) => (self.half, (self.x + self.width - self.half).max(0.0)),
         }
     }
 

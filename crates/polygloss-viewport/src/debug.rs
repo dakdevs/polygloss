@@ -51,6 +51,9 @@ pub struct ViewportDebug {
     pub plus_button: Option<PlusDebug>,
     /// The open ⋯ menu.
     pub menu: Option<MenuDebug>,
+    /// Where the prelude was placed, `(x, y, width, height)` relative to the
+    /// viewport; `None` when it is not set or out of view.
+    pub prelude: Option<(f32, f32, f32, f32)>,
 }
 
 /// The "+" painted on the hovered line numbers: the line it comments on.

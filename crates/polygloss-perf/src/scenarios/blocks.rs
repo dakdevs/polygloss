@@ -77,7 +77,7 @@ fn lines_in(doc: &Document, f: u32, from: f64, to: f64) -> Vec<BlockAnchor> {
     let Some(layout) = doc.file_layout(f).filter(|_| !doc.is_collapsed(f)) else {
         return Vec::new();
     };
-    let body_top = doc.file_top(f) + f64::from(doc.metrics().header_height);
+    let body_top = doc.body_top(f);
     let lo = (from - body_top).max(0.0);
     let hi = (to - body_top).min(layout.height());
     if lo >= hi || layout.is_empty() {

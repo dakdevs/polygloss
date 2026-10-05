@@ -205,9 +205,10 @@ pub fn plan(
     }
 }
 
-/// The scroll anchor in the new state: the same line of the same file
-/// (mapped through the file's line diff when its blob changed), else the
-/// file's header, else the next file still there.
+/// The scroll anchor in the new state: the top of the document stays the
+/// top; else the same line of the same file (mapped through the file's line
+/// diff when its blob changed), else the file's header, else the next file
+/// still there.
 fn map_anchor(
     anchor: ScrollAnchor,
     old: &[FileChange],
@@ -216,14 +217,24 @@ fn map_anchor(
     lines: &Lines<'_>,
 ) -> ScrollAnchor {
     let j = anchor.file_idx as usize;
+    // The first file's lead (the prelude and the canvas above the first
+    // card) belongs to the document, not to that file: whichever file is
+    // first now, the header card stays where it was.
+    if j == 0 && anchor.row == RowKey::Lead {
+        return anchor;
+    }
     let Some(i) = map.old_to_new.get(j).copied().flatten() else {
         // The file is gone: the top of the next file that is still there
-        // (else the previous one).
+        // (else the previous one); its lead from a lead, else its header.
         let next = map.old_to_new.iter().skip(j + 1).find_map(|m| *m);
         let prev = map.old_to_new.iter().take(j).rev().find_map(|m| *m);
         return ScrollAnchor {
             file_idx: next.or(prev).unwrap_or(0),
-            row: RowKey::Header,
+            row: if anchor.row == RowKey::Lead {
+                RowKey::Lead
+            } else {
+                RowKey::Header
+            },
             offset_px: 0.0,
         };
     };
@@ -257,7 +268,7 @@ fn map_anchor(
                 None => header,
             }
         }
-        RowKey::Header | RowKey::Placeholder => ScrollAnchor {
+        RowKey::Lead | RowKey::Header | RowKey::Placeholder => ScrollAnchor {
             file_idx: i,
             ..anchor
         },

@@ -4,8 +4,10 @@
 //! - [`document`]: every file's height, the logical scroll anchor, the
 //!   materialization window and eviction (pure Rust).
 //! - [`DiffViewport`]: the GPUI view. It reads files and blobs from a
-//!   [`DiffProvider`] and paints only visible rows, split or unified, with
-//!   line numbers, change indicators, word highlights and syntax colors;
+//!   [`DiffProvider`] and paints each file as a card on the canvas
+//!   ([`CardStyle`]; the host's header card above the first one,
+//!   [`DiffViewport::set_prelude`]) and only visible rows, split or unified,
+//!   with line numbers, change indicators, word highlights and syntax colors;
 //!   sticky file headers with the host's review flags ([`FileFlags`]), a
 //!   collapse chevron, a Viewed checkbox and a ⋯ menu; gap expanders; and
 //!   placeholders for binary, submodule, generated and large files.
@@ -24,6 +26,7 @@
 //! without its startup font scan).
 
 pub mod blocks;
+mod card;
 mod controls;
 mod cursor;
 pub mod debug;
@@ -47,6 +50,7 @@ mod text_cache;
 mod view;
 
 pub use blocks::{BlockSpec, ESTIMATED_BLOCK_ROWS, RenderBlock};
+pub use card::CardStyle;
 pub use controls::ControlAction;
 pub use cursor::{CursorPos, Direction};
 pub use debug::{ControlDebug, HeaderDebug, MenuDebug, PlusDebug, ViewportDebug};

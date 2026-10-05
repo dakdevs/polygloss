@@ -5,21 +5,26 @@
 //! the first one), shapes their text through the [`TextCache`] and records
 //! quads and text in three layers (whole width, left half, right half) so
 //! paint can replay them with one clip per layer, all quads before all text.
-//! File headers go into a fourth layer painted after all of that, so the
-//! header pinned at the top (design §11.6 "Sticky header") covers the rows
-//! scrolling under it. Nothing here allocates per frame once the buffers are
-//! warm, except for lines shaped for the first time and short header and
-//! label strings.
+//! The canvas and the file cards go into a layer painted before them
+//! ([`crate::card`]); rows fill a card's inner width, so nothing paints over
+//! its border. File headers go into a fourth layer painted after all of that,
+//! so the header pinned at the top (design §11.6 "Sticky header") covers the
+//! rows scrolling under it. Nothing here allocates per frame once the
+//! buffers are warm, except for lines shaped for the first time and short
+//! header and label strings.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::{Bounds, Font, Hsla, Pixels, Point, WindowTextSystem, point, px, size};
+use gpui_kit::{
+    Bounds, Corners, Edges, Font, Hsla, Pixels, Point, WindowTextSystem, point, px, size,
+};
 use polygloss_diff::rows::{Cell, Layout, LineKind, Row};
 use polygloss_diff::{FileChange, Side};
 
-use crate::blocks::{BlockSlot, Blocks};
+use crate::blocks::{BlockSlot, Blocks, RenderBlock};
+use crate::card::{CardStyle, PreludeSlot};
 use crate::controls::{Control, ControlAction, ControlLayer};
 use crate::cursor::CursorPos;
 use crate::document::{BodyRow, Document, FileState};
@@ -34,14 +39,16 @@ use crate::special::{BodyLabel, Specials};
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{ShapedText, Shaper, TextCache, TextKey};
 
-/// A filled rectangle with rounded corners and an optional 1 px border
-/// (badges, checkboxes).
+/// A filled rectangle with rounded corners and an optional border (cards,
+/// headers, badges, checkboxes).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RoundedQuad {
     pub bounds: Bounds<Pixels>,
     pub background: Hsla,
     pub border: Option<Hsla>,
-    pub radius: Pixels,
+    /// Used with `border` only.
+    pub border_widths: Edges<Pixels>,
+    pub radius: Corners<Pixels>,
 }
 
 /// Quads and text drawn under one clip: plain quads, then rounded ones, then
@@ -62,6 +69,8 @@ pub(crate) const HEADERS: usize = 3;
 /// Everything one frame paints, in window coordinates.
 #[derive(Default)]
 pub(crate) struct Frame {
+    /// The canvas and the cards, under everything else.
+    pub cards: Layer,
     pub layers: [Layer; 4],
     /// The viewport's top-left corner.
     pub origin: Point<Pixels>,
@@ -86,6 +95,9 @@ pub(crate) struct Frame {
     /// Visible host blocks, top to bottom (their elements are rendered,
     /// measured and painted by the element, see [`crate::blocks`]).
     pub blocks: Vec<BlockSlot>,
+    /// The prelude, when it reaches into the viewport (rendered, measured
+    /// and painted like a block).
+    pub prelude: Option<PreludeSlot>,
     /// Every painted code cell (a unified row, or one half of a split row),
     /// for mouse hit tests ([`crate::selection`]).
     pub cells: Vec<LineCell>,
@@ -126,7 +138,7 @@ pub(crate) struct Marks {
 
 impl Frame {
     pub fn clear(&mut self) {
-        for layer in &mut self.layers {
+        for layer in std::iter::once(&mut self.cards).chain(&mut self.layers) {
             layer.clip = None;
             layer.quads.clear();
             layer.rounded.clear();
@@ -135,6 +147,7 @@ impl Frame {
         self.controls.clear();
         self.header_areas.clear();
         self.blocks.clear();
+        self.prelude = None;
         self.cells.clear();
         self.plus = None;
         self.rows = 0;
@@ -198,7 +211,14 @@ pub(crate) struct Painter<'a> {
     pub geometry: Geometry,
     pub font: &'a Font,
     pub layout: Layout,
+    /// The viewport, in window coordinates.
     pub bounds: Bounds<Pixels>,
+    /// Where rows go: `bounds` inset by a card's margin and border on the
+    /// left and right (`bounds` in the flat layout).
+    pub inner: Bounds<Pixels>,
+    pub cards: Option<CardStyle>,
+    /// The host's prelude.
+    pub prelude: Option<&'a RenderBlock>,
     /// `scroll_top` snapped to device pixels.
     pub scroll_top: f64,
     pub cache: &'a mut TextCache,
@@ -228,29 +248,39 @@ impl Painter<'_> {
     /// Fills the frame with every row intersecting the viewport.
     pub fn paint_visible(&mut self) {
         let b = self.bounds;
-        let (width, height) = (b.size.width.as_f32(), b.size.height.as_f32());
+        let height = b.size.height.as_f32();
         self.frame.line_height = px(self.geometry.row_height);
         self.frame.origin = b.origin;
         self.frame.hover = self.theme.hover;
-        self.frame.layers[FULL].clip = Some(b);
+        // Rows never paint over a card's border or the canvas beside it.
+        self.frame.layers[FULL].clip = Some(self.inner);
         self.frame.layers[HEADERS].clip = Some(b);
-        self.quad(FULL, 0.0, 0.0, width, height, self.theme.background);
+        let visible = self.doc.visible(height);
+        self.paint_canvas(visible.clone());
         if self.layout == Layout::Split {
-            let half = (width / 2.0).floor();
-            self.frame.layers[1].clip = Some(Bounds::new(b.origin, size(px(half), b.size.height)));
+            let i = self.inner;
+            let half = (i.size.width.as_f32() / 2.0).floor();
+            self.frame.layers[1].clip = Some(Bounds::new(i.origin, size(px(half), i.size.height)));
             self.frame.layers[2].clip = Some(Bounds::new(
-                point(b.origin.x + px(half), b.origin.y),
-                size(px(width - half), b.size.height),
+                point(i.origin.x + px(half), i.origin.y),
+                size(i.size.width - px(half), i.size.height),
             ));
         }
+        self.place_prelude();
         let header_h = self.doc.metrics().header_height;
-        let visible = self.doc.visible(height);
         for f in visible.clone() {
-            let top = (self.doc.file_top(f) - self.scroll_top) as f32;
+            let top = (self.doc.header_top(f) - self.scroll_top) as f32;
+            if top >= height {
+                // Only its lead shows (the canvas above its card, or the
+                // prelude): nothing of the card is in view.
+                break;
+            }
             // The first file's header pins at the top while its body scrolls
-            // under it, until the next file's header pushes it up.
+            // under it, until its body's end (the next card in the flat
+            // layout) pushes it up.
             let y = if f == visible.start && top < 0.0 {
-                (top + self.doc.file_height(f) - header_h).min(0.0)
+                let body_bottom = self.doc.body_top(f) + f64::from(self.doc.body_height(f));
+                ((body_bottom - self.scroll_top) as f32 - header_h).min(0.0)
             } else {
                 top
             };
@@ -289,7 +319,7 @@ impl Painter<'_> {
                             "Loading…".to_owned()
                         }
                     };
-                    let h = self.doc.file_height(f) - header_h;
+                    let h = self.doc.body_height(f);
                     self.label_row(f, &label, body_top, h.min(self.geometry.row_height * 2.0));
                 }
             }
@@ -305,9 +335,11 @@ impl Painter<'_> {
 
     pub(crate) fn columns(&self, file: Option<&MaterializedFile>) -> Columns {
         let lines = file.map_or(0, |m| m.diff.old.len().max(m.diff.new.len()));
+        let (x, width) = self.inner_x_w();
         Columns::new(
             self.layout,
-            self.bounds.size.width.as_f32(),
+            x,
+            width,
             self.geometry.advance,
             digits(lines),
             self.style.indicators,
@@ -437,13 +469,13 @@ impl Painter<'_> {
         paired: bool,
     ) {
         let cols = self.columns(Some(file));
-        let width = cols.width;
+        let (x0, width) = cols.pane(Pane::Full);
         if self.style.backgrounds
             && let Some(bg) = self.kind_background(kind)
         {
-            self.quad(FULL, 0.0, y, width, h, bg);
+            self.quad(FULL, x0, y, width, h, bg);
         }
-        self.cursor_tint(FULL, f, (old, new), 0.0, width, y, h);
+        self.cursor_tint(FULL, f, (old, new), x0, width, y, h);
         if let Some(o) = old {
             self.number(FULL, o + 1, cols.number_right(Pane::Full, 0), y);
         }
@@ -467,9 +499,9 @@ impl Painter<'_> {
                 old,
                 new,
                 side,
-                x: 0.0,
+                x: x0,
                 code_x: cols.code_x(Pane::Full),
-                right: width,
+                right: x0 + width,
                 y,
                 h,
                 text: text.clone(),
@@ -601,7 +633,8 @@ impl Painter<'_> {
         Bounds::new(point(o.x + px(x), o.y + px(y)), size(px(w), px(h)))
     }
 
-    /// Queues a rounded rectangle at viewport-relative coordinates.
+    /// Queues a rounded rectangle with a 1 px border (when `border` is set)
+    /// at viewport-relative coordinates.
     pub(crate) fn rounded(
         &mut self,
         layer: usize,
@@ -615,7 +648,8 @@ impl Painter<'_> {
             bounds,
             background,
             border,
-            radius: px(radius),
+            border_widths: Edges::all(px(1.)),
+            radius: Corners::all(px(radius)),
         });
     }
 

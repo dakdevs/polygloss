@@ -223,11 +223,12 @@ impl FileLayout {
 
     /// The row a key resolves to. `Line` resolves to the row showing that
     /// line, the gap hiding it, or else the nearest earlier row of that side;
-    /// `Gap` to the first run of that gap; `Header` never (it is not a row).
+    /// `Gap` to the first run of that gap; `Lead` and `Header` never (they are
+    /// not rows).
     pub fn find(&self, key: RowKey) -> Option<usize> {
         let row =
             match key {
-                RowKey::Header => None,
+                RowKey::Lead | RowKey::Header => None,
                 RowKey::Line { side, line } => {
                     let owners = match side {
                         Side::Old => &self.old_owners,

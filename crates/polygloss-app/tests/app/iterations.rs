@@ -18,7 +18,7 @@ use polygloss_core::review::{
 };
 use polygloss_core::store::events::Actor;
 use polygloss_diff::{ObjectFormat, Side};
-use polygloss_viewport::{CursorPos, ViewportEvent};
+use polygloss_viewport::{CursorPos, ScrollAnchor, ViewportEvent};
 
 use crate::shell::{Shell, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
@@ -750,4 +750,54 @@ fn viewed_marks_follow_the_iteration_shown(cx: &mut gpui_kit::TestAppContext) {
     );
     let flags = tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).file_flags().to_vec());
     assert!(flags[0].viewed && !flags[0].changed_since_viewed);
+}
+
+#[gpui_kit::test]
+fn refresh_and_iteration_switches_keep_the_top_of_the_document(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{IntoElement as _, Styled as _};
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    // A 72 pt prelude (the header card's stand-in) above the first card.
+    let prelude: polygloss_viewport::RenderBlock =
+        std::rc::Rc::new(|_, _| gpui_kit::div().h(gpui_kit::px(72.)).into_any_element());
+    viewport.update(shell.cx, |v, cx| v.set_prelude(Some(prelude), cx));
+    draw(shell.cx);
+    // The scroll position, and whether it is the top anchor (a short
+    // document clamps `scroll_top` to 0 whatever the anchor).
+    let top = |shell: &mut Shell| {
+        viewport.read_with(shell.cx, |v, _| {
+            (
+                v.document().scroll_top(),
+                v.anchor() == ScrollAnchor::default(),
+            )
+        })
+    };
+    assert_eq!(top(&mut shell), (0.0, true));
+
+    // Iteration 2 adds `a.rs`, which sorts before the first file (`b.rs`).
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+    assert_eq!(
+        paths(&mut shell, &tab),
+        ["src/a.rs", "src/b.rs", "src/c.rs"]
+    );
+    assert_eq!(top(&mut shell), (0.0, true));
+    // Iteration 1 has no `a.rs`: the first file goes away.
+    show(&mut shell, &tab, Choice::Iteration(1));
+    assert_eq!(paths(&mut shell, &tab), ["src/b.rs", "src/c.rs"]);
+    assert_eq!(top(&mut shell), (0.0, true));
+    // And back: a file sorting first appears.
+    show(&mut shell, &tab, Choice::Current);
+    assert_eq!(
+        paths(&mut shell, &tab),
+        ["src/a.rs", "src/b.rs", "src/c.rs"]
+    );
+    assert_eq!(top(&mut shell), (0.0, true));
+    assert_eq!(
+        viewport.read_with(shell.cx, |v, _| v.document().prelude_height()),
+        Some(72.0)
+    );
 }
