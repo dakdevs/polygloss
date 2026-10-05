@@ -11,10 +11,12 @@
 //! Rules:
 //! - `kind`: a text file becomes `Binary` when `binary` is set or `diff` is unset
 //!   (`-diff`). Symlinks and submodules keep their kind.
-//! - `generated`: `linguist-generated` / `linguist-generated=true` sets it,
-//!   `-linguist-generated` / `linguist-generated=false` clears it (both override
-//!   the lists, as on GitHub); otherwise it is set when the path matches
-//!   `BUILTIN_GENERATED` or an extra pattern (`diff.generated_patterns`).
+//! - `generated_attr`: `linguist-generated` / `linguist-generated=true` is `Set`,
+//!   `-linguist-generated` / `linguist-generated=false` is `Unset`, anything else
+//!   (including git without `--source`) is `Unspecified` (T6.1, design §11.15).
+//! - `generated`: `Set` sets it and `Unset` clears it (both override the lists, as
+//!   on GitHub); otherwise it is set when the path matches `BUILTIN_GENERATED` or
+//!   an extra pattern (`diff.generated_patterns`). Store v1 kept only this bit.
 //!
 //! Patterns (built-in and extra) are a gitignore-like subset matched against the raw
 //! path bytes: no `/` → match the file name; with a `/` → match the whole path (a
@@ -26,13 +28,17 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::{Mutex, Once, PoisonError};
 
-use polygloss_diff::{FileChange, FileKind, Oid};
+use polygloss_diff::{FileChange, FileKind, GeneratedAttr, Oid};
 
 use crate::git::runner::{Git, GitError, git_binary};
 use crate::git::version::{GitVersion, check_version};
 
 /// Built-in generated-file patterns (design §6.4): lockfiles by name, minified and
 /// source-map files, protobuf output.
+///
+/// Frozen: store v1 rows kept only the `generated` bit computed with this list, and
+/// [`legacy_attr`] recovers their attribute from it. Changing it would change how
+/// stored v1 rows read.
 pub const BUILTIN_GENERATED: &[&str] = &[
     "package-lock.json",
     "yarn.lock",
@@ -81,15 +87,33 @@ pub fn classify(
         if change.kind == FileKind::Text && found.is_some_and(|a| a.binary) {
             change.kind = FileKind::Binary;
         }
-        change.generated = match found.and_then(|a| a.generated) {
-            Some(explicit) => explicit,
-            None => {
-                BUILTIN_GENERATED.iter().any(|p| pattern_matches(p, &path))
-                    || extra_generated.iter().any(|p| pattern_matches(p, &path))
-            }
+        let explicit = found.and_then(|a| a.generated);
+        change.generated_attr = match explicit {
+            Some(true) => GeneratedAttr::Set,
+            Some(false) => GeneratedAttr::Unset,
+            None => GeneratedAttr::Unspecified,
         };
+        change.generated = explicit.unwrap_or_else(|| {
+            BUILTIN_GENERATED.iter().any(|p| pattern_matches(p, &path))
+                || extra_generated.iter().any(|p| pattern_matches(p, &path))
+        });
     }
     Ok(())
+}
+
+/// The attribute of a row stored before v2, from its `generated` bit (design §11.15).
+/// v1 stored "the attribute if specified, else `BUILTIN_GENERATED`" (both v1 callers
+/// of [`classify`] passed no extra patterns), so a bit that disagrees with the list
+/// was the attribute; a bit that agrees with it is ambiguous.
+pub fn legacy_attr(path: &str, generated: bool) -> GeneratedAttr {
+    let listed = BUILTIN_GENERATED
+        .iter()
+        .any(|p| pattern_matches(p, path.as_bytes()));
+    match (generated, listed) {
+        (false, true) => GeneratedAttr::Unset,
+        (true, false) => GeneratedAttr::Set,
+        _ => GeneratedAttr::Unspecified,
+    }
 }
 
 /// What the head tree's attributes say about one path.

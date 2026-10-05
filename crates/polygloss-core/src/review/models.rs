@@ -9,7 +9,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid};
+use polygloss_diff::{
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid,
+};
 use rusqlite::{Connection, Row, Transaction, params};
 use serde::{Deserialize, Serialize};
 
@@ -192,6 +194,27 @@ fn parse_kind(s: &str) -> Option<FileKind> {
     })
 }
 
+/// `file_changes.generated_attr` (design §7.2): 0 unspecified, 1 set, 2 unset;
+/// `NULL` for rows from before migration 2.
+fn generated_attr_db(attr: GeneratedAttr) -> Option<u8> {
+    match attr {
+        GeneratedAttr::Unknown => None,
+        GeneratedAttr::Unspecified => Some(0),
+        GeneratedAttr::Set => Some(1),
+        GeneratedAttr::Unset => Some(2),
+    }
+}
+
+fn parse_generated_attr(value: Option<u8>) -> Option<GeneratedAttr> {
+    Some(match value {
+        None => GeneratedAttr::Unknown,
+        Some(0) => GeneratedAttr::Unspecified,
+        Some(1) => GeneratedAttr::Set,
+        Some(2) => GeneratedAttr::Unset,
+        Some(_) => return None,
+    })
+}
+
 /// Inserts the `diffs` row and its `file_changes` unless the diff is stored already
 /// (`files_count` set). A row without `files_count` (inserted without its file list)
 /// gets `files_count` and a fresh set of `file_changes`. Returns whether it wrote
@@ -226,8 +249,8 @@ pub(crate) fn store_diff(
     tx.execute("DELETE FROM file_changes WHERE diff_id = ?1", [id.as_str()])?;
     let mut stmt = tx.prepare_cached(
         "INSERT INTO file_changes (diff_id, idx, status, old_path, new_path, old_mode, new_mode, \
-           old_blob, new_blob, similarity, kind, generated) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+           old_blob, new_blob, similarity, kind, generated, generated_attr) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
     for f in files {
         stmt.execute(params![
@@ -243,6 +266,7 @@ pub(crate) fn store_diff(
             f.similarity,
             kind_str(f.kind),
             f.generated,
+            generated_attr_db(f.generated_attr),
         ])?;
     }
     Ok(true)
@@ -286,7 +310,7 @@ pub(crate) fn load_files(
         .ok_or_else(|| StoreError::Integrity(format!("diff {id}: object format {fmt:?}")))?;
     let mut stmt = conn.prepare_cached(
         "SELECT idx, status, old_path, new_path, old_mode, new_mode, old_blob, new_blob, \
-           similarity, kind, generated \
+           similarity, kind, generated, generated_attr \
          FROM file_changes WHERE diff_id = ?1 ORDER BY idx",
     )?;
     let files = stmt
@@ -316,6 +340,7 @@ fn read_file_row(r: &Row, fmt: ObjectFormat) -> Result<FileChange, StoreError> {
         Oid::parse(&s, fmt).map_err(|_| bad("blob", &s))
     };
     let kind: String = r.get(9)?;
+    let attr: Option<u8> = r.get(11)?;
     Ok(FileChange {
         idx: r.get(0)?,
         status: status
@@ -333,6 +358,8 @@ fn read_file_row(r: &Row, fmt: ObjectFormat) -> Result<FileChange, StoreError> {
         similarity: r.get(8)?,
         kind: parse_kind(&kind).ok_or_else(|| bad("kind", &kind))?,
         generated: r.get(10)?,
+        generated_attr: parse_generated_attr(attr)
+            .ok_or_else(|| bad("generated_attr", &format!("{attr:?}")))?,
     })
 }
 
@@ -380,6 +407,57 @@ mod tests {
             assert!(!p.escaped, "{literal}");
             assert_eq!(p.text, literal);
         }
+    }
+
+    #[test]
+    fn file_changes_round_trip_generated_attr() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::store::migrations::migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let fmt = ObjectFormat::Sha1;
+        let blob = Oid::parse("ce013625030ba8dba906f756967f9e9ca394464a", fmt).unwrap();
+        let attrs = [
+            GeneratedAttr::Unknown,
+            GeneratedAttr::Unspecified,
+            GeneratedAttr::Set,
+            GeneratedAttr::Unset,
+        ];
+        let files: Vec<FileChange> = attrs
+            .iter()
+            .enumerate()
+            .map(|(idx, &generated_attr)| FileChange {
+                idx: idx as u32,
+                status: FileStatus::Modified,
+                old_path: Some(GitPath::from_bytes(format!("f{idx}").as_bytes())),
+                new_path: Some(GitPath::from_bytes(format!("f{idx}").as_bytes())),
+                old_mode: Some(Mode(0o100644)),
+                new_mode: Some(Mode(0o100644)),
+                old_blob: blob.clone(),
+                new_blob: blob.clone(),
+                similarity: None,
+                kind: FileKind::Text,
+                generated: generated_attr == GeneratedAttr::Set,
+                generated_attr,
+            })
+            .collect();
+        let tree = fmt.empty_tree();
+        let id = crate::ids::diff_id(fmt, &tree, &tree);
+        let tx = conn.transaction().unwrap();
+        assert!(store_diff(&tx, &id, fmt, &tree, &tree, &files, 1).unwrap());
+        tx.commit().unwrap();
+
+        // design §7.2: 0 unspecified, 1 set, 2 unset; NULL = unknown.
+        let raw: Vec<Option<i64>> = conn
+            .prepare("SELECT generated_attr FROM file_changes ORDER BY idx")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(raw, [None, Some(0), Some(1), Some(2)]);
+
+        assert_eq!(load_files(&conn, &id).unwrap().unwrap(), files);
     }
 
     #[test]

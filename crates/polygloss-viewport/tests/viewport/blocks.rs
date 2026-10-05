@@ -14,7 +14,9 @@ use gpui_kit::{
 use polygloss_diff::hunks::diff_blobs;
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::{Expansions, Layout, build_rows};
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid, Side};
+use polygloss_diff::{
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid, Side,
+};
 use polygloss_viewport::document::{BodyRow, Document, FileLayout, Metrics, RowKey};
 use polygloss_viewport::{
     BlockAnchor, BlockId, BlockSpec, DiffViewport, ESTIMATED_BLOCK_ROWS, LayoutMode, PlacedBlock,
@@ -102,6 +104,7 @@ fn text_change(idx: u32) -> FileChange {
         similarity: None,
         kind: FileKind::Text,
         generated: false,
+        generated_attr: GeneratedAttr::Unspecified,
     }
 }
 

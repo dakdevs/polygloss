@@ -17,5 +17,6 @@ pub mod whitespace;
 pub mod word;
 
 pub use types::{
-    FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid, OidError, Side,
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid, OidError,
+    Side,
 };

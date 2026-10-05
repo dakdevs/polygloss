@@ -129,7 +129,7 @@ describe.skipIf(!process.env.POLYGLOSS_E2E)("RF5 multi-process writers", () => {
     const dbPath = join(world.dataDir, "polygloss.db");
     expect(existsSync(dbPath)).toBe(false);
 
-    // Store bootstrap logs "store migrated before=N after=1" at debug.
+    // Store bootstrap logs "store migrated before=N after=2" at debug.
     const storeDebug = { RUST_LOG: "warn,polygloss_core::store=debug" };
     const envA = {
       ...world.env,
@@ -172,7 +172,7 @@ describe.skipIf(!process.env.POLYGLOSS_E2E)("RF5 multi-process writers", () => {
       expect(
         sql<{ user_version: number }>(world.dataDir, "PRAGMA user_version")
           .user_version,
-      ).toBe(1);
+      ).toBe(2);
       expect(
         readdirSync(world.dataDir).filter((f) => f.includes(".bak-")),
       ).toEqual([]);

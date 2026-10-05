@@ -203,6 +203,20 @@ pub enum FileKind {
     Submodule,
 }
 
+/// The head tree's `linguist-generated` attribute for a file (design §11.15).
+/// Git's `true` and `false` values count as set and unset, as Polygloss v1 read them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratedAttr {
+    /// Stored before store v2, which kept only the folded `generated` bit.
+    #[default]
+    Unknown,
+    /// Not specified, another value, or unreadable (git without `check-attr --source`).
+    Unspecified,
+    Set,
+    Unset,
+}
+
 /// A git file mode. `Display` prints the 6-digit octal form, e.g. `100644`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -348,7 +362,11 @@ pub struct FileChange {
     pub new_blob: Oid,
     pub similarity: Option<u8>,
     pub kind: FileKind,
+    /// `linguist-generated` if specified, else a generated-pattern match: the
+    /// bit store v1 kept.
     pub generated: bool,
+    #[serde(default)]
+    pub generated_attr: GeneratedAttr,
 }
 
 impl FileChange {
@@ -517,6 +535,7 @@ mod tests {
             similarity: None,
             kind: FileKind::Text,
             generated: false,
+            generated_attr: GeneratedAttr::Unspecified,
         }
     }
 
@@ -567,5 +586,32 @@ mod tests {
         let fc = change(FileStatus::Modified, Some("a b.rs"), Some("a b.rs"));
         let back: FileChange = serde_json::from_str(&serde_json::to_string(&fc).unwrap()).unwrap();
         assert_eq!(back, fc);
+    }
+
+    #[test]
+    fn file_change_json_without_generated_attr_reads_unknown() {
+        // A `FileChange` serialized before store v2 had no `generated_attr`.
+        let v1 = r#"{"idx":3,"status":"modified",
+            "old_path":{"text":"Cargo.lock","escaped":false},
+            "new_path":{"text":"Cargo.lock","escaped":false},
+            "old_mode":33188,"new_mode":33188,
+            "old_blob":"ce013625030ba8dba906f756967f9e9ca394464a",
+            "new_blob":"4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            "similarity":null,"kind":"text","generated":true}"#;
+        let fc: FileChange = serde_json::from_str(v1).unwrap();
+        assert_eq!(fc.generated_attr, GeneratedAttr::Unknown);
+        assert!(fc.generated);
+        assert_eq!(fc.display_path(), "Cargo.lock");
+
+        let v2 = v1.replace(
+            r#""generated":true"#,
+            r#""generated":false,"generated_attr":"unset""#,
+        );
+        let fc: FileChange = serde_json::from_str(&v2).unwrap();
+        assert_eq!(fc.generated_attr, GeneratedAttr::Unset);
+        assert_eq!(
+            serde_json::to_string(&GeneratedAttr::Unspecified).unwrap(),
+            "\"unspecified\""
+        );
     }
 }

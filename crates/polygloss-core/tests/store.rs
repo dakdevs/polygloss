@@ -1,4 +1,5 @@
-//! Data paths, store bootstrap, schema v1 and migrations (T1.10, design §7.1, §7.2, §13.2).
+//! Data paths, store bootstrap, schemas v1 and v2, and migrations (T1.10, T6.1, design §7.1,
+//! §7.2, §13.2).
 //!
 //! Isolation: every test first calls `isolate_process()`, which points `HOME`,
 //! `POLYGLOSS_DATA_DIR`, `XDG_CONFIG_HOME` and the git config at a per-process temp
@@ -20,9 +21,12 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use polygloss_core::DiffId;
 use polygloss_core::paths::{DataPaths, PathsError, SOCKET_PATH_MAX, socket_path_fits};
+use polygloss_core::review::Core;
 use polygloss_core::store::migrations::{LATEST_VERSION, migrations};
 use polygloss_core::store::{Store, StoreError};
+use polygloss_diff::GeneratedAttr;
 use rusqlite::{Connection, OptionalExtension};
 use rusqlite_migration::{M, Migrations};
 
@@ -304,9 +308,9 @@ fn store_bootstrap_sets_wal_sync_normal_foreign_keys() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(LATEST_VERSION, 1);
+    assert_eq!(LATEST_VERSION, 2);
     assert_eq!(store.bootstrap().version_before, 0);
-    assert_eq!(store.bootstrap().version_after, 1);
+    assert_eq!(store.bootstrap().version_after, 2);
     assert_eq!(store.bootstrap().backup, None, "no backup of an empty db");
 
     // Foreign keys are enforced on the store's connection.
@@ -327,7 +331,7 @@ fn store_bootstrap_sets_wal_sync_normal_foreign_keys() {
 
     // Reopening an up-to-date store migrates nothing.
     let again = Store::open(&paths).unwrap();
-    assert_eq!(again.bootstrap().version_before, 1);
+    assert_eq!(again.bootstrap().version_before, 2);
     assert_eq!(again.bootstrap().backup, None);
 }
 
@@ -442,23 +446,20 @@ fn store_quick_check_reports_corruption() {
 // ---------------------------------------------------------------------------
 // Schema
 
-/// The ```sql block under "### 7.2 Schema (v1)" in docs/design.md.
-fn design_schema_block() -> String {
+/// The first ```sql block after `anchor` in docs/design.md.
+fn design_sql_block(anchor: &str) -> String {
     let design =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design.md"))
             .unwrap();
-    let start = design.find("### 7.2 Schema (v1)").expect("§7.2 heading");
+    let start = design.find(anchor).expect(anchor);
     let rest = &design[start..];
     let open = rest.find("```sql\n").expect("sql fence") + "```sql\n".len();
     let close = rest[open..].find("\n```").expect("closing fence");
     rest[open..open + close].to_owned()
 }
 
-#[test]
-fn schema_v1_sql_is_design_7_2_verbatim() {
-    let sql = include_str!("../src/store/schema-v1.sql");
-    let block = design_schema_block();
-    // Only a leading `--` header may precede the copied block.
+/// `sql` is `block` exactly, after an optional `--` comment header.
+fn assert_sql_is_block(sql: &str, block: &str) {
     let header_end = sql
         .find(block.lines().next().unwrap())
         .expect("block start");
@@ -466,9 +467,24 @@ fn schema_v1_sql_is_design_7_2_verbatim() {
         sql[..header_end]
             .lines()
             .all(|l| l.is_empty() || l.starts_with("--")),
-        "non-comment text before the §7.2 block"
+        "non-comment text before the design block"
     );
     assert_eq!(sql[header_end..].trim_end(), block.trim_end());
+}
+
+#[test]
+fn schema_v1_sql_is_design_7_2_verbatim() {
+    assert_sql_is_block(
+        include_str!("../src/store/schema-v1.sql"),
+        &design_sql_block("### 7.2 Schema (v1)"),
+    );
+}
+
+#[test]
+fn schema_v2_sql_is_design_migration_2_verbatim() {
+    let block = design_sql_block("\nMigration 2 ");
+    assert!(block.contains("ADD COLUMN generated_attr"), "{block}");
+    assert_sql_is_block(include_str!("../src/store/schema-v2.sql"), &block);
 }
 
 #[test]
@@ -559,6 +575,63 @@ fn store_open_rejects_newer_schema() {
     assert!(matches!(err, StoreError::Migration(_)), "{err:?}");
     assert_eq!(user_version(&paths.db), 7, "left untouched");
     assert!(!paths.data_dir.join("polygloss.db.bak-v7").exists());
+}
+
+#[test]
+fn store_migrates_v1_to_v2_with_a_backup() {
+    let (_root, paths) = fresh_paths();
+    // A store as a v1 build left it, with one listed file.
+    let v1 = [M::up(include_str!("../src/store/schema-v1.sql"))];
+    let store = Store::open_with_migrations(&paths, &Migrations::from_slice(&v1)).unwrap();
+    let diff = "d".repeat(64);
+    let (tree, blob) = ("a".repeat(40), "b".repeat(40));
+    store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO diffs (id, object_format, base_tree, head_tree, files_count, \
+                   created_at) VALUES (?1, 'sha1', ?2, ?2, 1, 1)",
+                [&diff, &tree],
+            )?;
+            tx.execute(
+                "INSERT INTO file_changes (diff_id, idx, status, old_path, new_path, old_mode, \
+                   new_mode, old_blob, new_blob, kind, generated) \
+                 VALUES (?1, 0, 'M', 'Cargo.lock', 'Cargo.lock', '100644', '100644', ?2, ?2, \
+                   'text', 0)",
+                [&diff, &blob],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+    assert_eq!(user_version(&paths.db), 1);
+
+    let store = Store::open(&paths).unwrap();
+    let backup = paths.data_dir.join("polygloss.db.bak-v1");
+    assert_eq!(store.bootstrap().version_before, 1);
+    assert_eq!(store.bootstrap().version_after, 2);
+    assert_eq!(store.bootstrap().backup.as_deref(), Some(backup.as_path()));
+    assert_eq!(user_version(&backup), 1);
+    let raw: Option<i64> = store
+        .read(|c| Ok(c.query_row("SELECT generated_attr FROM file_changes", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(raw, None, "rows from before migration 2 hold NULL");
+    drop(store);
+
+    let core = Core::with_paths(paths.clone()).unwrap();
+    let files = core
+        .files_for_diff(&DiffId::parse(&diff).unwrap())
+        .unwrap()
+        .expect("stored diff");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].display_path(), "Cargo.lock");
+    assert_eq!(files[0].generated_attr, GeneratedAttr::Unknown);
+    assert!(!files[0].generated);
+    drop(core);
+
+    // Migrated once: the next open finds v2 and takes no backup.
+    let again = Store::open(&paths).unwrap();
+    assert_eq!(again.bootstrap().version_before, 2);
+    assert_eq!(again.bootstrap().backup, None);
 }
 
 #[test]
@@ -671,8 +744,11 @@ fn store_concurrent_first_open_migrates_once() {
         1,
         "exactly one child migrates: {befores:?}"
     );
-    assert!(befores.iter().all(|v| *v <= 1), "{befores:?}");
-    assert_eq!(user_version(&paths.db), 1);
+    assert!(
+        befores.iter().all(|v| *v == 0 || *v == LATEST_VERSION),
+        "{befores:?}"
+    );
+    assert_eq!(user_version(&paths.db), LATEST_VERSION);
     let backups: Vec<_> = fs::read_dir(&paths.data_dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -686,7 +762,7 @@ fn store_parallel_writers_never_surface_busy() {
     let (root, paths) = fresh_paths();
     Store::open(&paths).unwrap();
     let befores = run_children(&paths, root.path(), "write", 4);
-    assert_eq!(befores, vec![1; 4]);
+    assert_eq!(befores, vec![LATEST_VERSION; 4]);
     let n: i64 = Connection::open(&paths.db)
         .unwrap()
         .query_row(

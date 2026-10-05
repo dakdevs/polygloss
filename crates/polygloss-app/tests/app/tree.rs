@@ -13,7 +13,7 @@ use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::tree::filters::{self, StatusFilter, TreeFilters};
 use polygloss_app::tree::model::{ItemId, NodeKind, TreeModel};
 use polygloss_app::tree::{FileTree, FileTreeEvent, file_tree, finder};
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, ObjectFormat, Oid};
+use polygloss_diff::{FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, ObjectFormat, Oid};
 use polygloss_viewport::{DiffProvider, DiffViewport, FileFlags, ScrollTarget, ViewportOptions};
 
 use crate::shell::{Shell, compare_req, draw, start};
@@ -768,6 +768,7 @@ fn synthetic_files(n: usize) -> Vec<FileChange> {
             similarity: None,
             kind: FileKind::Text,
             generated: false,
+            generated_attr: GeneratedAttr::Unspecified,
         })
         .collect()
 }
