@@ -21,8 +21,10 @@
 //! Updates touch only what changed: a file whose thread anchors changed gets
 //! `set_blocks` (the viewport re-lays out that file only), a thread whose
 //! content changed gets `invalidate_block` (re-measured on the next frame).
-//! "Hide agent notes" (`tab::ToggleAgentNotes`, toolbar, settings
-//! `agent_notes.hidden`) removes notes from the diff and the panel. `.` /
+//! "Hide agent notes" (`tab::ToggleAgentNotes`, the display options menu,
+//! settings `agent_notes.hidden`) removes notes from the diff and the
+//! panel; the toolbar's threads button ([`toolbar`]) then carries a muted
+//! dot. `.` /
 //! `,` (`viewport::NextOpenThread` / `PrevOpenThread`) move the cursor to
 //! the next or previous open thread across files (outdated included,
 //! resolved skipped), expanding a collapsed file and the hidden context
@@ -32,17 +34,16 @@ pub mod block;
 pub mod keys;
 pub mod panel;
 pub mod placement;
+pub mod toolbar;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{IconName, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    InteractiveElement as _, IntoElement, MenuItem, ScrollHandle, Task, WeakEntity, Window, div,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, IntoElement,
+    MenuItem, ScrollHandle, Task, WeakEntity, Window, div,
 };
 use polygloss_core::git::RepoInfo;
 use polygloss_core::ids::DiffId;
@@ -67,6 +68,7 @@ use crate::window::MenuKind;
 use placement::{Changes, DiffOrder, PlacedThread, ThreadPlace};
 
 pub use keys::{current_thread, focus_panel};
+pub use toolbar::{agent_notes_entry, open_counts, toolbar_button};
 
 /// Registers `.` / `,`, "Hide agent notes", the threads panel's keys and
 /// their menu items.
@@ -208,57 +210,6 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
     })
     .detach();
     tab.insert_extension(model);
-}
-
-/// "Hide agent notes" in the toolbar (design §11.4), when the review has
-/// agent notes.
-pub fn toolbar_items(
-    tab: &ReviewTab,
-    _window: &mut Window,
-    cx: &mut Context<ReviewTab>,
-) -> Vec<AnyElement> {
-    let Some(model) = threads(tab) else {
-        return Vec::new();
-    };
-    let m = model.read(cx);
-    let notes = m
-        .threads
-        .iter()
-        .filter(|t| t.kind == ThreadKind::Note)
-        .count();
-    if notes == 0 {
-        return Vec::new();
-    }
-    let hidden = m.hide_agent_notes;
-    let model = model.clone();
-    vec![
-        Button::new("toggle-agent-notes")
-            .debug_selector(|| "toggle-agent-notes".into())
-            .small()
-            .ghost()
-            .icon(if hidden {
-                IconName::EyeOff
-            } else {
-                IconName::Eye
-            })
-            .label(if hidden {
-                format!("Show agent notes ({notes})")
-            } else {
-                "Hide agent notes".to_owned()
-            })
-            .tooltip(if hidden {
-                "Show the agents' notes in the diff"
-            } else {
-                "Hide the agents' notes in the diff"
-            })
-            .on_click(move |_, _, cx| {
-                model.update(cx, |m, cx| {
-                    let hide = !m.hide_agent_notes;
-                    m.set_hide_agent_notes(hide, cx);
-                })
-            })
-            .into_any_element(),
-    ]
 }
 
 /// The threads panel.

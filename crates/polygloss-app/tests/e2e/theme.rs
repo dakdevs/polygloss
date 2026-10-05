@@ -85,6 +85,7 @@ fn e2e_theme_polygloss_dark_unified() {
 fn capture_app(mode: ThemeMode, named: Option<&str>, layout: LayoutSetting, threads_panel: bool) {
     let sb = Sandbox::isolate();
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     // The settings file the app reads at startup (the headless context runs
     // no effect cycle between updates, so observers of a later change would
     // not run before the capture).

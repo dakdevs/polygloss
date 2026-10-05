@@ -47,9 +47,9 @@ The sidebar's **Reviews** segment is the same list for the mouse: **Home** with 
 
 ## Reviewing
 
-A review fills the window: the sidebar on the left shows its **file tree** (its **Files | Reviews** switch lists Home and the open reviews instead; its other button hides the sidebar), and the main column holds a toolbar, a banner strip, the **diff** and the **threads panel** (toggle it from the palette or the View menu). Drag the sidebar's edge to resize it; it keeps its width for every review. Drag either top row to move the window and double-click it to zoom.
+A review fills the window: the sidebar on the left shows its **file tree** (its **Files | Reviews** switch lists Home and the open reviews instead; its other button hides the sidebar), and the main column holds a toolbar, a banner strip, the **diff** and the **threads panel** (its toolbar button, the palette or the View menu show and hide it). Drag the sidebar's edge to resize it; it keeps its width for every review. Drag either top row to move the window and double-click it to zoom.
 
-- **Toolbar:** the iteration picker ("Iteration 3 of 3") with **Changes since last review**, the base picker and **Snapshot** (live reviews), split/unified, hide whitespace, word diff by words or characters, "N / M viewed", **Hide agent notes**, and the drafts count with **Submit review**.
+- **Toolbar:** on the left the repo's name over its folder (`~` for your home folder), then pills for what you review: a commit's id; a compare's base and head refs (`…` for three-dot, `..` for direct); a live review's branch and **Live · base**, which picks the base; then **Snapshot** (live reviews) and the iteration pill ("Iteration 3 of 3", with **Changes since last review**; `i` opens it). On the right: find (`⌘F`), the threads button (open threads; a dot while agent notes are hidden), `N/M` files viewed, the split | unified switch, the display options (automatic layout, hide whitespace, wrap lines, word diff by words or characters, hide or show agent notes) and **Submit review** with the drafts count. In a narrow window the labels shorten and find and `N/M` move into the display options.
 - **Layout:** split when the diff is at least 160 code columns wide (`diff.split_min_columns`), otherwise unified. `s` switches, and the choice is remembered for that diff. An added or deleted file is one full-width pane with one line-number column in both layouts. Changed lines have a colored bar at their left edge (each side's in split) and tinted line numbers.
 - **Word diff:** each modified line pair highlights the changed words (or characters).
 - **Context:** 3 lines around each change. The gap expanders show 20 more lines up or down, or everything; `e` expands the gap nearest the cursor by 20 lines and `⇧E` expands the whole file.
@@ -72,13 +72,13 @@ Threads anchor to lines of one side of the diff (a line or a range), to a whole 
 
 Threads are **open** or **resolved**; you and agents can both resolve and reopen them, and that takes effect at once (it is not a draft). You can edit and delete your own comments.
 
-Agents write three kinds of threads. Their **comments and replies** are published immediately, and a banner ("claude-code replied to N threads") jumps to the next unread one. **Notes** explain code: they show as one-line chips, and **Hide agent notes** hides them all (`agent_notes.hidden` sets the default). **Questions** ask you to decide something: they show expanded with a question badge and count as "awaiting you" until you reply (and submit) or resolve them.
+Agents write three kinds of threads. Their **comments and replies** are published immediately, and a banner ("claude-code replied to N threads") jumps to the next unread one. **Notes** explain code: they show as one-line chips, and **Hide agent notes** in the display options hides them all (`agent_notes.hidden` sets the default; the threads button then shows a dot and says how many are hidden). **Questions** ask you to decide something: they show expanded with a question badge and count as "awaiting you" until you reply (and submit) or resolve them.
 
 When the code under a thread changes in a later iteration, the thread follows its lines. If the lines moved, it moves with them. If they changed, it is shown as **Outdated** at the nearest line with its original snippet, and it is also listed in the threads panel. It stays open until someone resolves it. `.` and `,` jump to the next and previous open thread.
 
 ## Viewed
 
-Mark a file **Viewed** with its header checkbox, its tree checkbox, or `v`. Marking a file viewed collapses it and jumps to the next unviewed file. The toolbar counts "N / M viewed".
+Mark a file **Viewed** with its header checkbox, its tree checkbox, or `v`. Marking a file viewed collapses it and jumps to the next unviewed file. The toolbar counts the files viewed (`N/M`).
 
 - Viewed belongs to the file's exact change: its path plus the old and new file contents. A file stays viewed across iterations, and even across reviews, for as long as that change is the same.
 - When the file changes again, it unchecks itself and shows **Changed since viewed** (the tree marks it with a dot), like GitHub's dismissed state.
@@ -210,6 +210,7 @@ These are in the command palette (and some in the toolbar or menus); bind them i
 | Split view                | `viewport::LayoutSplit`             |
 | Unified view              | `viewport::LayoutUnified`           |
 | Automatic layout          | `viewport::LayoutAuto`              |
+| Toggle wrap lines         | `viewport::ToggleWrap`              |
 | Word diff: words          | `viewport::WordDiffWord`            |
 | Word diff: characters     | `viewport::WordDiffChar`            |
 | Word diff: off            | `viewport::WordDiffOff`             |

@@ -15,7 +15,7 @@ use polygloss_diff::rows::Layout;
 use polygloss_viewport::{LayoutMode, RowKey, ScrollTarget};
 
 use crate::keymap::wait_until;
-use crate::shell::{Shell, compare_req, draw, start};
+use crate::shell::{Shell, bounds, compare_req, draw, painted, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
 fn has_dialog(shell: &mut Shell) -> bool {
@@ -501,4 +501,141 @@ fn cheat_sheet_folds_the_review_numbers() {
         .collect();
     assert_eq!(titles.len(), 9, "{titles:?}");
     assert!(rebound.iter().all(|r| !r.span));
+}
+
+#[gpui_kit::test]
+fn layout_toggle_is_segmented_and_follows_auto(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let selected = |shell: &mut Shell| {
+        let marker = bounds(shell.cx, "layout-selected");
+        ["layout-split", "layout-unified"]
+            .into_iter()
+            .find(|s| bounds(shell.cx, s).contains(&marker.center()))
+            .expect("the marker is in a segment")
+    };
+    // Two segments side by side in one track: split, then unified.
+    let (track, split, unified) = (
+        bounds(shell.cx, "layout-toggle"),
+        bounds(shell.cx, "layout-split"),
+        bounds(shell.cx, "layout-unified"),
+    );
+    assert!(split.right() <= unified.left());
+    assert!(track.contains(&split.center()) && track.contains(&unified.center()));
+    // Automatic: this window is too narrow to split.
+    assert_eq!(selected(&mut shell), "layout-unified");
+    // A wide window splits, and the toggle follows.
+    crate::shell::resize_window(&mut shell, 2800., 900.);
+    assert_eq!(
+        tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).effective_layout()),
+        Layout::Split
+    );
+    assert_eq!(selected(&mut shell), "layout-split");
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| view_toggles::layout_choice(t)),
+        None
+    );
+    // A click on a segment chooses it.
+    crate::shell::click(shell.cx, "layout-unified");
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| view_toggles::layout_choice(t)),
+        Some(LayoutMode::Unified)
+    );
+    assert_eq!(selected(&mut shell), "layout-unified");
+    crate::shell::click(shell.cx, "layout-split");
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| view_toggles::layout_choice(t)),
+        Some(LayoutMode::Split)
+    );
+    assert_eq!(selected(&mut shell), "layout-split");
+}
+
+#[gpui_kit::test]
+fn display_menu_has_wrap_and_agent_notes(cx: &mut TestAppContext) {
+    use actions::{tab as tab_actions, viewport as v};
+    use polygloss_app::palette::MenuEntry;
+    use polygloss_core::review::ThreadKind;
+    use polygloss_diff::Side;
+
+    use crate::threads::{agent, create, line, reload};
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let entries = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            polygloss_app::features::display_menu_entries(t, cx)
+        })
+    };
+    let toggles = || {
+        vec![
+            MenuEntry::check("Automatic layout", true, v::LayoutAuto),
+            MenuEntry::check("Hide whitespace", false, v::ToggleWhitespace),
+            MenuEntry::check("Wrap lines", false, v::ToggleWrap),
+            MenuEntry::Separator,
+            MenuEntry::check("Word diff", true, v::WordDiffWord),
+            MenuEntry::check("Character diff", false, v::WordDiffChar),
+            MenuEntry::check("No inline highlights", false, v::WordDiffOff),
+        ]
+    };
+    // No agent notes: no notes item.
+    assert_eq!(entries(&mut shell), toggles());
+
+    for (n, body) in [(1, "First note."), (3, "Second note.")] {
+        let subject = line("src/config.rs", Side::New, n, n);
+        create(&mut shell, &tab, subject, ThreadKind::Note, body, agent());
+    }
+    reload(&mut shell, &tab);
+    let with_notes = |label: &str| {
+        let mut all = toggles();
+        all.push(MenuEntry::Separator);
+        all.push(MenuEntry::action(label, tab_actions::ToggleAgentNotes));
+        all
+    };
+    assert_eq!(entries(&mut shell), with_notes("Hide agent notes"));
+    shell.cx.dispatch_action(tab_actions::ToggleAgentNotes);
+    draw(shell.cx);
+    assert_eq!(entries(&mut shell), with_notes("Show agent notes (2)"));
+
+    // The items say what is on: wrap toggled from the palette.
+    shell.cx.dispatch_action(v::ToggleWrap);
+    draw(shell.cx);
+    assert!(entries(&mut shell).contains(&MenuEntry::check("Wrap lines", true, v::ToggleWrap)));
+    // The button that opens it is painted.
+    assert!(painted(shell.cx, "view-options").is_some());
+}
+
+#[gpui_kit::test]
+fn toggle_wrap_reaches_the_viewport_options(cx: &mut TestAppContext) {
+    let sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let wrap = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).options().style.wrap)
+    };
+    assert!(!wrap(&mut shell), "off by default (diff.style.wrap)");
+    shell.cx.dispatch_action(actions::viewport::ToggleWrap);
+    draw(shell.cx);
+    assert!(wrap(&mut shell));
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| view_toggles::overrides(t).wrap),
+        Some(true)
+    );
+    // A settings reload keeps the tab's choice (it is an override on top).
+    let settings = sb.config_dir().join("polygloss/settings.json");
+    std::fs::write(&settings, r#"{ "buffer_font": { "size": 14 } }"#).unwrap();
+    shell.cx.update(|_, cx| SettingsStore::reload(cx));
+    draw(shell.cx);
+    let size = tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).options().code_font_size
+    });
+    assert_eq!(size, 14.0, "the reload applied");
+    assert!(wrap(&mut shell), "kept over the reload");
+    shell.cx.dispatch_action(actions::viewport::ToggleWrap);
+    draw(shell.cx);
+    assert!(!wrap(&mut shell));
 }

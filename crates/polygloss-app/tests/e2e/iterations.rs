@@ -77,6 +77,7 @@ struct Shown {
 /// on Changes since last review (module docs).
 fn changes_since() -> Shown {
     let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    crate::support::home_above(repo.path());
     repo.write("src/config.rs", CONFIG_RS_BASE.as_bytes());
     repo.write("src/greet.ts", GREET_BASE.as_bytes());
     repo.commit("base");

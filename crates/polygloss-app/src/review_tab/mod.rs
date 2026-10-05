@@ -8,8 +8,8 @@
 //!
 //! Features plug in without editing this module: every feature module's
 //! `attach` runs for each new tab (subscriptions, per-tab state kept with
-//! [`ReviewTab::insert_extension`]), the toolbar calls their
-//! `toolbar_items`, the panes call `tree::render_pane` and
+//! [`ReviewTab::insert_extension`]), the toolbar calls their slots through
+//! `features::{toolbar_left, toolbar_right}`, the panes call `tree::render_pane` and
 //! `threads::render_panel`, and banners go through [`ReviewTab::banners`].
 
 pub mod banners;
@@ -190,7 +190,7 @@ impl Focusable for ReviewTab {
 impl Render for ReviewTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = panes::render_sidebar(self, window, cx);
-        let toolbar = toolbar::render(self, window, cx);
+        let toolbar = toolbar::render(cx);
         let panes = panes::render(self, window, cx);
         let main = v_flex()
             .size_full()
@@ -213,12 +213,17 @@ impl Render for ReviewTab {
     }
 }
 
-/// The repo's name: its worktree's directory, else the git dir's parent.
-fn repo_name(opened: &OpenedDiff) -> String {
-    let dir = opened.repo.toplevel.clone().unwrap_or_else(|| {
+/// The repo's directory: its worktree, else the git dir's parent.
+fn repo_dir(opened: &OpenedDiff) -> std::path::PathBuf {
+    opened.repo.toplevel.clone().unwrap_or_else(|| {
         let common = &opened.repo.common_dir;
         common.parent().unwrap_or(common).to_path_buf()
-    });
+    })
+}
+
+/// The repo's name: [`repo_dir`]'s name.
+fn repo_name(opened: &OpenedDiff) -> String {
+    let dir = repo_dir(opened);
     dir.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir.display().to_string())

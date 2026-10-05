@@ -23,6 +23,16 @@ use polygloss_core::git::{CompareMode, Source};
 use polygloss_core::review::{Core, OpenRequest, OpenedDiff};
 use polygloss_core::store::events::Actor;
 pub use polygloss_core::testing::{FixtureRepo, Sandbox};
+
+/// Points `HOME` at the directory holding `repo` (the fixture's own temp
+/// dir, never the real home), so the toolbar's repo block reads `~` under
+/// the repo's name and screenshots never show a temp path. Call it after
+/// `Sandbox::isolate()`, before the app starts.
+pub fn home_above(repo: &Path) {
+    let root = repo.parent().expect("a fixture repo has a parent dir");
+    // SAFETY: one test per process, before the app starts any thread.
+    unsafe { std::env::set_var("HOME", root) };
+}
 use polygloss_diff::ObjectFormat;
 
 /// `src/config.rs` at `base`.

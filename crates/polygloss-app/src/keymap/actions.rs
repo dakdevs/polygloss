@@ -57,6 +57,9 @@ pub mod viewport {
             LayoutAuto,
             /// `w`: hide or show whitespace-only changes.
             ToggleWhitespace,
+            /// Wrap long lines, or cut them at the column's edge (palette and
+            /// the display options menu, T6.8).
+            ToggleWrap,
             /// Word diff by words.
             WordDiffWord,
             /// Word diff by characters.
@@ -258,6 +261,7 @@ pub const ACTIONS: &[ActionInfo] = registry![
     viewport::LayoutUnified => "Unified view",
     viewport::LayoutAuto => "Automatic layout",
     viewport::ToggleWhitespace => "Toggle hide whitespace",
+    viewport::ToggleWrap => "Toggle wrap lines",
     viewport::WordDiffWord => "Word diff: words",
     viewport::WordDiffChar => "Word diff: characters",
     viewport::WordDiffOff => "Word diff: off",

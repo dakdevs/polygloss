@@ -5,7 +5,7 @@
 //! tab it was chosen from keeps showing its own base.
 //!
 //! `tab::ChooseBase` (the palette, the Review menu) and the toolbar's
-//! "Base: …" button open a searchable list (a gpui-kit `Dialog` with a
+//! Live pill ("Live · merge base") open a searchable list (a gpui-kit `Dialog` with a
 //! `List`, like ⌘P): the two moving bases first, then the worktree's
 //! commits (newest first, read in the background), ranked by
 //! `nucleo-matcher` over subject, author and id. The current base is
@@ -34,7 +34,7 @@ use crate::review_tab::{ReviewTab, open_review};
 /// Commits listed (newest first).
 pub const COMMITS: u32 = 500;
 
-/// How a base reads in the toolbar ("Base: merge base").
+/// How a base reads in the toolbar's Live pill ("Live · merge base").
 pub fn since_label(since: &Since) -> String {
     match since {
         Since::MergeBase => "merge base".to_owned(),
