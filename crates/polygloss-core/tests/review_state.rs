@@ -396,6 +396,7 @@ fn sample_view_state() -> ViewState {
         tree_expanded: Some(vec!["src".into(), "src/review".into()]),
         composer: BTreeMap::from([("line:src/lib.rs:new:42".into(), "draft text".into())]),
         threads_panel: Some(true),
+        open_sections: Some(vec!["tests".into(), "custom:tokens".into()]),
     }
 }
 
@@ -438,7 +439,8 @@ fn view_state_roundtrip_v1() {
             "layout": "unified",
             "tree_expanded": ["src", "src/review"],
             "composer": { "line:src/lib.rs:new:42": "draft text" },
-            "threads_panel": true
+            "threads_panel": true,
+            "open_sections": ["tests", "custom:tokens"]
         })
     );
 
@@ -537,6 +539,36 @@ fn view_state_threads_panel_is_optional_and_round_trips() {
     );
     let old = core.load_view_state(&opened.diff_id).unwrap().unwrap();
     assert_eq!((old.layout, old.threads_panel), (Some(Layout::Split), None));
+}
+
+#[test]
+fn view_state_open_sections_is_optional_and_round_trips() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let opened = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+    // Never toggled: left out of the JSON, unlike an empty list (every
+    // section closed).
+    core.save_view_state(&opened.diff_id, &ViewState::default())
+        .unwrap();
+    assert_eq!(stored_json(&core).get("open_sections"), None);
+    let closed = ViewState {
+        open_sections: Some(Vec::new()),
+        ..ViewState::default()
+    };
+    core.save_view_state(&opened.diff_id, &closed).unwrap();
+    assert_eq!(stored_json(&core)["open_sections"], serde_json::json!([]));
+    assert_eq!(core.load_view_state(&opened.diff_id).unwrap(), Some(closed));
+    // A state written before M6 has no key.
+    exec(
+        &core,
+        "UPDATE view_state SET state_json = ?1",
+        [r#"{"v":1,"layout":"split"}"#],
+    );
+    let old = core.load_view_state(&opened.diff_id).unwrap().unwrap();
+    assert_eq!(old.open_sections, None);
 }
 
 #[test]

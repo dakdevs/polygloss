@@ -89,6 +89,7 @@ fn palette_lists_every_action_with_binding_hint(cx: &mut TestAppContext) {
             "Comment",
             "Threads",
             "Review",
+            "File categories",
             "Window"
         ]
     );

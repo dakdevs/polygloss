@@ -11,6 +11,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod categories;
 mod cursor;
 mod feed;
 mod find;
@@ -63,5 +64,6 @@ fn main() -> std::process::ExitCode {
         feed::TESTS,
         keyboard_only_review::TESTS,
         header_card::TESTS,
+        categories::TESTS,
     ])
 }

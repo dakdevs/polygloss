@@ -47,7 +47,7 @@ struct Shot {
 /// highlighted.
 fn render(opened: &OpenedDiff, layout: LayoutMode, appearance: Appearance) -> Shot {
     let provider: Arc<dyn DiffProvider> =
-        Arc::new(CoreDiffProvider::open(opened).expect("open the provider"));
+        Arc::new(CoreDiffProvider::open(opened, &default_categories()).expect("open the provider"));
     let opts = ViewportOptions {
         layout,
         theme: Arc::new(ViewportTheme::pierre(appearance)),
@@ -238,4 +238,11 @@ fn e2e_viewport_special_files() {
         ],
     );
     assert_screenshot(&shot.image);
+}
+
+/// The categorizer of the default settings (design §11.15): what a review
+/// tab builds its provider with.
+fn default_categories() -> polygloss_core::categories::Categorizer {
+    polygloss_core::categories::Categorizer::new(&Default::default(), &[])
+        .expect("the defaults compile")
 }

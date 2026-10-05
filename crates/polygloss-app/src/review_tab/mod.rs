@@ -374,9 +374,12 @@ pub type Opening = Task<anyhow::Result<(OpenedDiff, CoreDiffProvider)>>;
 /// up; [`finish_open`] shows the result.
 pub fn start_open(req: OpenRequest, cx: &mut App) -> Opening {
     let core = AppState::global(cx).core.clone();
+    // Captured now: the provider's Generated verdicts are the ones the tab
+    // partitions with when it attaches.
+    let categorizer = crate::categories::ForOpen::capture(cx);
     cx.background_spawn(async move {
         let opened = core.open(&req)?;
-        let provider = CoreDiffProvider::open(&opened)?;
+        let provider = CoreDiffProvider::open(&opened, &categorizer.get())?;
         anyhow::Ok((opened, provider))
     })
 }

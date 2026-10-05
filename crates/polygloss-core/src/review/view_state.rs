@@ -3,9 +3,10 @@
 //! Stored per `diff_id` as `{ "v": 1, "scroll_anchor": { "path", "side", "line" },
 //! "collapsed": [path], "expanded": { path: [[start, end]] }, "layout": "split" |
 //! "unified" | null, "tree_expanded": [dir], "composer": { key: text },
-//! "threads_panel": bool }`. Missing fields load as their defaults (a missing
-//! `tree_expanded` or `threads_panel` is `None`: never saved, unlike `[]` or
-//! `false`) and unknown fields are ignored; a state with
+//! "threads_panel": bool, "open_sections": [category] }`. Missing fields load as
+//! their defaults (a missing `tree_expanded`, `threads_panel` or `open_sections`
+//! is `None`: never saved, unlike `[]` or `false`) and unknown fields are
+//! ignored; a state with
 //! another `v`, or one that does not parse, loads as `None` (ignored, never an
 //! error). View state is UI state saved on change (debounced by the app), so it
 //! appends no event.
@@ -54,6 +55,12 @@ pub struct ViewState {
     /// never shown or hidden (left out of the JSON): the panel is hidden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads_panel: Option<bool>,
+    /// The category sections shown open (design §11.15), by category as
+    /// agents spell it (`"tests"`, `"custom:tokens"`). `None` when the user
+    /// never opened or closed one (left out of the JSON): the default rule
+    /// decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_sections: Option<Vec<String>>,
 }
 
 impl Default for ViewState {
@@ -67,6 +74,7 @@ impl Default for ViewState {
             tree_expanded: None,
             composer: BTreeMap::new(),
             threads_panel: None,
+            open_sections: None,
         }
     }
 }

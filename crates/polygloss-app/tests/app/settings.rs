@@ -66,6 +66,60 @@ fn settings_defaults_match_design_table() {
     assert!(s.notifications.enabled);
     assert_eq!(s.storage.prune_reviews_after_days, None);
     assert_eq!(s.updates.automatic_checks, None);
+    // Categories (design §11.15's table): Tests and Generated on, the rest
+    // off; Generated's `build-output` group off; no extras, no custom ones.
+    let c = &s.categories;
+    let enabled = [
+        c.tests.enabled,
+        c.generated.enabled,
+        c.vendored.enabled,
+        c.agents.enabled,
+        c.docs.enabled,
+        c.tooling.enabled,
+        c.stories.enabled,
+    ];
+    assert_eq!(enabled, [true, true, false, false, false, false, false]);
+    assert_eq!(c.generated.disabled_groups, ["build-output"]);
+    for other in [
+        &c.tests,
+        &c.vendored,
+        &c.agents,
+        &c.docs,
+        &c.tooling,
+        &c.stories,
+    ] {
+        assert!(other.disabled_groups.is_empty());
+    }
+    for any in [
+        &c.tests,
+        &c.generated,
+        &c.vendored,
+        &c.agents,
+        &c.docs,
+        &c.tooling,
+        &c.stories,
+    ] {
+        assert!(any.patterns.is_empty());
+    }
+    assert!(c.custom.is_empty());
+    // A category object with keys left out keeps that category's defaults.
+    let partial = Settings::parse(
+        r#"{ "categories": {
+              "generated": { "patterns": ["!Cargo.lock"] },
+              "docs": { "enabled": true },
+              "custom": [{ "id": "tokens", "name": "Design tokens", "patterns": ["tokens/"] }],
+            } }"#,
+    )
+    .unwrap();
+    assert!(partial.categories.generated.enabled);
+    assert_eq!(
+        partial.categories.generated.disabled_groups,
+        ["build-output"]
+    );
+    assert_eq!(partial.categories.generated.patterns, ["!Cargo.lock"]);
+    assert!(partial.categories.docs.enabled);
+    assert_eq!(partial.categories.custom[0].id, "tokens");
+    assert!(partial.categories.custom[0].enabled);
 
     // An empty object is the defaults; the design table's JSON spellings
     // parse; unknown keys are ignored and missing ones keep their default.
@@ -294,4 +348,135 @@ fn settings_watcher_wakes_an_awaiting_task() {
         }),
         None
     );
+}
+
+/// Starts logging to the sandbox's logs dir (one test per process) and
+/// returns the guard and a reader of everything logged so far (flushed by
+/// dropping the guard).
+fn capture_log(
+    sb: &Sandbox,
+) -> (
+    tracing_appender::non_blocking::WorkerGuard,
+    std::path::PathBuf,
+) {
+    let dir = sb.home().join("Library/Logs/polygloss");
+    let guard = polygloss_app::logging::init(&dir).expect("logging starts");
+    (guard, dir)
+}
+
+fn read_log(dir: &std::path::Path) -> String {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect()
+}
+
+#[gpui_kit::test]
+fn invalid_categories_keep_the_previous_settings_and_toast(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = crate::categories::mixed_repo(3);
+    let mut shell = start(cx);
+    crate::categories::reload_settings(
+        &mut shell,
+        r#"{ "categories": { "docs": { "enabled": true } } }"#,
+    );
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    assert_eq!(crate::categories::main_files(&mut shell, &tab), [2, 4]);
+
+    // A pattern that does not compile (an unclosed class), a bad custom id,
+    // an empty name, a built-in key as a custom id and 501 patterns each
+    // make the file invalid.
+    let many: Vec<String> = (0..501).map(|i| format!("\"gen-{i}/\"")).collect();
+    let bad = [
+        r#"{ "categories": { "tests": { "patterns": ["[abc"] } } }"#.to_owned(),
+        r#"{ "categories": { "custom": [{ "id": "Tokens", "name": "T" }] } }"#.to_owned(),
+        r#"{ "categories": { "custom": [{ "id": "tokens", "name": " " }] } }"#.to_owned(),
+        r#"{ "categories": { "custom": [{ "id": "tests", "name": "T" }] } }"#.to_owned(),
+        format!(
+            r#"{{ "categories": {{ "docs": {{ "patterns": [{}] }} }} }}"#,
+            many.join(",")
+        ),
+    ];
+    for (i, text) in bad.iter().enumerate() {
+        crate::categories::reload_settings(&mut shell, text);
+        let error = shell.cx.update(|_, cx| {
+            SettingsStore::global(cx)
+                .last_error()
+                .map(|e| e.to_string())
+        });
+        let error = error.unwrap_or_else(|| panic!("{text} was accepted"));
+        assert!(error.contains("categories"), "{error}");
+        let toasts = shell.main.read_with(shell.cx, |m, _| m.toasts().len());
+        assert_eq!(toasts, i + 1, "a toast per invalid load");
+        // The previous settings stay, and so does the partition.
+        assert!(
+            shell
+                .cx
+                .update(|_, cx| { SettingsStore::global(cx).settings().categories.docs.enabled })
+        );
+        assert_eq!(crate::categories::main_files(&mut shell, &tab), [2, 4]);
+    }
+    let toasts = shell.main.read_with(shell.cx, |m, _| m.toasts().to_vec());
+    assert!(toasts[0].contains("[abc"), "{toasts:?}");
+}
+
+#[gpui_kit::test]
+fn invalid_legacy_generated_patterns_are_logged_not_fatal(cx: &mut TestAppContext) {
+    let sb = Sandbox::isolate();
+    let (guard, logs) = capture_log(&sb);
+    let repo = crate::categories::repo_with(&["a.out", "src/a.rs"], 3);
+    let mut shell = start(cx);
+    crate::categories::reload_settings(
+        &mut shell,
+        r#"{ "diff": { "generated_patterns": ["[abc", "*.out"] } }"#,
+    );
+    let error = shell.cx.update(|_, cx| {
+        SettingsStore::global(cx)
+            .last_error()
+            .map(|e| e.to_string())
+    });
+    assert_eq!(
+        error, None,
+        "a bad legacy pattern never invalidates the file"
+    );
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    // `*.out` applies: `a.out` is generated and in the Generated section.
+    let generated = tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).document().files()[0].generated
+    });
+    assert!(generated);
+    assert_eq!(crate::categories::main_files(&mut shell, &tab), [1]);
+    drop(guard);
+    let log = read_log(&logs);
+    assert_eq!(log.matches("[abc").count(), 1, "logged once: {log}");
+}
+
+#[gpui_kit::test]
+fn unknown_category_keys_are_logged(cx: &mut TestAppContext) {
+    let sb = Sandbox::isolate();
+    let (guard, logs) = capture_log(&sb);
+    let mut shell = start(cx);
+    crate::categories::reload_settings(
+        &mut shell,
+        r#"{ "categories": {
+              "test": { "enabled": false },
+              "tests": { "enable": false, "disabled_groups": ["snapshot"] },
+            } }"#,
+    );
+    let error = shell.cx.update(|_, cx| {
+        SettingsStore::global(cx)
+            .last_error()
+            .map(|e| e.to_string())
+    });
+    assert_eq!(error, None, "unknown keys are ignored");
+    drop(guard);
+    let log = read_log(&logs);
+    for key in [
+        "categories.test",
+        "categories.tests.enable",
+        "tests/snapshot",
+    ] {
+        let line = format!(" {key} (ignored)");
+        assert_eq!(log.matches(&line).count(), 1, "{key} logged once: {log}");
+    }
 }

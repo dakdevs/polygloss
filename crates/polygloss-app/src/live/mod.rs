@@ -320,11 +320,12 @@ pub fn refresh_tab(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Re
     let old_provider = tab.viewport.read(cx).provider().clone();
     let review_id = tab.review_id.clone();
     let core = AppState::global(cx).core.clone();
+    let categorizer = crate::categories::shared(cx);
     cx.spawn_in(window, async move |tab, cx: &mut AsyncWindowContext| {
         let prepared = cx
             .background_spawn(async move {
                 let opened = core.open(&req)?;
-                let provider = CoreDiffProvider::open(&opened)?;
+                let provider = CoreDiffProvider::open(&opened, &categorizer)?;
                 let plan = (opened.review_id == review_id).then(|| {
                     refresh::plan(&kept, &old_files, &opened.files, &*old_provider, &provider)
                 });

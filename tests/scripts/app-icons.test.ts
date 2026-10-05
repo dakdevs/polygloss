@@ -1,10 +1,11 @@
-// App icons (plan M6 "Icons", T6.3): an icon no asset source registers draws
-// nothing, silently. Every `IconName::X` or `Lucide::X` (the app's alias of
-// gpui-kit-assets' `IconName`) in the app's sources and every
-// `"icons/<name>.svg"` literal in the app's and the viewport's sources must
-// be one of `AppIcons` (crates/polygloss-app/src/assets.rs) or one of
-// gpui-kit-assets' `default-icons.txt` (the bundle `gpui_kit::assets::Assets`
-// embeds). The catalog and the defaults come from the gpui-kit-assets crate
+// App icons (plan M6 "Icons", T6.3, T6.14): an icon no asset source
+// registers draws nothing, silently. Every `IconName::X` or `Lucide::X` (the
+// app's alias of gpui-kit-assets' `IconName`) in the app's sources, every
+// `"icons/<name>.svg"` literal in the app's and the viewport's sources, and
+// every category icon (the core catalog's `icon:` names and `CUSTOM_ICONS`,
+// which section bands draw as `icons/<name>.svg`) must be one of `AppIcons`
+// (crates/polygloss-app/src/assets.rs) or one of gpui-kit-assets'
+// `default-icons.txt` (the bundle `gpui_kit::assets::Assets` embeds). The catalog and the defaults come from the gpui-kit-assets crate
 // cargo resolves (`cargo metadata`), its file names turned into variant names
 // the way its build script does.
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
@@ -26,6 +27,7 @@ setDefaultTimeout(120_000);
 const repoRoot = resolve(import.meta.dir, "../..");
 const appSrc = "crates/polygloss-app/src";
 const viewportSrc = "crates/polygloss-viewport/src";
+const coreCategories = "crates/polygloss-core/src/categories";
 
 const sandbox = makeSandbox();
 const scratch = mkdtempSync(join(tmpdir(), "polygloss-app-icons-"));
@@ -126,6 +128,29 @@ function appIcons(root: string): string[] {
     .filter((name) => name.length > 0);
 }
 
+/**
+ * The icon names of the categories (design §11.15): each built-in's `icon:`
+ * in the core catalog, then `CUSTOM_ICONS`.
+ */
+function categoryIcons(root: string): string[] {
+  const catalog = readFileSync(
+    join(root, coreCategories, "catalog.rs"),
+    "utf8",
+  );
+  const builtins = [...catalog.matchAll(/^\s*icon: "([^"]+)",$/gm)].map(
+    (m) => m[1]!,
+  );
+  if (builtins.length !== 7)
+    throw new Error(`catalog.rs lists ${builtins.length} icons, not 7`);
+  const source = readFileSync(join(root, coreCategories, "mod.rs"), "utf8");
+  const list = /pub const CUSTOM_ICONS: &\[&str\] = &\[([^\]]*)\]/.exec(
+    source,
+  )?.[1];
+  if (list === undefined) throw new Error("mod.rs has no CUSTOM_ICONS list");
+  const custom = [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+  return [...new Set([...builtins, ...custom])];
+}
+
 function rustFiles(dir: string): string[] {
   return readdirSync(dir, { recursive: true, encoding: "utf8" })
     .filter((file) => file.endsWith(".rs"))
@@ -170,11 +195,21 @@ function iconProblems(root: string): { uses: Set<string>; problems: string[] } {
   for (const dir of [appSrc, viewportSrc]) {
     for (const file of rustFiles(join(root, dir))) {
       const text = readFileSync(file, "utf8");
-      for (const [, path] of text.matchAll(/"(icons\/[^"]+\.svg)"/g)) {
+      // A template (`"icons/{}.svg"`) names no icon by itself: the category
+      // icons it formats are checked below.
+      for (const [, path] of text.matchAll(/"(icons\/[^"{}]+\.svg)"/g)) {
         if (path === undefined) continue;
         check(file, `"${path}"`, known.has(path) ? path : undefined);
       }
     }
+  }
+  for (const name of categoryIcons(root)) {
+    const path = `icons/${name}.svg`;
+    check(
+      join(root, coreCategories, "mod.rs"),
+      `category icon "${name}"`,
+      known.has(path) ? path : undefined,
+    );
   }
   return { uses, problems };
 }
@@ -187,11 +222,26 @@ test("every icon the app and viewport use is registered", () => {
   expect(uses).toContain("IconName::RotateCcwClock");
   expect(uses).toContain("IconName::Close");
   expect(uses).toContain("Lucide::GitBranch");
+  // Every built-in's icon and every custom one (design §11.15).
+  for (const name of [
+    "flask-conical",
+    "file-cog",
+    "package",
+    "bot",
+    "book-open",
+    "wrench",
+    "layers",
+    "tag",
+    "languages",
+    "folder",
+    "file",
+  ])
+    expect(uses).toContain(`category icon "${name}"`);
 });
 
 test("an unregistered icon fails the check", () => {
   const root = join(scratch, "copy");
-  for (const dir of [appSrc, viewportSrc])
+  for (const dir of [appSrc, viewportSrc, coreCategories])
     cpSync(join(repoRoot, dir), join(root, dir), { recursive: true });
   writeFileSync(
     join(root, appSrc, "planted.rs"),
@@ -206,6 +256,14 @@ test("an unregistered icon fails the check", () => {
     assets,
     readFileSync(assets, "utf8").replace("Dot,", "Dot,\n        NotAnIcon,"),
   );
+  const categories = join(root, coreCategories, "mod.rs");
+  writeFileSync(
+    categories,
+    readFileSync(categories, "utf8").replace(
+      '"tag",',
+      '"tag",\n    "sparkles",',
+    ),
+  );
   const { problems } = iconProblems(root);
   expect(problems.sort()).toEqual(
     [
@@ -214,6 +272,7 @@ test("an unregistered icon fails the check", () => {
       `${appSrc}/planted.rs: IconName::NoSuchIcon is no gpui-kit icon`,
       `${appSrc}/planted.rs: Lucide::NoSuchLucide is no gpui-kit icon`,
       `${viewportSrc}/planted.rs: "icons/anchor.svg" (icons/anchor.svg) is neither in AppIcons nor a gpui-kit default`,
+      `${coreCategories}/mod.rs: category icon "sparkles" (icons/sparkles.svg) is neither in AppIcons nor a gpui-kit default`,
     ].sort(),
   );
 });

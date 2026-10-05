@@ -337,7 +337,9 @@ fn url_thread_focus_waits_for_threads_to_load(cx: &mut gpui_kit::TestAppContext)
     // The focus arrives with the tab, before its threads have loaded.
     let main = shell.main.clone();
     let tab = shell.cx.update(|window, cx| {
-        let provider = Arc::new(CoreDiffProvider::open(&opened).unwrap());
+        let provider = Arc::new(
+            CoreDiffProvider::open(&opened, &polygloss_app::categories::shared(cx)).unwrap(),
+        );
         let tab = main.update(cx, |m, cx| {
             m.show_review(opened.clone(), provider, window, cx)
         });

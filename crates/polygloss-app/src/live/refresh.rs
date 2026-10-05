@@ -105,10 +105,17 @@ pub struct Kept {
 
 impl Kept {
     /// Reads `viewport`. An anchor on a host block becomes the line the
-    /// block sits below (blocks are placed again after the refresh).
+    /// block sits below (blocks are placed again after the refresh). An
+    /// anchor in the first shown file's lead is the top of the document
+    /// (the prelude), whichever file holds it in display order: it is kept
+    /// as file 0's lead, the top after the swap's identity order, which
+    /// the re-partition's sections keep at the top.
     pub fn read(viewport: &DiffViewport) -> Kept {
         let doc = viewport.document();
         let mut anchor = viewport.anchor();
+        if anchor.row == RowKey::Lead && anchor.file_idx == doc.top_anchor().file_idx {
+            anchor.file_idx = 0;
+        }
         if let RowKey::Block(id) = anchor.row {
             let metrics = doc.metrics();
             let placed = doc.blocks(anchor.file_idx).iter().find(|b| b.id == id);

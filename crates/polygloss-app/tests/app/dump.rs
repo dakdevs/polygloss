@@ -160,12 +160,17 @@ fn user_guide_examples() -> Vec<String> {
 #[test]
 fn user_guide_keymap_and_settings_examples_parse() {
     let examples = user_guide_examples();
+    // A keymap.json example (a list), then two settings.json ones: the file
+    // categories' and the Settings section's.
+    let (keymaps, settings): (Vec<&String>, Vec<&String>) = examples
+        .iter()
+        .partition(|e| e.trim_start().starts_with('['));
     assert_eq!(
-        examples.len(),
-        2,
-        "a keymap.json and a settings.json example"
+        (keymaps.len(), settings.len()),
+        (1, 2),
+        "a keymap.json and two settings.json examples"
     );
-    let bindings = polygloss_app::keymap::file::parse(&examples[0])
+    let bindings = polygloss_app::keymap::file::parse(keymaps[0])
         .unwrap_or_else(|e| panic!("the keymap.json example: {e}"));
     assert!(
         bindings.iter().any(|b| b.action.is_none()),
@@ -175,7 +180,16 @@ fn user_guide_keymap_and_settings_examples_parse() {
         bindings.iter().any(|b| b.context.is_none()),
         "it binds everywhere"
     );
-    let settings =
-        Settings::parse(&examples[1]).unwrap_or_else(|e| panic!("the settings.json example: {e}"));
-    assert_ne!(settings, Settings::default());
+    for example in &settings {
+        let parsed =
+            Settings::parse(example).unwrap_or_else(|e| panic!("a settings.json example: {e}"));
+        assert_ne!(parsed, Settings::default());
+    }
+    // The File categories example says what its prose says.
+    let categories = Settings::parse(settings[0]).unwrap().categories;
+    assert_eq!(categories.tests.disabled_groups, ["snapshots"]);
+    assert_eq!(categories.tests.patterns, ["spec/", "!spec/support/"]);
+    assert_eq!(categories.generated.disabled_groups, ["build-output"]);
+    assert!(categories.docs.enabled);
+    assert_eq!(categories.custom[0].name, "Design tokens");
 }

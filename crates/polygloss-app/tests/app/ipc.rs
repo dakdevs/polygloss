@@ -498,6 +498,45 @@ fn ipc_debug_state_reports_tabs_banners_badge_and_events(cx: &mut gpui_kit::Test
     assert_eq!(state["feed_errors"], json!(stats.errors));
 }
 
+#[gpui_kit::test]
+fn debug_state_lists_sections(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = crate::categories::mixed_repo(3);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    crate::threads::create(
+        &mut shell,
+        &tab,
+        crate::threads::line("tests/it.rs", polygloss_diff::Side::New, 1, 1),
+        polygloss_core::review::ThreadKind::Comment,
+        "Why?",
+        crate::threads::human(),
+    );
+    crate::threads::reload(&mut shell, &tab);
+    let state = run(&mut shell, Op::DebugState).unwrap();
+    assert_eq!(
+        state["tabs"][0]["sections"],
+        json!([
+            {
+                "category": "tests",
+                "files": ["src/a.test.rs", "tests/it.rs"],
+                "open": false,
+                "open_threads": 1,
+                "agent": false,
+                "changed_since_viewed": false,
+            },
+            {
+                "category": "generated",
+                "files": ["Cargo.lock"],
+                "open": false,
+                "open_threads": 0,
+                "agent": false,
+                "changed_since_viewed": false,
+            },
+        ])
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Single instance
 

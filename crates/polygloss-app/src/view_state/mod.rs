@@ -4,7 +4,8 @@
 //! position as a line (the first line shown below the pinned file header,
 //! never pixels, see [`polygloss_viewport::Document::top_line`]), collapsed
 //! files, revealed context, the split/unified choice, the file tree's
-//! expansion, whether the threads panel shows and unsaved composer text. It
+//! expansion, whether the threads panel shows, the open category sections
+//! (once the user opened or closed one) and unsaved composer text. It
 //! is restored when the diff opens again ([`attach`], before the first
 //! frame) and saved on change, [`SAVE_DEBOUNCE`] after the last one
 //! (trailing), off the main thread; closing the tab or quitting saves what
@@ -162,11 +163,12 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
     });
 }
 
-/// Applies `state` to `tab`: collapsed files, revealed context, the tree's
-/// expansion, then the scroll position (a saved line lands right below its
-/// file's pinned header), and the threads panel (shown at once). Paths the
-/// diff does not have are skipped. The layout is restored by the view
-/// toggles (T3.2).
+/// Applies `state` to `tab`, in design §11.12's order: collapsed files,
+/// revealed context, the tree's expansion, the open category sections, then
+/// the scroll position (a saved line lands right below its file's pinned
+/// header; one in a closed section lands on its band, never opening it);
+/// and the threads panel (shown at once). Paths the diff does not have are
+/// skipped. The layout is restored by the view toggles (T3.2).
 pub fn restore(tab: &mut ReviewTab, state: &ViewState, cx: &mut Context<ReviewTab>) {
     let files = tab.viewport.read(cx).document().files().clone();
     let index: HashMap<&str, u32> = files
@@ -185,22 +187,27 @@ pub fn restore(tab: &mut ReviewTab, state: &ViewState, cx: &mut Context<ReviewTa
                 v.set_expansions(idx, ranges, cx);
             }
         }
-        if let Some(anchor) = &state.scroll_anchor
-            && let Some(idx) = file(&anchor.path)
-        {
+    });
+    if let (Some(dirs), Some(tree)) = (&state.tree_expanded, crate::tree::file_tree(tab)) {
+        tree.update(cx, |t, cx| t.set_expanded_dirs(dirs.iter().cloned(), cx));
+    }
+    if let Some(open) = &state.open_sections {
+        crate::categories::apply_open_sections(tab, open, cx);
+    }
+    if let Some(anchor) = &state.scroll_anchor
+        && let Some(idx) = file(&anchor.path)
+    {
+        tab.viewport.update(cx, |v, cx| {
             v.scroll_to(
-                ScrollTarget::Line {
+                ScrollTarget::Restore {
                     file_idx: idx,
                     side: anchor.side,
                     // Stored 1-based (the store's convention).
                     line: anchor.line.saturating_sub(1),
                 },
                 cx,
-            );
-        }
-    });
-    if let (Some(dirs), Some(tree)) = (&state.tree_expanded, crate::tree::file_tree(tab)) {
-        tree.update(cx, |t, cx| t.set_expanded_dirs(dirs.iter().cloned(), cx));
+            )
+        });
     }
     if let Some(shown) = state.threads_panel {
         tab.panes.threads_panel = Some(shown);
@@ -215,9 +222,10 @@ pub fn snapshot(tab: &ReviewTab, cx: &App) -> ViewState {
     let path = |idx: u32| files[idx as usize].display_path().to_owned();
     // At the very top, or anywhere above the first card (the header card and
     // the canvas around it), there is nothing to restore: it reopens at the
-    // top.
+    // top. The first card is the first shown file's, in display order.
     let top = doc.scroll_top();
-    let scroll_anchor = if top <= 0.0 || top < doc.header_top(0) {
+    let first = doc.top_anchor().file_idx;
+    let scroll_anchor = if top <= 0.0 || top < doc.header_top(first) {
         None
     } else {
         doc.top_line().map(|(idx, side, line)| ScrollAnchorState {
@@ -247,6 +255,7 @@ pub fn snapshot(tab: &ReviewTab, cx: &App) -> ViewState {
         layout,
         tree_expanded,
         threads_panel: tab.panes.threads_panel,
+        open_sections: crate::categories::open_sections(tab, cx),
         composer: tab
             .extension::<Persist>()
             .map(|p| p.composer.clone())
