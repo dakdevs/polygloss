@@ -395,6 +395,7 @@ fn sample_view_state() -> ViewState {
         layout: Some(Layout::Unified),
         tree_expanded: Some(vec!["src".into(), "src/review".into()]),
         composer: BTreeMap::from([("line:src/lib.rs:new:42".into(), "draft text".into())]),
+        threads_panel: Some(true),
     }
 }
 
@@ -436,7 +437,8 @@ fn view_state_roundtrip_v1() {
             "expanded": { "src/lib.rs": [[1, 20], [90, 110]] },
             "layout": "unified",
             "tree_expanded": ["src", "src/review"],
-            "composer": { "line:src/lib.rs:new:42": "draft text" }
+            "composer": { "line:src/lib.rs:new:42": "draft text" },
+            "threads_panel": true
         })
     );
 
@@ -481,6 +483,60 @@ fn view_state_roundtrip_v1() {
         core.load_view_state(&opened.diff_id).unwrap(),
         Some(unsaved)
     );
+}
+
+/// The stored JSON of the only view state.
+fn stored_json(core: &Core) -> serde_json::Value {
+    let json: String = core
+        .store
+        .read(|c| Ok(c.query_row("SELECT state_json FROM view_state", [], |r| r.get(0))?))
+        .unwrap();
+    serde_json::from_str(&json).unwrap()
+}
+
+#[test]
+fn view_state_threads_panel_is_optional_and_round_trips() {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let core = core();
+    let opened = core
+        .open(&req(repo.path(), compare("main", "feature")))
+        .unwrap();
+
+    // Never chosen: left out of the JSON (an older build reads it unchanged).
+    core.save_view_state(&opened.diff_id, &ViewState::default())
+        .unwrap();
+    let json = stored_json(&core);
+    assert_eq!(json.get("threads_panel"), None, "{json}");
+    assert_eq!(
+        core.load_view_state(&opened.diff_id)
+            .unwrap()
+            .unwrap()
+            .threads_panel,
+        None
+    );
+
+    // Shown or hidden: a boolean (design §7.2), version still 1.
+    for shown in [true, false] {
+        let state = ViewState {
+            threads_panel: Some(shown),
+            ..ViewState::default()
+        };
+        core.save_view_state(&opened.diff_id, &state).unwrap();
+        let json = stored_json(&core);
+        assert_eq!(json["threads_panel"], serde_json::json!(shown), "{json}");
+        assert_eq!(json["v"], serde_json::json!(1));
+        assert_eq!(core.load_view_state(&opened.diff_id).unwrap(), Some(state));
+    }
+
+    // A state written before M6 has no key: never chosen.
+    exec(
+        &core,
+        "UPDATE view_state SET state_json = ?1",
+        [r#"{"v":1,"layout":"split"}"#],
+    );
+    let old = core.load_view_state(&opened.diff_id).unwrap().unwrap();
+    assert_eq!((old.layout, old.threads_panel), (Some(Layout::Split), None));
 }
 
 #[test]

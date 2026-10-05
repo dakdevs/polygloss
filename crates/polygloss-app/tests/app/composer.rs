@@ -676,14 +676,30 @@ fn comment_on_file_creates_file_thread_draft(cx: &mut gpui_kit::TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn comment_on_review_opens_the_panel(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    // A new review hides the panel; the palette's Comment on review (and
+    // the Review menu's) shows it with its composer.
+    assert!(!tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    assert!(!painted(shell.cx, "threads-panel".into()));
+    cursor_at(&mut shell, &tab, 0, Side::New, 1);
+    shell.cx.dispatch_action(tab_actions::CommentOnReview);
+    draw(shell.cx);
+    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    assert!(painted(shell.cx, "threads-panel".into()));
+    assert_eq!(open_keys(&mut shell, &tab), [ComposerKey::Review]);
+    assert!(painted(shell.cx, "composer-review".into()));
+}
+
+#[gpui_kit::test]
 fn comment_on_review_creates_review_thread_draft(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
-    // Hidden panel: the action shows it.
-    tab.update(shell.cx, |t, cx| t.toggle_threads_panel(cx));
-    draw(shell.cx);
     cursor_at(&mut shell, &tab, 0, Side::New, 1);
     shell.cx.dispatch_action(tab_actions::CommentOnReview);
     draw(shell.cx);

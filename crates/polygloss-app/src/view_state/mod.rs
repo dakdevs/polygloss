@@ -4,13 +4,15 @@
 //! position as a line (the first line shown below the pinned file header,
 //! never pixels, see [`polygloss_viewport::Document::top_line`]), collapsed
 //! files, revealed context, the split/unified choice, the file tree's
-//! expansion and unsaved composer text. It is restored when the diff opens
-//! again ([`attach`], before the first frame) and saved on change,
-//! [`SAVE_DEBOUNCE`] after the last one (trailing), off the main thread;
-//! closing the tab or quitting saves what is pending at once.
+//! expansion, whether the threads panel shows and unsaved composer text. It
+//! is restored when the diff opens again ([`attach`], before the first
+//! frame) and saved on change, [`SAVE_DEBOUNCE`] after the last one
+//! (trailing), off the main thread; closing the tab or quitting saves what
+//! is pending at once.
 //!
 //! What changed is found by observing the tab's viewport and file tree (every
-//! scroll, collapse, reveal or layout change notifies them) and comparing a
+//! scroll, collapse, reveal or layout change notifies them; showing or hiding
+//! the threads panel calls [`changed`] itself) and comparing a
 //! fresh [`snapshot`] with the last state written, so nothing is written
 //! while nothing changed, and an untouched diff (at the top, nothing
 //! collapsed, revealed or chosen) writes nothing at all.
@@ -162,8 +164,9 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
 
 /// Applies `state` to `tab`: collapsed files, revealed context, the tree's
 /// expansion, then the scroll position (a saved line lands right below its
-/// file's pinned header). Paths the diff does not have are skipped. The
-/// layout is restored by the view toggles (T3.2).
+/// file's pinned header), and the threads panel (shown at once). Paths the
+/// diff does not have are skipped. The layout is restored by the view
+/// toggles (T3.2).
 pub fn restore(tab: &mut ReviewTab, state: &ViewState, cx: &mut Context<ReviewTab>) {
     let files = tab.viewport.read(cx).document().files().clone();
     let index: HashMap<&str, u32> = files
@@ -198,6 +201,9 @@ pub fn restore(tab: &mut ReviewTab, state: &ViewState, cx: &mut Context<ReviewTa
     });
     if let (Some(dirs), Some(tree)) = (&state.tree_expanded, crate::tree::file_tree(tab)) {
         tree.update(cx, |t, cx| t.set_expanded_dirs(dirs.iter().cloned(), cx));
+    }
+    if let Some(shown) = state.threads_panel {
+        tab.panes.threads_panel = Some(shown);
     }
 }
 
@@ -240,6 +246,7 @@ pub fn snapshot(tab: &ReviewTab, cx: &App) -> ViewState {
             .collect(),
         layout,
         tree_expanded,
+        threads_panel: tab.panes.threads_panel,
         composer: tab
             .extension::<Persist>()
             .map(|p| p.composer.clone())
@@ -278,7 +285,7 @@ pub fn set_composer_text(
 }
 
 /// Something may have changed: save [`SAVE_DEBOUNCE`] after the last change.
-fn changed(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
+pub(crate) fn changed(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
     let Some(persist) = tab.extension_mut::<Persist>() else {
         return;
     };

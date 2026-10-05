@@ -209,6 +209,7 @@ fn every_action_has_binding_or_palette_entry(cx: &mut gpui_kit::TestAppContext) 
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     create(
         &mut shell,
         &tab,
@@ -292,6 +293,7 @@ fn focus_cycles_between_panes(cx: &mut gpui_kit::TestAppContext) {
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     let key = open_line_composer(&mut shell, &tab);
     shell.cx.simulate_input("typed");
     draw(shell.cx);
@@ -378,7 +380,7 @@ fn focus_cycles_between_panes(cx: &mut gpui_kit::TestAppContext) {
 
     // A hidden threads panel is skipped; without composers the cycle is
     // tree ⇄ viewport.
-    tab.update(shell.cx, |t, cx| t.toggle_threads_panel(cx));
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(false, cx));
     let composer_focus = composer_focus(&mut shell, &tab, &key);
     focus_on(&mut shell, &composer_focus);
     keys(&mut shell, "escape");
@@ -420,6 +422,7 @@ fn pane_cycle_skips_the_tree_unless_files_shows(cx: &mut gpui_kit::TestAppContex
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     assert_eq!(sidebar(&mut shell), (true, Segment::Files));
     assert_eq!(
         stops(&mut shell, &tab),
@@ -457,6 +460,40 @@ fn pane_cycle_skips_the_tree_unless_files_shows(cx: &mut gpui_kit::TestAppContex
         stops(&mut shell, &tab),
         [Pane::Tree, Pane::Viewport, Pane::Threads]
     );
+}
+
+#[gpui_kit::test]
+fn pane_cycle_includes_the_panel_only_when_shown(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    // A new review hides the panel: tree ⇄ viewport.
+    assert_eq!(stops(&mut shell, &tab), [Pane::Tree, Pane::Viewport]);
+    focus_viewport(&mut shell, &tab);
+    for want in [Pane::Tree, Pane::Viewport, Pane::Tree] {
+        keys(&mut shell, "tab");
+        assert_eq!(pane_of(&mut shell, &tab), Some(want), "hidden");
+    }
+    // Shown: the panel follows the diff.
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
+    assert_eq!(
+        stops(&mut shell, &tab),
+        [Pane::Tree, Pane::Viewport, Pane::Threads]
+    );
+    focus_viewport(&mut shell, &tab);
+    for want in [Pane::Threads, Pane::Tree, Pane::Viewport] {
+        keys(&mut shell, "tab");
+        assert_eq!(pane_of(&mut shell, &tab), Some(want), "shown");
+    }
+    // Hidden again: skipped again.
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(false, cx));
+    draw(shell.cx);
+    assert_eq!(stops(&mut shell, &tab), [Pane::Tree, Pane::Viewport]);
+    focus_viewport(&mut shell, &tab);
+    keys(&mut shell, "tab");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
 }
 
 #[gpui_kit::test]
@@ -523,6 +560,7 @@ fn hiding_the_sidebar_hands_its_keyboard_to_the_diff(cx: &mut gpui_kit::TestAppC
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
     let cursor = |shell: &mut Shell| viewport.read_with(shell.cx, |v, _| v.cursor());
 
@@ -656,6 +694,7 @@ fn threads_panel_works_from_the_keyboard(cx: &mut gpui_kit::TestAppContext) {
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     let question = create(
         &mut shell,
         &tab,
@@ -931,6 +970,7 @@ fn escape_closes_popovers_and_dialogs(cx: &mut gpui_kit::TestAppContext) {
     let repo = two_iteration_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_branches(&repo)).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     // A second iteration, so the iteration picker shows.
     repo.write("src/a.rs", b"fn a() {}\n");
     repo.commit("feature 2");

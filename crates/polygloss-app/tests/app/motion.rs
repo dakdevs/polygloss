@@ -203,3 +203,151 @@ fn reduce_motion_is_reread_on_activation(cx: &mut TestAppContext) {
     frame(pcx);
     assert_eq!(sample(pcx, &drawn), (px(12.), 0.0), "it moves again");
 }
+
+/// The threads panel's content: its left edge's offset from the pane's, and
+/// the opacity its entrance drew on the last frame (`None`: no entrance was
+/// drawn since `drawn` was last cleared).
+fn panel_sample(cx: &mut VisualTestContext, drawn: &Drawn) -> (f32, Option<f32>) {
+    let pane = crate::shell::bounds(cx, "threads-pane");
+    let content = crate::shell::bounds(cx, "threads-panel");
+    let opacity = drawn
+        .borrow()
+        .get(&ElementId::from("threads-panel"))
+        .map(|e| e.opacity);
+    ((content.left() - pane.left()).as_f32(), opacity)
+}
+
+/// Clears what entrances drew, then draws one frame.
+fn fresh_frame(cx: &mut VisualTestContext, drawn: &Drawn) {
+    drawn.borrow_mut().clear();
+    frame(cx);
+}
+
+/// Opens `code_change_repo`'s compare review in a started app.
+fn review(
+    shell: &mut crate::shell::Shell,
+    repo: &crate::support::FixtureRepo,
+) -> Entity<polygloss_app::review_tab::ReviewTab> {
+    let tab = shell
+        .open(crate::shell::compare_req(repo.path()))
+        .expect("open the review");
+    assert!(!tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    tab
+}
+
+/// A click on the toolbar's threads button.
+fn click_threads_button(cx: &mut VisualTestContext) {
+    let at = crate::shell::bounds(cx, "toggle-threads-panel").center();
+    cx.simulate_click(at, Modifiers::none());
+}
+
+#[gpui_kit::test]
+fn pointer_open_slides_the_panel_content_in(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let drawn = record(cx);
+    let repo = crate::support::code_change_repo();
+    let mut shell = start(cx);
+    let tab = review(&mut shell, &repo);
+
+    click_threads_button(shell.cx);
+    fresh_frame(shell.cx, &drawn);
+    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    let (start_x, start_opacity) = panel_sample(shell.cx, &drawn);
+    shell.cx.executor().advance_clock(Duration::from_millis(90));
+    fresh_frame(shell.cx, &drawn);
+    let (mid_x, mid_opacity) = panel_sample(shell.cx, &drawn);
+    shell
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(180));
+    fresh_frame(shell.cx, &drawn);
+    let (end_x, end_opacity) = panel_sample(shell.cx, &drawn);
+    assert_eq!(start_x - end_x, 12.0, "the first frame: 12 pt right");
+    assert_eq!(start_opacity, Some(0.0));
+    assert!(
+        strictly_between(mid_x - end_x, 0., 12.),
+        "half way: {mid_x}"
+    );
+    let mid_opacity = mid_opacity.expect("still entering");
+    assert!(strictly_between(mid_opacity, 0., 1.), "{mid_opacity}");
+    assert_eq!(end_opacity.unwrap_or(1.0), 1.0, "settled");
+
+    // Settled, it stays: away to Home and back plays nothing again.
+    shell.cx.simulate_keystrokes("cmd-0");
+    draw(shell.cx);
+    assert!(crate::shell::painted(shell.cx, "threads-pane").is_none());
+    shell.cx.simulate_keystrokes("cmd-1");
+    draw(shell.cx);
+    fresh_frame(shell.cx, &drawn);
+    assert_eq!(panel_sample(shell.cx, &drawn), (end_x, None), "no replay");
+
+    // Closing is instant; opening again enters again.
+    click_threads_button(shell.cx);
+    fresh_frame(shell.cx, &drawn);
+    assert!(crate::shell::painted(shell.cx, "threads-pane").is_none());
+    click_threads_button(shell.cx);
+    fresh_frame(shell.cx, &drawn);
+    assert_eq!(panel_sample(shell.cx, &drawn), (end_x + 12.0, Some(0.0)));
+}
+
+#[gpui_kit::test]
+fn keyboard_toggle_and_restore_show_the_panel_at_once(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let drawn = record(cx);
+    let repo = crate::support::code_change_repo();
+    let mut shell = start(cx);
+    let tab = review(&mut shell, &repo);
+
+    // The palette's or View menu's toggle, from the keyboard.
+    shell.cx.simulate_keystrokes("escape");
+    shell
+        .cx
+        .dispatch_action(polygloss_app::review_tab::panes::ToggleThreadsPanel);
+    fresh_frame(shell.cx, &drawn);
+    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    let (at_once, entrance) = panel_sample(shell.cx, &drawn);
+    assert_eq!(entrance, None, "no entrance");
+    shell
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(500));
+    fresh_frame(shell.cx, &drawn);
+    assert_eq!(
+        panel_sample(shell.cx, &drawn),
+        (at_once, None),
+        "at its end"
+    );
+
+    // Restored with the review (closed and opened again): at once too.
+    shell.cx.simulate_keystrokes("cmd-w");
+    drop(tab);
+    draw(shell.cx);
+    let tab = shell
+        .open(crate::shell::compare_req(repo.path()))
+        .expect("reopen");
+    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    fresh_frame(shell.cx, &drawn);
+    assert_eq!(panel_sample(shell.cx, &drawn), (at_once, None));
+}
+
+#[gpui_kit::test]
+fn reduce_motion_shows_the_panel_at_once(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let drawn = record(cx);
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let repo = crate::support::code_change_repo();
+    let mut shell = start(cx);
+    let tab = review(&mut shell, &repo);
+
+    click_threads_button(shell.cx);
+    fresh_frame(shell.cx, &drawn);
+    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    let (first, opacity) = panel_sample(shell.cx, &drawn);
+    assert_eq!(opacity.unwrap_or(1.0), 1.0, "opaque on its first frame");
+    shell
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(500));
+    fresh_frame(shell.cx, &drawn);
+    assert_eq!(panel_sample(shell.cx, &drawn).0, first, "never moved");
+}

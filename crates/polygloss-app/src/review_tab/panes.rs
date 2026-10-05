@@ -1,18 +1,21 @@
 //! The review tab's panes (design §11.1): the sidebar's content (T3.6's
 //! `tree::render_pane`, find in its place, or the Reviews list) and the main
-//! column's resizable diff viewport | threads panel (toggleable; T3.9's).
+//! column's resizable diff viewport | threads panel (T3.9's; hidden until
+//! shown, its content sliding in when the toolbar's button opens it, design
+//! §11.16).
 
-use gpui_kit::component::{
-    ActiveTheme as _, ResizableState, StyledExt as _, h_flex, h_resizable, resizable_panel, v_flex,
-};
+use std::time::Instant;
+
+use gpui_kit::component::{ActiveTheme as _, ResizableState, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, Styled as _, Window, div, px,
+    ParentElement as _, Styled as _, Window, div, point, px,
 };
 
 use crate::chrome::{self, Segment};
 use crate::keyboard::Pane;
+use crate::motion;
 use crate::review_tab::ReviewTab;
 
 gpui_kit::actions!(
@@ -23,22 +26,81 @@ gpui_kit::actions!(
     ]
 );
 
-/// Initial width of the threads panel.
+/// The threads panel's width until the user drags its edge.
 const THREADS_WIDTH: f32 = 340.0;
+/// The narrowest the threads panel gets (design §11.1).
+const THREADS_MIN_WIDTH: f32 = 220.0;
+/// The widest the threads panel gets (design §11.1).
+const THREADS_MAX_WIDTH: f32 = 720.0;
+/// The narrowest the diff gets beside the threads panel (design §11.1).
+const VIEWPORT_MIN_WIDTH: f32 = 260.0;
+/// How far right of its place the panel's content starts entering.
+const ENTER_FROM_RIGHT: f32 = 12.0;
 
 /// Pane state of one review tab.
 pub(crate) struct Panes {
-    pub threads_visible: bool,
+    /// Whether the threads panel shows: `None` until it is shown or hidden
+    /// (then it is hidden), as view state keeps it (design §11.12).
+    pub threads_panel: Option<bool>,
+    /// The panel content's entrance after a pointer open: its epoch, and
+    /// when it is over on the executor clock.
+    entrance: Option<(u64, Instant)>,
+    /// Entrances started so far: each plays once.
+    entrances: u64,
     /// The viewport | threads panel widths (kept while the tab lives).
     pub state: Entity<ResizableState>,
 }
 
 impl Panes {
     pub fn new(cx: &mut Context<ReviewTab>) -> Panes {
+        // gpui-base stores a panel's first measured width while its size is
+        // still the 100 pt placeholder. Both start with real sizes instead:
+        // the panel keeps 340 pt even when first shown in a narrow window
+        // (which clamps it), and the viewport never gets a width of its own
+        // ([`render`] clears it every frame), so resizing the window never
+        // rescales the panel's.
+        let state = cx.new(|cx| {
+            let mut state = ResizableState::default();
+            state.insert_panel(Some(px(VIEWPORT_MIN_WIDTH)), None, cx);
+            state.insert_panel(Some(px(THREADS_WIDTH)), None, cx);
+            state
+        });
         Panes {
-            threads_visible: true,
-            state: cx.new(|_| ResizableState::default()),
+            threads_panel: None,
+            entrance: None,
+            entrances: 0,
+            state,
         }
+    }
+
+    pub fn threads_shown(&self) -> bool {
+        self.threads_panel == Some(true)
+    }
+
+    /// Shows or hides the threads panel at once, dropping an entrance that
+    /// was playing. Whether it changed.
+    pub fn set_threads_shown(&mut self, shown: bool) -> bool {
+        if self.threads_shown() == shown {
+            return false;
+        }
+        self.threads_panel = Some(shown);
+        self.entrance = None;
+        true
+    }
+
+    /// Plays the panel content's entrance from `now` (design §11.16).
+    pub fn enter_threads(&mut self, now: Instant) {
+        self.entrances += 1;
+        self.entrance = Some((self.entrances, now + motion::ENTER_PANEL));
+    }
+
+    /// The epoch of the entrance playing at `now`. The content is wrapped in
+    /// it only while it plays: `enter_from` would replay it on the next
+    /// frame that draws it after one that did not (another review shown).
+    fn entering(&self, now: Instant) -> Option<u64> {
+        self.entrance
+            .filter(|(_, until)| now < *until)
+            .map(|(epoch, _)| epoch)
     }
 }
 
@@ -86,17 +148,46 @@ pub(crate) fn render_sidebar(
         .into_any_element()
 }
 
-/// The main column's panes of `tab`: diff viewport | threads panel.
+/// The main column's panes of `tab`: diff viewport | threads panel. The
+/// panel keeps its stored width (up to [`THREADS_MAX_WIDTH`]) while the main
+/// column leaves the viewport [`VIEWPORT_MIN_WIDTH`], and gives way down to
+/// [`THREADS_MIN_WIDTH`] (design §11.1); the stored width comes back when
+/// the window widens.
 pub(crate) fn render(
     tab: &ReviewTab,
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
-    let threads = tab.panes.threads_visible.then(|| {
-        crate::threads::render_panel(tab, window, cx)
-            .unwrap_or_else(|| empty_threads(cx).into_any_element())
+    let shown = tab.panes.threads_shown();
+    let threads = shown.then(|| {
+        let panel = crate::threads::render_panel(tab, window, cx)
+            .unwrap_or_else(|| div().size_full().into_any_element());
+        let content = div().size_full().child(panel);
+        match tab.panes.entering(cx.background_executor().now()) {
+            Some(epoch) => motion::enter_from(
+                "threads-panel",
+                epoch,
+                point(px(ENTER_FROM_RIGHT), px(0.)),
+                motion::ENTER_PANEL,
+                motion::ease_out_quint,
+                content,
+                window,
+                cx,
+            ),
+            None => content.into_any_element(),
+        }
     });
-    let border = cx.theme().border;
+    let main = chrome::main_column_width(shown, window, cx);
+    let threads_max = (main - VIEWPORT_MIN_WIDTH).clamp(THREADS_MIN_WIDTH, THREADS_MAX_WIDTH);
+    // The viewport keeps no width of its own (a drag of the panel's edge
+    // gives it one), so resizing the window never rescales the panel's.
+    tab.panes.state.update(cx, |state, cx| {
+        if state.sizes().len() == 2 {
+            state.reset_panel(0, cx);
+        }
+    });
+    let theme = cx.theme();
+    let (border, canvas) = (theme.border, crate::theme::viewport_theme(cx).canvas);
     let focus = tab.viewport_focus().clone();
     let focused = ringed_pane(tab, window, cx);
     let ring = |pane: Pane, selector: &'static str| {
@@ -109,24 +200,26 @@ pub(crate) fn render(
     h_resizable("review-body")
         .with_state(&tab.panes.state)
         .child(
-            resizable_panel().size_range(px(320.)..px(100_000.)).child(
-                div()
-                    .debug_selector(|| "viewport-pane".into())
-                    .key_context("Viewport")
-                    .track_focus(tab.viewport_focus())
-                    // A click anywhere in the diff gives it the keyboard.
-                    .capture_any_mouse_down(move |_, window, cx| window.focus(&focus, cx))
-                    .relative()
-                    .size_full()
-                    .overflow_hidden()
-                    .child(tab.viewport.clone())
-                    .children(viewport_ring),
-            ),
+            resizable_panel()
+                .size_range(px(VIEWPORT_MIN_WIDTH)..px(100_000.))
+                .child(
+                    div()
+                        .debug_selector(|| "viewport-pane".into())
+                        .key_context("Viewport")
+                        .track_focus(tab.viewport_focus())
+                        // A click anywhere in the diff gives it the keyboard.
+                        .capture_any_mouse_down(move |_, window, cx| window.focus(&focus, cx))
+                        .relative()
+                        .size_full()
+                        .overflow_hidden()
+                        .child(tab.viewport.clone())
+                        .children(viewport_ring),
+                ),
         )
         .child(
             resizable_panel()
                 .size(px(THREADS_WIDTH))
-                .size_range(px(220.)..px(720.))
+                .size_range(px(THREADS_MIN_WIDTH)..px(threads_max))
                 .flex_none()
                 .visible(threads.is_some())
                 .when_some(threads, |panel, threads| {
@@ -135,6 +228,8 @@ pub(crate) fn render(
                             .debug_selector(|| "threads-pane".into())
                             .relative()
                             .size_full()
+                            .overflow_hidden()
+                            .bg(canvas)
                             .border_l_1()
                             .border_color(border)
                             .child(threads)
@@ -155,45 +250,4 @@ fn focus_ring(selector: &'static str, cx: &Context<ReviewTab>) -> AnyElement {
         .border_2()
         .border_color(cx.theme().ring.opacity(0.7))
         .into_any_element()
-}
-
-/// A pane's title row.
-fn pane_header(
-    title: SharedString,
-    detail: Option<SharedString>,
-    cx: &Context<ReviewTab>,
-) -> impl IntoElement {
-    let theme = cx.theme();
-    h_flex()
-        .flex_none()
-        .h(px(32.))
-        .px_3()
-        .gap_2()
-        .border_b_1()
-        .border_color(theme.border)
-        .text_xs()
-        .font_semibold()
-        .text_color(theme.muted_foreground)
-        .child(title)
-        .when_some(detail, |row, d| row.child(div().font_normal().child(d)))
-}
-
-/// The threads panel until T3.9 fills it.
-fn empty_threads(cx: &Context<ReviewTab>) -> impl IntoElement {
-    let theme = cx.theme();
-    v_flex()
-        .size_full()
-        .bg(theme.sidebar)
-        .child(pane_header("THREADS".into(), None, cx))
-        .child(
-            v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .gap_1()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("No threads yet")
-                .child(div().text_xs().child("Press C on a line to comment.")),
-        )
 }
