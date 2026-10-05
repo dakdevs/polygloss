@@ -56,7 +56,7 @@ A review fills the window: the sidebar on the left shows its **file tree** (its 
 - **Line cursor:** `j`/`k` (or the arrows) move a line cursor across rows and files; it is where `c`, `o` and `e` act. `⇧↓`/`⇧↑` extend it to a range on one side.
 - **File headers** stay pinned at the top while you scroll through a file. They show a collapse chevron, the path with the file name in bold (`old → new` for renames), pills for the kind of change (rename similarity, mode change, binary, symlink, submodule, generated, LFS), then on the right the review state (changed since viewed, open threads, agent), an open-in-editor button, the `+added −removed` counts, the **Viewed** button and a ⋯ menu (Open in editor, Comment on file, Copy path, Expand all, Load diff, and Highlight anyway for a file too large to highlight). In a narrow window the kind pills go first, then the review state, then the counts.
 - **Large and generated files** start collapsed behind **Load diff**: files with more than `diff.large_file_changed_lines` changed lines, and generated files: those marked `linguist-generated` in `.gitattributes`, or matching the built-in list (lock files, minified and source-map files, protobuf output) or `diff.generated_patterns`.
-- **File tree:** checkboxes mark files viewed (folders show a combined state and offer "Mark folder viewed"), with status letters, +/− counts, thread and agent badges, and a dot for files changed since you viewed them. Filter by unviewed, has comments, status or extension, or type to fuzzy-filter. Selecting a file scrolls the diff to it, and scrolling highlights the current file.
+- **File tree:** the circle at the end of each row marks a file viewed (it appears when you point at the row; folders show a combined state and offer "Mark folder viewed"), with status letters, +/− counts, thread and agent badges, and a dot for files changed since you viewed them. Type in the filter field to fuzzy-filter, or use its menu to show only unviewed files, files with comments, a status or an extension. The footer totals the lines added and removed. Selecting a file scrolls the diff to it, and scrolling highlights the current file.
 - **Selection and copy:** drag to select text on one side; `⌘C` copies the source text without gutters or `+`/`-` markers.
 
 Where you were (scroll position, collapsed files, expanded context, layout, tree folders) is saved per diff and restored when you open it again.
@@ -78,7 +78,7 @@ When the code under a thread changes in a later iteration, the thread follows it
 
 ## Viewed
 
-Mark a file **Viewed** with its header checkbox, its tree checkbox, or `v`. Marking a file viewed collapses it and jumps to the next unviewed file. The toolbar counts the files viewed (`N/M`).
+Mark a file **Viewed** with its header checkbox, the circle at the end of its tree row, or `v`. Marking a file viewed collapses it and jumps to the next unviewed file. The toolbar counts the files viewed (`N/M`).
 
 - Viewed belongs to the file's exact change: its path plus the old and new file contents. A file stays viewed across iterations, and even across reviews, for as long as that change is the same.
 - When the file changes again, it unchecks itself and shows **Changed since viewed** (the tree marks it with a dot), like GitHub's dismissed state.

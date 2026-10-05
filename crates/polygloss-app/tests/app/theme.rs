@@ -13,7 +13,7 @@ use polygloss_app::theme::fonts::{LILEX_FAMILY, LILEX_FONTS};
 use polygloss_app::theme::zed_to_kit::{REQUIRED_KIT_TOKENS, kit_colors, kit_theme_config};
 use polygloss_app::theme::{self, ThemeRegistry};
 use polygloss_highlight::{Appearance, Rgba, ZedTheme, default_theme, pierre_theme};
-use polygloss_viewport::kit::{SYSTEM_MONO_FONT, SYSTEM_UI_FONT};
+use polygloss_viewport::kit::{SYSTEM_MONO_FONT, SYSTEM_UI_FONT, is_installed};
 
 use crate::shell::{compare_req, draw, start};
 use crate::support::{Sandbox, code_change_repo};
@@ -587,7 +587,19 @@ fn lilex_is_default_code_font(cx: &mut TestAppContext) {
     set_family(shell.cx, "Menlo");
     assert_eq!(fonts(shell.cx), ("Menlo".into(), SYSTEM_MONO_FONT.into()));
     set_family(shell.cx, LILEX_FAMILY);
-    assert_eq!(fonts(shell.cx), (LILEX_FAMILY.into(), LILEX_FAMILY.into()));
+    // gpui-kit names Lilex when the text system has it, else the system
+    // mono. The test text system gives every font one id, so its answer
+    // depends on which fonts were resolved before (the sidebar's monospace
+    // counts add some): take its answer, not a fixed one.
+    let installed = shell
+        .cx
+        .update(|_, cx| is_installed(cx.text_system(), LILEX_FAMILY));
+    let mono = if installed {
+        LILEX_FAMILY
+    } else {
+        SYSTEM_MONO_FONT
+    };
+    assert_eq!(fonts(shell.cx), (LILEX_FAMILY.into(), mono.into()));
     let snippets = shell.cx.update(|_, cx| markdown::code_font(cx).0);
     assert_eq!(snippets, LILEX_FAMILY);
     // "SF Mono" names the system monospaced font: the diff, gpui-kit and the

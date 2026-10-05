@@ -1,12 +1,17 @@
 //! File tree and file finder (⌘P) (design §11.5, §11.8).
 //!
-//! - [`FileTree`]: the sidebar's Files segment, a gpui-kit `Tree`
-//!   (virtualized, key context `Tree`) over the diff's files with directory
-//!   chains compacted ([`model`]); rows ([`row`]) carry a Viewed checkbox,
-//!   the status letter, +/− counts, open-thread and agent badges and the
-//!   "changed since viewed" dot; [`filters`] hide files (unviewed, has
-//!   comments, status, extension, fuzzy text). Selecting a file scrolls the
-//!   viewport to it; the viewport's top file is highlighted in the tree.
+//! - [`FileTree`]: the sidebar's Files segment: the rounded filter field
+//!   holding the filter menu, a gpui-kit `Tree` (virtualized, key context
+//!   `Tree`) over the diff's files with directory chains compacted
+//!   ([`model`]), and the [`footer`] totals. Rows ([`row`]) carry the
+//!   outline icon, open-thread and agent badges, the "changed since viewed"
+//!   dot, `+a −d`, the status letter and the Viewed slot at their end;
+//!   [`filters`] hide files (unviewed, has comments, status, extension,
+//!   fuzzy text). Selecting a file scrolls the viewport to it; the
+//!   viewport's top file is highlighted in the tree.
+//! - The pane is a cached view: the diff's scroll frames do not render it.
+//!   It renders again when notified: its own changes, new line counts
+//!   (`ViewportEvent::CountsUpdated`, `BinaryDetected`) and a new top file.
 //! - [`finder`]: ⌘P, every changed path ranked by `nucleo-matcher`; Enter
 //!   jumps to the file.
 //!
@@ -14,13 +19,14 @@
 //! first ([`crate::chrome::show_files`]).
 //!
 //! The Viewed state is T3.7's: it pushes [`FileFlags`] with
-//! [`FileTree::set_file_flags`] and handles the checkboxes' [`FileTreeEvent`]s
+//! [`FileTree::set_file_flags`] and handles the slots' [`FileTreeEvent`]s
 //! and `tree::ToggleViewed` (with [`FileTree::selected_file`] /
 //! [`FileTree::selected_dir`]). View-state (T3.14) reads and restores the
 //! expansion with [`FileTree::expanded_dirs`] / [`FileTree::set_expanded_dirs`].
 
 pub mod filters;
 pub mod finder;
+pub mod footer;
 pub mod model;
 pub mod row;
 
@@ -29,16 +35,17 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
     Focusable as _, InteractiveElement as _, IntoElement, MenuItem, ParentElement as _, Render,
-    ScrollStrategy, SharedString, Styled as _, Subscription, WeakEntity, Window, div, px,
+    ScrollStrategy, SharedString, StyleRefinement, Styled as _, Subscription, WeakEntity, Window,
+    div, px,
 };
 use polygloss_diff::FileChange;
 use polygloss_viewport::{DiffViewport, FileFlags, ScrollTarget, ViewportEvent};
@@ -127,22 +134,27 @@ pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewT
     .detach();
 }
 
-/// The file tree pane.
+/// The file tree pane, cached: the tab renders on every scroll frame of the
+/// diff, the tree only when it is notified.
 pub fn render_pane(
     tab: &ReviewTab,
     _window: &mut Window,
     _cx: &mut Context<ReviewTab>,
 ) -> Option<AnyElement> {
-    file_tree(tab).map(|t| t.clone().into_any_element())
+    file_tree(tab).map(|t| {
+        t.clone()
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
+    })
 }
 
 /// What the tree asks its host to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileTreeEvent {
-    /// A file's Viewed checkbox was clicked.
+    /// A file's Viewed slot was clicked.
     ToggleViewed(u32),
-    /// A directory's Viewed checkbox was clicked: every file below it (as
-    /// the tree shows them).
+    /// A directory's Viewed slot was clicked: every file below it (as the
+    /// tree shows them).
     ToggleFolderViewed { dir: String, files: Vec<u32> },
 }
 
@@ -181,6 +193,8 @@ pub struct FileTree {
     jumped: Option<u32>,
     /// The filter menu, when opened from the keyboard (`f`).
     key_menu: Option<KeyMenu>,
+    /// Times [`Render::render`] ran ([`FileTree::render_count`]).
+    renders: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -213,7 +227,7 @@ impl FileTree {
             "tree order differs from diff order"
         );
         let state = cx.new(|cx| TreeState::new(cx).items(tree_items(&full, &HashSet::new())));
-        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
+        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
         let subscriptions = vec![
             cx.observe(&state, |t: &mut FileTree, _, cx| t.selection_changed(cx)),
             cx.subscribe(&state, |t: &mut FileTree, _, event: &TreeEvent, cx| {
@@ -221,10 +235,11 @@ impl FileTree {
             }),
             cx.subscribe(
                 &viewport,
-                |t: &mut FileTree, _, event: &ViewportEvent, cx| {
-                    if let ViewportEvent::VisibleFileChanged(idx) = *event {
-                        t.visible_file_changed(idx, cx);
-                    }
+                |t: &mut FileTree, _, event: &ViewportEvent, cx| match *event {
+                    ViewportEvent::VisibleFileChanged(idx) => t.visible_file_changed(idx, cx),
+                    // Rows and the footer show the counts.
+                    ViewportEvent::CountsUpdated | ViewportEvent::BinaryDetected(_) => cx.notify(),
+                    _ => {}
                 },
             ),
             cx.subscribe(
@@ -244,6 +259,7 @@ impl FileTree {
             state,
             filter_input,
             key_menu: None,
+            renders: 0,
             full,
             filtered: None,
             flags,
@@ -262,6 +278,12 @@ impl FileTree {
             tree.highlight(top, cx);
         }
         tree
+    }
+
+    /// How many times the tree has rendered: tests check that scroll
+    /// frames of the diff do not render it.
+    pub fn render_count(&self) -> u64 {
+        self.renders
     }
 
     /// The tree shown (filtered or not).
@@ -306,7 +328,7 @@ impl FileTree {
         let menu = KeyMenu::open(
             |t: &mut FileTree| Some(&mut t.key_menu),
             self.key_menu.take(),
-            move |menu, _, _| build_filter_menu(&tree, f, extensions, menu),
+            move |menu, _, _| filters::menu(&tree, f, extensions, menu),
             window,
             cx,
         );
@@ -381,7 +403,7 @@ impl FileTree {
         cx.notify();
     }
 
-    /// Directory `dir`'s tri-state checkbox (of the tree shown): checked when
+    /// Directory `dir`'s tri-state Viewed slot (of the tree shown): on when
     /// every file below it is viewed, mixed when some are.
     pub fn folder_check(&self, dir: &str) -> Option<row::Check> {
         self.dir_viewed
@@ -755,6 +777,7 @@ impl FileTree {
     }
 
     fn row_ctx(&self, cx: &Context<Self>) -> row::RowCtx {
+        let colors = crate::theme::viewport_theme(cx);
         row::RowCtx {
             files: self.files.clone(),
             flags: self.flags.clone(),
@@ -762,6 +785,9 @@ impl FileTree {
             model: self.filtered.clone().unwrap_or_else(|| self.full.clone()),
             viewport: self.viewport.clone(),
             tree: cx.entity().downgrade(),
+            status: row::StatusColors::of(cx),
+            stat_added: colors.stat_added,
+            stat_removed: colors.stat_removed,
         }
     }
 
@@ -785,84 +811,9 @@ impl FileTree {
                 let t = tree.read(cx);
                 // Counted when the menu opens, not on every render.
                 let (f, extensions) = (t.filters.clone(), filters::extensions(&t.files));
-                build_filter_menu(&this, f, extensions, menu)
+                filters::menu(&this, f, extensions, menu)
             })
     }
-}
-
-/// A filter menu item's effect.
-type FilterToggle = Box<dyn Fn(&mut FileTree, &mut Context<FileTree>)>;
-
-/// The filter menu of `tree` (the funnel button's, and `f`'s): Unviewed,
-/// Has comments, the statuses and, with more than one, the extensions, each
-/// checked when on; "Clear filters" while any is on.
-/// `f` and `extensions` are the tree's filters and file extensions as the
-/// menu opens.
-fn build_filter_menu(
-    tree: &WeakEntity<FileTree>,
-    f: TreeFilters,
-    extensions: Vec<(String, usize)>,
-    mut menu: PopupMenu,
-) -> PopupMenu {
-    let item = |label: &str, checked: bool, act: FilterToggle| {
-        let tree = tree.clone();
-        PopupMenuItem::new(label.to_owned())
-            .checked(checked)
-            .on_click(move |_, _, cx| {
-                if let Some(tree) = tree.upgrade() {
-                    tree.update(cx, |t, cx| act(t, cx));
-                }
-            })
-    };
-    menu = menu
-        .item(item(
-            "Unviewed",
-            f.unviewed,
-            Box::new(|t, cx| t.toggle_unviewed(cx)),
-        ))
-        .item(item(
-            "Has comments",
-            f.has_comments,
-            Box::new(|t, cx| t.toggle_has_comments(cx)),
-        ))
-        .separator()
-        .label("Status");
-    for status in StatusFilter::ALL {
-        menu = menu.item(item(
-            status.label(),
-            f.statuses.contains(&status),
-            Box::new(move |t, cx| t.toggle_status(status, cx)),
-        ));
-    }
-    if extensions.len() > 1 {
-        menu = menu.separator().label("Extension");
-        for (ext, count) in &extensions {
-            let label = if ext.is_empty() {
-                format!("No extension ({count})")
-            } else {
-                format!(".{ext} ({count})")
-            };
-            let e = ext.clone();
-            menu = menu.item(item(
-                &label,
-                f.extensions.contains(ext),
-                Box::new(move |t, cx| t.toggle_extension(&e, cx)),
-            ));
-        }
-    }
-    if f.menu_active() {
-        let tree = tree.clone();
-        menu = menu
-            .separator()
-            .item(
-                PopupMenuItem::new("Clear filters").on_click(move |_, window, cx| {
-                    if let Some(tree) = tree.upgrade() {
-                        tree.update(cx, |t, cx| t.clear_filters(window, cx));
-                    }
-                }),
-            );
-    }
-    menu.max_h(px(420.)).scrollable(true)
 }
 
 /// gpui-kit tree items for `model`, directories expanded unless in
@@ -890,14 +841,10 @@ fn tree_items(model: &TreeModel, collapsed: &HashSet<String>) -> Vec<TreeItem> {
 
 impl Render for FileTree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
         let theme = cx.theme().clone();
         let total = self.files.len();
         let shown = self.model().file_order().len();
-        let count: SharedString = if self.filtered.is_some() {
-            format!("{shown} of {total}").into()
-        } else {
-            total.to_string().into()
-        };
         let ctx = row::RowCtx::shared(self.row_ctx(cx));
         let body: AnyElement = if shown == 0 {
             let this = cx.entity().downgrade();
@@ -932,6 +879,7 @@ impl Render for FileTree {
             div()
                 .flex_1()
                 .min_h_0()
+                .px_1p5()
                 .child(
                     tree(&self.state, move |ix, entry, selected, window, cx| {
                         row::render(&ctx, ix, entry, selected, window, cx)
@@ -940,57 +888,47 @@ impl Render for FileTree {
                 )
                 .into_any_element()
         };
+        // The footer counts every file, whatever the filters show.
+        let all: Vec<u32> = (0..total as u32).collect();
         v_flex()
             .key_context(KEY_CONTEXT)
             .size_full()
             .bg(theme.sidebar)
             .child(
-                h_flex()
-                    .flex_none()
-                    .h(px(32.))
-                    .pl_3()
-                    .pr_2()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(theme.muted_foreground)
-                    .child("FILES")
-                    .child(
-                        div()
-                            .debug_selector(|| "tree-count".into())
-                            .font_normal()
-                            .child(count),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .relative()
-                            .child(self.filter_menu(cx))
-                            .when_some(self.key_menu.as_ref(), |el, menu| {
-                                el.child(menu.element(Anchor::TopRight))
-                            }),
-                    ),
-            )
-            .child(
-                // Esc in the filter box: back to the list.
+                // The rounded filter field, its menu at the right edge. Esc
+                // in it: back to the list.
                 div()
                     .flex_none()
                     .px_2()
-                    .py_1p5()
+                    .pt_1()
+                    .pb_2()
                     .on_action(cx.listener(|t, _: &Escape, window, cx| t.focus(window, cx)))
                     .child(
-                        Input::new(&self.filter_input)
-                            .small()
-                            .cleanable(true)
-                            .prefix(
-                                Icon::new(IconName::Search)
-                                    .xsmall()
-                                    .text_color(theme.muted_foreground),
-                            ),
+                        div().debug_selector(|| "tree-filter".into()).child(
+                            Input::new(&self.filter_input)
+                                .small()
+                                .cleanable(true)
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .small()
+                                        .text_color(theme.muted_foreground),
+                                )
+                                .suffix(
+                                    div()
+                                        .relative()
+                                        .child(self.filter_menu(cx))
+                                        .when_some(self.key_menu.as_ref(), |el, menu| {
+                                            el.child(menu.element(Anchor::TopRight))
+                                        }),
+                                )
+                                .min_h(px(28.))
+                                .rounded(px(8.))
+                                .bg(theme.tab_bar_segmented)
+                                .border_color(gpui_kit::transparent_black()),
+                        ),
                     ),
             )
             .child(body)
+            .child(footer::footer(&all, &self.viewport, cx))
     }
 }

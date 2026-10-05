@@ -1,8 +1,10 @@
-//! File tree and file finder (T3.6, design §11.5, §11.8): compacted
-//! directories, row checkboxes, filters, the nucleo fuzzy filter, tree ↔
-//! viewport sync, ⌘P and the 13k-file build budget.
+//! File tree and file finder (T3.6, T6.11, design §11.5, §11.8): compacted
+//! directories, rows (icons, right-aligned stats and status letters, the
+//! Viewed slot at the row's end), the filter field and its menu, the footer
+//! totals, filters, the nucleo fuzzy filter, tree ↔ viewport sync, ⌘P, no
+//! tree render on scroll frames and the 13k-file build budget.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,10 +16,15 @@ use polygloss_app::tree::filters::{self, StatusFilter, TreeFilters};
 use polygloss_app::tree::model::{ItemId, NodeKind, TreeModel};
 use polygloss_app::tree::{FileTree, FileTreeEvent, file_tree, finder};
 use polygloss_diff::{FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, ObjectFormat, Oid};
-use polygloss_viewport::{DiffProvider, DiffViewport, FileFlags, ScrollTarget, ViewportOptions};
+use polygloss_viewport::{
+    DiffProvider, DiffViewport, FileFlags, ScrollTarget, ViewportEvent, ViewportOptions,
+};
 
-use crate::shell::{Shell, compare_req, draw, start};
+use crate::shell::{Shell, bounds, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
+
+mod footer;
+mod rows;
 
 /// `n` lines of numbered text, so every file is taller than the window
 /// and a jump can bring any file to the top.
@@ -112,13 +119,8 @@ fn shown_paths(o: &mut Opened) -> Vec<&'static str> {
     })
 }
 
-fn click(o: &mut Opened, selector: &'static str) {
-    let at = o
-        .shell
-        .cx
-        .debug_bounds(selector)
-        .unwrap_or_else(|| panic!("no element {selector}"))
-        .center();
+fn click(o: &mut Opened, selector: &str) {
+    let at = bounds(o.shell.cx, selector).center();
     o.shell.cx.simulate_click(at, gpui_kit::Modifiers::none());
     draw(o.shell.cx);
 }
@@ -135,6 +137,45 @@ fn selected_row(o: &mut Opened) -> Option<ItemId> {
             .selected_item()
             .and_then(|i| ItemId::parse(&i.id))
     })
+}
+
+/// Draws until every one of `tab`'s first `n` files has its line counts.
+fn settle_counts(shell: &mut Shell, tab: &Entity<ReviewTab>, n: usize) {
+    for _ in 0..60 {
+        draw(shell.cx);
+        let counted = tab.read_with(shell.cx, |t, cx| {
+            let v = t.viewport.read(cx);
+            (0..n as u32).all(|f| v.file_counts(f).is_some())
+        });
+        if counted {
+            return;
+        }
+    }
+    panic!("the line counts never settled");
+}
+
+/// The one-minute load average when `sysctl -n vm.loadavg` reads (the M6
+/// timing-test rule: assert wall-clock budgets only below 4).
+fn load_average() -> Option<f64> {
+    let out = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()?;
+    // "{ 5.28 9.47 19.69 }"
+    String::from_utf8(out.stdout)
+        .ok()?
+        .split_whitespace()
+        .find_map(|w| w.parse::<f64>().ok())
+}
+
+/// Asserts `elapsed < budget` on a quiet machine; otherwise prints it.
+fn assert_under(what: &str, elapsed: Duration, budget: Duration) {
+    match load_average() {
+        Some(load) if load < 4.0 => {
+            assert!(elapsed < budget, "{what} took {elapsed:?} (load {load})")
+        }
+        load => eprintln!("{what} took {elapsed:?}; load {load:?}: not asserted"),
+    }
 }
 
 #[test]
@@ -218,7 +259,7 @@ fn tree_compacts_single_child_dirs(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn tree_checkbox_click_does_not_toggle_folder(cx: &mut TestAppContext) {
+fn tree_slot_click_does_not_toggle_folder(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = tree_repo();
     let mut o = open_tree(cx, &repo);
@@ -245,8 +286,8 @@ fn tree_checkbox_click_does_not_toggle_folder(cx: &mut TestAppContext) {
         }]
     );
 
-    // A file's checkbox asks to toggle Viewed and neither selects the row
-    // nor scrolls the viewport.
+    // A file's slot asks to toggle Viewed and neither selects the row nor
+    // scrolls the viewport.
     click(&mut o, "tree-check-f:5");
     assert_eq!(
         events.borrow().last(),
@@ -255,7 +296,7 @@ fn tree_checkbox_click_does_not_toggle_folder(cx: &mut TestAppContext) {
     assert_eq!(top_file(&mut o), top);
     assert_ne!(selected_row(&mut o), Some(ItemId::File(5)));
 
-    // The checkboxes show the pushed Viewed state: `src` is partly viewed.
+    // The slots show the pushed Viewed state: `src` is partly viewed.
     o.tree.update(o.shell.cx, |t, cx| {
         let mut flags = vec![FileFlags::default(); 7];
         flags[5].viewed = true;
@@ -265,13 +306,13 @@ fn tree_checkbox_click_does_not_toggle_folder(cx: &mut TestAppContext) {
     let flags = o.tree.read_with(o.shell.cx, |t, _| t.file_flags().to_vec());
     assert!(flags[5].viewed);
 
-    // Clicking the folder's row (not its checkbox) does toggle it.
+    // Clicking the folder's row (not its slot) does toggle it.
     click(&mut o, "tree-row-d:src");
     assert_eq!(
         row_labels(&mut o),
         ["README.md", "config.toml", "docs/guide", "intro.md", "src"]
     );
-    assert_eq!(events.borrow().len(), 2, "no checkbox event from the row");
+    assert_eq!(events.borrow().len(), 2, "no slot event from the row");
 }
 
 #[gpui_kit::test]
@@ -353,9 +394,6 @@ fn tree_filters_unviewed_status_extension(cx: &mut TestAppContext) {
         })
     });
     assert_eq!(shown_paths(&mut o), ["src/app/ui/button.rs"]);
-    draw(o.shell.cx);
-    let count = o.shell.cx.debug_bounds("tree-count");
-    assert!(count.is_some());
 
     // Clearing brings every file back with the user's own expansion.
     o.shell
@@ -786,10 +824,10 @@ fn tree_builds_13k_files_under_200ms(cx: &mut TestAppContext) {
         let tree = cx.new(|cx| FileTree::new(files.clone(), viewport, window, cx));
         (tree, start.elapsed())
     });
-    eprintln!("13k-file tree built in {elapsed:?}");
-    assert!(
-        elapsed < Duration::from_millis(200),
-        "building the tree took {elapsed:?}"
+    assert_under(
+        "building the 13k-file tree",
+        elapsed,
+        Duration::from_millis(200),
     );
     let (order, rows) = tree.read_with(shell.cx, |t, cx| {
         (t.model().file_order().len(), t.rows(cx).len())
@@ -803,11 +841,10 @@ fn tree_builds_13k_files_under_200ms(cx: &mut TestAppContext) {
     shell
         .cx
         .update(|window, cx| tree.update(cx, |t, cx| t.set_query("d07part3", window, cx)));
-    let filtered = start.elapsed();
-    eprintln!("13k-file fuzzy filter in {filtered:?}");
-    assert!(
-        filtered < Duration::from_millis(400),
-        "filtering took {filtered:?}"
+    assert_under(
+        "the 13k-file fuzzy filter",
+        start.elapsed(),
+        Duration::from_millis(400),
     );
 }
 
@@ -869,4 +906,49 @@ fn tree_marks_a_jump_landed_only_at_header_top(cx: &mut TestAppContext) {
     assert_eq!(viewport.read_with(shell.cx, |v, _| v.anchor().file_idx), 0);
     let selected = tree.read_with(shell.cx, |t, _| t.selected_file());
     assert_eq!(selected, Some(1));
+}
+
+#[gpui_kit::test]
+fn tree_does_not_rerender_on_scroll_frames(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = tree_repo();
+    let mut o = open_tree(cx, &repo);
+    settle_counts(&mut o.shell, &o.tab, PATHS.len());
+    let viewport = o.tab.read_with(o.shell.cx, |t, _| t.viewport.clone());
+    let frames = Rc::new(Cell::new(0u32));
+    let seen = frames.clone();
+    o.shell.cx.update(|_, cx| {
+        cx.subscribe(&viewport, move |_, e: &ViewportEvent, _| {
+            if matches!(e, ViewportEvent::FrameStats(_)) {
+                seen.set(seen.get() + 1);
+            }
+        })
+        .detach()
+    });
+    let renders = |o: &mut Opened| o.tree.read_with(o.shell.cx, |t, _| t.render_count());
+    let before = renders(&mut o);
+    // Five scroll frames inside the first file (drawn as the app draws
+    // them: no window refresh).
+    for _ in 0..5 {
+        viewport.update(o.shell.cx, |v, cx| v.scroll_by(8.0, cx));
+        o.shell.cx.run_until_parked();
+    }
+    assert!(
+        frames.get() >= 5,
+        "the diff painted {} frames",
+        frames.get()
+    );
+    assert_eq!(top_file(&mut o), 0, "the scroll stayed in the first file");
+    assert_eq!(
+        renders(&mut o),
+        before,
+        "the tree rendered on scroll frames"
+    );
+    // A change the tree shows renders it again (the count does see renders).
+    let mut flags = vec![FileFlags::default(); PATHS.len()];
+    flags[2].viewed = true;
+    o.tree
+        .update(o.shell.cx, |t, cx| t.set_file_flags(flags, cx));
+    o.shell.cx.run_until_parked();
+    assert!(renders(&mut o) > before, "a Viewed change renders the tree");
 }
