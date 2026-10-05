@@ -53,8 +53,10 @@ pub fn headless_app() -> HeadlessAppContext {
     headless_app_with_assets(Arc::new(()))
 }
 
-/// [`headless_app`] with an asset source (gpui-kit's icons for the app
-/// shell: `Arc::new(gpui_kit::assets::Assets)`).
+/// [`headless_app`] with an asset source behind the app's own icons
+/// (`polygloss_app::assets::AppIcons`): given gpui-kit's icons
+/// (`Arc::new(gpui_kit::assets::Assets)`), the app's `AppAssets`. Every
+/// capture runs with Reduce Motion on, so nothing is caught mid-animation.
 pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> HeadlessAppContext {
     assert_eq!(
         std::thread::current().name(),
@@ -63,12 +65,13 @@ pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> Headl
     );
     let mut cx = HeadlessAppContext::with_platform(
         gpui_kit::platform::current_platform(true).text_system(),
-        assets,
+        Arc::new(polygloss_app::assets::WithAppIcons(assets)),
         gpui_kit::platform::current_headless_renderer,
     );
     // The app's bundled code font (T3.3): screenshots draw Lilex, as the
     // app does, not the system's Menlo fallback.
     cx.update(polygloss_app::theme::fonts::register_fonts);
+    cx.update(|cx| cx.set_reduce_motion(true));
     cx
 }
 

@@ -3,10 +3,12 @@
 //! review tab's panes and `Esc` closes every popover and dialog.
 //!
 //! - Pane cycle (`tab::FocusNextPane` / `FocusPrevPane`, `⇥` / `⇧⇥` in a
-//!   review tab): the file tree (or the find results in its place) → the
-//!   diff → the threads panel (while shown) → every open composer, in the
-//!   order they opened, and around. The composers' text fields give `⇥` to
-//!   the cycle instead of indenting (`⌘]` / `⌘[` still indent).
+//!   review tab): the file tree (or the find results in its place, while
+//!   the sidebar shows Files) → the diff → the threads panel (while shown)
+//!   → every open composer, in the order they opened, and around. The
+//!   composers' text fields give `⇥` to the cycle instead of indenting
+//!   (`⌘]` / `⌘[` still indent). Moving the keyboard into the tree shows
+//!   the sidebar's Files first ([`crate::chrome::show_files`]).
 //! - [`menu`]: popup menus opened from the keyboard (the tree's filters,
 //!   the iteration picker) next to the button the mouse opens them with.
 //! - [`focus_step`]: `⇥` out of a multi-line text field inside a dialog
@@ -74,9 +76,14 @@ pub fn focused_pane(tab: &ReviewTab, window: &Window, cx: &App) -> Option<Pane> 
     (find || tree).then_some(Pane::Tree)
 }
 
-/// The panes `Tab` visits in `tab` now, in order.
+/// The panes `Tab` visits in `tab` now, in order: the tree only while the
+/// sidebar shows it.
 pub fn stops(tab: &ReviewTab, cx: &App) -> Vec<Pane> {
-    let mut out = vec![Pane::Tree, Pane::Viewport];
+    let mut out = Vec::new();
+    if crate::chrome::chrome(cx).read(cx).files_shown() {
+        out.push(Pane::Tree);
+    }
+    out.push(Pane::Viewport);
     if tab.threads_panel_visible() && crate::threads::threads(tab).is_some() {
         out.push(Pane::Threads);
     }
@@ -111,18 +118,21 @@ pub fn focus_pane(
 ) {
     match pane {
         // The find bar while it is open in the tree's place, else the tree
-        // list.
-        Pane::Tree => match crate::find::find_bar(tab).filter(|b| b.read(cx).is_open()) {
-            Some(bar) => {
-                let focus = bar.read(cx).input().focus_handle(cx);
-                window.focus(&focus, cx);
-            }
-            None => {
-                if let Some(tree) = crate::tree::file_tree(tab).cloned() {
-                    tree.update(cx, |t, cx| t.focus(window, cx));
+        // list; the sidebar shows them first.
+        Pane::Tree => {
+            crate::chrome::show_files(window, cx);
+            match crate::find::find_bar(tab).filter(|b| b.read(cx).is_open()) {
+                Some(bar) => {
+                    let focus = bar.read(cx).input().focus_handle(cx);
+                    window.focus(&focus, cx);
+                }
+                None => {
+                    if let Some(tree) = crate::tree::file_tree(tab).cloned() {
+                        tree.update(cx, |t, cx| t.focus(window, cx));
+                    }
                 }
             }
-        },
+        }
         Pane::Viewport => window.focus(&tab.viewport_focus().clone(), cx),
         Pane::Threads => {
             if let Some(model) = crate::threads::threads(tab).cloned() {

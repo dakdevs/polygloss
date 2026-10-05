@@ -5,7 +5,8 @@
 //! dialog, handing the keyboard back.
 
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::{Entity, FocusHandle, VisualTestContext};
+use gpui_kit::{Entity, FocusHandle, ScrollDelta, ScrollWheelEvent, VisualTestContext, point, px};
+use polygloss_app::chrome::{self, Segment};
 use polygloss_app::composer::{self, ComposerKey};
 use polygloss_app::iterations;
 use polygloss_app::keyboard::{self, Pane};
@@ -23,7 +24,7 @@ use polygloss_core::store::events::Actor;
 use polygloss_diff::{ObjectFormat, Side};
 use polygloss_viewport::CursorPos;
 
-use crate::shell::{Shell, compare_req, draw, start};
+use crate::shell::{Shell, click, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
 fn author(kind: AuthorKind) -> Author {
@@ -389,6 +390,264 @@ fn focus_cycles_between_panes(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
     keys(&mut shell, "shift-tab");
     assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+}
+
+/// The window's sidebar: `(visible, segment)`.
+fn sidebar(shell: &mut Shell) -> (bool, Segment) {
+    shell.cx.update(|_, cx| {
+        let c = chrome::chrome(cx).read(cx);
+        (c.sidebar_visible(), c.segment())
+    })
+}
+
+fn set_sidebar(shell: &mut Shell, visible: bool, segment: Segment) {
+    let c = shell.cx.update(|_, cx| chrome::chrome(cx));
+    c.update(shell.cx, |c, cx| {
+        c.set_sidebar_visible(visible, cx);
+        c.set_segment(segment, cx);
+    });
+    draw(shell.cx);
+}
+
+/// The panes `Tab` visits in `tab` now.
+fn stops(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Vec<Pane> {
+    tab.read_with(shell.cx, keyboard::stops)
+}
+
+#[gpui_kit::test]
+fn pane_cycle_skips_the_tree_unless_files_shows(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    assert_eq!(sidebar(&mut shell), (true, Segment::Files));
+    assert_eq!(
+        stops(&mut shell, &tab),
+        [Pane::Tree, Pane::Viewport, Pane::Threads]
+    );
+
+    for (visible, segment) in [(true, Segment::Reviews), (false, Segment::Files)] {
+        set_sidebar(&mut shell, visible, segment);
+        assert_eq!(
+            stops(&mut shell, &tab),
+            [Pane::Viewport, Pane::Threads],
+            "visible {visible}, {segment:?}"
+        );
+        // Tab and ⇧Tab go round the viewport and the threads panel only.
+        focus_viewport(&mut shell, &tab);
+        for want in [Pane::Threads, Pane::Viewport, Pane::Threads] {
+            keys(&mut shell, "tab");
+            assert_eq!(pane_of(&mut shell, &tab), Some(want), "tab");
+        }
+        keys(&mut shell, "shift-tab");
+        assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+        keys(&mut shell, "shift-tab");
+        assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Threads));
+        assert_eq!(sidebar(&mut shell), (visible, segment), "left alone");
+    }
+
+    // Moving the keyboard into the tree (as `focus_pane` does for the
+    // palette's tree actions) shows Files first.
+    set_sidebar(&mut shell, true, Segment::Reviews);
+    focus_pane(&mut shell, &tab, &Pane::Tree);
+    assert_eq!(sidebar(&mut shell), (true, Segment::Files));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    assert!(painted(shell.cx, "file-tree-pane"));
+    assert_eq!(
+        stops(&mut shell, &tab),
+        [Pane::Tree, Pane::Viewport, Pane::Threads]
+    );
+}
+
+#[gpui_kit::test]
+fn find_filter_and_finder_show_the_files_segment_first(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let hidden_states = [
+        (true, Segment::Reviews),
+        (false, Segment::Files),
+        (false, Segment::Reviews),
+    ];
+
+    // ⌘F: the find pane, in the Files segment.
+    for (visible, segment) in hidden_states {
+        set_sidebar(&mut shell, visible, segment);
+        focus_viewport(&mut shell, &tab);
+        assert!(!painted(shell.cx, "find-pane"));
+        keys(&mut shell, "cmd-f");
+        assert_eq!(sidebar(&mut shell), (true, Segment::Files), "⌘F");
+        assert!(
+            painted(shell.cx, "find-pane"),
+            "⌘F from {visible} {segment:?}"
+        );
+        assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+        keys(&mut shell, "escape");
+        assert!(!painted(shell.cx, "find-pane"));
+    }
+
+    // tree::FocusFilter (`/` in the tree, or the palette): the filter box.
+    let filter = tab.read_with(shell.cx, |t, cx| {
+        tree::file_tree(t).unwrap().read(cx).filter_focus(cx)
+    });
+    for (visible, segment) in hidden_states {
+        set_sidebar(&mut shell, visible, segment);
+        focus_viewport(&mut shell, &tab);
+        shell.cx.dispatch_action(actions::tree::FocusFilter);
+        draw(shell.cx);
+        assert_eq!(sidebar(&mut shell), (true, Segment::Files), "filter");
+        assert!(painted(shell.cx, "file-tree-pane"));
+        assert!(shell.cx.update(|window, _| filter.is_focused(window)));
+    }
+
+    // ⌘P: the finder, over a sidebar showing Files.
+    for (visible, segment) in hidden_states {
+        set_sidebar(&mut shell, visible, segment);
+        focus_viewport(&mut shell, &tab);
+        keys(&mut shell, "cmd-p");
+        assert_eq!(sidebar(&mut shell), (true, Segment::Files), "⌘P");
+        assert!(shell.cx.update(|_, cx| tree::finder::current(cx)).is_some());
+        assert!(has_dialog(&mut shell));
+        keys(&mut shell, "escape");
+        assert!(!has_dialog(&mut shell));
+    }
+}
+
+/// Hiding the tree or the find field while it has the keyboard (the Reviews
+/// segment, the sidebar toggle) hands the keyboard to the diff, so `⇥`, `j`
+/// and ⌘F still act.
+#[gpui_kit::test]
+fn hiding_the_sidebar_hands_its_keyboard_to_the_diff(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let cursor = |shell: &mut Shell| viewport.read_with(shell.cx, |v, _| v.cursor());
+
+    // A click on a tree row, then on Reviews: `⇥` goes on from the diff.
+    click(shell.cx, "tree-row-f:0");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    click(shell.cx, "segment-reviews");
+    assert_eq!(sidebar(&mut shell), (true, Segment::Reviews));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    keys(&mut shell, "tab");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Threads), "⇥ acts");
+
+    // `⇧⇥` into the tree and `/` to its filter field, then the toggle: `j`
+    // moves the diff's cursor.
+    click(shell.cx, "segment-files");
+    focus_viewport(&mut shell, &tab);
+    keys(&mut shell, "shift-tab");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    keys(&mut shell, "/");
+    let filter = tab.read_with(shell.cx, |t, cx| {
+        tree::file_tree(t).unwrap().read(cx).filter_focus(cx)
+    });
+    assert!(shell.cx.update(|window, _| filter.is_focused(window)));
+    click(shell.cx, "toggle-sidebar");
+    assert!(!sidebar(&mut shell).0);
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    let before = cursor(&mut shell);
+    keys(&mut shell, "j");
+    assert_ne!(cursor(&mut shell), before, "j acts");
+
+    // ⌘F's field, then Reviews: ⌘F opens find again.
+    click(shell.cx, "show-sidebar");
+    keys(&mut shell, "cmd-f");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    click(shell.cx, "segment-reviews");
+    assert!(!painted(shell.cx, "find-pane"));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    keys(&mut shell, "cmd-f");
+    assert_eq!(sidebar(&mut shell), (true, Segment::Files), "⌘F acts");
+    assert!(painted(shell.cx, "find-pane"));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+
+    // Hidden while the keyboard is in use (a menu command): the next frame
+    // already rings the diff, with no other input to redraw the window.
+    keys(&mut shell, "escape");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    keys(&mut shell, "shift-tab");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    assert!(painted(shell.cx, "focus-ring-tree"));
+    let chrome = shell.cx.update(|_, cx| chrome::chrome(cx));
+    chrome.update(shell.cx, |c, cx| c.set_sidebar_visible(false, cx));
+    shell.cx.run_until_parked();
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    assert!(painted(shell.cx, "focus-ring-viewport"));
+}
+
+/// A line composer keeps the keyboard while the wheel scrolls it out of view
+/// and back (the viewport draws only its visible blocks): the next letters
+/// are its text, never the diff's keys.
+#[gpui_kit::test]
+fn composer_scrolled_out_of_view_keeps_the_keyboard(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    let lines = |suffix: &str| -> String {
+        (0..400)
+            .map(|i| format!("let a{i} = {i}{suffix};\n"))
+            .collect()
+    };
+    repo.write("src/long.rs", lines("").as_bytes());
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    repo.write("src/long.rs", lines(" + 1").as_bytes());
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    cursor_at(&mut shell, &tab, 0, 4);
+    keys(&mut shell, "c");
+    let key = ComposerKey::Line {
+        path: "src/long.rs".into(),
+        side: Side::New,
+        start_line: 5,
+        line: 5,
+    };
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Composer(key.clone())));
+    shell.cx.simulate_input("abc");
+    draw(shell.cx);
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let cursor = viewport.read_with(shell.cx, |v, _| v.cursor());
+    let over_diff = shell
+        .cx
+        .debug_bounds("viewport-pane")
+        .expect("the diff is painted")
+        .center();
+    let wheel = |shell: &mut Shell, dy: f32| {
+        shell.cx.simulate_event(ScrollWheelEvent {
+            position: over_diff,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
+            ..Default::default()
+        });
+        draw(shell.cx);
+    };
+    let block = format!("composer-{key}");
+
+    wheel(&mut shell, 4000.);
+    assert!(!painted(shell.cx, &block), "the composer left the screen");
+    wheel(&mut shell, -4000.);
+    assert!(painted(shell.cx, &block), "and came back");
+    assert_eq!(
+        pane_of(&mut shell, &tab),
+        Some(Pane::Composer(key.clone())),
+        "the composer still has the keyboard"
+    );
+    keys(&mut shell, "j");
+    shell.cx.simulate_input("def");
+    draw(shell.cx);
+    let text = tab.read_with(shell.cx, |t, cx| {
+        composer::composer(t, &key, cx).map(|c| c.read(cx).text(cx))
+    });
+    assert_eq!(text.as_deref(), Some("abcjdef"));
+    assert_eq!(
+        viewport.read_with(shell.cx, |v, _| v.cursor()),
+        cursor,
+        "j typed, not moved"
+    );
 }
 
 #[gpui_kit::test]
