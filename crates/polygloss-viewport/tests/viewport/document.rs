@@ -13,6 +13,7 @@ use polygloss_diff::{
 use polygloss_viewport::document::{
     BlockAnchor, BlockId, BodyRow, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document,
     FileLayout, FileState, HeightIndex, Metrics, PlacedBlock, RowKey, ScrollAnchor, SizeHint,
+    SlotRange,
 };
 use polygloss_viewport::materialize::MaterializedFile;
 
@@ -47,6 +48,10 @@ fn modified(idx: u32) -> FileChange {
         generated: false,
         generated_attr: GeneratedAttr::Unspecified,
     }
+}
+
+fn slots(start: u32, end: u32) -> SlotRange {
+    SlotRange { start, end }
 }
 
 fn files(n: u32) -> Arc<Vec<FileChange>> {
@@ -428,33 +433,33 @@ fn visible_range_for_offset() {
     let mut d = doc_with_heights(&heights, 200.0);
     assert_eq!(d.total_height(), 1_160.0);
     assert_eq!(d.scroll_top(), 0.0);
-    assert_eq!(d.visible(200.0), 0..2);
+    assert_eq!(d.visible(200.0), slots(0, 2));
 
     d.scroll_to(1, RowKey::Header);
     assert_eq!(d.scroll_top(), 100.0);
-    assert_eq!(d.visible(200.0), 1..2);
+    assert_eq!(d.visible(200.0), slots(1, 2));
 
     d.scroll_by(150.0);
     assert_eq!(d.scroll_top(), 250.0);
-    assert_eq!(d.visible(200.0), 1..3);
+    assert_eq!(d.visible(200.0), slots(1, 3));
 
     // A file starting exactly at the bottom edge is not visible.
     d.scroll_to(2, RowKey::Header);
     assert_eq!(d.scroll_top(), 400.0);
-    assert_eq!(d.visible(200.0), 2..4);
-    assert_eq!(d.visible(201.0), 2..5);
-    assert_eq!(d.visible(0.0), 2..2);
+    assert_eq!(d.visible(200.0), slots(2, 4));
+    assert_eq!(d.visible(201.0), slots(2, 5));
+    assert_eq!(d.visible(0.0), slots(2, 2));
 
     // Clamped at the end: the last pixel is at the viewport bottom.
     d.scroll_by(10_000.0);
     assert_eq!(d.scroll_top(), 960.0);
-    assert_eq!(d.visible(200.0), 8..10);
+    assert_eq!(d.visible(200.0), slots(8, 10));
     d.scroll_by(-10_000.0);
     assert_eq!(d.scroll_top(), 0.0);
 
     let empty = Document::new(Arc::new(Vec::new()), metrics());
-    assert_eq!(empty.visible(200.0), 0..0);
-    assert_eq!(empty.materialize_range(200.0, 2.0), 0..0);
+    assert_eq!(empty.visible(200.0), slots(0, 0));
+    assert_eq!(empty.materialize_range(200.0, 2.0), slots(0, 0));
 }
 
 #[test]
@@ -462,18 +467,21 @@ fn materialize_window_two_screens() {
     let mut d = doc_with_heights(&[100.0; 100], 200.0);
     d.scroll_to(50, RowKey::Header);
     assert_eq!(d.scroll_top(), 5_000.0);
-    assert_eq!(d.visible(200.0), 50..52);
+    assert_eq!(d.visible(200.0), slots(50, 52));
     // Two screens (400 px) above and below: [4600, 5600).
-    assert_eq!(d.materialize_range(200.0, 2.0), 46..56);
-    assert_eq!(d.materialize_range(200.0, DEFAULT_WINDOW_SCREENS), 46..56);
-    assert_eq!(d.materialize_range(200.0, 1.0), 48..54);
-    assert_eq!(d.materialize_range(200.0, 0.0), 50..52);
+    assert_eq!(d.materialize_range(200.0, 2.0), slots(46, 56));
+    assert_eq!(
+        d.materialize_range(200.0, DEFAULT_WINDOW_SCREENS),
+        slots(46, 56)
+    );
+    assert_eq!(d.materialize_range(200.0, 1.0), slots(48, 54));
+    assert_eq!(d.materialize_range(200.0, 0.0), slots(50, 52));
 
     d.scroll_to(0, RowKey::Header);
-    assert_eq!(d.materialize_range(200.0, 2.0), 0..6);
+    assert_eq!(d.materialize_range(200.0, 2.0), slots(0, 6));
     d.scroll_to(99, RowKey::Header);
     assert_eq!(d.scroll_top(), 9_800.0);
-    assert_eq!(d.materialize_range(200.0, 2.0), 94..100);
+    assert_eq!(d.materialize_range(200.0, 2.0), slots(94, 100));
 }
 
 #[test]
@@ -489,7 +497,7 @@ fn evict_farthest_first_under_budget() {
         generations.push(generation);
     }
     d.scroll_to(10, RowKey::Header);
-    assert_eq!(d.visible(200.0), 10..12);
+    assert_eq!(d.visible(200.0), slots(10, 12));
     let resident = d.resident_bytes();
     assert!((200 * MB..201 * MB).contains(&resident), "{resident}");
     let heights: Vec<f32> = (0..20).map(|f| d.file_height(f)).collect();
@@ -1210,13 +1218,13 @@ fn eviction_can_keep_the_materialization_window() {
     }
     d.scroll_to(10, RowKey::Header);
     // Everything but the window 8..14 goes, even with no budget at all.
-    let evicted = d.evict_over_budget_keeping(0, 8..14);
+    let evicted = d.evict_over_budget_keeping(0, slots(8, 14));
     let kept: Vec<u32> = (0..20).filter(|&f| d.state(f).is_materialized()).collect();
     assert_eq!(kept, (8..14).collect::<Vec<u32>>());
     assert_eq!(evicted.len(), 14);
     assert_eq!(evicted[0], 0, "farthest first");
     // The visible files are kept even when `keep` misses them.
-    d.evict_over_budget_keeping(0, 0..0);
+    d.evict_over_budget_keeping(0, slots(0, 0));
     assert!(d.state(10).is_materialized() && d.state(11).is_materialized());
     assert!(!d.state(8).is_materialized());
 }

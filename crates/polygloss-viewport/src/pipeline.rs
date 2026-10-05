@@ -31,7 +31,6 @@
 //! other side of the file is highlighted as usual.
 
 use std::collections::VecDeque;
-use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -46,7 +45,7 @@ use polygloss_highlight::{
     guess_language,
 };
 
-use crate::document::{Document, FileState, SizeHint};
+use crate::document::{Document, FileState, SizeHint, SlotRange};
 use crate::layout::layout_for;
 use crate::materialize::{LoadError, LoadOptions, Loaded, MaterializedFile, is_binary, read_blob};
 use crate::provider::DiffProvider;
@@ -659,8 +658,11 @@ pub(crate) struct Pipeline {
     background_started: bool,
     /// Schedule even if the window did not move (options changed).
     dirty: bool,
-    last_window: Range<u32>,
-    last_visible: Range<u32>,
+    last_window: SlotRange,
+    last_visible: SlotRange,
+    /// The file at the top of the viewport: the background pass goes
+    /// outward from it.
+    focus: u32,
     stats: PipelineStats,
 }
 
@@ -711,8 +713,9 @@ impl Pipeline {
             epoch: 0,
             background_started: false,
             dirty: true,
-            last_window: 0..0,
-            last_visible: 0..0,
+            last_window: SlotRange { start: 0, end: 0 },
+            last_visible: SlotRange { start: 0, end: 0 },
+            focus: 0,
             stats: PipelineStats::default(),
         }
     }
@@ -814,14 +817,16 @@ impl Pipeline {
         let visible = doc.visible(h);
         let window = doc.materialize_range(h, opts.window_screens);
         let keep = doc.materialize_range(h, opts.window_screens + CANCEL_SLACK_SCREENS);
+        let focus = doc.file_at(visible.start);
         let mut changed = std::mem::take(&mut self.dirty)
             || window != self.last_window
-            || visible != self.last_visible;
+            || visible != self.last_visible
+            || focus != self.focus;
 
         let mut i = 0;
         while i < self.active.len() {
             let f = self.active[i];
-            if keep.contains(&f) && !doc.is_collapsed(f) {
+            if doc.contains_file(keep, f) && !doc.is_collapsed(f) {
                 i += 1;
                 continue;
             }
@@ -831,7 +836,8 @@ impl Pipeline {
         }
 
         let mut jobs = Vec::new();
-        for f in window.clone() {
+        let shown: Vec<u32> = doc.shown_files(window).collect();
+        for f in shown {
             if !doc.is_collapsed(f) {
                 self.plan(f, &files[f as usize], doc, opts, &mut jobs);
             }
@@ -840,16 +846,17 @@ impl Pipeline {
             return false;
         }
         self.last_window = window;
-        self.last_visible = visible.clone();
+        self.last_visible = visible;
+        self.focus = focus;
         let mut q = lock(&self.shared.queue);
         q.urgent.retain(|j| j.cancel.load(Ordering::Relaxed) == 0);
         q.urgent.extend(jobs);
         let (top, bottom) = (doc.scroll_top(), doc.scroll_top() + f64::from(h));
         q.urgent
             .make_contiguous()
-            .sort_by_key(|j| priority(j.file, j.highlight(), doc, &visible, top, bottom));
+            .sort_by_key(|j| priority(j.file, j.highlight(), doc, visible, top, bottom));
         if let Some(pass) = &mut q.pass {
-            pass.refocus(visible.start);
+            pass.refocus(focus);
         }
         true
     }
@@ -1027,7 +1034,7 @@ impl Pipeline {
     /// viewport first.
     pub fn start_background(&mut self, diff: DiffOptions, cx: &mut Context<DiffViewport>) {
         self.background_started = true;
-        let (len, focus) = (self.work.len() as u32, self.last_visible.start);
+        let (len, focus) = (self.work.len() as u32, self.focus);
         lock(&self.shared.queue).pass = Some(Pass {
             sizes: Outward::new(len, focus),
             counts: Outward::new(len, focus),
@@ -1039,7 +1046,7 @@ impl Pipeline {
 
     /// Takes a finished job's result into the document. `window` is the
     /// materialization window.
-    pub fn apply(&mut self, done: Done, doc: &mut Document, window: Range<u32>) -> Applied {
+    pub fn apply(&mut self, done: Done, doc: &mut Document, window: SlotRange) -> Applied {
         let mut out = Applied::default();
         match done {
             Done::Cancelled { flight, file } => {
@@ -1116,7 +1123,7 @@ impl Pipeline {
                 for (f, old, new) in sizes {
                     self.work[f as usize].sizes = Some((old, new));
                     doc.set_size_hint(f, SizeHint::BlobSizes { old, new });
-                    out.repaint |= window.contains(&f);
+                    out.repaint |= doc.contains_file(window, f);
                     // A binary placeholder shows the sizes.
                     if doc.files()[f as usize].kind == FileKind::Binary {
                         out.relayout.push(f);
@@ -1129,7 +1136,7 @@ impl Pipeline {
                 }
                 for (f, counted) in files {
                     self.shared.counted[f as usize].store(true, Ordering::Relaxed);
-                    out.repaint |= window.contains(&f);
+                    out.repaint |= doc.contains_file(window, f);
                     match counted {
                         Counted::Binary => out.binary.push(f),
                         Counted::Lines { counts, hunks } => {
@@ -1382,7 +1389,7 @@ impl Pipeline {
             }
         }
         if let Some(pass) = &mut lock(&self.shared.queue).pass {
-            pass.counts = Outward::new(self.work.len() as u32, self.last_visible.start);
+            pass.counts = Outward::new(self.work.len() as u32, self.focus);
             pass.epoch = self.epoch;
             pass.diff = diff;
         }
@@ -1416,19 +1423,20 @@ fn counts_hint(counts: FileCounts, hunks: u32) -> SizeHint {
 }
 
 /// Sort key of a job for file `f`: visible files first (loads, then
-/// highlights, top to bottom), then by pixel distance from the viewport
-/// `[top, bottom)` (below before above on ties, a load before a highlight).
+/// highlights, top to bottom in display order), then by pixel distance from
+/// the viewport `[top, bottom)` (below before above on ties, a load before a
+/// highlight).
 fn priority(
     f: u32,
     highlight: bool,
     doc: &Document,
-    visible: &Range<u32>,
+    visible: SlotRange,
     top: f64,
     bottom: f64,
 ) -> (u8, u64, u64) {
     let stage = u64::from(highlight);
-    if visible.contains(&f) {
-        return (0, stage, u64::from(f));
+    if doc.contains_file(visible, f) {
+        return (0, stage, u64::from(doc.slot(f)));
     }
     let start = doc.file_top(f);
     let end = start + f64::from(doc.file_height(f));

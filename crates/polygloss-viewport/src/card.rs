@@ -13,6 +13,7 @@
 use gpui_kit::{Bounds, Context, Corners, Edges, Pixels, Point, point, px, size};
 
 use crate::blocks::RenderBlock;
+use crate::document::SlotRange;
 use crate::paint_rows::{FULL, HEADERS, Painter, RoundedQuad};
 use crate::view::DiffViewport;
 
@@ -158,7 +159,7 @@ impl Painter<'_> {
     /// layout; with cards, the canvas and one rounded quad per visible card
     /// (their own layer), each cut to the viewport plus its corners and a
     /// little, so a long card never makes a huge quad.
-    pub(crate) fn paint_canvas(&mut self, visible: std::ops::Range<u32>) {
+    pub(crate) fn paint_canvas(&mut self, visible: SlotRange) {
         let b = self.bounds;
         let (width, height) = (b.size.width.as_f32(), b.size.height.as_f32());
         let Some(style) = self.cards else {
@@ -170,9 +171,10 @@ impl Painter<'_> {
         layer.quads.push((b, self.theme.canvas));
         let (x, w) = self.card_x_w();
         let reach = style.radius + 2.0;
-        for f in visible {
-            let top = (self.doc.header_top(f) - self.scroll_top) as f32;
-            let bottom = (self.doc.card_bottom(f) - self.scroll_top) as f32;
+        let doc = self.doc;
+        for f in doc.shown_files(visible) {
+            let top = (doc.header_top(f) - self.scroll_top) as f32;
+            let bottom = (doc.card_bottom(f) - self.scroll_top) as f32;
             let (top, bottom) = (top.max(-reach), bottom.min(height + reach));
             if bottom <= top {
                 continue;

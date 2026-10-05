@@ -2,7 +2,9 @@
 //! about SQLite, git or review semantics (threads are opaque blocks).
 //!
 //! - [`document`]: every file's height, the logical scroll anchor, the
-//!   materialization window and eviction (pure Rust).
+//!   materialization window and eviction (pure Rust), with files in display
+//!   order and hidden files skipped ([`SlotRange`], [`Document::shown_files`]):
+//!   every API stays keyed by `file_idx`.
 //! - [`DiffViewport`]: the GPUI view. It reads files and blobs from a
 //!   [`DiffProvider`] and paints each file as a card on the canvas
 //!   ([`CardStyle`]; the host's header card above the first one,
@@ -63,7 +65,7 @@ pub use debug::{
 };
 pub use document::{
     BlockAnchor, BlockId, BodyRow, Document, FileLayout, FileState, HeightIndex, Metrics,
-    PlacedBlock, RowKey, ScrollAnchor, SizeHint,
+    PlacedBlock, RowKey, ScrollAnchor, ShownFiles, SizeHint, SlotRange,
 };
 pub use file_flags::FileFlags;
 pub use find::{FindCurrent, FindHighlights, FindMatcher};

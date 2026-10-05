@@ -385,7 +385,8 @@ impl DiffViewport {
         let margin = f64::from(DEFAULT_WINDOW_SCREENS * h);
         let top = self.doc.scroll_top() - margin;
         let bottom = self.doc.scroll_top() + f64::from(h) + margin;
-        for f in self.doc.materialize_range(h, DEFAULT_WINDOW_SCREENS) {
+        let window = self.doc.materialize_range(h, DEFAULT_WINDOW_SCREENS);
+        for f in self.doc.shown_files(window) {
             if self.doc.blocks(f).is_empty() || self.doc.is_collapsed(f) {
                 continue;
             }

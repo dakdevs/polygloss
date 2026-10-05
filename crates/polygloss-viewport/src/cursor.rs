@@ -8,6 +8,8 @@
 //! so it survives relayouts (split ↔ unified, revealed context, blocks).
 //! A move into a file that is not laid out yet (never materialized) scrolls
 //! to it and lands once its rows exist ([`Pending`], resolved in prepaint).
+//! Moves across files walk the shown files in display order: hidden files
+//! are passed over, and the last shown file is the end.
 
 use gpui_kit::Context;
 use polygloss_diff::Side;
@@ -316,7 +318,8 @@ impl DiffViewport {
         let Some(p) = self.cursor.pending else {
             return false;
         };
-        if p.file_idx >= self.doc.len() {
+        // A hidden file is never laid out.
+        if p.file_idx >= self.doc.len() || self.doc.is_hidden(p.file_idx) {
             self.cursor.pending = None;
             return false;
         }
@@ -386,16 +389,12 @@ impl DiffViewport {
             .pos
             .map_or(self.doc.anchor().file_idx, |p| p.file_idx);
         let target = match dir {
-            Direction::Down => current + 1,
-            Direction::Up => match current.checked_sub(1) {
-                Some(f) => f,
-                None => return,
-            },
+            Direction::Down => self.doc.next_shown(current),
+            Direction::Up => self.doc.prev_shown(current),
         };
-        if target >= self.doc.len() {
-            return;
+        if let Some(target) = target {
+            self.jump_to_file(target, cx);
         }
-        self.jump_to_file(target, cx);
     }
 
     fn jump_to_file(&mut self, target: u32, cx: &mut Context<Self>) {
@@ -525,7 +524,10 @@ impl DiffViewport {
     /// file is expanded and laid out.
     fn cursor_at(&self) -> Option<At> {
         let pos = self.cursor.pos?;
-        if pos.file_idx >= self.doc.len() || self.doc.is_collapsed(pos.file_idx) {
+        if pos.file_idx >= self.doc.len()
+            || self.doc.is_collapsed(pos.file_idx)
+            || self.doc.is_hidden(pos.file_idx)
+        {
             return None;
         }
         let layout = self.doc.file_layout(pos.file_idx)?;
@@ -552,9 +554,9 @@ impl DiffViewport {
 
     /// Scans rows for `pred` from row `from` of file `f` (exclusive; `None`
     /// starts at the file's first row going down, its last going up),
-    /// continuing into the next files when `cross`. Collapsed files and
-    /// files without rows are skipped; a file that is not laid out stops
-    /// the scan ([`Found::Pending`]).
+    /// continuing into the next shown files in display order when `cross`.
+    /// Collapsed and hidden files and files without rows are skipped; a file
+    /// that is not laid out stops the scan ([`Found::Pending`]).
     fn scan(
         &self,
         f: u32,
@@ -569,7 +571,7 @@ impl DiffViewport {
             if f >= self.doc.len() {
                 return None;
             }
-            if !self.doc.is_collapsed(f) {
+            if !self.doc.is_collapsed(f) && !self.doc.is_hidden(f) {
                 let Some(layout) = self.doc.file_layout(f) else {
                     return Some(Found::Pending(f));
                 };
@@ -592,8 +594,8 @@ impl DiffViewport {
                 return None;
             }
             f = match dir {
-                Direction::Down => f + 1,
-                Direction::Up => f.checked_sub(1)?,
+                Direction::Down => self.doc.next_shown(f)?,
+                Direction::Up => self.doc.prev_shown(f)?,
             };
             from = None;
         }

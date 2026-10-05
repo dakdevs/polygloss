@@ -65,6 +65,8 @@ pub(crate) struct FileEntry {
     pub(crate) blocks: Vec<PlacedBlock>,
     /// How many times `blocks` was replaced ([`super::Document::block_sets`]).
     pub(crate) block_sets: u32,
+    /// Hidden ([`super::Document::set_hidden`]): only its lead counts.
+    pub(crate) hidden: bool,
 }
 
 impl FileEntry {

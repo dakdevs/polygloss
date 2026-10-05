@@ -268,7 +268,7 @@ impl Painter<'_> {
         self.frame.layers[FULL].clip = Some(self.inner);
         self.frame.layers[HEADERS].clip = Some(b);
         let visible = self.doc.visible(height);
-        self.paint_canvas(visible.clone());
+        self.paint_canvas(visible);
         if self.layout == Layout::Split {
             let i = self.inner;
             let half = (i.size.width.as_f32() / 2.0).floor();
@@ -280,17 +280,20 @@ impl Painter<'_> {
         }
         self.place_prelude();
         let header_h = self.doc.metrics().header_height;
-        for f in visible.clone() {
+        let doc = self.doc;
+        let mut first = true;
+        for f in doc.shown_files(visible) {
             let top = (self.doc.header_top(f) - self.scroll_top) as f32;
             if top >= height {
                 // Only its lead shows (the canvas above its card, or the
                 // prelude): nothing of the card is in view.
                 break;
             }
-            // The first file's header pins at the top while its body scrolls
-            // under it, until its body's end (the next card in the flat
-            // layout) pushes it up.
-            let y = if f == visible.start && top < 0.0 {
+            // The first shown file's header pins at the top while its body
+            // scrolls under it, until its body's end (the next card in the
+            // flat layout) pushes it up.
+            let pins = std::mem::take(&mut first);
+            let y = if pins && top < 0.0 {
                 let body_bottom = self.doc.body_top(f) + f64::from(self.doc.body_height(f));
                 ((body_bottom - self.scroll_top) as f32 - header_h).min(0.0)
             } else {

@@ -585,6 +585,50 @@ impl DiffViewport {
         self.after_scroll(cx);
     }
 
+    /// Shows the files in `order` (a permutation of the file indices; anything
+    /// else is ignored). Every API stays keyed by `file_idx`. Nothing on
+    /// screen moves: the anchor stays put, or at the top.
+    pub fn set_order(&mut self, order: Vec<u32>, cx: &mut Context<Self>) {
+        self.doc.set_order(order);
+        self.after_scroll(cx);
+    }
+
+    /// Hides `files` (or shows them again). A hidden file is never laid out,
+    /// painted, loaded or walked by the stepwise keys; the background counts
+    /// still cover it. An anchor in a file hidden now moves to the top of
+    /// where it was, and a cursor, selection or ⋯ menu in one goes.
+    pub fn set_hidden(&mut self, files: &[u32], hidden: bool, cx: &mut Context<Self>) {
+        self.doc.set_hidden(files, hidden);
+        if hidden {
+            let doc = &self.doc;
+            if self.cursor.pos.is_some_and(|p| doc.is_hidden(p.file_idx)) {
+                self.cursor.pos = None;
+            }
+            if self.selection.is_some_and(|s| doc.is_hidden(s.file_idx)) {
+                self.selection = None;
+            }
+            if self.menu_file().is_some_and(|f| self.doc.is_hidden(f)) {
+                self.close_menu(cx);
+            }
+        }
+        self.after_scroll(cx);
+    }
+
+    /// Whether file `file_idx` is hidden ([`DiffViewport::set_hidden`]).
+    pub fn is_hidden(&self, file_idx: u32) -> bool {
+        self.doc.is_hidden(file_idx)
+    }
+
+    /// Every file index in display order ([`DiffViewport::set_order`]).
+    pub fn display_order(&self) -> &[u32] {
+        self.doc.display_order()
+    }
+
+    /// File `file_idx`'s position in display order.
+    pub fn display_rank(&self, file_idx: u32) -> u32 {
+        self.doc.slot(file_idx)
+    }
+
     /// Scrolls by `dy` pixels (positive = down), clamped to the document.
     /// Closes the ⋯ menu (it would no longer sit under its button).
     pub fn scroll_by(&mut self, dy: f32, cx: &mut Context<Self>) {
@@ -858,7 +902,9 @@ impl DiffViewport {
         self.pipeline
             .schedule(&mut self.doc, &self.files, &self.opts, self.layout, cx);
         let range = self.doc.materialize_range(height, self.opts.window_screens);
-        for f in range {
+        // Laying a file out changes heights: collect the files first.
+        let files: Vec<u32> = self.doc.shown_files(range).collect();
+        for f in files {
             if self.doc.is_collapsed(f) {
                 continue;
             }

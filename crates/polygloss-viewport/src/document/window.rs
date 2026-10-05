@@ -1,10 +1,9 @@
 //! The visible range, the materialization window and LRU-by-bytes eviction
 //! (design §12.4 "Window").
 
-use std::ops::Range;
-
 use super::Document;
 use super::file_state::{Body, FileState};
+use super::slots::SlotRange;
 
 /// Materialize files within this many screens above and below the viewport
 /// (**Provisional**, design §12.4).
@@ -15,14 +14,15 @@ pub const DEFAULT_WINDOW_SCREENS: f32 = 2.0;
 pub const DEFAULT_EVICTION_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 
 impl Document {
-    /// Files intersecting the viewport `[scroll_top, scroll_top + viewport_h)`.
-    pub fn visible(&self, viewport_h: f32) -> Range<u32> {
+    /// Slots intersecting the viewport `[scroll_top, scroll_top +
+    /// viewport_h)` (walk their files with [`Document::shown_files`]).
+    pub fn visible(&self, viewport_h: f32) -> SlotRange {
         self.overlapping(self.scroll_top, self.scroll_top + f64::from(viewport_h))
     }
 
-    /// Files intersecting the viewport extended by `screens` viewport heights
-    /// above and below: the files to materialize.
-    pub fn materialize_range(&self, viewport_h: f32, screens: f32) -> Range<u32> {
+    /// Slots intersecting the viewport extended by `screens` viewport heights
+    /// above and below: the files to materialize are their shown files.
+    pub fn materialize_range(&self, viewport_h: f32, screens: f32) -> SlotRange {
         let viewport_h = f64::from(viewport_h);
         let margin = f64::from(screens.max(0.0)) * viewport_h;
         let top = self.scroll_top - margin;
@@ -45,14 +45,14 @@ impl Document {
     /// Evicted files keep their exact height, so nothing moves. Returns the
     /// evicted files in eviction order.
     pub fn evict_over_budget(&mut self, budget_bytes: usize) -> Vec<u32> {
-        self.evict_over_budget_keeping(budget_bytes, 0..0)
+        self.evict_over_budget_keeping(budget_bytes, SlotRange { start: 0, end: 0 })
     }
 
-    /// [`Document::evict_over_budget`] that also keeps the files in `keep`
-    /// (the materialization window: evicting them would only load them
+    /// [`Document::evict_over_budget`] that also keeps the shown files in
+    /// `keep` (the materialization window: evicting them would only load them
     /// again). The budget is soft: when the kept files alone exceed it, they
-    /// stay.
-    pub fn evict_over_budget_keeping(&mut self, budget_bytes: usize, keep: Range<u32>) -> Vec<u32> {
+    /// stay. Hidden files are never kept.
+    pub fn evict_over_budget_keeping(&mut self, budget_bytes: usize, keep: SlotRange) -> Vec<u32> {
         let mut resident = self.resident_bytes();
         if resident <= budget_bytes {
             return Vec::new();
@@ -63,8 +63,10 @@ impl Document {
             self.scroll_top + f64::from(self.viewport_h),
         );
         let mut candidates: Vec<(f64, u32)> = (0..self.len())
-            .filter(|f| {
-                !visible.contains(f) && !keep.contains(f) && self.state(*f).is_materialized()
+            .filter(|&f| {
+                !self.contains_file(visible, f)
+                    && !self.contains_file(keep, f)
+                    && self.state(f).is_materialized()
             })
             .map(|f| {
                 let start = self.file_top(f);
@@ -97,21 +99,31 @@ impl Document {
         freed
     }
 
-    /// Files intersecting `[top, bottom)` (empty, at the file containing `top`,
-    /// when `bottom <= top`).
-    fn overlapping(&self, top: f64, bottom: f64) -> Range<u32> {
+    /// Slots intersecting `[top, bottom)` (empty, at the slot containing
+    /// `top`, when `bottom <= top`).
+    fn overlapping(&self, top: f64, bottom: f64) -> SlotRange {
         if self.entries.is_empty() {
-            return 0..0;
+            return SlotRange { start: 0, end: 0 };
         }
         let (first, _) = self.heights.find(top);
         if bottom.is_nan() || bottom <= top.max(0.0) {
-            return first as u32..first as u32;
+            let first = first as u32;
+            return SlotRange {
+                start: first,
+                end: first,
+            };
         }
+        // Past the total the index gives its last slot, which may be hidden:
+        // the document's last pixel row is the bottom.
+        let bottom = bottom.min(self.heights.total() - 0.5);
         let (mut last, _) = self.heights.find(bottom);
         // A file starting exactly at `bottom` is outside.
         if last > first && self.heights.prefix(last) >= bottom {
             last -= 1;
         }
-        first as u32..last as u32 + 1
+        SlotRange {
+            start: first as u32,
+            end: last.max(first) as u32 + 1,
+        }
     }
 }

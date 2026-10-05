@@ -1314,3 +1314,56 @@ fn thread_on_an_added_file_spans_the_card(cx: &mut TestAppContext) {
     let theme = view.read_with(cx, |v, _| v.options().theme.clone());
     assert!(quads_of(cx, theme.empty_cell).is_empty());
 }
+
+#[gpui_kit::test]
+fn blocks_in_hidden_files_are_not_measured(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let named = |path: &str| Spec {
+        path: path.to_owned(),
+        ..one_change()
+    };
+    let provider = MemProvider::new(vec![named("a.rs"), named("b.rs"), named("c.rs")]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 600.);
+    let counted = |id: u64, renders: &Rc<Cell<u32>>| {
+        let count = renders.clone();
+        BlockSpec {
+            id: BlockId(id),
+            anchor: new(4),
+            render: Rc::new(move |_, _| {
+                count.set(count.get() + 1);
+                div().w_full().h(px(120.)).into_any_element()
+            }),
+        }
+    };
+    // File 1 is laid out, with a block that is measured and painted.
+    let first = Rc::new(Cell::new(0));
+    set_blocks(&view, cx, 1, vec![counted(1, &first)]);
+    assert!(first.get() > 0);
+    assert!(view.read_with(cx, |v, _| v.document().file_layout(1).is_some()));
+
+    // Hidden, between two shown files: its block is neither painted nor
+    // measured again, even when its content changes.
+    view.update(cx, |v, cx| v.set_hidden(&[1], true, cx));
+    settle(cx);
+    let after_hide = first.get();
+    view.update(cx, |v, cx| v.invalidate_block(BlockId(1), cx));
+    settle(cx);
+    redraw(cx);
+    assert_eq!(first.get(), after_hide);
+
+    // A new block in the hidden file is never rendered, and adds no height.
+    let second = Rc::new(Cell::new(0));
+    set_blocks(&view, cx, 1, vec![counted(1, &first), counted(2, &second)]);
+    redraw(cx);
+    assert_eq!(second.get(), 0);
+    assert_eq!(view.read_with(cx, |v, _| v.document().file_height(1)), 0.0);
+    let rows = debug(&view, cx).visible_rows;
+    assert!(!rows.iter().any(|r| r.starts_with("[block")), "{rows:?}");
+
+    // Shown again: measured and painted.
+    view.update(cx, |v, cx| v.set_hidden(&[1], false, cx));
+    settle(cx);
+    assert!(second.get() > 0);
+    let rows = debug(&view, cx).visible_rows;
+    assert!(rows.iter().any(|r| r == "[block 2]"), "{rows:?}");
+}
