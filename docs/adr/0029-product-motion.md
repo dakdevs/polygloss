@@ -22,7 +22,7 @@ Two motions, both on occasional surfaces, ease-out, no exit motion:
 - The threads panel opened by keyboard (`Window::last_input_was_keyboard`), restored from view state or opened automatically (composer, a URL, `focus`) shows its end state at once.
 - Banner notices are the exception to that rule: they always appear on their own. They animate because they are small (4 px), peripheral, take no focus and move no content.
 - Both run on gpui-base's executor clock (`animate_keyframes`), never `with_animation`, so tests step them with `advance_clock`.
-- The app re-reads Reduce Motion on every window activation (`apply_system_reduce_motion`); under it nothing moves. Screenshot tests always run with reduced motion.
+- The app re-reads Reduce Motion on every window activation through a replaceable reader (default `apply_system_reduce_motion`, which does nothing under the test scheduler; tests install their own); under it nothing moves. Screenshot tests always run with reduced motion.
 - New chrome avoids gpui-component pieces with built-in motion: `TabBar::segmented`, `Accordion`, `Collapsible`, `Sidebar` and `Checkbox`.
 - Theme colors are never animated.
 
