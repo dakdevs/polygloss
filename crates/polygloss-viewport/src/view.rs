@@ -42,6 +42,7 @@ use crate::paint_rows::DebugRow;
 use crate::paint_rows::{Frame, Marks, Painter, failed_label};
 use crate::pipeline::{Applied, Done, FileCounts, Pipeline, PipelineStats};
 use crate::provider::DiffProvider;
+use crate::section_band::Band;
 use crate::selection::{Drag, TextSelection};
 use crate::special::{BodyLabel, Specials, large_label, needs_blobs};
 use crate::style::{DiffStyle, ViewportTheme};
@@ -114,6 +115,8 @@ impl Default for ViewportOptions {
 }
 
 /// What [`DiffViewport::scroll_to`] brings to the top of what is visible.
+/// Every target but [`ScrollTarget::Restore`] is explicit: a target in a
+/// closed section opens it first ([`ViewportEvent::SectionToggled`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollTarget {
     /// A file's header, at the viewport's top edge.
@@ -127,6 +130,13 @@ pub enum ScrollTarget {
     },
     /// A host block (T2.7), right below its file's (pinned) header.
     Block(BlockId),
+    /// A [`ScrollTarget::Line`] restored from view state: it never opens a
+    /// section; in a closed one it lands on the section's band.
+    Restore {
+        file_idx: u32,
+        side: Side,
+        line: u32,
+    },
 }
 
 /// Timing of one frame (plan T2.9 `scroll_p95_ms`: prepaint + paint CPU time).
@@ -180,6 +190,15 @@ pub enum ViewportEvent {
     /// Line counts landed ([`DiffViewport::file_counts`]): at most once per
     /// pipeline batch that brought new counts, never per frame.
     CountsUpdated,
+    /// The viewport opened or closed a section: its band's Show / Hide, or
+    /// an explicit target in it. Never for the host's own calls.
+    SectionToggled {
+        id: u32,
+        open: bool,
+    },
+    /// A band's Mark all viewed (or unviewed) was clicked; the host marks the
+    /// section's files ([`DiffViewport::set_band_all_viewed`]).
+    SectionMarkViewed(u32),
 }
 
 /// Which layout a file's rows were built for; a different key means the file
@@ -240,6 +259,9 @@ pub struct DiffViewport {
     pub(crate) pressed: Option<Pressed>,
     /// Host blocks (threads, composers, notes; see [`crate::blocks`]).
     pub(crate) blocks: Blocks,
+    /// What each section's band shows ([`crate::section_band`]), in the
+    /// document's section order.
+    pub(crate) bands: Vec<Band>,
     /// The line cursor and range ([`crate::cursor`]).
     pub(crate) cursor: Cursor,
     /// Selected text ([`crate::selection`]).
@@ -257,6 +279,8 @@ pub struct DiffViewport {
     pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_headers: Vec<crate::debug::HeaderDebug>,
+    #[cfg(feature = "debug-inspect")]
+    pub(crate) debug_bands: Vec<crate::debug::BandDebug>,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_text: Vec<(f32, f32, std::rc::Rc<crate::text_cache::ShapedText>)>,
 }
@@ -319,6 +343,7 @@ impl DiffViewport {
             pending_menu: None,
             pressed: None,
             blocks: Blocks::default(),
+            bands: Vec::new(),
             cursor: Cursor::default(),
             selection: None,
             drag: None,
@@ -329,6 +354,8 @@ impl DiffViewport {
             debug_rows: Vec::new(),
             #[cfg(feature = "debug-inspect")]
             debug_headers: Vec::new(),
+            #[cfg(feature = "debug-inspect")]
+            debug_bands: Vec::new(),
             #[cfg(feature = "debug-inspect")]
             debug_text: Vec::new(),
         }
@@ -418,6 +445,7 @@ impl DiffViewport {
         if old.diff != self.opts.diff {
             // Line counts depend on the diff options alone.
             self.pipeline.recount(&self.doc, self.opts.diff);
+            self.refresh_band_counts();
         }
         if old.syntax != self.opts.syntax {
             self.pipeline.set_syntax(self.opts.syntax);
@@ -460,14 +488,20 @@ impl DiffViewport {
     /// document): a file's header to the viewport's top edge; a line (or the
     /// gap hiding it) or a block right below its file's header, which is
     /// pinned there while the file's body scrolls under it. A target in a
-    /// file that is not laid out yet lands exactly once it is. Closes the ⋯
-    /// menu.
+    /// file that is not laid out yet lands exactly once it is. A target in a
+    /// closed section opens it first, except [`ScrollTarget::Restore`],
+    /// which lands on its band. Closes the ⋯ menu.
     pub fn scroll_to(&mut self, target: ScrollTarget, cx: &mut Context<Self>) {
         self.close_menu(cx);
         self.cursor.pending = None;
         let (file_idx, row) = match target {
             ScrollTarget::File(f) => (f, RowKey::Header),
             ScrollTarget::Line {
+                file_idx,
+                side,
+                line,
+            }
+            | ScrollTarget::Restore {
                 file_idx,
                 side,
                 line,
@@ -480,6 +514,9 @@ impl DiffViewport {
                 (f, RowKey::Block(id))
             }
         };
+        if !matches!(target, ScrollTarget::Restore { .. }) {
+            self.open_section_of(file_idx, cx);
+        }
         // The viewport's top edge a header's height above a body row, so the
         // pinned header does not cover it. (The first row of a body: the
         // header is in place, at the top edge.)
@@ -497,7 +534,8 @@ impl DiffViewport {
 
     /// Restores a scroll position (a line-mapped anchor after a refresh, or
     /// saved view state): `anchor` goes to the viewport's top edge, exactly
-    /// once its file is laid out. Closes the ⋯ menu.
+    /// once its file is laid out. It never opens a section: an anchor in a
+    /// closed one lands on its band. Closes the ⋯ menu.
     pub fn scroll_to_anchor(&mut self, anchor: ScrollAnchor, cx: &mut Context<Self>) {
         self.close_menu(cx);
         self.cursor.pending = None;
@@ -510,7 +548,8 @@ impl DiffViewport {
     /// font, the measured width and layout, the prelude (it is not per file)
     /// and every subscription to the view stay; everything per file starts
     /// over (loads, layouts, collapse, revealed context, flags, blocks, the
-    /// cursor, the selection, the ⋯ menu) with the scroll at the top. The host restores
+    /// cursor, the selection, the ⋯ menu, the sections and the display
+    /// order) with the scroll at the top. The host restores
     /// what it keeps ([`DiffViewport::set_collapsed`],
     /// [`DiffViewport::set_expansions`], [`DiffViewport::set_file_flags`],
     /// [`DiffViewport::set_blocks`], [`DiffViewport::scroll_to_anchor`])
@@ -574,6 +613,7 @@ impl DiffViewport {
         self.flags = vec![FileFlags::default(); files.len()];
         self.gaps = Gaps::default();
         self.blocks = Blocks::default();
+        self.bands = Vec::new();
         self.cursor = Cursor::default();
         self.selection = None;
         self.drag = None;
@@ -600,18 +640,24 @@ impl DiffViewport {
     pub fn set_hidden(&mut self, files: &[u32], hidden: bool, cx: &mut Context<Self>) {
         self.doc.set_hidden(files, hidden);
         if hidden {
-            let doc = &self.doc;
-            if self.cursor.pos.is_some_and(|p| doc.is_hidden(p.file_idx)) {
-                self.cursor.pos = None;
-            }
-            if self.selection.is_some_and(|s| doc.is_hidden(s.file_idx)) {
-                self.selection = None;
-            }
-            if self.menu_file().is_some_and(|f| self.doc.is_hidden(f)) {
-                self.close_menu(cx);
-            }
+            self.forget_hidden(cx);
         }
         self.after_scroll(cx);
+    }
+
+    /// Drops the cursor, the text selection and the ⋯ menu when their file
+    /// is hidden: nothing could walk from them or paint them.
+    pub(crate) fn forget_hidden(&mut self, cx: &mut Context<Self>) {
+        let doc = &self.doc;
+        if self.cursor.pos.is_some_and(|p| doc.is_hidden(p.file_idx)) {
+            self.cursor.pos = None;
+        }
+        if self.selection.is_some_and(|s| doc.is_hidden(s.file_idx)) {
+            self.selection = None;
+        }
+        if self.menu_file().is_some_and(|f| self.doc.is_hidden(f)) {
+            self.close_menu(cx);
+        }
     }
 
     /// Whether file `file_idx` is hidden ([`DiffViewport::set_hidden`]).
@@ -705,6 +751,7 @@ impl DiffViewport {
                 })
                 .unwrap_or_default(),
             headers: self.debug_headers.clone(),
+            bands: self.debug_bands.clone(),
             controls: self
                 .frame_pool
                 .as_ref()
@@ -798,6 +845,7 @@ impl DiffViewport {
             {
                 self.debug_rows.clear();
                 self.debug_headers.clear();
+                self.debug_bands.clear();
                 self.debug_text.clear();
             }
             let mut painter = Painter {
@@ -823,6 +871,7 @@ impl DiffViewport {
                 cache: &mut self.text_cache,
                 pipeline: &self.pipeline,
                 blocks: &self.blocks,
+                bands: &self.bands,
                 find: self.find.as_mut(),
                 text_system: window.text_system().clone(),
                 marks,
@@ -832,6 +881,8 @@ impl DiffViewport {
                 debug: &mut self.debug_rows,
                 #[cfg(feature = "debug-inspect")]
                 debug_headers: &mut self.debug_headers,
+                #[cfg(feature = "debug-inspect")]
+                debug_bands: &mut self.debug_bands,
                 #[cfg(feature = "debug-inspect")]
                 debug_text: &mut self.debug_text,
             };
@@ -1050,6 +1101,9 @@ impl DiffViewport {
 
     fn take_applied(&mut self, applied: Applied, cx: &mut Context<Self>) {
         if applied.counts {
+            if self.refresh_band_counts() {
+                cx.notify();
+            }
             cx.emit(ViewportEvent::CountsUpdated);
         }
         for f in applied.relayout {

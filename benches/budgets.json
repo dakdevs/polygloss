@@ -52,6 +52,22 @@
         "linux": 2000
       }
     },
+    "sections_scroll_p95_ms": {
+      "label": "sections scroll p95",
+      "unit": "ms",
+      "budget": {
+        "synthetic": 8.3,
+        "linux": 8.3
+      }
+    },
+    "section_toggle_ms": {
+      "label": "section toggle",
+      "unit": "ms",
+      "budget": {
+        "synthetic": 50,
+        "linux": 50
+      }
+    },
     "peak_rss_mb": {
       "label": "peak RSS",
       "unit": "MB",

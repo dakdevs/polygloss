@@ -97,8 +97,25 @@ pub async fn run(
     rng: &mut Rng,
     result: &mut ScenarioResult,
 ) -> anyhow::Result<()> {
-    let files = h.read(cx, |v| v.document().len());
-    let jumps = plan_jumps(files, knobs.scroll, knobs.jumps, rng);
+    let files: Vec<u32> = (0..h.read(cx, |v| v.document().len())).collect();
+    measure(h, cx, knobs, rng, result, "", &files).await
+}
+
+/// The scroll run, its metrics named `<prefix>scroll_p95_ms` and so on, its
+/// jumps going to seeded random files of `targets`.
+pub async fn measure(
+    h: &mut Harness,
+    cx: &mut AsyncApp,
+    knobs: &Knobs,
+    rng: &mut Rng,
+    result: &mut ScenarioResult,
+    prefix: &str,
+    targets: &[u32],
+) -> anyhow::Result<()> {
+    let mut jumps = plan_jumps(targets.len() as u32, knobs.scroll, knobs.jumps, rng);
+    for jump in &mut jumps {
+        jump.file = targets[jump.file as usize];
+    }
     h.drain();
     let t0 = Instant::now();
     let done = h.scroll(cx, knobs.speed, knobs.scroll)?;
@@ -124,19 +141,20 @@ pub async fn run(
     let times: Vec<Instant> = frames.iter().map(|f| f.at).collect();
     let gaps = intervals_ms(&times);
     let (cpu_s, gaps_s) = (Series::new(&cpu), Series::new(&gaps));
-    result.metric("scroll_p95_ms", cpu_s.p95());
-    result.metric("scroll_p99_ms", cpu_s.p99());
-    result.metric("scroll_max_ms", cpu_s.max());
-    result.metric("frame_interval_p95_ms", gaps_s.p95());
-    result.metric("frame_interval_max_ms", gaps_s.max());
-    result.metric("frames_over_16_7ms", Some(cpu_s.over(SLOW_FRAME_MS) as f64));
-    result.metric(
+    let mut metric = |name: &str, value| result.metric(&format!("{prefix}{name}"), value);
+    metric("scroll_p95_ms", cpu_s.p95());
+    metric("scroll_p99_ms", cpu_s.p99());
+    metric("scroll_max_ms", cpu_s.max());
+    metric("frame_interval_p95_ms", gaps_s.p95());
+    metric("frame_interval_max_ms", gaps_s.max());
+    metric("frames_over_16_7ms", Some(cpu_s.over(SLOW_FRAME_MS) as f64));
+    metric(
         "intervals_over_16_7ms",
         Some(gaps_s.over(SLOW_FRAME_MS) as f64),
     );
-    result.metric("frames", Some(cpu_s.len() as f64));
+    metric("frames", Some(cpu_s.len() as f64));
     result.info(
-        "scroll",
+        &format!("{prefix}scroll"),
         json!({
             "duration_ms": ms(knobs.scroll),
             "speed_px_s": knobs.speed,
@@ -146,8 +164,8 @@ pub async fn run(
             "loading_frames": frames.iter().filter(|f| f.stats.loading_rows > 0).count(),
         }),
     );
-    result.samples("frame_ms", cpu);
-    result.samples("interval_ms", gaps);
+    result.samples(&format!("{prefix}frame_ms"), cpu);
+    result.samples(&format!("{prefix}interval_ms"), gaps);
     Ok(())
 }
 

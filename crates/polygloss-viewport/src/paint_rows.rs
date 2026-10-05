@@ -39,6 +39,7 @@ use crate::gap::Gaps;
 use crate::layout::{Columns, Geometry, Pane, digits, layout_for};
 use crate::materialize::MaterializedFile;
 use crate::pipeline::Pipeline;
+use crate::section_band::Band;
 use crate::selection::{PlusHit, TextSelection};
 use crate::special::{BodyLabel, Specials};
 use crate::style::{DiffStyle, ViewportTheme};
@@ -187,6 +188,8 @@ pub(crate) enum DebugContent {
     Block(u64),
     /// Two blocks side by side (split): the old side's, then the new side's.
     BlockPair(u64, u64),
+    /// A section band: `▸` (closed) or `▾` (open) and its label.
+    Band(String),
 }
 
 #[cfg(feature = "debug-inspect")]
@@ -238,6 +241,8 @@ pub(crate) struct Painter<'a> {
     pub pipeline: &'a Pipeline,
     /// Host blocks, for their columns and render functions.
     pub blocks: &'a Blocks,
+    /// What each section's band shows, in the document's section order.
+    pub bands: &'a [Band],
     /// Find matches to mark in the code.
     pub find: Option<&'a mut FindState>,
     pub text_system: Arc<WindowTextSystem>,
@@ -251,6 +256,8 @@ pub(crate) struct Painter<'a> {
     pub debug: &'a mut Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
     pub debug_headers: &'a mut Vec<crate::debug::HeaderDebug>,
+    #[cfg(feature = "debug-inspect")]
+    pub debug_bands: &'a mut Vec<crate::debug::BandDebug>,
     /// Every text queued, `(x, y, text)` relative to the viewport.
     #[cfg(feature = "debug-inspect")]
     pub debug_text: &'a mut Vec<(f32, f32, Rc<ShapedText>)>,
@@ -282,7 +289,14 @@ impl Painter<'_> {
         let header_h = self.doc.metrics().header_height;
         let doc = self.doc;
         let mut first = true;
+        // Bands in visible slots, painted in order with the files: a band
+        // comes before the file whose lead holds it.
+        let mut bands = doc.sections_in(visible).peekable();
         for f in doc.shown_files(visible) {
+            let slot = doc.slot(f);
+            while let Some(s) = bands.next_if(|&s| doc.band_slot(s) <= slot) {
+                self.paint_band(s, height);
+            }
             let top = (self.doc.header_top(f) - self.scroll_top) as f32;
             if top >= height {
                 // Only its lead shows (the canvas above its card, or the
@@ -338,6 +352,17 @@ impl Painter<'_> {
                     self.label_row(f, &label, body_top, h.min(self.geometry.row_height * 2.0));
                 }
             }
+        }
+        for s in bands {
+            self.paint_band(s, height);
+        }
+    }
+
+    /// Section `s`'s band, when it reaches into the viewport (`height` tall).
+    fn paint_band(&mut self, s: usize, height: f32) {
+        let y = (self.doc.band_top(s) - self.scroll_top) as f32;
+        if y < height && y + self.doc.metrics().band_height > 0.0 {
+            self.band(s, y);
         }
     }
 
@@ -842,11 +867,16 @@ impl Painter<'_> {
 
     /// Queues SVG icon `path` (`icons/<name>.svg`) in `color`, `size` px
     /// square, at viewport-relative `(x, y)`.
-    pub(crate) fn icon(&mut self, path: &'static str, x: f32, y: f32, size: f32, color: Hsla) {
+    pub(crate) fn icon(
+        &mut self,
+        path: impl Into<SharedString>,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: Hsla,
+    ) {
         let bounds = self.bounds_at(x, y, size, size);
-        self.frame
-            .icons
-            .push((bounds, SharedString::new_static(path), color));
+        self.frame.icons.push((bounds, path.into(), color));
     }
 
     /// Queues a quad at viewport-relative coordinates.

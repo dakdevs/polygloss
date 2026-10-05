@@ -16,12 +16,13 @@
 //! label shows "Binary file" until they arrive.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use gpui_kit::{Context, SharedString};
 use polygloss_diff::{FileChange, FileKind, FileStatus};
 
 use crate::controls::ControlAction;
-use crate::document::FileState;
+use crate::document::{FileState, RowKey};
 use crate::materialize::MaterializedFile;
 use crate::paint_rows::Painter;
 use crate::view::DiffViewport;
@@ -235,6 +236,64 @@ impl DiffViewport {
         self.labels[file_idx as usize] = None;
         self.relayout(file_idx);
         cx.notify();
+    }
+
+    /// Relabels files as generated or not (`(file_idx, generated)`; design
+    /// §11.15: a settings change moved their Generated verdict), in one new
+    /// copy of the file list shared by the view, the document and the
+    /// pipeline. Only the files whose verdict changes are laid out again: one
+    /// that becomes generated shows "Generated file" with "Load diff"
+    /// instead of its rows (unless a load was requested), one that stops
+    /// loads like any shown file. Every other file keeps its rows, tokens,
+    /// shaped lines, collapse state and revealed context; flags, blocks, the
+    /// cursor, the selection and the anchor stay, except that an anchor on a
+    /// row that went away moves to its file's header, and a cursor or
+    /// selection on one goes.
+    pub fn set_generated(&mut self, changes: &[(u32, bool)], cx: &mut Context<Self>) {
+        let mut next = (*self.files).clone();
+        for &(f, generated) in changes {
+            if let Some(change) = next.get_mut(f as usize) {
+                change.generated = generated;
+            }
+        }
+        let changed: Vec<u32> = (0..next.len() as u32)
+            .filter(|&f| next[f as usize].generated != self.files[f as usize].generated)
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        let anchor = *self.doc.anchor();
+        let files = Arc::new(next);
+        self.files = files.clone();
+        self.doc.replace_files(files.clone(), &changed);
+        self.pipeline.set_files(files);
+        for f in changed {
+            let sizes = self.pipeline.blob_sizes(f);
+            self.labels[f as usize] = self.special.body_label(f, &self.files[f as usize], sizes);
+            self.relayout(f);
+            let doc = &self.doc;
+            let gone = |key: RowKey| doc.file_layout(f).is_none_or(|l| l.find(key).is_none());
+            let line = |side, line| RowKey::Line { side, line };
+            let anchor_gone =
+                anchor.file_idx == f && !anchor.row.is_above_body() && gone(anchor.row);
+            if self
+                .cursor
+                .pos
+                .is_some_and(|p| p.file_idx == f && gone(line(p.side, p.line)))
+            {
+                self.cursor.pos = None;
+            }
+            if self
+                .selection
+                .is_some_and(|s| s.file_idx == f && gone(line(s.side, s.anchor.line)))
+            {
+                self.selection = None;
+            }
+            if anchor_gone {
+                self.doc.scroll_to(f, RowKey::Header);
+            }
+        }
+        self.after_scroll(cx);
     }
 
     /// Whether file `f` shows a "Load diff" link.

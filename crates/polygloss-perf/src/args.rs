@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! polygloss-perf --version
-//! polygloss-perf --corpus <name> --layout split|unified --scenario open|scroll|highlight|blocks
+//! polygloss-perf --corpus <name> --layout split|unified --scenario open|scroll|highlight|blocks|sections
 //!                [--json] [--repo <path> --base <rev> --head <rev> [--direct]]
 //!                [--seed <n>] [--scroll-secs <s>] [--jumps <n>] [--stops <n>] [--ops <n>]
 //! ```
@@ -19,7 +19,7 @@ use std::time::Duration;
 use polygloss_diff::rows::Layout;
 
 pub const USAGE: &str = "usage: polygloss-perf --corpus <name> --layout split|unified \
-    --scenario open|scroll|highlight|blocks [--json] \
+    --scenario open|scroll|highlight|blocks|sections [--json] \
     [--repo <path> --base <rev> --head <rev> [--direct]] [--seed <n>] \
     [--scroll-secs <s>] [--jumps <n>] [--stops <n>] [--ops <n>]";
 
@@ -34,14 +34,17 @@ pub enum ScenarioName {
     Highlight,
     /// `comment_repaint_ms` (M2: `set_blocks` → next frame).
     Blocks,
+    /// `sections_scroll_p95_ms` and `section_toggle_ms` (T6.17).
+    Sections,
 }
 
 impl ScenarioName {
-    const ALL: [ScenarioName; 4] = [
+    const ALL: [ScenarioName; 5] = [
         ScenarioName::Open,
         ScenarioName::Scroll,
         ScenarioName::Highlight,
         ScenarioName::Blocks,
+        ScenarioName::Sections,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -50,6 +53,7 @@ impl ScenarioName {
             ScenarioName::Scroll => "scroll",
             ScenarioName::Highlight => "highlight",
             ScenarioName::Blocks => "blocks",
+            ScenarioName::Sections => "sections",
         }
     }
 
@@ -243,6 +247,7 @@ mod tests {
             ("open", ScenarioName::Open),
             ("highlight", ScenarioName::Highlight),
             ("blocks", ScenarioName::Blocks),
+            ("sections", ScenarioName::Sections),
         ] {
             let a = parse(&[
                 "--corpus",

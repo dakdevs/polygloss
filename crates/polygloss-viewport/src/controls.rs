@@ -1,6 +1,6 @@
 //! Clickable controls the viewport paints itself (design §11.6): the header's
 //! collapse chevron, open-in-editor icon, Viewed pill and ⋯ menu button, gap
-//! expanders and "Load diff".
+//! expanders, "Load diff" and a section band's toggles and Mark all viewed.
 //!
 //! The painter records each control's bounds and action in the frame. The
 //! element turns them into hitboxes: body controls first, then every header's
@@ -46,6 +46,12 @@ pub enum ControlAction {
     /// "Load diff" on a large or generated file: loads it and emits
     /// [`ViewportEvent::LoadDiffRequested`].
     LoadDiff(u32),
+    /// A section band's chevron and label, or its Show / Hide: opens or
+    /// closes section `id` and emits [`ViewportEvent::SectionToggled`].
+    SectionToggle(u32),
+    /// A section band's Mark all viewed (or unviewed): emits
+    /// [`ViewportEvent::SectionMarkViewed`] (Viewed is the host's state).
+    SectionMarkViewed(u32),
 }
 
 /// Which pass a control is painted in: with the rows, or in the header
@@ -214,6 +220,8 @@ impl DiffViewport {
                 self.load_diff(f, cx);
                 cx.emit(ViewportEvent::LoadDiffRequested(f));
             }
+            ControlAction::SectionToggle(id) => self.toggle_section(id, cx),
+            ControlAction::SectionMarkViewed(id) => cx.emit(ViewportEvent::SectionMarkViewed(id)),
         }
     }
 }

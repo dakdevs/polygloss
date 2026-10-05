@@ -67,6 +67,9 @@ pub(crate) struct FileEntry {
     pub(crate) block_sets: u32,
     /// Hidden ([`super::Document::set_hidden`]): only its lead counts.
     pub(crate) hidden: bool,
+    /// The first file of a category section: its lead holds the section's
+    /// band, shown or hidden ([`super::Document::set_sections`]).
+    pub(crate) band: bool,
 }
 
 impl FileEntry {

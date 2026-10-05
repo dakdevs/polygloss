@@ -20,6 +20,7 @@ use crate::paint_rows::{DebugContent, DebugRow};
 /// | Unified line | `format!("{:>5} {:>5} {} {}", old, new, marker, text)`   |
 /// | Split line   | `"<cell> │ <cell>"`, a cell `format!("{:>5} {} {}", n, marker, text)` (blank for an empty side) |
 /// | Markers      | `\ No newline at end of file`, both sides' joined with ` │ ` in split |
+/// | Section band | `▸ <label>` (closed) or `▾ <label>` (open)                |
 /// | Other        | the label shown (`⋯ 3 unchanged lines`, `Binary file`, `Loading…`), `[block <id>]`, or `[block <old> │ block <new>]` for split blocks side by side |
 ///
 /// Numbers are 1-based; markers are `-`, `+` or a space; text is as displayed
@@ -50,6 +51,8 @@ pub struct ViewportDebug {
     pub icons: Vec<IconDebug>,
     /// Every painted file header, top to bottom.
     pub headers: Vec<HeaderDebug>,
+    /// Every painted section band, top to bottom.
+    pub bands: Vec<BandDebug>,
     /// Every clickable control painted, relative to the viewport.
     pub controls: Vec<ControlDebug>,
     /// The "+" on the hovered line numbers.
@@ -113,6 +116,27 @@ pub struct HeaderDebug {
     pub collapsed: bool,
 }
 
+/// A painted section band.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandDebug {
+    /// The section's id.
+    pub id: u32,
+    /// Top edge relative to the viewport.
+    pub y: f32,
+    pub open: bool,
+    pub label: String,
+    /// `(additions, deletions)` as shown; `None` before any file is counted
+    /// or when the band is too narrow for them.
+    pub counts: Option<(u64, u64)>,
+    /// The review pills shown, left to right ("3 open threads", "agent").
+    pub badges: Vec<String>,
+    /// The changed-since-viewed dot is shown.
+    pub dot: bool,
+    /// Its links, left to right: "Show" or "Hide", then "Mark all viewed" or
+    /// "Mark all unviewed".
+    pub links: Vec<String>,
+}
+
 /// A clickable control of the last frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlDebug {
@@ -157,6 +181,7 @@ pub(crate) fn format_rows(rows: &[DebugRow]) -> (Vec<String>, Vec<(f32, f32)>, u
             DebugContent::Split { left, right } => format!("{} │ {}", cell(left), cell(right)),
             DebugContent::Block(id) => format!("[block {id}]"),
             DebugContent::BlockPair(old, new) => format!("[block {old} │ block {new}]"),
+            DebugContent::Band(text) => text.clone(),
         })
         .collect();
     let bounds = rows.iter().map(|r| (r.y, r.height)).collect();

@@ -1216,3 +1216,66 @@ fn hiding_a_loading_file_cancels_its_load(cx: &mut TestAppContext) {
     assert!(matches!(state(&view, cx, 1), FileState::Estimated));
     assert_eq!(counts(&view, cx, 1).map(|c| c.additions), Some(20));
 }
+
+#[gpui_kit::test]
+fn shown_files_skips_a_closed_sections_band_file(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // `pipeline_never_loads_hidden_files_but_counts_them`, with the hidden
+    // files in a closed section: file 1 carries its band (36 px), file 2 is
+    // nothing. Order 0, 3, 4, 5, 1, 2.
+    let provider = MemProvider::new(twenty_line_files(6));
+    let shared = provider.clone();
+    let window = cx.open_window(size(px(1000.), px(400.)), move |window, cx| {
+        let mut view = DiffViewport::new(shared, options(LayoutMode::Unified), window, cx);
+        view.set_sections(
+            vec![polygloss_viewport::Section {
+                id: 5,
+                label: "2 test files".into(),
+                icon: None,
+                files: vec![1, 2],
+                open: false,
+            }],
+            cx,
+        );
+        view
+    });
+    let view = window.root(cx).expect("window has a root view");
+    let cx = VisualTestContext::from_window(*window, cx).into_mut();
+    settle(cx);
+    // The top window held 0, 3 and 4; at the bottom 5 loads too.
+    view.update(cx, |v, cx| v.scroll_by(1e9, cx));
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        let doc = v.document();
+        assert_eq!(v.display_order(), &[0, 3, 4, 5, 1, 2]);
+        assert_eq!((doc.file_height(1), doc.file_height(2)), (36.0, 0.0));
+        // The walk looks at the four shown files and the band's slot, and
+        // stops at the document's end without looking at file 2.
+        let mut walk = doc.shown_files(SlotRange { start: 0, end: 6 });
+        assert_eq!(walk.by_ref().collect::<Vec<_>>(), [0, 3, 4, 5]);
+        assert_eq!(walk.visits(), 5);
+        // At the bottom: file 5 and the band are visible, the band's file is
+        // not among the shown ones.
+        let visible = doc.visible(400.0);
+        assert_eq!(visible, SlotRange { start: 3, end: 5 });
+        assert_eq!(doc.shown_files(visible).collect::<Vec<_>>(), [5]);
+    });
+    for f in [0, 3, 4, 5] {
+        assert!(state(&view, cx, f).is_materialized(), "file {f}");
+    }
+    for f in [1, 2] {
+        assert!(
+            matches!(state(&view, cx, f), FileState::Estimated),
+            "file {f}"
+        );
+        // Counted by the pass alone: one blob read.
+        assert_eq!(provider.loads_of(f as usize), 1, "file {f}");
+        assert_eq!(counts(&view, cx, f).map(|c| c.additions), Some(20));
+    }
+    let d = debug(&view, cx);
+    assert_eq!(
+        d.visible_rows.last().map(String::as_str),
+        Some("▸ 2 test files")
+    );
+    assert_eq!(d.bands[0].y, 400.0 - 36.0);
+}

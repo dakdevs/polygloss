@@ -16,6 +16,9 @@
 //!
 //! Files are laid out in display order ([`slots`]): "first" and "last" above
 //! mean the first and last shown file, and hidden files have no height.
+//! Category sections ([`sections`]) come last; a section's band is in the
+//! lead of its first file, which keeps it while hidden, so "first" and
+//! "last" also count a closed section's band.
 
 mod anchor;
 mod file_layout;
@@ -23,6 +26,7 @@ mod file_state;
 mod height_index;
 mod metrics;
 mod placement;
+mod sections;
 mod slots;
 mod window;
 
@@ -36,6 +40,7 @@ pub use file_state::FileState;
 pub use height_index::HeightIndex;
 pub use metrics::{Metrics, SizeHint};
 pub use placement::{BlockAnchor, PlacedBlock};
+pub use sections::SectionFiles;
 pub use slots::{ShownFiles, SlotRange};
 pub use window::{DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS};
 
@@ -53,12 +58,18 @@ pub struct Document {
     order: Vec<u32>,
     /// Each file's display slot (file → slot).
     slots: Vec<u32>,
-    /// The first and last shown slots; `None` when every file is hidden.
+    /// The first and last slots that are shown or hold a band; `None` when
+    /// every file is hidden and no section has a band.
     shown: Option<(u32, u32)>,
     /// File heights by slot: lead, header, body and card padding
     /// ([`Document::file_height`]).
     heights: HeightIndex,
     anchor: ScrollAnchor,
+    /// Category sections, in display order ([`sections`]).
+    sections: Vec<SectionFiles>,
+    /// Each file's index in `sections` ([`sections::NO_SECTION`]: none);
+    /// empty until sections are set.
+    section_of: Vec<u32>,
     /// Height of the prelude above the first card, when there is one.
     prelude: Option<f32>,
     /// Pixel offset of the viewport top, derived from `anchor`.
@@ -85,6 +96,7 @@ impl Document {
                 blocks: Vec::new(),
                 block_sets: 0,
                 hidden: false,
+                band: false,
             })
             .collect();
         let n = files.len() as u32;
@@ -97,6 +109,8 @@ impl Document {
             shown: n.checked_sub(1).map(|last| (0, last)),
             heights: HeightIndex::default(),
             anchor: ScrollAnchor::default(),
+            sections: Vec::new(),
+            section_of: Vec::new(),
             prelude: None,
             scroll_top: 0.0,
             anchor_y: 0.0,
@@ -157,15 +171,23 @@ impl Document {
 
     /// The canvas above file `idx`'s card: [`Metrics::card_gap`], except for
     /// the first shown file, whose lead is the prelude and a gap when there
-    /// is a prelude, else nothing, and hidden files, which have none.
+    /// is a prelude, else nothing, and hidden files, which have none. A
+    /// section's first file adds its band ([`Metrics::band_height`]) below
+    /// that, shown or hidden.
     pub fn lead(&self, idx: u32) -> f32 {
-        if self.slot(idx) == self.top_slot() {
+        let band = if self.has_band(idx) {
+            self.metrics.band_height
+        } else {
+            0.0
+        };
+        let above = if self.slot(idx) == self.top_slot() {
             self.prelude.map_or(0.0, |p| p + self.metrics.card_gap)
-        } else if self.is_hidden(idx) {
+        } else if self.is_hidden(idx) && band == 0.0 {
             0.0
         } else {
             self.metrics.card_gap
-        }
+        };
+        above + band
     }
 
     /// Top of file `idx`'s header (its card): [`Document::file_top`] plus its
@@ -204,17 +226,18 @@ impl Document {
     }
 
     /// File `idx`'s height in the document: its lead, header, body and card
-    /// padding, plus the gap below the last card; only its lead when hidden.
+    /// padding, plus the gap below the last card (or band); only its lead
+    /// (and that gap) when hidden.
     fn entry_height(&self, idx: u32) -> f32 {
-        if self.is_hidden(idx) {
-            return self.lead(idx);
-        }
-        let body = self.padded(self.entries[idx as usize].body_height());
         let tail = if self.last_shown_slot() == Some(self.slot(idx)) {
             self.metrics.card_gap
         } else {
             0.0
         };
+        if self.is_hidden(idx) {
+            return self.lead(idx) + tail;
+        }
+        let body = self.padded(self.entries[idx as usize].body_height());
         self.lead(idx) + self.metrics.header_height + body + tail
     }
 
@@ -263,7 +286,8 @@ impl Document {
 
     /// The file containing document offset `offset` and the offset within it;
     /// past the end, the last file that has a height (files without one, such
-    /// as hidden files, never contain an offset).
+    /// as hidden files, never contain an offset; a closed section's first
+    /// file has its band's).
     pub fn file_at_offset(&self, offset: f64) -> (u32, f64) {
         let (mut slot, mut y) = self.heights.find(offset);
         // `find` gives its last slot past the end, whatever its height.
@@ -322,8 +346,8 @@ impl Document {
     }
 
     /// Restores a scroll position (view state, or a target above the row). A
-    /// position in a hidden file is the top of where it is: `(file, Lead,
-    /// 0)`.
+    /// position in a hidden file is its section's band (the top of the
+    /// section's first file), or the top of where it is: `(file, Lead, 0)`.
     pub fn scroll_to_anchor(&mut self, anchor: ScrollAnchor) {
         if self.entries.is_empty() {
             return;
@@ -344,8 +368,7 @@ impl Document {
             self.anchor.offset_px = 0.0;
         }
         if self.is_hidden(self.anchor.file_idx) {
-            self.anchor.row = RowKey::Lead;
-            self.anchor.offset_px = 0.0;
+            self.anchor = self.hidden_anchor(self.anchor.file_idx);
         }
         // A key that does not resolve (a block or gap that is gone, an old line
         // of an added file) falls back to the top of the body.
@@ -542,6 +565,25 @@ impl Document {
     /// headers can still show counts).
     pub fn size_hint(&self, idx: u32) -> Option<SizeHint> {
         self.entries.get(idx as usize)?.hint
+    }
+
+    /// The same files with new metadata (a Generated verdict,
+    /// [`crate::DiffViewport::set_generated`]): the files in `changed` go back
+    /// to estimates from their new metadata (the view lays them out again);
+    /// every other file keeps its height and rows. The anchor stays put.
+    pub fn replace_files(&mut self, files: Arc<Vec<FileChange>>, changed: &[u32]) {
+        debug_assert_eq!(files.len(), self.files.len());
+        self.files = files;
+        for &f in changed {
+            let Some(entry) = self.entries.get_mut(f as usize) else {
+                continue;
+            };
+            let estimate = self
+                .metrics
+                .estimate_body(&self.files[f as usize], entry.hint);
+            entry.body = Body::Estimated(estimate);
+            self.refresh(f);
+        }
     }
 
     /// Changes file `idx`'s kind (binary content found when its blobs were

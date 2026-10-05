@@ -867,3 +867,177 @@ fn stepwise_keys_walk_display_order_and_skip_hidden_files(cx: &mut TestAppContex
         assert_eq!(cursor(&view, cx), new(f, 0));
     }
 }
+
+/// Five added files `f<i>.txt` of three lines with 1 and 3 in a closed
+/// section (id 5): shown in the order 0, 2, 4, then the band.
+fn with_closed_section(cx: &mut TestAppContext) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+    let specs = (0..5)
+        .map(|i| {
+            Spec::added(
+                &format!("f{i}.txt"),
+                &numbered(&format!("f{i}"), 3).concat(),
+            )
+        })
+        .collect();
+    let (view, cx) = open(
+        cx,
+        MemProvider::new(specs),
+        options(LayoutMode::Unified),
+        1000.,
+        2000.,
+    );
+    view.update(cx, |v, cx| {
+        v.set_sections(
+            vec![polygloss_viewport::Section {
+                id: 5,
+                label: "2 test files".into(),
+                icon: None,
+                files: vec![1, 3],
+                open: false,
+            }],
+            cx,
+        )
+    });
+    settle(cx);
+    (view, cx)
+}
+
+#[gpui_kit::test]
+fn stepwise_keys_pass_over_a_closed_section(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = with_closed_section(cx);
+    let new = |f: u32, line: u32| Some(pos(f, Side::New, line));
+    let next_file = |view: &Entity<DiffViewport>, cx: &mut VisualTestContext| {
+        view.update(cx, |v, cx| v.next_file(cx));
+        settle(cx);
+        cursor(view, cx)
+    };
+
+    // `n` from file 0: 2, then 4, the last main file, where it stays.
+    set_cursor(&view, cx, pos(0, Side::New, 1));
+    assert_eq!(next_file(&view, cx), new(2, 0));
+    assert_eq!(next_file(&view, cx), new(4, 0));
+    assert_eq!(next_file(&view, cx), new(4, 0));
+    // `j` at the last line stays too; `]` finds nothing below.
+    set_cursor(&view, cx, pos(4, Side::New, 2));
+    move_cursor(&view, cx, Direction::Down);
+    assert_eq!(cursor(&view, cx), new(4, 2));
+    view.update(cx, |v, cx| v.next_change(cx));
+    settle(cx);
+    assert_eq!(cursor(&view, cx), new(4, 2));
+    assert_eq!(view.read_with(cx, |v, _| v.section_open(5)), Some(false));
+
+    // Open, `n` enters it: 1, then 3; `p` goes back to 4.
+    view.update(cx, |v, cx| v.set_section_open(5, true, cx));
+    settle(cx);
+    assert_eq!(next_file(&view, cx), new(1, 0));
+    assert_eq!(next_file(&view, cx), new(3, 0));
+    view.update(cx, |v, cx| v.prev_file(cx));
+    view.update(cx, |v, cx| v.prev_file(cx));
+    settle(cx);
+    assert_eq!(cursor(&view, cx), new(4, 0));
+}
+
+#[gpui_kit::test]
+fn explicit_targets_open_the_section_and_emit(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = with_closed_section(cx);
+    // A block on file 1 (hidden) for the block target.
+    view.update(cx, |v, cx| {
+        v.set_blocks(
+            1,
+            vec![polygloss_viewport::BlockSpec {
+                id: polygloss_viewport::BlockId(9),
+                anchor: polygloss_viewport::BlockAnchor::FileTop,
+                render: std::rc::Rc::new(|_, _| {
+                    use gpui_kit::{IntoElement as _, Styled as _};
+                    gpui_kit::div().h(px(30.)).into_any_element()
+                }),
+            }],
+            cx,
+        )
+    });
+    settle(cx);
+    type Target = Box<dyn Fn(&mut DiffViewport, &mut gpui_kit::Context<DiffViewport>)>;
+    fn target(
+        f: impl Fn(&mut DiffViewport, &mut gpui_kit::Context<DiffViewport>) + 'static,
+    ) -> Target {
+        Box::new(f)
+    }
+    let line = polygloss_viewport::ScrollTarget::Line {
+        file_idx: 3,
+        side: Side::New,
+        line: 1,
+    };
+    let block = polygloss_viewport::ScrollTarget::Block(polygloss_viewport::BlockId(9));
+    let targets: Vec<(&str, Target)> = vec![
+        (
+            "scroll_to(File)",
+            target(|v, cx| v.scroll_to(polygloss_viewport::ScrollTarget::File(3), cx)),
+        ),
+        (
+            "scroll_to(Line)",
+            target(move |v, cx| v.scroll_to(line, cx)),
+        ),
+        (
+            "scroll_to(Block)",
+            target(move |v, cx| v.scroll_to(block, cx)),
+        ),
+        ("go_to_file", target(|v, cx| v.go_to_file(3, cx))),
+        (
+            "set_cursor",
+            target(|v, cx| v.set_cursor(Some(pos(3, Side::New, 2)), cx)),
+        ),
+        (
+            "reveal_line",
+            target(|v, cx| v.reveal_line(3, Side::New, 1, cx)),
+        ),
+    ];
+    for (name, target) in targets {
+        view.update(cx, |v, cx| {
+            v.set_section_open(5, false, cx);
+            v.set_cursor(None, cx);
+        });
+        settle(cx);
+        let (events, sub) = record_events(&view, cx);
+        view.update(cx, |v, cx| target(v, cx));
+        settle(cx);
+        assert_eq!(
+            view.read_with(cx, |v, _| v.section_open(5)),
+            Some(true),
+            "{name}"
+        );
+        let toggled: Vec<ViewportEvent> = events_of(&events)
+            .into_iter()
+            .filter(|e| matches!(e, ViewportEvent::SectionToggled { .. }))
+            .collect();
+        assert_eq!(
+            toggled,
+            [ViewportEvent::SectionToggled { id: 5, open: true }],
+            "{name}"
+        );
+        drop(sub);
+    }
+    // Where the targets went (the last ones of their kind).
+    assert_eq!(cursor(&view, cx), None);
+    view.update(cx, |v, cx| {
+        v.set_section_open(5, false, cx);
+        v.go_to_file(3, cx);
+    });
+    settle(cx);
+    assert_eq!(cursor(&view, cx), Some(pos(3, Side::New, 0)));
+    assert_eq!(view.read_with(cx, |v, _| v.anchor().file_idx), 3);
+
+    // A target in an open section or a main file emits nothing.
+    let (events, _sub) = record_events(&view, cx);
+    view.update(cx, |v, cx| {
+        v.go_to_file(1, cx);
+        v.go_to_file(2, cx);
+    });
+    settle(cx);
+    assert!(
+        events_of(&events)
+            .iter()
+            .all(|e| !matches!(e, ViewportEvent::SectionToggled { .. }))
+    );
+}

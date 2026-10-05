@@ -12,6 +12,7 @@ mod kit;
 mod pipeline;
 mod provider_swap;
 mod rows;
+mod sections;
 mod slots;
 mod support;
 mod theme;
