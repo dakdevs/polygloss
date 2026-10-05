@@ -12,6 +12,7 @@ use gpui_kit::{
 };
 
 use crate::tabs::TabItem;
+use crate::window::MainWindow;
 
 /// The Reviews segment's list.
 pub fn render_nav(_window: &mut Window, _cx: &mut App) -> AnyElement {
@@ -26,9 +27,7 @@ struct Nav;
 
 /// One row of the list.
 struct NavRow {
-    /// Its tab's index.
-    ix: usize,
-    /// `nav-home`, or the review's id.
+    /// The review's id; `None` for Home.
     review_id: Option<String>,
     title: SharedString,
     active: bool,
@@ -51,7 +50,6 @@ impl RenderOnce for Nav {
                 .iter()
                 .enumerate()
                 .map(|(ix, item)| NavRow {
-                    ix,
                     review_id: match item {
                         TabItem::Home(_) => None,
                         TabItem::Review(tab) => Some(tab.read(cx).review_id.clone()),
@@ -62,16 +60,24 @@ impl RenderOnce for Nav {
                 .collect()
         };
         let main = main.downgrade();
-        list.children(rows.into_iter().map(|row| {
+        list.children(rows.into_iter().enumerate().map(|(ix, row)| {
             let theme = cx.theme();
             let selector = match &row.review_id {
                 Some(id) => format!("open-review-{id}"),
                 None => "nav-home".to_owned(),
             };
-            let ix = row.ix;
+            // A click acts on the row's review wherever its tab is by then
+            // (a tab may have closed since this frame), or on nothing.
+            let tab_ix = {
+                let review_id = row.review_id.clone();
+                move |m: &MainWindow, cx: &App| match &review_id {
+                    Some(id) => m.tabs().find_review(id, cx),
+                    None => Some(0),
+                }
+            };
             let close = row.review_id.as_ref().map(|id| {
                 let close_selector = format!("close-review-{id}");
-                let main = main.clone();
+                let (main, tab_ix) = (main.clone(), tab_ix.clone());
                 // The row activates on click; × must not.
                 div()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -83,7 +89,12 @@ impl RenderOnce for Nav {
                             .tooltip("Close Review (⌘W)")
                             .debug_selector(move || close_selector)
                             .on_click(move |_, window, cx| {
-                                main.update(cx, |m, cx| m.close_tab_at(ix, window, cx)).ok();
+                                main.update(cx, |m, cx| {
+                                    if let Some(ix) = tab_ix(m, cx) {
+                                        m.close_tab_at(ix, window, cx);
+                                    }
+                                })
+                                .ok();
                             }),
                     )
             });
@@ -110,7 +121,11 @@ impl RenderOnce for Nav {
                 .children(close)
                 .on_click(move |_, window, cx| {
                     activate
-                        .update(cx, |m, cx| m.activate_tab(ix, window, cx))
+                        .update(cx, |m, cx| {
+                            if let Some(ix) = tab_ix(m, cx) {
+                                m.activate_tab(ix, window, cx);
+                            }
+                        })
                         .ok();
                 })
         }))

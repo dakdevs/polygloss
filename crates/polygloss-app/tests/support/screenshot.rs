@@ -65,7 +65,7 @@ pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> Headl
     );
     let mut cx = HeadlessAppContext::with_platform(
         gpui_kit::platform::current_platform(true).text_system(),
-        Arc::new(WithAppIcons(assets)),
+        Arc::new(polygloss_app::assets::WithAppIcons(assets)),
         gpui_kit::platform::current_headless_renderer,
     );
     // The app's bundled code font (T3.3): screenshots draw Lilex, as the
@@ -73,26 +73,6 @@ pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> Headl
     cx.update(polygloss_app::theme::fonts::register_fonts);
     cx.update(|cx| cx.set_reduce_motion(true));
     cx
-}
-
-/// `polygloss_app::assets::AppIcons` first, then another source.
-struct WithAppIcons(Arc<dyn gpui_kit::AssetSource>);
-
-impl gpui_kit::AssetSource for WithAppIcons {
-    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        match polygloss_app::assets::AppIcons.load(path)? {
-            Some(bytes) => Ok(Some(bytes)),
-            None => self.0.load(path),
-        }
-    }
-
-    fn list(&self, path: &str) -> anyhow::Result<Vec<gpui_kit::SharedString>> {
-        let mut paths = self.0.list(path)?;
-        paths.extend(polygloss_app::assets::AppIcons.list(path)?);
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
-    }
 }
 
 /// Where [`open_window`] parks the pointer: outside the window.

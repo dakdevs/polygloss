@@ -7,6 +7,7 @@
 //! `default-icons.txt`; `tests/scripts/app-icons.test.ts` checks that.
 
 use std::borrow::Cow;
+use std::ops::Deref;
 
 use gpui_kit::{AssetSource, SharedString};
 
@@ -56,14 +57,31 @@ pub struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        WithAppIcons(&gpui_kit::assets::Assets).load(path)
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+        WithAppIcons(&gpui_kit::assets::Assets).list(path)
+    }
+}
+
+/// [`AppIcons`] in front of the asset source `S` points to ([`AppAssets`];
+/// the screenshot harness puts them in front of what a capture loads).
+pub struct WithAppIcons<S>(pub S);
+
+impl<S> AssetSource for WithAppIcons<S>
+where
+    S: Deref<Target: AssetSource> + Send + Sync + 'static,
+{
+    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         match AppIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
-            None => gpui_kit::assets::Assets.load(path),
+            None => self.0.load(path),
         }
     }
 
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        let mut paths = self.0.list(path)?;
         paths.extend(AppIcons.list(path)?);
         paths.sort();
         paths.dedup();

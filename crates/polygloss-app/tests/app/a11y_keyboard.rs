@@ -24,7 +24,7 @@ use polygloss_core::store::events::Actor;
 use polygloss_diff::{ObjectFormat, Side};
 use polygloss_viewport::CursorPos;
 
-use crate::shell::{Shell, compare_req, draw, start};
+use crate::shell::{Shell, click, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
 fn author(kind: AuthorKind) -> Author {
@@ -512,6 +512,71 @@ fn find_filter_and_finder_show_the_files_segment_first(cx: &mut gpui_kit::TestAp
         keys(&mut shell, "escape");
         assert!(!has_dialog(&mut shell));
     }
+}
+
+/// Hiding the tree or the find field while it has the keyboard (the Reviews
+/// segment, the sidebar toggle) hands the keyboard to the diff, so `⇥`, `j`
+/// and ⌘F still act.
+#[gpui_kit::test]
+fn hiding_the_sidebar_hands_its_keyboard_to_the_diff(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let cursor = |shell: &mut Shell| viewport.read_with(shell.cx, |v, _| v.cursor());
+
+    // A click on a tree row, then on Reviews: `⇥` goes on from the diff.
+    click(shell.cx, "tree-row-f:0");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    click(shell.cx, "segment-reviews");
+    assert_eq!(sidebar(&mut shell), (true, Segment::Reviews));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    keys(&mut shell, "tab");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Threads), "⇥ acts");
+
+    // `⇧⇥` into the tree and `/` to its filter field, then the toggle: `j`
+    // moves the diff's cursor.
+    click(shell.cx, "segment-files");
+    focus_viewport(&mut shell, &tab);
+    keys(&mut shell, "shift-tab");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    keys(&mut shell, "/");
+    let filter = tab.read_with(shell.cx, |t, cx| {
+        tree::file_tree(t).unwrap().read(cx).filter_focus(cx)
+    });
+    assert!(shell.cx.update(|window, _| filter.is_focused(window)));
+    click(shell.cx, "toggle-sidebar");
+    assert!(!sidebar(&mut shell).0);
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    let before = cursor(&mut shell);
+    keys(&mut shell, "j");
+    assert_ne!(cursor(&mut shell), before, "j acts");
+
+    // ⌘F's field, then Reviews: ⌘F opens find again.
+    click(shell.cx, "show-sidebar");
+    keys(&mut shell, "cmd-f");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    click(shell.cx, "segment-reviews");
+    assert!(!painted(shell.cx, "find-pane"));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    keys(&mut shell, "cmd-f");
+    assert_eq!(sidebar(&mut shell), (true, Segment::Files), "⌘F acts");
+    assert!(painted(shell.cx, "find-pane"));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+
+    // Hidden while the keyboard is in use (a menu command): the next frame
+    // already rings the diff, with no other input to redraw the window.
+    keys(&mut shell, "escape");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    keys(&mut shell, "shift-tab");
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    assert!(painted(shell.cx, "focus-ring-tree"));
+    let chrome = shell.cx.update(|_, cx| chrome::chrome(cx));
+    chrome.update(shell.cx, |c, cx| c.set_sidebar_visible(false, cx));
+    shell.cx.run_until_parked();
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+    assert!(painted(shell.cx, "focus-ring-viewport"));
 }
 
 #[gpui_kit::test]

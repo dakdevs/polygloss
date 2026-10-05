@@ -258,6 +258,11 @@ impl MainWindow {
             this.toast_settings_error(window, cx)
         })
         .detach();
+        // What had the keyboard stopped being drawn (the sidebar hid or
+        // switched segments under the tree or find field): the active page
+        // takes it, so keys never land where no handler listens.
+        cx.on_focus_lost(window, |this, window, cx| this.focus_active(window, cx))
+            .detach();
         crate::chrome::Chrome::install(cx);
         let mut this = MainWindow {
             focus,

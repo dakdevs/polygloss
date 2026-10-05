@@ -11,11 +11,15 @@
 //! ```
 //!
 //! Both top rows move the window when dragged and zoom (the system's
-//! double-click setting) on a double click; their control clusters stop the
-//! mouse-down, so a press on a button never moves the window. The sidebar
-//! gives way first: it never takes more than the window minus the main
-//! column's minimum ([`sidebar_max`]), and its stored width comes back when
-//! the window widens.
+//! double-click setting) on a double click, from anywhere but a control: a
+//! control claims its press (`Window::prevent_default` on mouse-down, as
+//! gpui-component's `Button` does), so a press on a button never moves the
+//! window. Like a titlebar, a press on a row leaves the keyboard where it
+//! is. The sidebar gives way first: it never takes more than the window
+//! minus the main column's minimum ([`sidebar_max`]), and its stored width
+//! comes back when the window widens.
+
+use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -60,7 +64,8 @@ pub enum Segment {
 }
 
 /// The main window's sidebar: one segment, visibility and width for every
-/// page, for the session (OQ-37).
+/// page, for the session (OQ-37): a window reopened from the Dock gets them
+/// back.
 pub struct Chrome {
     segment: Segment,
     sidebar_visible: bool,
@@ -75,9 +80,12 @@ struct ChromeGlobal(Entity<Chrome>);
 impl Global for ChromeGlobal {}
 
 impl Chrome {
-    /// Creates the main window's chrome and makes it the one [`chrome`]
-    /// returns (`MainWindow::new`).
+    /// Creates the main window's chrome, once per session, and makes it the
+    /// one [`chrome`] returns (`MainWindow::new`).
     pub(crate) fn install(cx: &mut App) -> Entity<Chrome> {
+        if let Some(ChromeGlobal(chrome)) = cx.try_global::<ChromeGlobal>() {
+            return chrome.clone();
+        }
         let shell = cx.new(|_| ResizableState::default());
         let chrome = cx.new(|_| Chrome {
             segment: Segment::Files,
@@ -279,6 +287,10 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
             .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
     };
     let segments = h_flex()
+        .debug_selector(|| "sidebar-segments".into())
+        // A control: a press on it (a segment, a disabled one, the rim)
+        // never moves the window.
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .p(px(2.))
         .gap(px(2.))
         .rounded(px(7.))
@@ -366,17 +378,45 @@ pub fn toolbar_row(
         .into_any_element()
 }
 
-/// A top row's controls: a press on them stays theirs (never a window drag).
+/// A top row's group of items, 8 pt apart. Its labels and gaps move the
+/// window like the rest of the row; its controls claim their own presses.
 fn cluster(children: Vec<AnyElement>) -> Div {
-    h_flex()
-        .h_full()
-        .gap_2()
-        .items_center()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .children(children)
+    h_flex().h_full().gap_2().items_center().children(children)
 }
 
-/// Whether the left button went down on a top row (not on its controls).
+/// What a press on a top row asks of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitlebarGesture {
+    /// A drag: the window follows the pointer (`Window::start_window_move`).
+    Move,
+    /// A double click: zoom, or minimize, as the system is set
+    /// (`Window::titlebar_double_click`).
+    DoubleClick,
+}
+
+/// Where the top rows send their gestures instead of the window (a GPUI
+/// global).
+struct GestureSink(Rc<dyn Fn(TitlebarGesture)>);
+
+impl Global for GestureSink {}
+
+/// Sends the top rows' gestures to `sink` instead of the window (tests: the
+/// test platform can neither move nor zoom a window).
+pub fn redirect_titlebar_gestures(sink: impl Fn(TitlebarGesture) + 'static, cx: &mut App) {
+    cx.set_global(GestureSink(Rc::new(sink)));
+}
+
+fn perform(gesture: TitlebarGesture, window: &Window, cx: &App) {
+    match cx.try_global::<GestureSink>() {
+        Some(GestureSink(sink)) => sink(gesture),
+        None => match gesture {
+            TitlebarGesture::Move => window.start_window_move(),
+            TitlebarGesture::DoubleClick => window.titlebar_double_click(),
+        },
+    }
+}
+
+/// Whether the left button went down on a top row (not on a control).
 #[derive(Default)]
 struct Drag {
     pressed: bool,
@@ -394,8 +434,13 @@ fn drag_region(
     let (down, up, up_out, moved) = (state.clone(), state.clone(), state.clone(), state);
     let release = |state: &Entity<Drag>, cx: &mut App| state.update(cx, |d, _| d.pressed = false);
     row.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+        if window.default_prevented() {
+            return; // A control's press.
+        }
+        // No focus-on-click above the row: the keyboard stays put.
+        window.prevent_default();
         if event.click_count == 2 {
-            window.titlebar_double_click();
+            perform(TitlebarGesture::DoubleClick, window, cx);
         } else {
             down.update(cx, |d, _| d.pressed = true);
         }
@@ -406,7 +451,7 @@ fn drag_region(
         if event.pressed_button == Some(MouseButton::Left)
             && moved.update(cx, |d, _| std::mem::take(&mut d.pressed))
         {
-            window.start_window_move();
+            perform(TitlebarGesture::Move, window, cx);
         }
     })
 }

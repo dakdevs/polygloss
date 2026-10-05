@@ -6,17 +6,20 @@
 //! write-back, the launch arguments and reopening after the last window
 //! closed.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use futures::FutureExt as _;
 use gpui_kit::component::IconName;
 use gpui_kit::{
-    Bounds, Entity, Modifiers, MouseButton, Pixels, SharedString, Size, TestAppContext,
-    VisualTestContext, WindowBackgroundAppearance, WindowBounds, point, px, size,
+    Bounds, Entity, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
+    PlatformInput, Point, SharedString, Size, TestAppContext, VisualTestContext,
+    WindowBackgroundAppearance, WindowBounds, point, px, size,
 };
-use polygloss_app::chrome::{self, Segment};
+use polygloss_app::chrome::{self, Segment, TitlebarGesture};
 use polygloss_app::review_tab::{self, BannerKind, ReviewTab, open_review};
 use polygloss_app::startup::{self, LaunchArgs};
 use polygloss_app::tabs::TabItem;
@@ -340,7 +343,7 @@ fn resize_window(shell: &mut Shell, width: f32, height: f32) {
     draw(shell.cx);
 }
 
-fn click(cx: &mut VisualTestContext, name: &str) {
+pub fn click(cx: &mut VisualTestContext, name: &str) {
     let at = bounds(cx, name).center();
     cx.simulate_click(at, Modifiers::none());
     draw(cx);
@@ -441,21 +444,66 @@ fn banner_strip_sits_between_the_toolbar_and_the_viewport(cx: &mut TestAppContex
     assert_eq!(viewport.left(), main.left());
 }
 
+/// Asserts that `columns` sit side by side across the whole window and that
+/// each one's `rows` stack from its top to the window's bottom with nothing
+/// between them.
+fn assert_tiles(cx: &mut VisualTestContext, columns: [(&str, &[&str]); 2]) {
+    let window = window_size(cx);
+    let mut left = px(0.);
+    for (column, rows) in columns {
+        let c = bounds(cx, column);
+        assert_eq!((c.left(), c.top()), (left, px(0.)), "{column}");
+        assert_eq!(c.bottom(), window.height, "{column}");
+        left = c.right();
+        let mut top = px(0.);
+        for row in rows {
+            let r = bounds(cx, row);
+            assert_eq!(r.top(), top, "{row} in {column}");
+            assert_eq!(r.left(), c.left(), "{row} in {column}");
+            top = r.bottom();
+        }
+        assert_eq!(top, window.height, "{column} ends with {rows:?}");
+    }
+    assert_eq!(left, window.width);
+}
+
 #[gpui_kit::test]
 fn no_tab_bar_is_painted(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
-    assert!(painted(shell.cx, "tab-bar").is_none(), "Home");
     shell.open(compare_req(repo.path())).unwrap();
     shell
         .open(commit_req(repo.path(), "refs/tags/head"))
         .unwrap();
     assert_eq!(shell.tabs(), (3, 2));
-    assert!(painted(shell.cx, "tab-bar").is_none(), "a review");
-    // Nothing sits above the top rows.
-    assert_eq!(bounds(shell.cx, "sidebar").top(), px(0.));
-    assert_eq!(bounds(shell.cx, "main-column").top(), px(0.));
+    // Each column is its known rows, top to bottom: no room for a tab row
+    // above, between or below them.
+    assert_tiles(
+        shell.cx,
+        [
+            ("sidebar", &["sidebar-top-row", "file-tree-pane"]),
+            (
+                "main-column",
+                &["review-toolbar", "banner-strip", "viewport-pane"],
+            ),
+        ],
+    );
+    shell.cx.simulate_keystrokes("cmd-{ cmd-{");
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (3, 0));
+    let TabItem::Home(home) = shell.tab(0) else {
+        panic!("tab 0 is Home")
+    };
+    home.update(shell.cx, |h, cx| h.refresh(cx));
+    draw(shell.cx);
+    assert_tiles(
+        shell.cx,
+        [
+            ("sidebar", &["sidebar-top-row", "nav"]),
+            ("main-column", &["home-toolbar", "home-list"]),
+        ],
+    );
 }
 
 #[gpui_kit::test]
@@ -598,51 +646,141 @@ fn sidebar_gives_way_to_the_main_column_minimum(cx: &mut TestAppContext) {
     assert_eq!(sidebar(&mut shell), px(480.));
 }
 
-#[gpui_kit::test]
-fn top_row_buttons_never_move_the_window(cx: &mut TestAppContext) {
-    let _sb = Sandbox::isolate();
-    let repo = code_change_repo();
-    let mut shell = start(cx);
-    shell.open(compare_req(repo.path())).unwrap();
-    // A press on a button followed by a drag stays the button's: the test
-    // platform panics on `start_window_move`, so a row that took the press
-    // would fail this test.
-    for name in ["toggle-threads-panel", "segment-reviews", "toggle-sidebar"] {
-        let at = bounds(shell.cx, name).center();
-        shell
-            .cx
-            .simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
-        shell.cx.simulate_mouse_move(
-            point(at.x + px(6.), at.y + px(3.)),
+/// The top rows' gestures, recorded (the test platform can neither move nor
+/// zoom a window).
+fn record_gestures(cx: &mut VisualTestContext) -> Rc<RefCell<Vec<TitlebarGesture>>> {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let sink = log.clone();
+    cx.update(|_, cx| chrome::redirect_titlebar_gestures(move |g| sink.borrow_mut().push(g), cx));
+    log
+}
+
+/// Presses along the middle of top row `row` (every control's centre, every
+/// gap between controls and every 30 pt, 2 pt clear of control edges and
+/// 8 pt clear of the row's ends, where the sidebar's resize handle takes
+/// presses within 5 pt of its edge):
+/// a drag must move the window and a double click zoom it, except on the
+/// painted controls among `controls`, where neither may happen. Returns how
+/// many points were on a control and how many off.
+fn sweep_top_row(
+    cx: &mut VisualTestContext,
+    log: &Rc<RefCell<Vec<TitlebarGesture>>>,
+    row: &str,
+    controls: &[&str],
+) -> (usize, usize) {
+    let r = bounds(cx, row);
+    let mut controls: Vec<Bounds<Pixels>> =
+        controls.iter().filter_map(|c| painted(cx, c)).collect();
+    controls.sort_by(|a, b| a.left().as_f32().total_cmp(&b.left().as_f32()));
+    let mut xs: Vec<Pixels> = controls.iter().map(|c| c.center().x).collect();
+    xs.extend(
+        controls
+            .windows(2)
+            .map(|w| (w[0].right() + w[1].left()) / 2.),
+    );
+    let mut x = r.left() + px(8.);
+    while x < r.right() - px(8.) {
+        xs.push(x);
+        x += px(30.);
+    }
+    let away = point(px(-50.), px(-50.));
+    let (mut on, mut off) = (0, 0);
+    for x in xs {
+        let at = point(x, r.center().y);
+        if x < r.left() + px(8.)
+            || x > r.right() - px(8.)
+            || controls
+                .iter()
+                .any(|c| (x - c.left()).abs() < px(2.) || (x - c.right()).abs() < px(2.))
+        {
+            continue;
+        }
+        let on_control = controls.iter().any(|c| c.contains(&at));
+        log.borrow_mut().clear();
+        let press = |cx: &mut VisualTestContext, click_count| {
+            cx.simulate_event(MouseDownEvent {
+                position: at,
+                modifiers: Modifiers::none(),
+                button: MouseButton::Left,
+                click_count,
+                first_mouse: false,
+            })
+        };
+        // On a control, every press is released off the window, so it
+        // clicks nothing.
+        let release = |cx: &mut VisualTestContext, click_count| {
+            cx.simulate_event(MouseUpEvent {
+                position: if on_control { away } else { at },
+                modifiers: Modifiers::none(),
+                button: MouseButton::Left,
+                click_count,
+            })
+        };
+        press(cx, 1);
+        cx.simulate_mouse_move(
+            point(at.x + px(6.), at.y),
             Some(MouseButton::Left),
             Modifiers::none(),
         );
-        shell
-            .cx
-            .simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
-        draw(shell.cx);
+        release(cx, 1);
+        press(cx, 2);
+        release(cx, 2);
+        let want = if on_control {
+            on += 1;
+            vec![]
+        } else {
+            off += 1;
+            vec![TitlebarGesture::Move, TitlebarGesture::DoubleClick]
+        };
+        assert_eq!(*log.borrow(), want, "{row} at x {x:?}");
     }
+    (on, off)
 }
 
+/// Every toolbar control that may be painted in the review toolbar.
+const TOOLBAR_CONTROLS: [&str; 9] = [
+    "show-sidebar",
+    "iteration-picker",
+    "live-base",
+    "live-snapshot",
+    "layout-toggle",
+    "view-options",
+    "toggle-agent-notes",
+    "submit-review",
+    "toggle-threads-panel",
+];
+
 #[gpui_kit::test]
-#[should_panic(expected = "not implemented")]
-fn dragging_a_top_row_moves_the_window(cx: &mut TestAppContext) {
+fn top_rows_move_the_window_except_on_controls(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
-    shell.open(compare_req(repo.path())).unwrap();
-    // Empty toolbar space between the two clusters. The test platform's
-    // `start_window_move` is `unimplemented!()`, so reaching it panics.
-    let toolbar = bounds(shell.cx, "review-toolbar");
-    let at = point(toolbar.center().x, toolbar.center().y);
-    shell
-        .cx
-        .simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
-    shell.cx.simulate_mouse_move(
-        point(at.x + px(6.), at.y),
-        Some(MouseButton::Left),
-        Modifiers::none(),
-    );
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let log = record_gestures(shell.cx);
+    let segments = ["sidebar-segments", "toggle-sidebar"];
+    // The kind badge, the title, the progress and the gaps drag like the
+    // empty room; the buttons, the segmented control (rim included) never.
+    let (on, off) = sweep_top_row(shell.cx, &log, "review-toolbar", &TOOLBAR_CONTROLS);
+    assert!(on >= 4 && off >= 10, "{on} on controls, {off} off");
+    let (on, off) = sweep_top_row(shell.cx, &log, "sidebar-top-row", &segments);
+    assert!(on >= 2 && off >= 3, "{on} on controls, {off} off");
+    // The keyboard stayed in the diff throughout.
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport_focus().clone());
+    assert!(shell.cx.update(|window, _| viewport.is_focused(window)));
+
+    // Hidden sidebar: the traffic lights' room and the show button.
+    click(shell.cx, "toggle-sidebar");
+    let (on, _) = sweep_top_row(shell.cx, &log, "review-toolbar", &TOOLBAR_CONTROLS);
+    assert!(on >= 5, "show-sidebar is among {on} controls");
+    click(shell.cx, "show-sidebar");
+
+    // Home: its title and count drag too.
+    shell.cx.simulate_keystrokes("cmd-{");
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (2, 0));
+    let (on, off) = sweep_top_row(shell.cx, &log, "home-toolbar", &[]);
+    assert!(on == 0 && off >= 10, "{on} on controls, {off} off");
+    sweep_top_row(shell.cx, &log, "sidebar-top-row", &segments);
 }
 
 #[gpui_kit::test]
@@ -695,6 +833,106 @@ fn nav_stub_lists_open_reviews_and_closes_like_cmd_w(cx: &mut TestAppContext) {
     click(shell.cx, &format!("close-review-{}", ids[0]));
     assert_eq!(shell.tabs(), (1, 0));
     assert!(painted(shell.cx, "nav-home").is_some());
+}
+
+/// ⌘W, then a click at `at` before the window draws again (both reach the
+/// last frame's handlers, as input queued within one frame does).
+fn close_then_click(shell: &mut Shell, at: Point<Pixels>) {
+    shell.cx.update(|window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("cmd-w").unwrap(), cx);
+        let (position, modifiers, button) = (at, Modifiers::none(), MouseButton::Left);
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                position,
+                modifiers,
+                button,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                position,
+                modifiers,
+                button,
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+    draw(shell.cx);
+}
+
+#[gpui_kit::test]
+fn nav_clicks_act_on_their_review_after_a_close(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let a = shell.open(compare_req(repo.path())).unwrap();
+    let b = shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
+    let id = |shell: &mut Shell, t: &Entity<ReviewTab>| {
+        t.read_with(shell.cx, |t, _| t.review_id.clone())
+    };
+    let (a_id, b_id) = (id(&mut shell, &a), id(&mut shell, &b));
+    click(shell.cx, "segment-reviews");
+    click(shell.cx, &format!("open-review-{a_id}"));
+    assert_eq!(shell.tabs(), (3, 1));
+
+    // ⌘W closes A, then B's row is clicked where the last frame drew it
+    // (its tab was third there, second now): B activates.
+    let b_row = bounds(shell.cx, &format!("open-review-{b_id}")).center();
+    close_then_click(&mut shell, b_row);
+    assert_eq!(shell.tabs(), (2, 1));
+    assert_eq!(shell.active_review(), Some(b.clone()));
+
+    // A again, after B; B active. ⌘W closes B, then B's × is clicked where
+    // it was (second, where A is now): A stays open.
+    let a = shell.open(compare_req(repo.path())).unwrap();
+    click(shell.cx, &format!("open-review-{b_id}"));
+    assert_eq!(shell.tabs(), (3, 1));
+    let b_close = bounds(shell.cx, &format!("close-review-{b_id}")).center();
+    close_then_click(&mut shell, b_close);
+    assert_eq!(shell.tabs(), (2, 0));
+    assert_eq!(shell.tab(1).review(), Some(&a));
+}
+
+#[gpui_kit::test]
+fn sidebar_state_lasts_for_the_session(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    set_sidebar_width(&mut shell, 330.);
+    let chrome = shell.cx.update(|_, cx| chrome::chrome(cx));
+    chrome.update(shell.cx, |c, cx| c.set_segment(Segment::Reviews, cx));
+    shell.cx.update(|window, _| window.remove_window());
+    shell.cx.run_until_parked();
+
+    // Reopened from the Dock: the same segment and width.
+    let reopen = |cx: &mut TestAppContext| {
+        cx.update(window::reopen);
+        let (window, _) = cx.update(|cx| window::main_window(cx)).expect("reopened");
+        let vcx = VisualTestContext::from_window(window, cx).into_mut();
+        draw(vcx);
+        vcx
+    };
+    let vcx = reopen(cx);
+    let (segment, visible) = vcx.update(|_, cx| {
+        let c = chrome::chrome(cx).read(cx);
+        (c.segment(), c.sidebar_visible())
+    });
+    assert_eq!((segment, visible), (Segment::Reviews, true));
+    assert_eq!(bounds(vcx, "sidebar").size.width, px(330.));
+
+    // Hidden stays hidden.
+    click(vcx, "toggle-sidebar");
+    vcx.update(|window, _| window.remove_window());
+    vcx.run_until_parked();
+    let vcx = reopen(cx);
+    assert!(painted(vcx, "sidebar").is_none());
+    click(vcx, "show-sidebar");
+    assert_eq!(bounds(vcx, "sidebar").size.width, px(330.));
 }
 
 #[gpui_kit::test]
