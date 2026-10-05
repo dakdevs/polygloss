@@ -31,6 +31,7 @@ fn review_window(
     // four frames of `open` before the animation ended).
     cx.update(|cx| cx.set_reduce_motion(true));
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");
     let (handle, main) = cx.update(|cx| {
         startup::init(core, cx);

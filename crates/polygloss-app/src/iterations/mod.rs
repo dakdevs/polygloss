@@ -40,7 +40,7 @@ use polygloss_core::review::{IterationEntry, IterationInfo, LastSubmission, Open
 use polygloss_core::store::events::Actor;
 use polygloss_diff::Oid;
 
-pub use picker::toolbar_items;
+pub use picker::toolbar_left;
 
 use crate::app_state::AppState;
 use crate::keyboard::menu::KeyMenu;

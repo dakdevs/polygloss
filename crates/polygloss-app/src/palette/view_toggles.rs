@@ -1,6 +1,7 @@
 //! The view toggles of a review tab (design §11.4, §11.6, §11.9): split /
-//! unified (`s`, remembered per diff), hide whitespace (`w`) and word diff
-//! by words, characters or off.
+//! unified (`s`, remembered per diff), hide whitespace (`w`), wrap lines
+//! (`viewport::ToggleWrap`, T6.8) and word diff by words, characters or
+//! off; [`menu_entries`] are their items in the display options menu.
 //!
 //! They are per-tab overrides on top of the settings ([`ViewOverrides`], a
 //! tab extension): a settings reload rebuilds the viewport options from the
@@ -23,6 +24,7 @@ use polygloss_viewport::{LayoutMode, ViewportOptions};
 use crate::app_state::AppState;
 use crate::keymap::actions::viewport;
 use crate::keymap::handlers;
+use crate::palette::MenuEntry;
 use crate::review_tab::ReviewTab;
 use crate::settings::SettingsStore;
 
@@ -33,6 +35,8 @@ pub struct ViewOverrides {
     pub hide_whitespace: Option<bool>,
     /// `Some(None)` turns word diff off.
     pub word_diff: Option<Option<Granularity>>,
+    /// Wrap long lines (`viewport::ToggleWrap`); per tab, for the session.
+    pub wrap: Option<bool>,
 }
 
 impl ViewOverrides {
@@ -46,6 +50,9 @@ impl ViewOverrides {
         }
         if let Some(word_diff) = self.word_diff {
             opts.word_diff = word_diff;
+        }
+        if let Some(wrap) = self.wrap {
+            opts.style.wrap = wrap;
         }
     }
 }
@@ -104,6 +111,13 @@ pub fn init(cx: &mut App) {
     );
     handlers::on_action(
         cx,
+        |tab: &mut ReviewTab, _: &viewport::ToggleWrap, _, cx| {
+            let wrap = tab.viewport.read(cx).options().style.wrap;
+            update(tab, cx, |o| o.wrap = Some(!wrap));
+        },
+    );
+    handlers::on_action(
+        cx,
         |tab: &mut ReviewTab, _: &viewport::WordDiffWord, _, cx| {
             update(tab, cx, |o| o.word_diff = Some(Some(Granularity::Word)))
         },
@@ -141,6 +155,42 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
     if remembered.is_some() {
         refresh(tab, cx);
     }
+}
+
+/// The view toggles' items in the display options menu (design §11.4), each
+/// checked when it is on.
+pub fn menu_entries(tab: &ReviewTab, cx: &App) -> Vec<MenuEntry> {
+    let opts = tab.viewport.read(cx).options();
+    let word_diff = opts.word_diff;
+    vec![
+        MenuEntry::check(
+            "Automatic layout",
+            opts.layout == LayoutMode::Auto,
+            viewport::LayoutAuto,
+        ),
+        MenuEntry::check(
+            "Hide whitespace",
+            opts.diff.ignore_whitespace,
+            viewport::ToggleWhitespace,
+        ),
+        MenuEntry::check("Wrap lines", opts.style.wrap, viewport::ToggleWrap),
+        MenuEntry::Separator,
+        MenuEntry::check(
+            "Word diff",
+            word_diff == Some(Granularity::Word),
+            viewport::WordDiffWord,
+        ),
+        MenuEntry::check(
+            "Character diff",
+            word_diff == Some(Granularity::Char),
+            viewport::WordDiffChar,
+        ),
+        MenuEntry::check(
+            "No inline highlights",
+            word_diff.is_none(),
+            viewport::WordDiffOff,
+        ),
+    ]
 }
 
 /// The layout stored in `diff_id`'s view state (`None`: no manual choice).

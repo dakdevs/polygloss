@@ -165,6 +165,7 @@ fn settle(
 fn e2e_submit_dialog() {
     let sb = Sandbox::isolate();
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");
     let req = compare(repo.path());
     let opened = core.open(&req).expect("open the review");
@@ -246,6 +247,7 @@ fn e2e_submit_dialog() {
 fn e2e_composer_line() {
     let sb = Sandbox::isolate();
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");
     let req = compare(repo.path());
     let opened = core.open(&req).expect("open the review");

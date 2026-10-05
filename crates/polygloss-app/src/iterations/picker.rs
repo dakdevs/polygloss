@@ -1,63 +1,95 @@
-//! The toolbar's iteration picker (design §11.4): an outline dropdown
-//! button labeled "Iteration k of n" (or "Working tree", or "Changes since
-//! last review", highlighted, when that mode is on). Its menu, like
-//! GitHub's commit picker, starts with the **Changes since last review**
-//! toggle (checked when on; disabled, with the reason as its note, when
-//! there is no submission or nothing changed since), then lists the states
-//! newest first with what each one is and when it was pinned.
+//! The toolbar's iteration pill (design §11.4): "Iteration k of n" (or
+//! "Working tree", or "Changes since last review", selected, when that mode
+//! is on), shortened to "k/n" or "Since review" when the toolbar is narrow
+//! and to its icon after that. Its menu, like GitHub's commit picker,
+//! starts with the **Changes since last review** toggle (checked when on;
+//! disabled, with the reason as its note, when there is no submission or
+//! nothing changed since), then lists the states newest first with what
+//! each one is and when it was pinned. `i` opens the same menu under it.
 
-use gpui_kit::component::button::Button;
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _,
-    SharedString, Styled as _, WeakEntity, Window, div, px,
+    Anchor, AnyElement, Context, IntoElement as _, ParentElement as _, SharedString, Styled as _,
+    WeakEntity, Window, div, px,
 };
 use polygloss_core::store::events::now_ms;
 
 use super::{
-    PickerEntry, changes_since_available, changes_since_checked, changes_since_hint, label,
-    picker_entries, picker_visible, show, toggle_changes_since,
+    PickerEntry, Showing, changes_since_available, changes_since_checked, changes_since_hint,
+    label, picker_entries, picker_visible, show, state, toggle_changes_since,
 };
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::review_tab::ReviewTab;
+use crate::review_tab::toolbar::{self, Narrow};
 
-/// The picker, when the review has something to pick (see
-/// [`picker_visible`]).
-pub fn toolbar_items(
+/// [`label`] for a narrow toolbar: "k/n", "Since review" (a working tree
+/// not pinned stays "Working tree").
+pub fn short_label(tab: &ReviewTab) -> String {
+    let Some(s) = state(tab) else {
+        return String::new();
+    };
+    let n = s.count();
+    match s.showing {
+        Showing::ChangesSince { .. } => "Since review".to_owned(),
+        Showing::Iteration(k) => format!("{k}/{n}"),
+        Showing::Current => match s.current_seq() {
+            Some(k) => format!("{k}/{n}"),
+            None => "Working tree".to_owned(),
+        },
+    }
+}
+
+/// The iteration pill, when the review has something to pick (see
+/// [`picker_visible`]), with the keyboard's menu (`i`) hanging from it.
+pub fn toolbar_left(
     tab: &ReviewTab,
     _window: &mut Window,
     cx: &mut Context<ReviewTab>,
-) -> Vec<AnyElement> {
+) -> Option<AnyElement> {
     if !picker_visible(tab) {
-        return Vec::new();
+        return None;
     }
+    let narrow = toolbar::narrow(tab);
+    let full = label(tab);
+    let text = (narrow < Narrow::IconPills).then(|| {
+        if narrow >= Narrow::ShortIteration {
+            short_label(tab)
+        } else {
+            full.clone()
+        }
+    });
+    let tip = match text {
+        Some(_) => "Choose which iteration to show".to_owned(),
+        None => full,
+    };
     let this = cx.entity().downgrade();
-    let since_on = changes_since_checked(tab);
-    let button = Button::new("iteration-picker")
-        .label(label(tab))
-        .dropdown_caret(true)
-        .xsmall()
-        .outline()
-        .selected(since_on)
-        .tooltip("Choose which iteration to show")
-        .dropdown_menu(move |menu, _, cx| match this.upgrade() {
-            Some(tab) => {
-                let data = MenuData::of(tab.read(cx));
-                build_menu(&this, data, menu)
-            }
-            None => menu,
-        });
-    let key_menu = super::state(tab).and_then(|s| s.key_menu.as_ref());
-    vec![
+    let pill = toolbar::pill(
+        "iteration-picker",
+        Lucide::Layers,
+        text.map(|t| toolbar::pill_text("iteration-picker-label", t)),
+        cx,
+    )
+    .selected(changes_since_checked(tab))
+    .tooltip(tip)
+    .dropdown_menu(move |menu, _, cx| match this.upgrade() {
+        Some(tab) => {
+            let data = MenuData::of(tab.read(cx));
+            build_menu(&this, data, menu)
+        }
+        None => menu,
+    });
+    let key_menu = state(tab).and_then(|s| s.key_menu.as_ref());
+    Some(
         div()
-            .debug_selector(|| "iteration-picker".into())
+            .flex_none()
             .relative()
-            .child(button)
+            .child(pill)
             .when_some(key_menu, |el, menu| el.child(menu.element(Anchor::TopLeft)))
             .into_any_element(),
-    ]
+    )
 }
 
 /// What the menu lists, read as it opens.

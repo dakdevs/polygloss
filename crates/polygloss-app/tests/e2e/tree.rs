@@ -68,6 +68,7 @@ fn badges_repo() -> FixtureRepo {
 fn e2e_tree_badges() {
     let _sb = Sandbox::isolate();
     let repo = badges_repo();
+    crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
     let (handle, main) = cx.update(|cx| {

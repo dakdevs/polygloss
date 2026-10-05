@@ -1,6 +1,6 @@
 //! Screenshot of T3.11 (design §10, §11.4, §11.7): a live review whose
 //! working tree changed after it was shown. The toolbar has the base picker
-//! ("Base: merge base") and Snapshot; the banner strip says "1 file changed"
+//! ("Live · merge base") and Snapshot; the banner strip says "1 file changed"
 //! with its Refresh (R) button, and the diff below has not moved.
 
 use std::sync::Arc;
@@ -28,6 +28,7 @@ const MAX_FRAMES: usize = 30;
 fn e2e_live_banner() {
     let _sb = Sandbox::isolate();
     let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    crate::support::home_above(repo.path());
     repo.write("src/config.rs", CONFIG_RS_BASE.as_bytes());
     repo.commit("base");
     repo.branch("feature");

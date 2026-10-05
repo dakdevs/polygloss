@@ -13,7 +13,7 @@
 //!   state in, keeping the scroll anchor by line mapping, collapsed files,
 //!   revealed context and Viewed; [`refresh::DiffRefreshed`] tells the
 //!   tab's features.
-//! - [`base_picker`]: `tab::ChooseBase` (and the toolbar's base button):
+//! - [`base_picker`]: `tab::ChooseBase` (and the toolbar's Live pill):
 //!   merge base (default), HEAD or a fixed commit, each its own review key
 //!   in its own tab.
 //! - `tab::Snapshot` pins the live state shown (`pinned_by = manual`).
@@ -29,12 +29,12 @@ pub mod watcher;
 
 use std::sync::Arc;
 
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncWindowContext, Context, Entity, InteractiveElement as _,
-    IntoElement as _, MenuItem, ParentElement as _, SharedString, Subscription, WeakEntity, Window,
-    div,
+    IntoElement as _, MenuItem, SharedString, Subscription, WeakEntity, Window,
 };
 use polygloss_core::git::{ReviewKind, Since};
 use polygloss_core::review::{OpenRequest, OpenedDiff, PinnedBy};
@@ -48,6 +48,7 @@ use crate::app_state::AppState;
 use crate::keymap::actions::tab as tab_actions;
 use crate::keymap::handlers;
 use crate::provider::CoreDiffProvider;
+use crate::review_tab::toolbar::{self, Narrow};
 use crate::review_tab::{BannerKind, ReviewTab};
 use crate::window::MenuKind;
 
@@ -448,9 +449,10 @@ pub fn since(tab: &ReviewTab) -> Option<Since> {
         .flatten()
 }
 
-/// The toolbar's live controls (design §11.4): the base picker and
-/// Snapshot, for live reviews.
-pub fn toolbar_items(
+/// The toolbar's live controls (design §11.4), for live reviews: the Live
+/// pill ("Live · merge base"), which opens the base picker, then Snapshot
+/// (until the header card takes it, T6.13).
+pub fn toolbar_left(
     tab: &ReviewTab,
     _window: &mut Window,
     cx: &mut Context<ReviewTab>,
@@ -464,18 +466,27 @@ pub fn toolbar_items(
         .as_ref()
         .filter(|it| it.diff_id == current.diff_id)
         .map(|it| it.seq);
-    let base = Button::new("live-base")
-        .label(format!("Base: {}", base_picker::since_label(&since)))
-        .dropdown_caret(true)
-        .xsmall()
-        .outline()
-        .tooltip("Choose the base of the working tree diff")
-        .on_click(cx.listener(|tab, _, window, cx| {
-            base_picker::open(tab, window, cx);
-        }));
+    let narrow = toolbar::narrow(tab);
+    let text = format!("Live \u{b7} {}", base_picker::since_label(&since));
+    let icon_only = narrow >= Narrow::IconPills;
+    let live = toolbar::pill(
+        "live-base",
+        Lucide::CircleDot,
+        (!icon_only).then(|| toolbar::pill_text("live-base-label", text.clone())),
+        cx,
+    )
+    .tooltip(if icon_only {
+        text
+    } else {
+        "Choose the base of the working tree diff".to_owned()
+    })
+    .on_click(cx.listener(|tab, _, window, cx| {
+        base_picker::open(tab, window, cx);
+    }));
     let snapshot = Button::new("live-snapshot")
+        .debug_selector(|| "live-snapshot".into())
         .label("Snapshot")
-        .xsmall()
+        .small()
         .ghost()
         .disabled(pinned.is_some())
         .tooltip(match pinned {
@@ -483,14 +494,5 @@ pub fn toolbar_items(
             None => "Pin this state as an iteration".to_owned(),
         })
         .on_click(cx.listener(|tab, _, window, cx| snapshot(tab, window, cx)));
-    vec![
-        div()
-            .debug_selector(|| "live-base".into())
-            .child(base)
-            .into_any_element(),
-        div()
-            .debug_selector(|| "live-snapshot".into())
-            .child(snapshot)
-            .into_any_element(),
-    ]
+    vec![live.into_any_element(), snapshot.into_any_element()]
 }

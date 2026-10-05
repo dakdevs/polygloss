@@ -41,6 +41,7 @@ fn agent() -> Author {
 fn e2e_feed_banners() {
     let sb = Sandbox::isolate();
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");
     let req = OpenRequest {
         worktree: repo.path().to_path_buf(),

@@ -23,7 +23,7 @@ use polygloss_viewport::{BlockAnchor, CursorPos};
 use crate::shell::{Shell, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
-fn human() -> Author {
+pub fn human() -> Author {
     Author {
         kind: AuthorKind::Human,
         name: "you".into(),
@@ -31,7 +31,7 @@ fn human() -> Author {
     }
 }
 
-fn agent() -> Author {
+pub fn agent() -> Author {
     Author {
         kind: AuthorKind::Agent,
         name: "claude-code".into(),
@@ -39,7 +39,7 @@ fn agent() -> Author {
     }
 }
 
-fn line(path: &str, side: Side, start_line: u32, line: u32) -> Subject {
+pub fn line(path: &str, side: Side, start_line: u32, line: u32) -> Subject {
     Subject::Line {
         path: path.into(),
         side,
@@ -49,7 +49,7 @@ fn line(path: &str, side: Side, start_line: u32, line: u32) -> Subject {
 }
 
 /// Creates a thread on the diff `tab` shows.
-fn create(
+pub fn create(
     shell: &mut Shell,
     tab: &Entity<ReviewTab>,
     subject: Subject,
@@ -81,7 +81,7 @@ fn create(
         .expect("create the thread")
 }
 
-fn reload(shell: &mut Shell, tab: &Entity<ReviewTab>) {
+pub fn reload(shell: &mut Shell, tab: &Entity<ReviewTab>) {
     tab.update(shell.cx, threads::reload);
     draw(shell.cx);
 }

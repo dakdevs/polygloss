@@ -26,6 +26,7 @@ use crate::app_state::AppState;
 use crate::keymap::actions::tab as tab_actions;
 use crate::keymap::handlers;
 use crate::review_tab::ReviewTab;
+use crate::review_tab::toolbar::{self, Narrow};
 use crate::threads;
 use crate::window::MenuKind;
 
@@ -240,13 +241,14 @@ fn submitted(
 }
 
 /// The toolbar's "Submit review" button with the draft count (design
-/// §11.4).
-pub fn toolbar_items(
-    tab: &ReviewTab,
-    _window: &mut Window,
-    cx: &mut Context<ReviewTab>,
-) -> Vec<AnyElement> {
+/// §11.4), "Submit" once the toolbar is narrow; in the accent color.
+pub fn button(tab: &ReviewTab, _window: &mut Window, cx: &mut Context<ReviewTab>) -> AnyElement {
     let drafts = drafts_count(tab, cx);
+    let label = if toolbar::narrow(tab) >= Narrow::ShortSubmit {
+        "Submit"
+    } else {
+        "Submit review"
+    };
     let theme = cx.theme();
     let count = (drafts > 0).then(|| {
         div()
@@ -263,19 +265,17 @@ pub fn toolbar_items(
             .text_xs()
             .child(drafts.to_string())
     });
-    vec![
-        Button::new("submit-review")
-            .debug_selector(|| "submit-review".into())
-            .small()
-            .primary()
-            .label("Submit review")
-            .when_some(count, |b, c| b.child(c))
-            .tooltip(match drafts {
-                0 => "Submit a verdict (⌘⇧⏎)".to_owned(),
-                1 => "Publish 1 draft with a verdict (⌘⇧⏎)".to_owned(),
-                n => format!("Publish {n} drafts with a verdict (⌘⇧⏎)"),
-            })
-            .on_click(cx.listener(|tab, _, window, cx| open_dialog(tab, window, cx)))
-            .into_any_element(),
-    ]
+    Button::new("submit-review")
+        .debug_selector(|| "submit-review".into())
+        .small()
+        .primary()
+        .child(toolbar::text("submit-review-label", label))
+        .when_some(count, |b, c| b.child(c))
+        .tooltip(match drafts {
+            0 => "Submit a verdict (⌘⇧⏎)".to_owned(),
+            1 => "Publish 1 draft with a verdict (⌘⇧⏎)".to_owned(),
+            n => format!("Publish {n} drafts with a verdict (⌘⇧⏎)"),
+        })
+        .on_click(cx.listener(|tab, _, window, cx| open_dialog(tab, window, cx)))
+        .into_any_element()
 }

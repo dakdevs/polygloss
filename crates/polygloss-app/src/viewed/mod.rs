@@ -25,20 +25,20 @@
 //!   `viewed` and `changed_since_viewed`; the thread fields are the
 //!   threads feature's (T3.9), which should set them through
 //!   [`update_file_flags`] too, so neither overwrites the other.
-//! - **Toolbar:** "N / M viewed" with a small progress bar
-//!   ([`toolbar_items`], selector `viewed-progress`).
+//! - **Toolbar:** a compact `N/M` with the tooltip "N of M files viewed"
+//!   ([`progress_item`], selector `viewed-progress`, T6.8); in the display
+//!   options menu once the toolbar is narrow ([`progress_entry`]).
 //!
-//! Owned by T3.7. T3.1 already calls [`init`] (from `features::init`),
-//! [`attach`] (for every new review tab), [`toolbar_items`] (by the review
-//! tab's toolbar).
+//! Owned by T3.7. `features` calls [`init`], [`attach`] (for every new
+//! review tab) and [`progress_item`] (for the toolbar).
 
 use std::sync::Arc;
 
-use gpui_kit::component::{ActiveTheme as _, h_flex};
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Global, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Task, Window, div, px, relative,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
+    div,
 };
 use polygloss_core::review::ViewedState;
 use polygloss_diff::FileChange;
@@ -48,7 +48,9 @@ use crate::app_state::AppState;
 use crate::keymap::actions::{tree as tree_actions, viewport as viewport_actions};
 use crate::keymap::handlers;
 use crate::live::DiffRefreshed;
+use crate::palette::MenuEntry;
 use crate::review_tab::ReviewTab;
+use crate::review_tab::toolbar::{self, Narrow};
 use crate::tree::{FileTreeEvent, file_tree};
 
 /// Registers the Viewed actions on review tabs.
@@ -165,10 +167,18 @@ pub fn progress(tab: &ReviewTab) -> (usize, usize) {
     (viewed, tab.opened.files.len())
 }
 
-/// The toolbar's text: "N / M viewed".
+/// The toolbar's text: `N/M`.
 pub fn progress_label(tab: &ReviewTab) -> String {
     let (viewed, total) = progress(tab);
-    format!("{viewed} / {total} viewed")
+    format!("{viewed}/{total}")
+}
+
+/// [`progress_label`] in words: "N of M files viewed".
+pub fn progress_tooltip(tab: &ReviewTab) -> String {
+    match progress(tab) {
+        (viewed, 1) => format!("{viewed} of 1 file viewed"),
+        (viewed, total) => format!("{viewed} of {total} files viewed"),
+    }
 }
 
 /// Reloads the marks from the store (after the queued writes). Call it
@@ -431,54 +441,34 @@ fn folder_for_action(tab: &ReviewTab, cx: &App) -> Option<Vec<u32>> {
     Some(model.dir(&dir)?.files.clone())
 }
 
-/// The toolbar's "N / M viewed" with a progress bar (design §11.4).
-pub fn toolbar_items(
+/// The toolbar's compact `N/M` (design §11.4), until the toolbar is narrow
+/// enough to move it into the display options menu. Not a control: it
+/// moves the window like the row.
+pub fn progress_item(
     tab: &ReviewTab,
     _window: &mut Window,
     cx: &mut Context<ReviewTab>,
-) -> Vec<AnyElement> {
-    if tab.extension::<TabViewed>().is_none() {
-        return Vec::new();
+) -> Option<AnyElement> {
+    if tab.extension::<TabViewed>().is_none() || toolbar::narrow(tab) >= Narrow::ProgressInMenu {
+        return None;
     }
-    let (viewed, total) = progress(tab);
-    let theme = cx.theme();
-    let fraction = if total == 0 {
-        0.
-    } else {
-        viewed as f32 / total as f32
-    };
-    let done = total > 0 && viewed == total;
-    let tooltip: SharedString = match total {
-        1 => format!("{viewed} of 1 file viewed").into(),
-        _ => format!("{viewed} of {total} files viewed").into(),
-    };
-    vec![
-        h_flex()
+    Some(
+        div()
             .id("viewed-progress")
             .debug_selector(|| "viewed-progress".into())
             .flex_none()
-            .gap_2()
             .px_1()
-            .text_xs()
-            .text_color(theme.muted_foreground)
-            .child(
-                div()
-                    .w(px(48.))
-                    .h(px(4.))
-                    .rounded_full()
-                    .bg(theme.muted_foreground.opacity(0.25))
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(fraction))
-                            .rounded_full()
-                            .bg(if done { theme.green } else { theme.primary }),
-                    ),
-            )
-            .child(progress_label(tab))
-            .tooltip(move |window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-            })
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(toolbar::text("viewed-progress-label", progress_label(tab)))
+            .tooltip(toolbar::tooltip(progress_tooltip(tab)))
             .into_any_element(),
-    ]
+    )
+}
+
+/// The progress as the display options menu's first row, once it left the
+/// toolbar.
+pub fn progress_entry(tab: &ReviewTab) -> Option<MenuEntry> {
+    tab.extension::<TabViewed>()
+        .map(|_| MenuEntry::note(progress_tooltip(tab)))
 }

@@ -801,3 +801,48 @@ fn refresh_and_iteration_switches_keep_the_top_of_the_document(cx: &mut gpui_kit
         Some(72.0)
     );
 }
+
+#[gpui_kit::test]
+fn iteration_pill_shows_only_with_more_than_one_state(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    // One state and no submission: no pill.
+    assert!(crate::shell::painted(shell.cx, "iteration-picker").is_none());
+
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+    assert!(crate::toolbar::shows(
+        shell.cx,
+        "iteration-picker-label",
+        "Iteration 2 of 2"
+    ));
+    // After the kind's pills.
+    let head = crate::shell::bounds(shell.cx, "ref-pill-head");
+    assert!(head.right() <= crate::shell::bounds(shell.cx, "iteration-picker").left());
+    show(&mut shell, &tab, Choice::Iteration(1));
+    assert!(crate::toolbar::shows(
+        shell.cx,
+        "iteration-picker-label",
+        "Iteration 1 of 2"
+    ));
+}
+
+#[gpui_kit::test]
+fn i_opens_the_iteration_menu_at_the_pill(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = review_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    second_commit(&repo);
+    refresh(&mut shell, &tab);
+    assert!(!tab.read_with(shell.cx, |t, _| iterations::menu_open(t)));
+    shell.cx.simulate_keystrokes("i");
+    draw(shell.cx);
+    assert!(tab.read_with(shell.cx, |t, _| iterations::menu_open(t)));
+    // It hangs from the pill's bottom-left corner.
+    let pill = crate::shell::bounds(shell.cx, "iteration-picker");
+    let menu = crate::shell::bounds(shell.cx, "key-menu");
+    assert_eq!((menu.left(), menu.top()), (pill.left(), pill.bottom()));
+}

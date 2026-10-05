@@ -26,6 +26,7 @@ const MAX_FRAMES: usize = 30;
 fn e2e_find_bar_results() {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
     let (handle, main) = cx.update(|cx| {

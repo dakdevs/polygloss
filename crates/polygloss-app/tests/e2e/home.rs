@@ -331,6 +331,7 @@ fn capture_sidebar_reviews(mode: ThemeMode) {
     let sb = Sandbox::isolate();
     let app = repo_with_history();
     let kit = repo_with_history();
+    crate::support::home_above(app.path());
     let core = Core::open_default().expect("open the sandbox store");
     let activity = populate(&core, &app, &kit);
     let mut settings = Settings::default();

@@ -746,7 +746,7 @@ Where the previous controls went:
 | Context line "base (…) → head (…) · N files" | The header card                                                     |
 | Comment on review                            | Unchanged: threads panel header, palette, Review menu               |
 
-When the row narrows, in order: the parent path hides; ref, branch and SHA pills truncate (to 64 pt); the iteration pill shortens ("2/3", "Since review"); Submit's label becomes "Submit"; Find moves into the display options menu; `N/M` moves into it too (as its first, disabled row); the kind and iteration pills become icon-only (text in the tooltip); the repo name truncates (to 48 pt). The threads button, the layout toggle, the display options menu and Submit never hide.
+When the row narrows, in order: the parent path hides; ref, branch and SHA pills truncate (to 64 pt); the iteration pill shortens ("2/3", "Since review"); Submit's label becomes "Submit"; Find moves into the display options menu; `N/M` moves into it too (as its first, disabled row); the kind and iteration pills become icon-only (text in the tooltip); the repo name truncates (to 48 pt). Should the row still not fit (a compare review with an iteration pill in a 320 pt main column), the left side's items go from its end, the repo block last. The threads button, the layout toggle, the display options menu and Submit never hide.
 
 "Changes since last review" is the pinned diff (head of the iteration at the last submission → current head). Its semantics are **Provisional** (OQ-9): comments allowed on the new side only, and a rebased base shows up as noise until range-diff (post-v1).
 

@@ -106,7 +106,7 @@ pub fn compare_req(repo: &Path) -> OpenRequest {
     }
 }
 
-fn commit_req(repo: &Path, rev: &str) -> OpenRequest {
+pub fn commit_req(repo: &Path, rev: &str) -> OpenRequest {
     OpenRequest {
         worktree: repo.to_path_buf(),
         source: Source::Commit { rev: rev.into() },
@@ -328,7 +328,7 @@ fn window_size(cx: &mut VisualTestContext) -> Size<Pixels> {
 }
 
 /// Sets the stored sidebar width, as dragging its edge does.
-fn set_sidebar_width(shell: &mut Shell, width: f32) {
+pub fn set_sidebar_width(shell: &mut Shell, width: f32) {
     let state = shell
         .cx
         .update(|_, cx| chrome::chrome(cx).read(cx).shell().clone());
@@ -338,7 +338,7 @@ fn set_sidebar_width(shell: &mut Shell, width: f32) {
     draw(shell.cx);
 }
 
-fn resize_window(shell: &mut Shell, width: f32, height: f32) {
+pub fn resize_window(shell: &mut Shell, width: f32, height: f32) {
     shell.cx.simulate_resize(size(px(width), px(height)));
     draw(shell.cx);
 }
@@ -737,17 +737,22 @@ fn sweep_top_row(
     (on, off)
 }
 
-/// Every toolbar control that may be painted in the review toolbar.
-const TOOLBAR_CONTROLS: [&str; 9] = [
+/// Every toolbar control that may be painted in the review toolbar: the
+/// buttons and the pills (design §11.4).
+const TOOLBAR_CONTROLS: [&str; 13] = [
     "show-sidebar",
-    "iteration-picker",
+    "commit-pill",
+    "ref-pill-base",
+    "ref-pill-head",
+    "branch-pill",
     "live-base",
     "live-snapshot",
+    "iteration-picker",
+    "toolbar-find",
+    "toggle-threads-panel",
     "layout-toggle",
     "view-options",
-    "toggle-agent-notes",
     "submit-review",
-    "toggle-threads-panel",
 ];
 
 #[gpui_kit::test]
@@ -758,8 +763,9 @@ fn top_rows_move_the_window_except_on_controls(cx: &mut TestAppContext) {
     let tab = shell.open(compare_req(repo.path())).unwrap();
     let log = record_gestures(shell.cx);
     let segments = ["sidebar-segments", "toggle-sidebar"];
-    // The kind badge, the title, the progress and the gaps drag like the
-    // empty room; the buttons, the segmented control (rim included) never.
+    // The repo block, the compare mode, the progress and the gaps drag like
+    // the empty room; the buttons, the pills and the segmented controls
+    // (rims included) never.
     let (on, off) = sweep_top_row(shell.cx, &log, "review-toolbar", &TOOLBAR_CONTROLS);
     assert!(on >= 4 && off >= 10, "{on} on controls, {off} off");
     let (on, off) = sweep_top_row(shell.cx, &log, "sidebar-top-row", &segments);
@@ -1458,6 +1464,16 @@ fn toolbar_and_banner_buttons_reach_the_tab_without_focus(cx: &mut TestAppContex
     draw(shell.cx);
     click(&mut shell, "banner-button-0");
     assert!(visible(&mut shell), "the banner's action reached the tab");
+
+    // Find (⌘F) opens the find bar wherever the keyboard is.
+    click(&mut shell, "toolbar-find");
+    let open = tab.read_with(shell.cx, |t, cx| {
+        polygloss_app::find::find_bar(t)
+            .expect("a find bar")
+            .read(cx)
+            .is_open()
+    });
+    assert!(open, "the toolbar's Find reached the tab");
 }
 
 #[gpui_kit::test]

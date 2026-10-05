@@ -1,9 +1,11 @@
 //! GPUI tests of T3.7: Viewed UX (design §9, ADR-0022). `v` in the viewport
 //! and the tree, the header and tree checkboxes, folder tri-state and "Mark
-//! folder viewed", the toolbar's "N / M viewed", carry-over across reopening
+//! folder viewed", the toolbar's `N/M` (T6.8), carry-over across reopening
 //! and iterations, the "changed since viewed" badge, and never pinning.
 
-use gpui_kit::{Entity, TestAppContext};
+use std::time::Duration;
+
+use gpui_kit::{Entity, TestAppContext, px};
 use polygloss_app::keymap::actions::tree as tree_actions;
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::tree::row::Check;
@@ -14,8 +16,9 @@ use polygloss_core::review::{OpenRequest, ViewedState};
 use polygloss_diff::{ObjectFormat, Side};
 use polygloss_viewport::{FileFlags, ViewportEvent};
 
-use crate::shell::{Shell, compare_req, draw, start};
+use crate::shell::{Shell, bounds, compare_req, draw, hover, painted, start, unhover};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
+use crate::toolbar::shows;
 
 use ViewedState::{ChangedSinceViewed, NotViewed, Viewed};
 
@@ -361,24 +364,31 @@ fn folder_tristate_and_mark_folder_viewed(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn viewed_progress_in_toolbar(cx: &mut TestAppContext) {
+fn viewed_progress_is_compact_with_a_tooltip(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     assert_eq!(progress(&mut shell, &tab), (0, 3));
-    let label = tab.read_with(shell.cx, |t, _| viewed::progress_label(t));
-    assert_eq!(label, "0 / 3 viewed");
-    assert!(shell.cx.debug_bounds("viewed-progress").is_some());
+    assert!(shows(shell.cx, "viewed-progress-label", "0/3"));
+    // Compact: the count alone, no bar (v1's bar alone was 48 pt).
+    let width = bounds(shell.cx, "viewed-progress").size.width;
+    assert!(width < px(48.), "{width:?}");
+    // The tooltip says it in words.
+    hover(shell.cx, "viewed-progress");
+    shell.cx.executor().advance_clock(Duration::from_secs(2));
+    draw(shell.cx);
+    assert!(painted(shell.cx, "tooltip: 0 of 3 files viewed").is_some());
+    unhover(shell.cx);
 
     focus_viewport(&mut shell, &tab);
     keys(&mut shell, "v");
     assert_eq!(progress(&mut shell, &tab), (1, 3));
-    let label = tab.read_with(shell.cx, |t, _| viewed::progress_label(t));
-    assert_eq!(label, "1 / 3 viewed");
+    assert!(shows(shell.cx, "viewed-progress-label", "1/3"));
     header_checkbox(&mut shell, &tab, 1);
     header_checkbox(&mut shell, &tab, 2);
     assert_eq!(progress(&mut shell, &tab), (3, 3));
+    assert!(shows(shell.cx, "viewed-progress-label", "3/3"));
     header_checkbox(&mut shell, &tab, 1);
     assert_eq!(progress(&mut shell, &tab), (2, 3));
 }

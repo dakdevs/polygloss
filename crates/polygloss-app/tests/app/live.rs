@@ -938,3 +938,30 @@ fn refresh_plan_keeps_the_top_of_the_document_and_maps_leads() {
         at(1, RowKey::Header, 0.0)
     );
 }
+
+#[gpui_kit::test]
+fn live_toolbar_shows_branch_and_live_pill_opening_the_base_picker(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::shell::{bounds, click};
+    use crate::toolbar::shows;
+
+    let _sb = Sandbox::isolate();
+    let repo = live_repo();
+    let mut shell = start(cx);
+    shell
+        .open(live_req(repo.path(), Since::MergeBase))
+        .expect("open the review");
+    assert!(shows(shell.cx, "branch-pill-label", "feature"));
+    assert!(shows(shell.cx, "live-base-label", "Live \u{b7} merge base"));
+    assert!(bounds(shell.cx, "branch-pill").right() <= bounds(shell.cx, "live-base").left());
+    // Snapshot stays in the toolbar until the header card takes it (T6.13).
+    assert!(crate::shell::painted(shell.cx, "live-snapshot").is_some());
+
+    assert!(shell.cx.update(|_, cx| base_picker::current(cx)).is_none());
+    click(shell.cx, "live-base");
+    assert!(
+        shell.cx.update(|_, cx| base_picker::current(cx)).is_some(),
+        "the Live pill opens the base picker"
+    );
+}

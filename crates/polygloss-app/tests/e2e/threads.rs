@@ -245,6 +245,7 @@ fn e2e_threads_unified() {
 fn capture_review(layout: LayoutSetting) {
     let sb = Sandbox::isolate();
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");
     let req = compare(&repo, "refs/tags/head");
     let opened = core.open(&req).expect("open the review");
@@ -267,6 +268,7 @@ fn capture_review(layout: LayoutSetting) {
 fn e2e_threads_outdated() {
     let sb = Sandbox::isolate();
     let repo = code_change_repo();
+    crate::support::home_above(repo.path());
     repo.git(&["checkout", "-q", "-b", "topic", "refs/tags/head"]);
     let core = Core::open_default().expect("open the sandbox store");
     let req = compare(&repo, "refs/heads/topic");
