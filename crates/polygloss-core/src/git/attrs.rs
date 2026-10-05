@@ -104,11 +104,11 @@ pub fn classify(
 /// The attribute of a row stored before v2, from its `generated` bit (design §11.15).
 /// v1 stored "the attribute if specified, else `BUILTIN_GENERATED`" (both v1 callers
 /// of [`classify`] passed no extra patterns), so a bit that disagrees with the list
-/// was the attribute; a bit that agrees with it is ambiguous.
-pub fn legacy_attr(path: &str, generated: bool) -> GeneratedAttr {
-    let listed = BUILTIN_GENERATED
-        .iter()
-        .any(|p| pattern_matches(p, path.as_bytes()));
+/// was the attribute; a bit that agrees with it is ambiguous. `path` is the raw
+/// path (a `&str`, or the bytes of a non-UTF-8 one).
+pub fn legacy_attr(path: impl AsRef<[u8]>, generated: bool) -> GeneratedAttr {
+    let path = path.as_ref();
+    let listed = BUILTIN_GENERATED.iter().any(|p| pattern_matches(p, path));
     match (generated, listed) {
         (false, true) => GeneratedAttr::Unset,
         (true, false) => GeneratedAttr::Set,

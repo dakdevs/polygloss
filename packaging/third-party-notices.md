@@ -80,6 +80,38 @@ Thiel, licensed under the Apache License, Version 2.0 (LICENSE-APACHE). The
 port leaves out imara's preprocessing, replaces its raw-pointer k-vectors with
 safe vectors and changes three heuristic details to match git; the file's
 header lists every change.
+
+--------------------------------------------------------------------------------
+geld pattern catalog
+  crates/polygloss-core/src/categories/catalog.rs
+
+The built-in file categories and their path patterns are ported from geld
+(https://github.com/brandonmcconnell/geld) at commit
+5b8ce0e470fcd2b2538da6c700d7d96197f57de3 (packages/core/src/categories.ts and
+test-patterns.ts). The port moves dist/, build/ and out/ into their own group;
+the file's header lists every change. geld is licensed under the MIT License:
+
+  MIT License
+
+  Copyright (c) 2026 Brandon McConnell
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
 ~~~~
 
 ## Lilex font
@@ -185,6 +217,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 ## Pierre themes
 
 Pierre Light and Pierre Dark are ported from @pierre/theme 2.0.0 (Apache-2.0); its NOTICE is quoted in the Polygloss NOTICE above. License text: [L-59d8f0ba](#l-59d8f0ba).
+
+## geld pattern catalog
+
+The built-in file categories (crates/polygloss-core/src/categories/catalog.rs) are ported from geld (https://github.com/brandonmcconnell/geld) at commit 5b8ce0e470fcd2b2538da6c700d7d96197f57de3 (MIT); its license, with its copyright line, is quoted in the Polygloss NOTICE above. License text: [L-c9638796](#l-c9638796).
 
 ## MPL-2.0 components
 
@@ -13346,7 +13382,7 @@ freely, subject to the following restrictions:
 
 ### L-c9638796
 
-Used by: accesskit 0.24.1, accesskit_consumer 0.38.0, accesskit_macos 0.26.3, block 0.1.6, block2 0.6.2, dispatch2 0.3.1, leak 0.1.2, leaky-cow 0.1.1, lumis-wasm-runtime 0.3.0, lyon 1.0.19, lyon_algorithms 1.0.21, lyon_geom 1.0.19, lyon_path 1.0.19, lyon_tessellation 1.0.22, mac 0.1.1, malloc_buf 0.0.6, objc-sys 0.3.5, objc2 0.5.2, objc2 0.6.4, objc2-app-kit 0.2.2, objc2-app-kit 0.3.2, objc2-cloud-kit 0.3.2, objc2-core-data 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.3.2, objc2-core-location 0.3.2, objc2-core-media 0.3.2, objc2-core-text 0.3.2, objc2-core-video 0.3.2, objc2-encode 4.1.0, objc2-foundation 0.2.2, objc2-foundation 0.3.2, objc2-quartz-core 0.3.2, objc2-screen-capture-kit 0.3.2, objc2-user-notifications 0.3.2, pathfinder_geometry 0.5.1, pathfinder_simd 0.5.6, profiling 1.0.18, profiling-procmacros 1.0.18, pulp-wasm-simd-flag 0.1.1, rust-i18n-macro 4.2.3, rust-i18n-support 4.2.3, seahash 4.1.0, svg_fmt 0.4.5, taffy 0.13.0, tree-sitter-asm 0.24.0, tree-sitter-cpp 0.23.4, tree-sitter-java 0.23.5, tree-sitter-json 0.24.8, tree-sitter-llvm 1.1.0, tree-sitter-lua 0.5.0, tree-sitter-make 1.1.1, tree-sitter-md 0.5.3, tree-sitter-objc 3.0.2, tree-sitter-sequel 0.3.11, tree-sitter-toml-ng 0.7.0, tree-sitter-typescript 0.23.2, tree-sitter-zig 1.1.2, zune-inflate 0.2.54, lumis grammars and queries.
+Used by: accesskit 0.24.1, accesskit_consumer 0.38.0, accesskit_macos 0.26.3, block 0.1.6, block2 0.6.2, dispatch2 0.3.1, leak 0.1.2, leaky-cow 0.1.1, lumis-wasm-runtime 0.3.0, lyon 1.0.19, lyon_algorithms 1.0.21, lyon_geom 1.0.19, lyon_path 1.0.19, lyon_tessellation 1.0.22, mac 0.1.1, malloc_buf 0.0.6, objc-sys 0.3.5, objc2 0.5.2, objc2 0.6.4, objc2-app-kit 0.2.2, objc2-app-kit 0.3.2, objc2-cloud-kit 0.3.2, objc2-core-data 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.3.2, objc2-core-location 0.3.2, objc2-core-media 0.3.2, objc2-core-text 0.3.2, objc2-core-video 0.3.2, objc2-encode 4.1.0, objc2-foundation 0.2.2, objc2-foundation 0.3.2, objc2-quartz-core 0.3.2, objc2-screen-capture-kit 0.3.2, objc2-user-notifications 0.3.2, pathfinder_geometry 0.5.1, pathfinder_simd 0.5.6, profiling 1.0.18, profiling-procmacros 1.0.18, pulp-wasm-simd-flag 0.1.1, rust-i18n-macro 4.2.3, rust-i18n-support 4.2.3, seahash 4.1.0, svg_fmt 0.4.5, taffy 0.13.0, tree-sitter-asm 0.24.0, tree-sitter-cpp 0.23.4, tree-sitter-java 0.23.5, tree-sitter-json 0.24.8, tree-sitter-llvm 1.1.0, tree-sitter-lua 0.5.0, tree-sitter-make 1.1.1, tree-sitter-md 0.5.3, tree-sitter-objc 3.0.2, tree-sitter-sequel 0.3.11, tree-sitter-toml-ng 0.7.0, tree-sitter-typescript 0.23.2, tree-sitter-zig 1.1.2, zune-inflate 0.2.54, lumis grammars and queries, geld pattern catalog.
 
 ~~~~text
 MIT License

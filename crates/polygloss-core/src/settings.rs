@@ -1,11 +1,15 @@
 //! Reads of the user's `settings.json` outside the app (design §18): the
 //! file is the app's (`polygloss-app`'s `settings::model`), but the MCP server
 //! must honor the global `notifications.enabled` before it launches the app to
-//! post a notification (design §17, T5.9 #12).
+//! post a notification (design §17, T5.9 #12), and classify files with the
+//! user's `categories` (design §11.15).
 //!
 //! [`strip_jsonc`] is the JSONC reader both use: `//` and `/* */` comments and
 //! trailing commas are allowed, like Zed's settings files.
 
+use serde::Deserialize;
+
+use crate::categories::{CategoriesConfig, Categorizer};
 use crate::paths::DataPaths;
 
 /// `settings.json` in the config dir.
@@ -33,6 +37,70 @@ pub fn notifications_enabled_in(text: &str) -> bool {
         .and_then(|n| n.get("enabled"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true)
+}
+
+/// The `categories` section and `diff.generated_patterns`, read leniently
+/// (design §11.15): an invalid section counts as the defaults, with a
+/// `warning` saying why. A missing or blank file is the defaults, quietly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LenientCategories {
+    pub config: CategoriesConfig,
+    /// `diff.generated_patterns` (`[]` when absent or not a string list).
+    pub legacy_generated: Vec<String>,
+    /// `settings.json: …` when the file or its `categories` section is invalid.
+    pub warning: Option<String>,
+}
+
+/// [`categories_config_in`] of `<config_dir>/settings.json`.
+pub fn categories_config(paths: &DataPaths) -> LenientCategories {
+    match std::fs::read_to_string(paths.config_dir.join(SETTINGS_FILE)) {
+        Ok(text) => categories_config_in(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => categories_config_in(""),
+        Err(e) => lenient(Err(e.to_string())),
+    }
+}
+
+/// The categories of a settings text. The section is invalid when it does not
+/// deserialize or [`Categorizer::new`] rejects it; an invalid legacy pattern
+/// is not (the categorizer drops it with a warning of its own).
+pub fn categories_config_in(text: &str) -> LenientCategories {
+    lenient(read_categories(text))
+}
+
+fn lenient(read: Result<(CategoriesConfig, Vec<String>), String>) -> LenientCategories {
+    match read {
+        Ok((config, legacy_generated)) => LenientCategories {
+            config,
+            legacy_generated,
+            warning: None,
+        },
+        Err(why) => LenientCategories {
+            config: CategoriesConfig::default(),
+            legacy_generated: Vec::new(),
+            warning: Some(format!("{SETTINGS_FILE}: {why}")),
+        },
+    }
+}
+
+fn read_categories(text: &str) -> Result<(CategoriesConfig, Vec<String>), String> {
+    let json = strip_jsonc(text);
+    if json.trim().is_empty() {
+        return Ok(Default::default());
+    }
+    let value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let legacy_generated: Vec<String> = value
+        .get("diff")
+        .and_then(|d| d.get("generated_patterns"))
+        .and_then(|p| Vec::deserialize(p).ok())
+        .unwrap_or_default();
+    let config = match value.get("categories") {
+        None | Some(serde_json::Value::Null) => CategoriesConfig::default(),
+        Some(section) => {
+            CategoriesConfig::deserialize(section).map_err(|e| format!("categories: {e}"))?
+        }
+    };
+    Categorizer::new(&config, &legacy_generated).map_err(|e| e.to_string())?;
+    Ok((config, legacy_generated))
 }
 
 /// `text` without JSONC comments and trailing commas (strings are kept

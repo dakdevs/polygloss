@@ -8,7 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 # Final for M1 (T1.1): later M1 tasks add code, never dependencies. `libc`
-# (getpeereid, geteuid; OQ-P8) arrived with T4.1. Never GPUI, tokio, rmcp or lumis.
+# (getpeereid, geteuid; OQ-P8) arrived with T4.1, `globset` (file categories) with
+# T6.4. Never GPUI, tokio, rmcp or lumis.
 [dependencies]
 polygloss-diff.workspace = true
 gix.workspace = true
@@ -24,6 +25,7 @@ libc.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+globset.workspace = true
 # Only for `testing::{Sandbox, FixtureRepo}` behind `test-support`.
 tempfile = { workspace = true, optional = true }
 
