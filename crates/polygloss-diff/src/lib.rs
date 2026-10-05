@@ -8,6 +8,7 @@ mod git_myers;
 pub mod hunks;
 pub mod line_map;
 pub mod lines;
+mod myers_core;
 pub mod options;
 pub mod rows;
 pub mod types;

@@ -26,6 +26,8 @@ const CASES: &[&str] = &[
     "content-to-empty",
     "unicode",
     "blank-line-multimatch",
+    "kept-brace-tie-break",
+    "removal-slides-to-addition",
 ];
 
 fn fixture_dir(case: &str) -> PathBuf {
@@ -138,6 +140,65 @@ fn hunks_histogram_matches_git_on_parity_fixtures() {
         ..DiffOptions::default()
     };
     assert_parity(&opts, &["--diff-algorithm=histogram", "--indent-heuristic"]);
+}
+
+/// Two files of the same numbered blocks of distinct lines (1 to 40 lines each);
+/// `new` swaps `near` pairs of blocks up to 40 apart and `far` pairs anywhere.
+/// Every line occurs once in each file, so git's cleanup keeps them all and Myers
+/// runs past its cost limit, where its good-snake split and its cost cutoff pick
+/// the alignment.
+fn shuffled_blocks(seed: u64, blocks: usize, near: usize, far: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut state = seed;
+    let mut below = |n: usize| {
+        // splitmix64
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) % n as u64) as usize
+    };
+    const LENS: [usize; 10] = [1, 2, 3, 5, 8, 13, 21, 25, 30, 40];
+    let text: Vec<String> = (0..blocks)
+        .map(|b| {
+            (0..LENS[below(LENS.len())])
+                .map(|j| format!("blk{b}_{j} = value({b}, {j});\n"))
+                .collect()
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..blocks).collect();
+    for _ in 0..near {
+        let i = below(blocks);
+        order.swap(i, (i + 1 + below(40)).min(blocks - 1));
+    }
+    for _ in 0..far {
+        order.swap(below(blocks), below(blocks));
+    }
+    let new: String = order.iter().map(|&b| text[b].as_str()).collect();
+    (text.concat().into_bytes(), new.into_bytes())
+}
+
+#[test]
+fn hunks_match_git_past_the_myers_cost_limit() {
+    // About 45,000 lines a side: the cost limit is 512 d-steps, so both the
+    // good-snake split (past 256) and the cost cutoff decide splits here.
+    let git = GitSandbox::new();
+    let (old_path, new_path) = (git.dir.path().join("old"), git.dir.path().join("new"));
+    for seed in [1, 2] {
+        let (old, new) = shuffled_blocks(seed, 3000, 300, 30);
+        fs::write(&old_path, &old).expect("write old");
+        fs::write(&new_path, &new).expect("write new");
+        let ours = unified_text(&diff_blobs(&old, &new, &DiffOptions::default()), &old, &new);
+        let theirs = git.diff(
+            &old_path,
+            &new_path,
+            &["--diff-algorithm=myers", "--indent-heuristic"],
+        );
+        let first_difference = ours.lines().zip(theirs.lines()).position(|(a, b)| a != b);
+        assert!(
+            ours == theirs,
+            "seed {seed}: hunks differ from git (first differing output line: {first_difference:?})"
+        );
+    }
 }
 
 #[test]
