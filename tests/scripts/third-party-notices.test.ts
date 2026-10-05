@@ -169,6 +169,25 @@ describe("packaging/third-party-notices.md", () => {
     expect(section(md, "Lilex font")).toContain("SIL OPEN FONT LICENSE");
   });
 
+  test("third-party notices credit the geld catalog", () => {
+    // The file-category patterns are ported from geld (MIT, T6.4): its own
+    // section names the source, the commit and the ported file, and the
+    // Polygloss NOTICE quotes geld's license with its copyright line.
+    const geld = section(md, "geld pattern catalog");
+    expect(geld).toContain("https://github.com/brandonmcconnell/geld");
+    expect(geld).toContain("5b8ce0e470fcd2b2538da6c700d7d96197f57de3");
+    expect(geld).toContain("crates/polygloss-core/src/categories/catalog.rs");
+    const ref = geld.match(/\[(L-[0-9a-f]{8})\]/)?.[1];
+    expect(ref).toBeDefined();
+    expect(md).toContain(`\n### ${ref}\n`);
+    const notice = section(md, "Polygloss NOTICE");
+    expect(notice).toContain("geld pattern catalog");
+    expect(notice).toContain("Copyright (c) 2026 Brandon McConnell");
+    expect(notice).toContain(
+      "The above copyright notice and this permission notice shall be included in all",
+    );
+  });
+
   test("names where every shipped MPL-2.0 component's source is available", () => {
     const mpl = section(md, "MPL-2.0 components");
     expect(mpl).toContain("nucleo-matcher 0.3.1");

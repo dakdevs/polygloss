@@ -7,6 +7,7 @@
 // stays free of `unsafe`.
 #![deny(unsafe_code)]
 
+pub mod categories;
 pub mod git;
 pub mod ids;
 pub mod ipc;

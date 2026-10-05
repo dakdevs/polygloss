@@ -6556,6 +6556,7 @@ name = "polygloss-core"
 version = "0.1.0"
 dependencies = [
  "gix",
+ "globset",
  "hex",
  "insta",
  "interprocess",

@@ -7,7 +7,8 @@
 // scripts/package-release.sh copies into Polygloss.app/Contents/Resources:
 //
 //   - Polygloss's own NOTICE (the Pierre theme port's Apache-2.0 NOTICE,
-//     Lilex) and Lilex's SIL Open Font License;
+//     Lilex, the geld pattern catalog's MIT license) and Lilex's SIL Open
+//     Font License;
 //   - the MPL-2.0 crates (nucleo-matcher) with where their source is;
 //   - the tree-sitter grammars and highlight queries lumis compiles in, with
 //     their upstream licenses;
@@ -446,6 +447,12 @@ export function buildNotices(opts: {
   line();
   line(
     `Pierre Light and Pierre Dark are ported from @pierre/theme 2.0.0 (Apache-2.0); its NOTICE is quoted in the Polygloss NOTICE above. License text: ${texts.link(standard["Apache-2.0"]!, "Pierre themes")}.`,
+  );
+  line();
+  line("## geld pattern catalog");
+  line();
+  line(
+    `The built-in file categories (crates/polygloss-core/src/categories/catalog.rs) are ported from geld (https://github.com/brandonmcconnell/geld) at commit 5b8ce0e470fcd2b2538da6c700d7d96197f57de3 (MIT); its license, with its copyright line, is quoted in the Polygloss NOTICE above. License text: ${texts.link(standard.MIT!, "geld pattern catalog")}.`,
   );
   line();
   line("## MPL-2.0 components");
