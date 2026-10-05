@@ -2893,6 +2893,17 @@ bun benches/run-perf.ts --scenarios watcher-banner,app-open --corpus typical,lin
 
 Then the standard completion block.
 
+**As built (T6.13):**
+
+- **App clock:** `header::set_clock(clock, cx)` (a GPUI global, default `now_ms`) is the seam; Home keeps its own `HomeView::set_clock`. The screenshot harness pins it at `support::screenshot::CLOCK_MS`, an hour after the fixtures' first commit date, so captures read "57m ago" on any day and in any time zone.
+- **Selectors:** as listed, plus `header-title` and `header-byline`; each text also as `"<name>: <text>"` (`header-avatar: A`, `header-sha: <sha>`, `header-stats: 2 files · +120 −1`); commit rows `header-commit-<i>` with `header-commit: <subject>`, then `header-commits-more`. Banner notices are `banner-notice-<i>`; the context line is `banner-context` (`banner-context: <line>`).
+- **Content:** a compare's byline names the author of its head commit, read with `commit_details` (`git log`'s date order need not list it first). A live card's second line is "vs <ref> (<sha>)" (the iteration line's `base_name`). The stats count every file through `tree::footer::totals`, now `pub(crate)` and taking an iterator (one edit outside the owned files). A failed git read is logged and leaves no card.
+- **Banners:** the notice's epoch is the strip's appearance counter (id `("banner", kind as usize)`); its 160 ms run from the notice's first frame, so a notice set in a background tab enters when that tab shows. The strip has the canvas color and no border.
+- **Removed:** `review_tab::description`, the old context line; the header card shows what it said. `iterations::refreshed` (a live Refresh) and `iterations::switched` reload the card; `refreshed` also empties the line.
+- **Tests:** `TOOLBAR_CONTROLS` lost `live-snapshot`. The 72 pt prelude stand-ins in `live.rs` and `iterations.rs` gave way to the real card, which reloads on Refresh. `view_state.rs` keeps its stand-in; `scroll_anchor_in_a_gap_and_at_the_top` now returns to the document's top with `scroll_to_anchor(ScrollAnchor::default())`, since `ScrollTarget::File(0)` lands below the card and saves a line, as design §11.12 says.
+- **Baselines:** the card is on every review's canvas, so every review capture moved: besides the three new ones, `e2e-composer-line`, `e2e-feed-banners`, `e2e-find-bar-results`, `e2e-iterations-changes-since{,-menu}`, `e2e-live-banner`, `e2e-palette-{cheat-sheet,command-palette}`, `e2e-shell-review-tab`, `e2e-sidebar-reviews{,-dark}`, `e2e-submit-dialog`, `e2e-theme-{pierre,polygloss}-*`, `e2e-threads-{outdated,split,unified}` and `e2e-tree-badges`.
+- **Left for T6.14:** `features.rs`'s doc for `toolbar_left` still names Snapshot (the file is T6.14's).
+
 ### T6.14 File categories in the app (**perf**)
 
 **Files**

@@ -16,7 +16,8 @@
 //! - [`base_picker`]: `tab::ChooseBase` (and the toolbar's Live pill):
 //!   merge base (default), HEAD or a fixed commit, each its own review key
 //!   in its own tab.
-//! - `tab::Snapshot` pins the live state shown (`pinned_by = manual`).
+//! - `tab::Snapshot` pins the live state shown (`pinned_by = manual`); its
+//!   button is in the live header card (`review_tab::header`).
 //!
 //! A tab's state is the [`Live`] extension. Watchers start after the tab's
 //! first frame (so they never cost first paint) and keep running while the
@@ -30,11 +31,9 @@ pub mod watcher;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, AsyncWindowContext, Context, Entity, InteractiveElement as _,
-    IntoElement as _, MenuItem, SharedString, Subscription, WeakEntity, Window,
+    AnyElement, App, AppContext as _, AsyncWindowContext, Context, Entity, IntoElement as _,
+    MenuItem, SharedString, Subscription, WeakEntity, Window,
 };
 use polygloss_core::git::{ReviewKind, Since};
 use polygloss_core::review::{OpenRequest, OpenedDiff, PinnedBy};
@@ -366,10 +365,8 @@ fn refreshed(
         Ok((opened, provider, Some(plan))) => {
             let old = std::mem::replace(&mut tab.opened, opened);
             clear_newer(tab, cx);
-            let context = crate::review_tab::description(&tab.opened);
-            tab.banners
-                .update(cx, |b, cx| b.set_context(context.into(), cx));
-            // The new state is the tab's current one (T3.12).
+            // The new state is the tab's current one (T3.12); its header
+            // card reloads.
             crate::iterations::refreshed(tab, cx);
             if old.diff_id != tab.opened.diff_id {
                 refresh::apply(tab, old.diff_id, Arc::new(provider), plan, cx);
@@ -449,9 +446,9 @@ pub fn since(tab: &ReviewTab) -> Option<Since> {
         .flatten()
 }
 
-/// The toolbar's live controls (design §11.4), for live reviews: the Live
-/// pill ("Live · merge base"), which opens the base picker, then Snapshot
-/// (until the header card takes it, T6.13).
+/// The toolbar's live control (design §11.4), for live reviews: the Live
+/// pill ("Live · merge base"), which opens the base picker. (Snapshot is in
+/// the header card.)
 pub fn toolbar_left(
     tab: &ReviewTab,
     _window: &mut Window,
@@ -460,12 +457,6 @@ pub fn toolbar_left(
     let Some(since) = since(tab) else {
         return Vec::new();
     };
-    let current = crate::iterations::current(tab);
-    let pinned = current
-        .iteration
-        .as_ref()
-        .filter(|it| it.diff_id == current.diff_id)
-        .map(|it| it.seq);
     let narrow = toolbar::narrow(tab);
     let text = format!("Live \u{b7} {}", base_picker::since_label(&since));
     let icon_only = narrow >= Narrow::IconPills;
@@ -483,16 +474,5 @@ pub fn toolbar_left(
     .on_click(cx.listener(|tab, _, window, cx| {
         base_picker::open(tab, window, cx);
     }));
-    let snapshot = Button::new("live-snapshot")
-        .debug_selector(|| "live-snapshot".into())
-        .label("Snapshot")
-        .small()
-        .ghost()
-        .disabled(pinned.is_some())
-        .tooltip(match pinned {
-            Some(seq) => format!("Saved as iteration {seq}"),
-            None => "Pin this state as an iteration".to_owned(),
-        })
-        .on_click(cx.listener(|tab, _, window, cx| snapshot(tab, window, cx)));
-    vec![live.into_any_element(), snapshot.into_any_element()]
+    vec![live.into_any_element()]
 }

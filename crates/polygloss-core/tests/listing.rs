@@ -1,9 +1,13 @@
 //! Ref and commit listings for the open flow (T3.5, design §11.3): `for-each-ref`
-//! over branches, remote branches and tags, and a paged `log -z`. Every test runs
-//! under `Sandbox::isolate()`.
+//! over branches, remote branches and tags, and a paged `log -z`; and the header
+//! card's commit details and ranges (T6.13, design §11.6). Every test runs under
+//! `Sandbox::isolate()`.
 
 use polygloss_core::git::Git;
-use polygloss_core::git::listing::{CommitInfo, RefInfo, RefKind, list_commits, list_refs};
+use polygloss_core::git::listing::{
+    CommitDetails, CommitInfo, RefInfo, RefKind, commit_details, list_commits, list_refs,
+    range_commits,
+};
 use polygloss_core::testing::{FixtureRepo, Sandbox};
 use polygloss_core::{ObjectFormat, Oid};
 
@@ -173,4 +177,87 @@ fn listing_log_parses_nul_fields() {
     assert_eq!(paged, all);
     assert!(page3.is_empty());
     assert!(list_commits(&git, 0, 0).unwrap().is_empty());
+}
+
+#[test]
+fn commit_details_reads_author_email_and_time() {
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"one\n");
+    repo.commit("base");
+    repo.write("a.txt", b"two\n");
+    repo.git(&["add", "-A"]);
+    // The fixture's second commit date: its epoch plus one minute. The
+    // email keeps its case; the subject its tab, quotes and non-ASCII; the
+    // body stays out.
+    repo.git(&[
+        "commit",
+        "-q",
+        "--author",
+        "Zoë Q. Public <Zoe@Example.invalid>",
+        "-m",
+        "fix:\tparse \"quoted\" ✓ values",
+        "-m",
+        "The body.",
+    ]);
+    let head = repo.oid("HEAD");
+
+    let details = commit_details(&Git::new(repo.path()), &head).expect("commit details");
+    assert_eq!(
+        details,
+        CommitDetails {
+            oid: head,
+            subject: "fix:\tparse \"quoted\" ✓ values".to_owned(),
+            author_name: "Zoë Q. Public".to_owned(),
+            author_email: "Zoe@Example.invalid".to_owned(),
+            committed_at: 1_767_225_660,
+        }
+    );
+
+    // An id that names no commit is an error, not an empty answer.
+    let missing = Oid::parse(&"1".repeat(40), ObjectFormat::Sha1).unwrap();
+    assert!(commit_details(&Git::new(repo.path()), &missing).is_err());
+}
+
+#[test]
+fn range_commits_lists_base_to_head_newest_first_with_a_total() {
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha256);
+    repo.write("a.txt", b"0\n");
+    let base = repo.commit("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    let mut made = Vec::new();
+    for i in 1..=5 {
+        repo.write("a.txt", format!("{i}\n").as_bytes());
+        made.push(repo.commit(&format!("step {i}")));
+    }
+    // A commit on main after the fork is not in `base..head`.
+    repo.checkout("main");
+    repo.write("b.txt", b"main\n");
+    repo.commit("main moves on");
+    let head = made[4].clone();
+    let git = Git::new(repo.path());
+
+    let (three, total) = range_commits(&git, &base, &head, 3).expect("range");
+    assert_eq!(total, 5, "every commit of the range is counted");
+    let subjects: Vec<&str> = three.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects, ["step 5", "step 4", "step 3"], "newest first");
+    assert_eq!(three[0].oid, made[4]);
+    assert_eq!(three[2].oid, made[2]);
+    assert_eq!(three[0].author_email, "fixture@polygloss.invalid");
+    assert_eq!(three[0].committed_at, 1_767_225_600 + 6 * 60);
+
+    let (all, total) = range_commits(&git, &base, &head, 50).unwrap();
+    assert_eq!((all.len(), total), (5, 5));
+    // An empty range.
+    assert_eq!(
+        range_commits(&git, &head, &head, 50).unwrap(),
+        (Vec::new(), 0)
+    );
+    // No limit: the count alone.
+    assert_eq!(
+        range_commits(&git, &base, &head, 0).unwrap(),
+        (Vec::new(), 5)
+    );
 }

@@ -286,9 +286,12 @@ fn scroll_anchor_in_a_gap_and_at_the_top(cx: &mut TestAppContext) {
     assert_eq!(top_header(&mut shell, &tab), "== docs/gamma.md");
     assert_eq!(row_below_header(&mut shell, &tab), shown);
 
-    // Back at the top: the anchor is cleared.
+    // Back at the top (the header card's, above the first file): the anchor
+    // is cleared.
     let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
-    viewport.update(shell.cx, |v, cx| v.scroll_to(ScrollTarget::File(0), cx));
+    viewport.update(shell.cx, |v, cx| {
+        v.scroll_to_anchor(ScrollAnchor::default(), cx)
+    });
     draw(shell.cx);
     settle(&mut shell);
     assert_eq!(stored_anchor(&mut shell, &tab), None);

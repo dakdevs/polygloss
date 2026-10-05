@@ -14,6 +14,7 @@ mod support;
 mod cursor;
 mod feed;
 mod find;
+mod header_card;
 mod home;
 mod iterations;
 mod keyboard_only_review;
@@ -61,5 +62,6 @@ fn main() -> std::process::ExitCode {
         iterations::TESTS,
         feed::TESTS,
         keyboard_only_review::TESTS,
+        header_card::TESTS,
     ])
 }

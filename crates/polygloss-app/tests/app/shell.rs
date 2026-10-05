@@ -799,14 +799,13 @@ fn sweep_top_row(
 
 /// Every toolbar control that may be painted in the review toolbar: the
 /// buttons and the pills (design §11.4).
-const TOOLBAR_CONTROLS: [&str; 13] = [
+const TOOLBAR_CONTROLS: [&str; 12] = [
     "show-sidebar",
     "commit-pill",
     "ref-pill-base",
     "ref-pill-head",
     "branch-pill",
     "live-base",
-    "live-snapshot",
     "iteration-picker",
     "toolbar-find",
     "toggle-threads-panel",
@@ -1490,6 +1489,120 @@ fn banner_strip_never_changes_viewport_anchor(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn banner_notice_enters_on_the_test_clock_once_per_appearance(cx: &mut TestAppContext) {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use gpui_kit::ElementId;
+    use polygloss_app::motion::{self, Entrance};
+    use polygloss_app::review_tab::panes::ToggleThreadsPanel;
+
+    let _sb = Sandbox::isolate();
+    let drawn: Rc<RefCell<HashMap<ElementId, Entrance>>> = Rc::default();
+    let sink = drawn.clone();
+    cx.update(|cx| {
+        motion::record_entrances(
+            move |id, e| {
+                sink.borrow_mut().insert(id.clone(), e);
+            },
+            cx,
+        )
+    });
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let banners = tab.read_with(shell.cx, |t, _| t.banners.clone());
+    let id = ElementId::from(("banner", BannerKind::LiveChanges as usize));
+    let set = |shell: &mut Shell, text: &str| {
+        let text = SharedString::from(text.to_owned());
+        banners.update(shell.cx, |b, cx| {
+            b.set(
+                BannerKind::LiveChanges,
+                text,
+                Box::new(ToggleThreadsPanel),
+                cx,
+            )
+        });
+    };
+    let clear = |shell: &mut Shell| {
+        banners.update(shell.cx, |b, cx| b.clear(BannerKind::LiveChanges, cx));
+    };
+    // One frame at the clock's current time, what was drawn cleared first.
+    let frame = |shell: &mut Shell| {
+        drawn.borrow_mut().clear();
+        shell.cx.update(|window, _| window.refresh());
+        shell.cx.run_until_parked();
+    };
+    // The notice's top below the strip's, and the opacity its entrance
+    // drew this frame (`None`: no entrance).
+    let sample = |shell: &mut Shell| {
+        let strip = bounds(shell.cx, "banner-strip");
+        let notice = bounds(shell.cx, "banner-notice-0");
+        let opacity = drawn.borrow().get(&id).map(|e| e.opacity);
+        ((notice.top() - strip.top()).as_f32(), opacity)
+    };
+    let advance = |shell: &mut Shell, ms: u64| {
+        shell.cx.executor().advance_clock(Duration::from_millis(ms));
+    };
+
+    set(&mut shell, "1 file changed");
+    frame(&mut shell);
+    let (start_top, start_opacity) = sample(&mut shell);
+    advance(&mut shell, 80);
+    frame(&mut shell);
+    let (mid_top, mid_opacity) = sample(&mut shell);
+    advance(&mut shell, 160);
+    frame(&mut shell);
+    let (end_top, end_opacity) = sample(&mut shell);
+    assert_eq!(start_opacity, Some(0.0), "the first frame");
+    assert_eq!(end_top - start_top, 4.0, "from 4 pt up");
+    assert!(
+        start_top < mid_top && mid_top < end_top,
+        "half way: {mid_top}"
+    );
+    let mid_opacity = mid_opacity.expect("still entering");
+    assert!(0.0 < mid_opacity && mid_opacity < 1.0, "{mid_opacity}");
+    assert_eq!(end_opacity.unwrap_or(1.0), 1.0, "settled after 160 ms");
+
+    // A new text or count is the same notice: nothing plays.
+    set(&mut shell, "2 files changed");
+    frame(&mut shell);
+    assert_eq!(sample(&mut shell), (end_top, None), "no replay on update");
+    // Away to Home and back: nothing plays either.
+    shell.cx.simulate_keystrokes("cmd-0");
+    draw(shell.cx);
+    assert!(painted(shell.cx, "banner-notice-0").is_none());
+    shell.cx.simulate_keystrokes("cmd-1");
+    draw(shell.cx);
+    frame(&mut shell);
+    assert_eq!(sample(&mut shell), (end_top, None), "no replay on return");
+
+    // Gone and back: it enters again.
+    clear(&mut shell);
+    frame(&mut shell);
+    set(&mut shell, "1 file changed");
+    frame(&mut shell);
+    assert_eq!(
+        sample(&mut shell),
+        (start_top, Some(0.0)),
+        "a new appearance"
+    );
+    advance(&mut shell, 200);
+    frame(&mut shell);
+    assert_eq!(sample(&mut shell).0, end_top);
+
+    // Under Reduce Motion it is in place on its first frame.
+    shell.cx.update(|_, cx| cx.set_reduce_motion(true));
+    clear(&mut shell);
+    frame(&mut shell);
+    set(&mut shell, "1 file changed");
+    frame(&mut shell);
+    let (top, opacity) = sample(&mut shell);
+    assert_eq!(top, end_top, "settled at once");
+    assert_eq!(opacity.unwrap_or(1.0), 1.0);
+}
+
+#[gpui_kit::test]
 fn toolbar_and_banner_buttons_reach_the_tab_without_focus(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
@@ -1761,12 +1874,7 @@ fn review_titles_name_the_repo_and_both_sides() {
         review_tab::title(&opened),
         format!("{name} · trunk...topic")
     );
-    let base = opened.base.commit.as_ref().unwrap().short().to_string();
     let head = opened.head_commit.as_ref().unwrap().short().to_string();
-    assert_eq!(
-        review_tab::description(&opened),
-        format!("trunk ({base}) → topic ({head}) · 3 files changed")
-    );
     let commit = core.open(&commit_req(repo.path(), "topic")).unwrap();
     assert_eq!(review_tab::title(&commit), format!("{name} · {head}"));
 
@@ -1788,11 +1896,6 @@ fn review_titles_name_the_repo_and_both_sides() {
         assert_eq!(
             review_tab::title(&opened),
             format!("{name} · trunk{sep}{shown}"),
-            "{head_ref}"
-        );
-        assert_eq!(
-            review_tab::description(&opened),
-            format!("trunk ({base}) → {shown} ({head}) · 3 files changed"),
             "{head_ref}"
         );
     }

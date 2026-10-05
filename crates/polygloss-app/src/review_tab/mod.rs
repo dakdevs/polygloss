@@ -1,7 +1,8 @@
 //! A review tab (design §11.1, ADR-0026): the window's shell
 //! ([`crate::chrome::shell`]) with the sidebar (its top row, then the file
 //! tree, or find in its place, or the Reviews list) beside the main column
-//! (toolbar row, banner strip, then the diff viewport | threads panel). One
+//! (toolbar row, banner strip, then the diff viewport, which starts with the
+//! [`header`] card, | threads panel). One
 //! tab per review; opening a review that is already open focuses its tab
 //! ([`open_review`]). The sidebar renders inside the tab, so the tree keeps
 //! the tab's key context.
@@ -13,6 +14,7 @@
 //! `threads::render_panel`, and banners go through [`ReviewTab::banners`].
 
 pub mod banners;
+pub mod header;
 pub mod panes;
 pub mod toolbar;
 
@@ -79,7 +81,7 @@ impl ReviewTab {
         let viewport = cx.new(|cx| DiffViewport::new(provider, opts, window, cx));
         let focus = cx.focus_handle();
         let banners =
-            cx.new(|_| BannerStrip::new(description(&opened).into()).with_target(focus.clone()));
+            cx.new(|_| BannerStrip::new(SharedString::default()).with_target(focus.clone()));
         let core = AppState::global(cx).core.clone();
         let subscriptions = vec![
             // The diff shown now: a refresh (T3.11) swaps it in the same
@@ -326,43 +328,6 @@ pub fn title(opened: &OpenedDiff) -> String {
     format!("{} · {}", repo_name(opened), source_summary(opened))
 }
 
-/// The banner strip's line when no banner shows: both sides and the size.
-pub fn description(opened: &OpenedDiff) -> String {
-    let short = |oid: &polygloss_diff::Oid| oid.short().to_string();
-    let files = match opened.files.len() {
-        1 => "1 file".to_owned(),
-        n => format!("{n} files"),
-    };
-    let base = match (&opened.base.ref_name, &opened.base.commit) {
-        (Some(r), Some(c)) => format!("{} ({})", short_ref(r), short(c)),
-        (None, Some(c)) => short(c),
-        (Some(r), None) => short_ref(r).to_owned(),
-        (None, None) => format!("tree {}", short(&opened.base.tree)),
-    };
-    let head = match opened.kind {
-        ReviewKind::Live => "the working tree".to_owned(),
-        _ => opened
-            .head_commit
-            .as_ref()
-            .map(short)
-            .unwrap_or_else(|| format!("tree {}", short(&opened.head_tree))),
-    };
-    match opened.kind {
-        ReviewKind::Commit => format!("{} · {files} changed against its parent", head),
-        ReviewKind::Compare => {
-            let (_, _, head_ref) = compare_sides(&opened.review_key);
-            let head_name = short_ref(head_ref).to_owned();
-            let head_side = if head_name.is_empty() || head_name == head {
-                head
-            } else {
-                format!("{head_name} ({head})")
-            };
-            format!("{base} → {head_side} · {files} changed")
-        }
-        ReviewKind::Live => format!("{base} → {head} · {files} changed"),
-    }
-}
-
 /// An [`on_new_tab`] hook.
 type NewTabHook = Box<dyn Fn(&Entity<ReviewTab>, &mut Window, &mut App)>;
 
@@ -484,7 +449,8 @@ impl MainWindow {
         }
         let tab = cx.new(|cx| ReviewTab::new(opened, provider, window, cx));
         tab.update(cx, |tab, cx| {
-            crate::features::attach_review_tab(tab, window, cx)
+            crate::features::attach_review_tab(tab, window, cx);
+            header::attach(tab, window, cx);
         });
         run_new_tab_hooks(&tab, window, cx);
         let ix = self.push_review(tab.clone(), window, cx);

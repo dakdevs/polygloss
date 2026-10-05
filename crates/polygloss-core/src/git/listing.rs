@@ -1,6 +1,8 @@
 //! Ref and commit listings for the open flow (T3.5, design §11.3): the branches,
 //! remote branches and tags a compare can name ([`list_refs`]), and the commit
-//! log a commit review is picked from ([`list_commits`], paged).
+//! log a commit review is picked from ([`list_commits`], paged). The header card
+//! (design §11.6) reads one commit ([`commit_details`]) and a compare's commits
+//! ([`range_commits`]).
 //!
 //! Both read git's output as NUL-separated fields, so subjects and names come
 //! back exactly (tabs, quotes, non-ASCII). `for-each-ref` has no `-z`: each
@@ -70,6 +72,19 @@ pub struct CommitInfo {
     /// Author date, Unix seconds.
     pub authored_at: i64,
     pub subject: String,
+}
+
+/// A commit as the header card shows it (design §11.6).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CommitDetails {
+    pub oid: Oid,
+    pub subject: String,
+    /// `%an`, no mailmap.
+    pub author_name: String,
+    /// `%ae` as written (the avatar's color lowercases it).
+    pub author_email: String,
+    /// Committer date, Unix seconds.
+    pub committed_at: i64,
 }
 
 const REF_FORMAT: &str = concat!(
@@ -198,6 +213,76 @@ pub fn list_commits(git: &Git, skip: u32, limit: u32) -> Result<Vec<CommitInfo>,
     parse_log(&out.stdout)
 }
 
+const DETAILS_FORMAT: &str = "--format=%H%x00%s%x00%an%x00%ae%x00%ct";
+const DETAILS_FIELDS: usize = 5;
+
+/// The commit `rev` names. An id that names no commit is an error.
+pub fn commit_details(git: &Git, rev: &Oid) -> Result<CommitDetails, GitError> {
+    let out = git.output(&details_args(&["-1", "--no-walk"], rev.as_str()))?;
+    parse_details(&out)?
+        .pop()
+        .ok_or_else(|| GitError::Parse(format!("log: no commit {rev}")))
+}
+
+/// The newest `limit` commits of `base..head` (on `head` and not on `base`),
+/// newest first, and how many the range holds in all.
+pub fn range_commits(
+    git: &Git,
+    base: &Oid,
+    head: &Oid,
+    limit: u32,
+) -> Result<(Vec<CommitDetails>, u32), GitError> {
+    let range = format!("{base}..{head}");
+    let count = git.output(&[
+        OsStr::new("rev-list"),
+        OsStr::new("--count"),
+        OsStr::new("--end-of-options"),
+        OsStr::new(&range),
+        OsStr::new("--"),
+    ])?;
+    let total = u32::try_from(parse_i64(&count)?)
+        .map_err(|_| GitError::Parse("rev-list --count: out of range".into()))?;
+    if limit == 0 || total == 0 {
+        return Ok((Vec::new(), total));
+    }
+    let max = format!("--max-count={limit}");
+    let commits = parse_details(&git.output(&details_args(&[&max], &range))?)?;
+    Ok((commits, total))
+}
+
+/// `log -z` of `rev` in [`DETAILS_FORMAT`], with `flags`.
+fn details_args<'a>(flags: &[&'a str], rev: &'a str) -> Vec<&'a OsStr> {
+    let mut args = vec![
+        OsStr::new("log"),
+        OsStr::new("-z"),
+        OsStr::new("--no-show-signature"),
+        OsStr::new("--no-notes"),
+        OsStr::new(DETAILS_FORMAT),
+    ];
+    args.extend(flags.iter().map(|f| OsStr::new(*f)));
+    args.extend([
+        OsStr::new("--end-of-options"),
+        OsStr::new(rev),
+        OsStr::new("--"),
+    ]);
+    args
+}
+
+fn parse_details(out: &[u8]) -> Result<Vec<CommitDetails>, GitError> {
+    log_fields(out, DETAILS_FIELDS)?
+        .chunks(DETAILS_FIELDS)
+        .map(|f| {
+            Ok(CommitDetails {
+                oid: parse_oid(f[0])?,
+                subject: String::from_utf8_lossy(f[1]).into_owned(),
+                author_name: String::from_utf8_lossy(f[2]).into_owned(),
+                author_email: String::from_utf8_lossy(f[3]).into_owned(),
+                committed_at: parse_i64(f[4])?,
+            })
+        })
+        .collect()
+}
+
 /// Whether HEAD names no commit (a fresh `git init`).
 fn is_unborn(git: &Git) -> Result<bool, GitError> {
     let code = git.status(&[
@@ -209,22 +294,27 @@ fn is_unborn(git: &Git) -> Result<bool, GitError> {
     Ok(code != 0)
 }
 
-fn parse_log(out: &[u8]) -> Result<Vec<CommitInfo>, GitError> {
+/// The fields of `log -z` output whose records have `n` fields each: `-z`
+/// ends every record with a NUL, and the fields are NUL-separated.
+fn log_fields(out: &[u8], n: usize) -> Result<Vec<&[u8]>, GitError> {
     if out.is_empty() {
         return Ok(Vec::new());
     }
-    // `-z` ends every record with a NUL, and the fields are NUL-separated.
     let body = out
         .strip_suffix(b"\0")
         .ok_or_else(|| GitError::Parse("log -z: output does not end with NUL".into()))?;
     let fields: Vec<&[u8]> = body.split(|&b| b == 0).collect();
-    if !fields.len().is_multiple_of(LOG_FIELDS) {
+    if !fields.len().is_multiple_of(n) {
         return Err(GitError::Parse(format!(
-            "log -z: {} fields is not a multiple of {LOG_FIELDS}",
+            "log -z: {} fields is not a multiple of {n}",
             fields.len()
         )));
     }
-    fields
+    Ok(fields)
+}
+
+fn parse_log(out: &[u8]) -> Result<Vec<CommitInfo>, GitError> {
+    log_fields(out, LOG_FIELDS)?
         .chunks(LOG_FIELDS)
         .map(|f| {
             let parents = std::str::from_utf8(f[2])

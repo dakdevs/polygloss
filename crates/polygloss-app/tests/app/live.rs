@@ -773,17 +773,14 @@ fn recompute_counts_changed_files_and_reads_sources_from_keys() {
 
 #[gpui_kit::test]
 fn live_refresh_keeps_the_line_below_the_header(cx: &mut gpui_kit::TestAppContext) {
-    use gpui_kit::{IntoElement as _, Styled as _};
     let _sb = Sandbox::isolate();
     let repo = live_repo();
     let mut shell = start(cx);
     let tab = open_watched(&mut shell, live_req(repo.path(), Since::MergeBase));
     let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
-    // On cards, below a 72 pt prelude (the header card's stand-in).
-    let prelude: polygloss_viewport::RenderBlock =
-        std::rc::Rc::new(|_, _| gpui_kit::div().h(gpui_kit::px(72.)).into_any_element());
-    viewport.update(shell.cx, |v, cx| v.set_prelude(Some(prelude), cx));
-    draw(shell.cx);
+    // On cards, below the header card.
+    let prelude = viewport.read_with(shell.cx, |v, _| v.document().prelude_height());
+    assert!(prelude.is_some_and(|h| h > 0.0), "{prelude:?}");
     // What is painted right below the pinned header, and the line saved for
     // it.
     let below_header = |shell: &mut Shell| {
@@ -811,23 +808,21 @@ fn live_refresh_keeps_the_line_below_the_header(cx: &mut gpui_kit::TestAppContex
     assert!(row.ends_with("fn a_60() { edited(); }"), "{row}");
     assert_eq!(
         viewport.read_with(shell.cx, |v, _| v.document().prelude_height()),
-        Some(72.0)
+        prelude,
+        "the reloaded card"
     );
 }
 
 #[gpui_kit::test]
 fn live_refresh_at_the_top_of_the_document_stays_there(cx: &mut gpui_kit::TestAppContext) {
-    use gpui_kit::{IntoElement as _, Styled as _};
     let _sb = Sandbox::isolate();
     let repo = live_repo();
     let mut shell = start(cx);
     let tab = open_watched(&mut shell, live_req(repo.path(), Since::MergeBase));
     let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
-    // A 72 pt prelude (the header card's stand-in) above the first card.
-    let prelude: polygloss_viewport::RenderBlock =
-        std::rc::Rc::new(|_, _| gpui_kit::div().h(gpui_kit::px(72.)).into_any_element());
-    viewport.update(shell.cx, |v, cx| v.set_prelude(Some(prelude), cx));
-    draw(shell.cx);
+    // The header card above the first card, taller than 30 pt.
+    let prelude = viewport.read_with(shell.cx, |v, _| v.document().prelude_height());
+    assert!(prelude.is_some_and(|h| h > 30.0), "{prelude:?}");
     let scroll_top =
         |shell: &mut Shell| viewport.read_with(shell.cx, |v, _| v.document().scroll_top());
     assert_eq!(scroll_top(&mut shell), 0.0);
@@ -955,8 +950,6 @@ fn live_toolbar_shows_branch_and_live_pill_opening_the_base_picker(
     assert!(shows(shell.cx, "branch-pill-label", "feature"));
     assert!(shows(shell.cx, "live-base-label", "Live \u{b7} merge base"));
     assert!(bounds(shell.cx, "branch-pill").right() <= bounds(shell.cx, "live-base").left());
-    // Snapshot stays in the toolbar until the header card takes it (T6.13).
-    assert!(crate::shell::painted(shell.cx, "live-snapshot").is_some());
 
     assert!(shell.cx.update(|_, cx| base_picker::current(cx)).is_none());
     click(shell.cx, "live-base");

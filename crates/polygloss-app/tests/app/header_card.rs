@@ -1,0 +1,438 @@
+//! The header card (T6.13, design §11.6, ADR-0027): the prelude above the
+//! first file card, per review kind. A commit's avatar (an initial on a
+//! color from FNV-1a of the lowercased email), subject, author, relative
+//! time and SHA; a compare's label or refs, its commit count and a "Show
+//! commits" list; a live review's branch, base and Snapshot. Stats sit in
+//! the right cluster before the trailing item; the card scrolls with the
+//! diff and keeps the top of the document while it loads or grows.
+
+use std::path::Path;
+
+use gpui_kit::{Entity, Hsla, TestAppContext, rgb};
+use polygloss_app::review_tab::{ReviewTab, header};
+use polygloss_core::git::{CompareMode, Since, Source};
+use polygloss_core::review::OpenRequest;
+use polygloss_core::store::events::Actor;
+use polygloss_diff::ObjectFormat;
+use polygloss_highlight::Appearance;
+
+use crate::shell::{Shell, bounds, click, commit_req, draw, painted, start};
+use crate::support::{FixtureRepo, Sandbox};
+use crate::toolbar::shows;
+
+/// The fixture's commit dates start here (Unix seconds); commit `n` is `n`
+/// minutes later.
+const EPOCH: i64 = 1_767_225_600;
+const HOUR_MS: i64 = 3_600_000;
+
+/// `main`: `a.txt` ("one") and `b.txt` ("x", "y"). Then, by Ada Lovelace
+/// (`Ada@Example.com`), "Parse configs": 120 lines added to `a.txt` and
+/// `y` removed from `b.txt`, committed at `EPOCH + 60`.
+fn authored_repo() -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"one\n");
+    repo.write("b.txt", b"x\ny\n");
+    repo.commit("base");
+    let more: String = (0..120).map(|i| format!("line {i}\n")).collect();
+    repo.write("a.txt", format!("one\n{more}").as_bytes());
+    repo.write("b.txt", b"x\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&[
+        "commit",
+        "-q",
+        "--author",
+        "Ada Lovelace <Ada@Example.com>",
+        "-m",
+        "Parse configs",
+    ]);
+    repo
+}
+
+/// Pins the card's clock at `ms` (Unix ms) and redraws.
+fn pin_clock(shell: &mut Shell, ms: i64) {
+    shell.cx.update(|_, cx| header::set_clock(move || ms, cx));
+    draw(shell.cx);
+}
+
+fn short(repo: &FixtureRepo, rev: &str) -> String {
+    repo.git(&["rev-parse", "--short=7", rev])
+}
+
+fn scroll_top(shell: &mut Shell, tab: &Entity<ReviewTab>) -> f64 {
+    tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).document().scroll_top()
+    })
+}
+
+#[test]
+fn avatar_color_is_fnv1a_of_the_lowercased_email() {
+    // Eight players, told apart by hue.
+    let players: Vec<Hsla> = (0..8)
+        .map(|i| gpui_kit::hsla(i as f32 / 8.0, 0.5, 0.5, 1.0))
+        .collect();
+    // FNV-1a 32 of "ada@example.com" is 0xbef5cfd2 (≡ 2 mod 8); of
+    // "fixture@polygloss.invalid" 0x525790a7 (≡ 7).
+    assert_eq!(
+        header::avatar_color("Ada@Example.com", &players, Appearance::Light),
+        players[2]
+    );
+    // An ASCII case flip changes bit 5 of a byte, which never reaches the
+    // low three bits of FNV-1a; `Σ` → `σ` (CE A3 → CF 83) does: FNV-1a 32 of
+    // "Σofia@example.gr" is 0x258de3c6 (≡ 6), of "σofia@example.gr"
+    // 0x332513ad (≡ 5).
+    assert_eq!(
+        header::avatar_color("Σofia@example.gr", &players, Appearance::Dark),
+        players[5],
+        "hashed lowercased"
+    );
+    assert_eq!(
+        header::avatar_color("fixture@polygloss.invalid", &players, Appearance::Light),
+        players[7]
+    );
+    // Fewer than eight players (Pierre has one): fixed hues per appearance
+    // (research: redesign reference).
+    let one = &players[..1];
+    assert_eq!(
+        header::avatar_color("ada@example.com", one, Appearance::Light),
+        Hsla::from(rgb(0x3f8f62))
+    );
+    assert_eq!(
+        header::avatar_color("ada@example.com", one, Appearance::Dark),
+        Hsla::from(rgb(0x6cc08f))
+    );
+    assert_eq!(
+        header::avatar_color("fixture@polygloss.invalid", &[], Appearance::Light),
+        Hsla::from(rgb(0x6b7280))
+    );
+
+    assert_eq!(header::initial("ada Lovelace"), "A");
+    assert_eq!(header::initial("  émile"), "É");
+    assert_eq!(header::initial("_x9"), "X");
+    assert_eq!(header::initial("42 Bot"), "4");
+    assert_eq!(header::initial("--"), "?");
+}
+
+#[gpui_kit::test]
+fn commit_header_shows_avatar_subject_author_and_sha(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = authored_repo();
+    let mut shell = start(cx);
+    shell.open(commit_req(repo.path(), "HEAD")).unwrap();
+    pin_clock(&mut shell, (EPOCH + 60) * 1000 + 2 * HOUR_MS);
+
+    let card = bounds(shell.cx, "header-card");
+    for part in ["header-avatar", "header-sha", "header-stats"] {
+        let b = bounds(shell.cx, part);
+        assert!(card.contains(&b.center()), "{part} is in the card");
+    }
+    assert!(shows(shell.cx, "header-avatar", "A"));
+    assert!(shows(shell.cx, "header-title", "Parse configs"));
+    assert!(shows(
+        shell.cx,
+        "header-byline",
+        "Ada Lovelace committed 2h ago"
+    ));
+    assert!(shows(shell.cx, "header-sha", &short(&repo, "HEAD")));
+    // The avatar leads, the SHA ends the row.
+    assert!(bounds(shell.cx, "header-avatar").right() <= bounds(shell.cx, "header-title").left());
+    assert!(bounds(shell.cx, "header-sha").right() <= card.right());
+    // A commit has no commit list and no Snapshot.
+    assert!(painted(shell.cx, "header-commits-toggle").is_none());
+    assert!(painted(shell.cx, "live-snapshot").is_none());
+}
+
+#[gpui_kit::test]
+fn relative_time_uses_the_app_clock(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = authored_repo();
+    let mut shell = start(cx);
+    shell.open(commit_req(repo.path(), "HEAD")).unwrap();
+    let committed = (EPOCH + 60) * 1000;
+    pin_clock(&mut shell, committed + 30_000);
+    assert!(shows(
+        shell.cx,
+        "header-byline",
+        "Ada Lovelace committed just now"
+    ));
+    pin_clock(&mut shell, committed + 3 * 24 * HOUR_MS);
+    assert!(shows(
+        shell.cx,
+        "header-byline",
+        "Ada Lovelace committed 3d ago"
+    ));
+}
+
+#[gpui_kit::test]
+fn header_stats_sit_before_the_sha(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = authored_repo();
+    let mut shell = start(cx);
+    shell.open(commit_req(repo.path(), "HEAD")).unwrap();
+    // `git diff --numstat HEAD~ HEAD`: a.txt 120 0, b.txt 0 1.
+    assert!(shows(shell.cx, "header-stats", "2 files · +120 −1"));
+    let stats = bounds(shell.cx, "header-stats");
+    let sha = bounds(shell.cx, "header-sha");
+    assert!(stats.right() <= sha.left(), "{stats:?} before {sha:?}");
+    assert!(
+        stats.top() < sha.bottom() && sha.top() < stats.bottom(),
+        "on one row"
+    );
+    assert!(
+        bounds(shell.cx, "header-title").right() <= stats.left(),
+        "the right cluster"
+    );
+}
+
+#[gpui_kit::test]
+fn fresh_open_shows_the_header_card(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = authored_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(commit_req(repo.path(), "HEAD")).unwrap();
+    let card = bounds(shell.cx, "header-card");
+    let viewport = bounds(shell.cx, "viewport-pane");
+    assert_eq!(card.top(), viewport.top(), "right under the banner strip");
+    assert_eq!(scroll_top(&mut shell, &tab), 0.0);
+    // The first file card follows it, below the card gap.
+    let prelude = tab
+        .read_with(shell.cx, |t, cx| {
+            t.viewport.read(cx).document().prelude_height()
+        })
+        .expect("the card is the prelude");
+    assert!(prelude > 40.0, "a card's height: {prelude}");
+}
+
+#[gpui_kit::test]
+fn header_card_scrolls_with_the_diff(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = authored_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(commit_req(repo.path(), "HEAD")).unwrap();
+    let before = bounds(shell.cx, "header-card");
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    viewport.update(shell.cx, |v, cx| v.scroll_by(25.0, cx));
+    draw(shell.cx);
+    let after = bounds(shell.cx, "header-card");
+    assert_eq!(after.top(), before.top() - gpui_kit::px(25.));
+    assert_eq!(scroll_top(&mut shell, &tab), 25.0);
+    // Scrolled past it, the card is gone from the frame.
+    viewport.update(shell.cx, |v, cx| v.scroll_by(800.0, cx));
+    draw(shell.cx);
+    assert!(painted(shell.cx, "header-card").is_none());
+}
+
+/// `main` with `a.txt`; branch `feature` (checked out) with `n` commits
+/// "step 1" … "step n", each by Ada Lovelace or, every third, Grace Hopper
+/// (`grace@example.org`). Commit `step i` is fixture commit `i + 1`.
+fn commits_repo(n: usize) -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"0\n");
+    repo.commit("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    for i in 1..=n {
+        repo.write("a.txt", format!("{i}\n").as_bytes());
+        repo.commit(&format!("step {i}"));
+        let author = if i % 3 == 0 {
+            "Grace Hopper <grace@example.org>"
+        } else {
+            "Ada Lovelace <ada@example.com>"
+        };
+        repo.git(&["commit", "-q", "--amend", "--no-edit", "--author", author]);
+    }
+    repo
+}
+
+fn compare(repo: &Path, mode: CompareMode, label: Option<&str>) -> OpenRequest {
+    OpenRequest {
+        worktree: repo.to_path_buf(),
+        source: Source::Compare {
+            base: "refs/heads/main".into(),
+            head: "refs/heads/feature".into(),
+            mode,
+        },
+        label: label.map(str::to_owned),
+        pin: None,
+        actor: Actor::human(),
+    }
+}
+
+#[gpui_kit::test]
+fn compare_header_counts_and_lists_commits(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = commits_repo(52);
+    let mut shell = start(cx);
+    shell
+        .open(compare(repo.path(), CompareMode::ThreeDot, None))
+        .unwrap();
+    // `step 52` is fixture commit 53; five minutes later.
+    pin_clock(&mut shell, (EPOCH + 53 * 60) * 1000 + 5 * 60_000);
+
+    assert!(shows(shell.cx, "header-title", "main\u{2026}feature"));
+    assert!(shows(
+        shell.cx,
+        "header-byline",
+        "52 commits · Ada Lovelace committed 5m ago"
+    ));
+    assert!(shows(shell.cx, "header-stats", "1 file · +1 −1"));
+    // No SHA and no Snapshot in a compare's card; no list until asked.
+    assert!(painted(shell.cx, "header-sha").is_none());
+    assert!(painted(shell.cx, "live-snapshot").is_none());
+    assert!(painted(shell.cx, "header-commit-0").is_none());
+
+    click(shell.cx, "header-commits-toggle");
+    // Newest first, 50 of them, then the rest as a count.
+    assert!(shows(shell.cx, "header-commit", "step 52"));
+    assert!(shows(shell.cx, "header-commit", "step 3"));
+    assert!(!shows(shell.cx, "header-commit", "step 2"), "past the 50");
+    assert!(shows(shell.cx, "header-commits-more", "and 2 more"));
+    let first = bounds(shell.cx, "header-commit-0");
+    let second = bounds(shell.cx, "header-commit-1");
+    assert!(first.bottom() <= second.top(), "newest on top");
+    // Hidden again.
+    click(shell.cx, "header-commits-toggle");
+    assert!(painted(shell.cx, "header-commit-0").is_none());
+
+    // A label names the review instead of its refs.
+    shell
+        .open(compare(
+            repo.path(),
+            CompareMode::Direct,
+            Some("Speed up parsing"),
+        ))
+        .unwrap();
+    assert!(shows(shell.cx, "header-title", "Speed up parsing"));
+}
+
+/// `main`: `a.txt`. Branch `feature` (checked out): `b.txt` committed, and
+/// `a.txt` edited in the working tree.
+fn live_repo() -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"one\n");
+    repo.commit("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("b.txt", b"feature\n");
+    repo.commit("feature work");
+    repo.write("a.txt", b"one\ntwo\n");
+    repo
+}
+
+fn live(repo: &Path, since: Since) -> OpenRequest {
+    OpenRequest {
+        worktree: repo.to_path_buf(),
+        source: Source::Live { since },
+        label: None,
+        pin: None,
+        actor: Actor::human(),
+    }
+}
+
+fn toasts(shell: &mut Shell) -> Vec<String> {
+    shell.main.read_with(shell.cx, |m, _| {
+        m.toasts().iter().map(|t| t.to_string()).collect()
+    })
+}
+
+#[gpui_kit::test]
+fn live_header_shows_branch_base_and_snapshot(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = live_repo();
+    let mut shell = start(cx);
+    shell.open(live(repo.path(), Since::MergeBase)).unwrap();
+    assert!(shows(shell.cx, "header-title", "Changes on feature"));
+    // The merge base with `main` is `main` itself here.
+    let base = short(&repo, "main");
+    assert!(shows(
+        shell.cx,
+        "header-byline",
+        &format!("vs main ({base})")
+    ));
+    // Merge base: both the branch's commit and the edit.
+    assert!(shows(shell.cx, "header-stats", "2 files · +2 −0"));
+    let stats = bounds(shell.cx, "header-stats");
+    let snapshot = bounds(shell.cx, "live-snapshot");
+    assert!(stats.right() <= snapshot.left(), "Snapshot ends the row");
+    assert!(painted(shell.cx, "header-avatar").is_none());
+
+    // Snapshot pins the state, then is disabled: a second click does
+    // nothing.
+    click(shell.cx, "live-snapshot");
+    let saved = "Snapshot saved as iteration 1";
+    assert_eq!(toasts(&mut shell).iter().filter(|t| *t == saved).count(), 1);
+    click(shell.cx, "live-snapshot");
+    assert_eq!(
+        toasts(&mut shell).iter().filter(|t| *t == saved).count(),
+        1,
+        "disabled once pinned: {:?}",
+        toasts(&mut shell)
+    );
+}
+
+#[gpui_kit::test]
+fn live_header_says_uncommitted_only_against_head(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = live_repo();
+    let mut shell = start(cx);
+    shell.open(live(repo.path(), Since::MergeBase)).unwrap();
+    assert!(shows(shell.cx, "header-title", "Changes on feature"));
+    shell.open(live(repo.path(), Since::Head)).unwrap();
+    assert!(shows(
+        shell.cx,
+        "header-title",
+        "Uncommitted changes on feature"
+    ));
+    let head = short(&repo, "HEAD");
+    assert!(shows(
+        shell.cx,
+        "header-byline",
+        &format!("vs feature ({head})")
+    ));
+    // Against HEAD only the edit: `a.txt` +1.
+    assert!(shows(shell.cx, "header-stats", "1 file · +1 −0"));
+}
+
+#[gpui_kit::test]
+fn snapshot_left_the_toolbar(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = live_repo();
+    let mut shell = start(cx);
+    shell.open(live(repo.path(), Since::MergeBase)).unwrap();
+    let snapshot = bounds(shell.cx, "live-snapshot");
+    let toolbar = bounds(shell.cx, "review-toolbar");
+    let card = bounds(shell.cx, "header-card");
+    assert!(snapshot.top() >= toolbar.bottom(), "not in the toolbar");
+    assert!(card.contains(&snapshot.center()), "in the header card");
+    // The Live pill stays in the toolbar.
+    assert!(toolbar.contains(&bounds(shell.cx, "live-base").center()));
+}
+
+#[gpui_kit::test]
+fn late_header_card_and_show_commits_keep_scroll_top_0(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = commits_repo(30);
+    let mut shell = start(cx);
+    let tab = shell
+        .open(compare(repo.path(), CompareMode::ThreeDot, None))
+        .unwrap();
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    // Frames without the card, then it lands (as after a slow `git log`).
+    viewport.update(shell.cx, |v, cx| v.set_prelude(None, cx));
+    draw(shell.cx);
+    assert!(painted(shell.cx, "header-card").is_none());
+    let top = bounds(shell.cx, "viewport-pane").top();
+    tab.update(shell.cx, header::reload);
+    draw(shell.cx);
+    assert_eq!(scroll_top(&mut shell, &tab), 0.0);
+    assert_eq!(bounds(shell.cx, "header-card").top(), top);
+
+    // 30 commits open below the subject; the view stays at the top.
+    click(shell.cx, "header-commits-toggle");
+    assert_eq!(scroll_top(&mut shell, &tab), 0.0);
+    assert_eq!(bounds(shell.cx, "header-card").top(), top);
+    let title = bounds(shell.cx, "header-title");
+    let row = bounds(shell.cx, "header-commit-0");
+    assert!(row.top() >= title.bottom(), "{row:?} below {title:?}");
+    assert!(shows(shell.cx, "header-commit", "step 30"));
+    assert!(painted(shell.cx, "header-commits-more").is_none(), "all 30");
+}

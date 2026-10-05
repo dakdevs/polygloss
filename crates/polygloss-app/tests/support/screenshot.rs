@@ -56,7 +56,8 @@ pub fn headless_app() -> HeadlessAppContext {
 /// [`headless_app`] with an asset source behind the app's own icons
 /// (`polygloss_app::assets::AppIcons`): given gpui-kit's icons
 /// (`Arc::new(gpui_kit::assets::Assets)`), the app's `AppAssets`. Every
-/// capture runs with Reduce Motion on, so nothing is caught mid-animation.
+/// capture runs with Reduce Motion on, so nothing is caught mid-animation,
+/// and with the header card's clock at [`CLOCK_MS`].
 pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> HeadlessAppContext {
     assert_eq!(
         std::thread::current().name(),
@@ -72,8 +73,14 @@ pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> Headl
     // app does, not the system's Menlo fallback.
     cx.update(polygloss_app::theme::fonts::register_fonts);
     cx.update(|cx| cx.set_reduce_motion(true));
+    cx.update(|cx| polygloss_app::review_tab::header::set_clock(|| CLOCK_MS, cx));
     cx
 }
+
+/// "Now" for the header card's relative times in every capture: an hour
+/// after the fixture repos' commit dates begin (`FixtureRepo`'s epoch), so
+/// a capture reads "57m ago" on any day and in any time zone.
+pub const CLOCK_MS: i64 = (1_767_225_600 + 3_600) * 1000;
 
 /// Where [`open_window`] parks the pointer: outside the window.
 pub const POINTER_AWAY: (f32, f32) = (-100.0, -100.0);
