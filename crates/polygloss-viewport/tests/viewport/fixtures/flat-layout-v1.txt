@@ -1,0 +1,526 @@
+## unified, top
+rows:
+  (0.0, 40.0) == src/lib.rs
+  (40.0, 32.0) ⋯ 27 unchanged lines
+  (72.0, 20.0)    28    28   line 27
+  (92.0, 20.0)    29    29   line 28
+  (112.0, 20.0)    30    30   line 29
+  (132.0, 30.0) [block 7]
+  (162.0, 20.0)    31       - line 30
+  (182.0, 20.0)          31 + line 30 changed
+  (202.0, 20.0)    32    32   line 31
+  (222.0, 20.0)    33    33   line 32
+  (242.0, 20.0)    34    34   line 33
+  (262.0, 32.0) ⋯ 26 unchanged lines
+  (294.0, 40.0) == new.rs
+  (334.0, 20.0)           1 + n 0
+  (354.0, 20.0)           2 + n 1
+  (374.0, 20.0)           3 + n 2
+  (394.0, 20.0)           4 + n 3
+headers:
+  HeaderDebug { file_idx: 0, y: 0.0, sticky: false, title: "src/lib.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 1, y: 294.0, sticky: false, title: "new.rs", counts: Some((12, 0)), badges: [], viewed: false, collapsed: false }
+texts:
+  (7.8, 10.0) ▾
+  (984.39996, 10.0) ⋯
+  (925.89996, 10.0) Viewed
+  (23.400002, 10.0) src/lib.rs
+  (117.00001, 10.0) +1
+  (140.40001, 10.0) −1
+  (62.4, 46.0) ⋯ 27 unchanged lines
+  (237.90002, 46.0) ↑ 20
+  (280.80002, 46.0) Expand all
+  (11.700001, 72.0) 28
+  (42.9, 72.0) 28
+  (78.0, 72.0) line 27
+  (11.700001, 92.0) 29
+  (42.9, 92.0) 29
+  (78.0, 92.0) line 28
+  (11.700001, 112.0) 30
+  (42.9, 112.0) 30
+  (78.0, 112.0) line 29
+  (11.700001, 162.0) 31
+  (66.3, 162.0) -
+  (78.0, 162.0) line 30
+  (42.9, 182.0) 31
+  (66.3, 182.0) +
+  (78.0, 182.0) line 30 changed
+  (11.700001, 202.0) 32
+  (42.9, 202.0) 32
+  (78.0, 202.0) line 31
+  (11.700001, 222.0) 33
+  (42.9, 222.0) 33
+  (78.0, 222.0) line 32
+  (11.700001, 242.0) 34
+  (42.9, 242.0) 34
+  (78.0, 242.0) line 33
+  (62.4, 268.0) ⋯ 26 unchanged lines
+  (237.90002, 268.0) ↓ 20
+  (280.80002, 268.0) Expand all
+  (7.8, 304.0) ▾
+  (984.39996, 304.0) ⋯
+  (925.89996, 304.0) Viewed
+  (23.400002, 304.0) new.rs
+  (85.8, 304.0) +12
+  (50.7, 334.0) 1
+  (66.3, 334.0) +
+  (78.0, 334.0) n 0
+  (50.7, 354.0) 2
+  (66.3, 354.0) +
+  (78.0, 354.0) n 1
+  (50.7, 374.0) 3
+  (66.3, 374.0) +
+  (78.0, 374.0) n 2
+  (50.7, 394.0) 4
+  (66.3, 394.0) +
+  (78.0, 394.0) n 3
+controls:
+  ControlDebug { action: Collapse(0), bounds: (0.0, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(0), bounds: (976.6, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(0), bounds: (904.1, 0.0, 72.5, 40.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(0), by: Up(20) }, bounds: (234.00003, 44.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(0), by: All }, bounds: (276.90002, 44.0, 85.8, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: Down(20) }, bounds: (234.00003, 266.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: All }, bounds: (276.90002, 266.0, 85.8, 24.0) }
+  ControlDebug { action: Collapse(1), bounds: (0.0, 294.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(1), bounds: (976.6, 294.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(1), bounds: (904.1, 294.0, 72.5, 40.0) }
+## unified, 250 px down
+rows:
+  (0.0, 40.0) == src/lib.rs
+  (-8.0, 20.0)    34    34   line 33
+  (12.0, 32.0) ⋯ 26 unchanged lines
+  (44.0, 40.0) == new.rs
+  (84.0, 20.0)           1 + n 0
+  (104.0, 20.0)           2 + n 1
+  (124.0, 20.0)           3 + n 2
+  (144.0, 20.0)           4 + n 3
+  (164.0, 20.0)           5 + n 4
+  (184.0, 20.0)           6 + n 5
+  (204.0, 20.0)           7 + n 6
+  (224.0, 20.0)           8 + n 7
+  (244.0, 20.0)           9 + n 8
+  (264.0, 20.0)          10 + n 9
+  (284.0, 20.0)          11 + n 10
+  (304.0, 20.0)          12 + n 11
+  (324.0, 40.0) == img.png
+  (364.0, 48.0) Binary file · 4 B → 4 B
+headers:
+  HeaderDebug { file_idx: 0, y: 0.0, sticky: true, title: "src/lib.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 1, y: 44.0, sticky: false, title: "new.rs", counts: Some((12, 0)), badges: [], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 2, y: 324.0, sticky: false, title: "img.png", counts: None, badges: ["binary"], viewed: false, collapsed: false }
+texts:
+  (7.8, 10.0) ▾
+  (984.39996, 10.0) ⋯
+  (925.89996, 10.0) Viewed
+  (23.400002, 10.0) src/lib.rs
+  (117.00001, 10.0) +1
+  (140.40001, 10.0) −1
+  (11.700001, -8.0) 34
+  (42.9, -8.0) 34
+  (78.0, -8.0) line 33
+  (62.4, 18.0) ⋯ 26 unchanged lines
+  (237.90002, 18.0) ↓ 20
+  (280.80002, 18.0) Expand all
+  (7.8, 54.0) ▾
+  (984.39996, 54.0) ⋯
+  (925.89996, 54.0) Viewed
+  (23.400002, 54.0) new.rs
+  (85.8, 54.0) +12
+  (50.7, 84.0) 1
+  (66.3, 84.0) +
+  (78.0, 84.0) n 0
+  (50.7, 104.0) 2
+  (66.3, 104.0) +
+  (78.0, 104.0) n 1
+  (50.7, 124.0) 3
+  (66.3, 124.0) +
+  (78.0, 124.0) n 2
+  (50.7, 144.0) 4
+  (66.3, 144.0) +
+  (78.0, 144.0) n 3
+  (50.7, 164.0) 5
+  (66.3, 164.0) +
+  (78.0, 164.0) n 4
+  (50.7, 184.0) 6
+  (66.3, 184.0) +
+  (78.0, 184.0) n 5
+  (50.7, 204.0) 7
+  (66.3, 204.0) +
+  (78.0, 204.0) n 6
+  (50.7, 224.0) 8
+  (66.3, 224.0) +
+  (78.0, 224.0) n 7
+  (50.7, 244.0) 9
+  (66.3, 244.0) +
+  (78.0, 244.0) n 8
+  (42.9, 264.0) 10
+  (66.3, 264.0) +
+  (78.0, 264.0) n 9
+  (42.9, 284.0) 11
+  (66.3, 284.0) +
+  (78.0, 284.0) n 10
+  (42.9, 304.0) 12
+  (66.3, 304.0) +
+  (78.0, 304.0) n 11
+  (7.8, 334.0) ▾
+  (984.39996, 334.0) ⋯
+  (925.89996, 334.0) Viewed
+  (23.400002, 334.0) img.png
+  (97.50001, 334.0) binary
+  (62.4, 378.0) Binary file · 4 B → 4 B
+controls:
+  ControlDebug { action: Collapse(0), bounds: (0.0, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(0), bounds: (976.6, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(0), bounds: (904.1, 0.0, 72.5, 40.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: Down(20) }, bounds: (234.00003, 16.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: All }, bounds: (276.90002, 16.0, 85.8, 24.0) }
+  ControlDebug { action: Collapse(1), bounds: (0.0, 44.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(1), bounds: (976.6, 44.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(1), bounds: (904.1, 44.0, 72.5, 40.0) }
+  ControlDebug { action: Collapse(2), bounds: (0.0, 324.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(2), bounds: (976.6, 324.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(2), bounds: (904.1, 324.0, 72.5, 40.0) }
+## unified, new.rs collapsed
+rows:
+  (0.0, 40.0) == src/lib.rs
+  (-10.0, 20.0)    30    30   line 29
+  (10.0, 30.0) [block 7]
+  (40.0, 20.0)    31       - line 30
+  (60.0, 20.0)          31 + line 30 changed
+  (80.0, 20.0)    32    32   line 31
+  (100.0, 20.0)    33    33   line 32
+  (120.0, 20.0)    34    34   line 33
+  (140.0, 32.0) ⋯ 26 unchanged lines
+  (172.0, 40.0) == new.rs
+  (212.0, 40.0) == img.png
+  (252.0, 48.0) Binary file · 4 B → 4 B
+  (300.0, 40.0) == tail.rs
+  (340.0, 20.0)     1     1   a
+  (360.0, 20.0)     2       - b
+  (380.0, 20.0)           2 + c
+headers:
+  HeaderDebug { file_idx: 0, y: 0.0, sticky: true, title: "src/lib.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 1, y: 172.0, sticky: false, title: "new.rs", counts: Some((12, 0)), badges: [], viewed: false, collapsed: true }
+  HeaderDebug { file_idx: 2, y: 212.0, sticky: false, title: "img.png", counts: None, badges: ["binary"], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 3, y: 300.0, sticky: false, title: "tail.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+texts:
+  (7.8, 10.0) ▾
+  (984.39996, 10.0) ⋯
+  (925.89996, 10.0) Viewed
+  (23.400002, 10.0) src/lib.rs
+  (117.00001, 10.0) +1
+  (140.40001, 10.0) −1
+  (11.700001, -10.0) 30
+  (42.9, -10.0) 30
+  (78.0, -10.0) line 29
+  (11.700001, 40.0) 31
+  (66.3, 40.0) -
+  (78.0, 40.0) line 30
+  (42.9, 60.0) 31
+  (66.3, 60.0) +
+  (78.0, 60.0) line 30 changed
+  (11.700001, 80.0) 32
+  (42.9, 80.0) 32
+  (78.0, 80.0) line 31
+  (11.700001, 100.0) 33
+  (42.9, 100.0) 33
+  (78.0, 100.0) line 32
+  (11.700001, 120.0) 34
+  (42.9, 120.0) 34
+  (78.0, 120.0) line 33
+  (62.4, 146.0) ⋯ 26 unchanged lines
+  (237.90002, 146.0) ↓ 20
+  (280.80002, 146.0) Expand all
+  (7.8, 182.0) ▸
+  (984.39996, 182.0) ⋯
+  (925.89996, 182.0) Viewed
+  (23.400002, 182.0) new.rs
+  (85.8, 182.0) +12
+  (7.8, 222.0) ▾
+  (984.39996, 222.0) ⋯
+  (925.89996, 222.0) Viewed
+  (23.400002, 222.0) img.png
+  (97.50001, 222.0) binary
+  (62.4, 266.0) Binary file · 4 B → 4 B
+  (7.8, 310.0) ▾
+  (984.39996, 310.0) ⋯
+  (925.89996, 310.0) Viewed
+  (23.400002, 310.0) tail.rs
+  (93.600006, 310.0) +1
+  (117.00001, 310.0) −1
+  (19.5, 340.0) 1
+  (50.7, 340.0) 1
+  (78.0, 340.0) a
+  (19.5, 360.0) 2
+  (66.3, 360.0) -
+  (78.0, 360.0) b
+  (50.7, 380.0) 2
+  (66.3, 380.0) +
+  (78.0, 380.0) c
+controls:
+  ControlDebug { action: Collapse(0), bounds: (0.0, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(0), bounds: (976.6, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(0), bounds: (904.1, 0.0, 72.5, 40.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: Down(20) }, bounds: (234.00003, 144.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: All }, bounds: (276.90002, 144.0, 85.8, 24.0) }
+  ControlDebug { action: Collapse(1), bounds: (0.0, 172.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(1), bounds: (976.6, 172.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(1), bounds: (904.1, 172.0, 72.5, 40.0) }
+  ControlDebug { action: Collapse(2), bounds: (0.0, 212.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(2), bounds: (976.6, 212.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(2), bounds: (904.1, 212.0, 72.5, 40.0) }
+  ControlDebug { action: Collapse(3), bounds: (0.0, 300.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(3), bounds: (976.6, 300.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(3), bounds: (904.1, 300.0, 72.5, 40.0) }
+## unified, img.png at the top
+rows:
+  (0.0, 40.0) == src/lib.rs
+  (-10.0, 20.0)    30    30   line 29
+  (10.0, 30.0) [block 7]
+  (40.0, 20.0)    31       - line 30
+  (60.0, 20.0)          31 + line 30 changed
+  (80.0, 20.0)    32    32   line 31
+  (100.0, 20.0)    33    33   line 32
+  (120.0, 20.0)    34    34   line 33
+  (140.0, 32.0) ⋯ 26 unchanged lines
+  (172.0, 40.0) == new.rs
+  (212.0, 40.0) == img.png
+  (252.0, 48.0) Binary file · 4 B → 4 B
+  (300.0, 40.0) == tail.rs
+  (340.0, 20.0)     1     1   a
+  (360.0, 20.0)     2       - b
+  (380.0, 20.0)           2 + c
+headers:
+  HeaderDebug { file_idx: 0, y: 0.0, sticky: true, title: "src/lib.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 1, y: 172.0, sticky: false, title: "new.rs", counts: Some((12, 0)), badges: [], viewed: false, collapsed: true }
+  HeaderDebug { file_idx: 2, y: 212.0, sticky: false, title: "img.png", counts: None, badges: ["binary"], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 3, y: 300.0, sticky: false, title: "tail.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+texts:
+  (7.8, 10.0) ▾
+  (984.39996, 10.0) ⋯
+  (925.89996, 10.0) Viewed
+  (23.400002, 10.0) src/lib.rs
+  (117.00001, 10.0) +1
+  (140.40001, 10.0) −1
+  (11.700001, -10.0) 30
+  (42.9, -10.0) 30
+  (78.0, -10.0) line 29
+  (11.700001, 40.0) 31
+  (66.3, 40.0) -
+  (78.0, 40.0) line 30
+  (42.9, 60.0) 31
+  (66.3, 60.0) +
+  (78.0, 60.0) line 30 changed
+  (11.700001, 80.0) 32
+  (42.9, 80.0) 32
+  (78.0, 80.0) line 31
+  (11.700001, 100.0) 33
+  (42.9, 100.0) 33
+  (78.0, 100.0) line 32
+  (11.700001, 120.0) 34
+  (42.9, 120.0) 34
+  (78.0, 120.0) line 33
+  (62.4, 146.0) ⋯ 26 unchanged lines
+  (237.90002, 146.0) ↓ 20
+  (280.80002, 146.0) Expand all
+  (7.8, 182.0) ▸
+  (984.39996, 182.0) ⋯
+  (925.89996, 182.0) Viewed
+  (23.400002, 182.0) new.rs
+  (85.8, 182.0) +12
+  (7.8, 222.0) ▾
+  (984.39996, 222.0) ⋯
+  (925.89996, 222.0) Viewed
+  (23.400002, 222.0) img.png
+  (97.50001, 222.0) binary
+  (62.4, 266.0) Binary file · 4 B → 4 B
+  (7.8, 310.0) ▾
+  (984.39996, 310.0) ⋯
+  (925.89996, 310.0) Viewed
+  (23.400002, 310.0) tail.rs
+  (93.600006, 310.0) +1
+  (117.00001, 310.0) −1
+  (19.5, 340.0) 1
+  (50.7, 340.0) 1
+  (78.0, 340.0) a
+  (19.5, 360.0) 2
+  (66.3, 360.0) -
+  (78.0, 360.0) b
+  (50.7, 380.0) 2
+  (66.3, 380.0) +
+  (78.0, 380.0) c
+controls:
+  ControlDebug { action: Collapse(0), bounds: (0.0, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(0), bounds: (976.6, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(0), bounds: (904.1, 0.0, 72.5, 40.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: Down(20) }, bounds: (234.00003, 144.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: All }, bounds: (276.90002, 144.0, 85.8, 24.0) }
+  ControlDebug { action: Collapse(1), bounds: (0.0, 172.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(1), bounds: (976.6, 172.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(1), bounds: (904.1, 172.0, 72.5, 40.0) }
+  ControlDebug { action: Collapse(2), bounds: (0.0, 212.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(2), bounds: (976.6, 212.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(2), bounds: (904.1, 212.0, 72.5, 40.0) }
+  ControlDebug { action: Collapse(3), bounds: (0.0, 300.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(3), bounds: (976.6, 300.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(3), bounds: (904.1, 300.0, 72.5, 40.0) }
+## split, top
+rows:
+  (0.0, 40.0) == src/lib.rs
+  (40.0, 32.0) ⋯ 27 unchanged lines
+  (72.0, 20.0)    28   line 27 │    28   line 27
+  (92.0, 20.0)    29   line 28 │    29   line 28
+  (112.0, 20.0)    30   line 29 │    30   line 29
+  (132.0, 20.0)    31 - line 30 │    31 + line 30 changed
+  (152.0, 20.0)    32   line 31 │    32   line 31
+  (172.0, 20.0)    33   line 32 │    33   line 32
+  (192.0, 20.0)    34   line 33 │    34   line 33
+  (212.0, 32.0) ⋯ 26 unchanged lines
+  (244.0, 40.0) == new.rs
+  (284.0, 20.0)          │     1 + n 0
+headers:
+  HeaderDebug { file_idx: 0, y: 0.0, sticky: false, title: "src/lib.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 1, y: 244.0, sticky: false, title: "new.rs", counts: Some((12, 0)), badges: [], viewed: false, collapsed: false }
+texts:
+  (7.8, 10.0) ▾
+  (1384.4, 10.0) ⋯
+  (1325.9, 10.0) Viewed
+  (23.400002, 10.0) src/lib.rs
+  (117.00001, 10.0) +1
+  (140.40001, 10.0) −1
+  (31.2, 46.0) ⋯ 27 unchanged lines
+  (206.70003, 46.0) ↑ 20
+  (249.60002, 46.0) Expand all
+  (11.700001, 72.0) 28
+  (46.800003, 72.0) line 27
+  (711.7, 72.0) 28
+  (746.8, 72.0) line 27
+  (11.700001, 92.0) 29
+  (46.800003, 92.0) line 28
+  (711.7, 92.0) 29
+  (746.8, 92.0) line 28
+  (11.700001, 112.0) 30
+  (46.800003, 112.0) line 29
+  (711.7, 112.0) 30
+  (746.8, 112.0) line 29
+  (11.700001, 132.0) 31
+  (35.100002, 132.0) -
+  (46.800003, 132.0) line 30
+  (711.7, 132.0) 31
+  (735.10004, 132.0) +
+  (746.8, 132.0) line 30 changed
+  (11.700001, 152.0) 32
+  (46.800003, 152.0) line 31
+  (711.7, 152.0) 32
+  (746.8, 152.0) line 31
+  (11.700001, 172.0) 33
+  (46.800003, 172.0) line 32
+  (711.7, 172.0) 33
+  (746.8, 172.0) line 32
+  (11.700001, 192.0) 34
+  (46.800003, 192.0) line 33
+  (711.7, 192.0) 34
+  (746.8, 192.0) line 33
+  (31.2, 218.0) ⋯ 26 unchanged lines
+  (206.70003, 218.0) ↓ 20
+  (249.60002, 218.0) Expand all
+  (7.8, 254.0) ▾
+  (1384.4, 254.0) ⋯
+  (1325.9, 254.0) Viewed
+  (23.400002, 254.0) new.rs
+  (85.8, 254.0) +12
+  (719.5, 284.0) 1
+  (735.10004, 284.0) +
+  (746.8, 284.0) n 0
+controls:
+  ControlDebug { action: Collapse(0), bounds: (0.0, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(0), bounds: (1376.6, 0.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(0), bounds: (1304.1, 0.0, 72.5, 40.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(0), by: Up(20) }, bounds: (202.80003, 44.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(0), by: All }, bounds: (245.70003, 44.0, 85.8, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: Down(20) }, bounds: (202.80003, 216.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: All }, bounds: (245.70003, 216.0, 85.8, 24.0) }
+  ControlDebug { action: Collapse(1), bounds: (0.0, 244.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(1), bounds: (1376.6, 244.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(1), bounds: (1304.1, 244.0, 72.5, 40.0) }
+## split, header pushed
+rows:
+  (-10.0, 40.0) == src/lib.rs
+  (-2.0, 32.0) ⋯ 26 unchanged lines
+  (30.0, 40.0) == new.rs
+  (70.0, 20.0)          │     1 + n 0
+  (90.0, 20.0)          │     2 + n 1
+  (110.0, 20.0)          │     3 + n 2
+  (130.0, 20.0)          │     4 + n 3
+  (150.0, 20.0)          │     5 + n 4
+  (170.0, 20.0)          │     6 + n 5
+  (190.0, 20.0)          │     7 + n 6
+  (210.0, 20.0)          │     8 + n 7
+  (230.0, 20.0)          │     9 + n 8
+  (250.0, 20.0)          │    10 + n 9
+  (270.0, 20.0)          │    11 + n 10
+  (290.0, 20.0)          │    12 + n 11
+headers:
+  HeaderDebug { file_idx: 0, y: -10.0, sticky: true, title: "src/lib.rs", counts: Some((1, 1)), badges: [], viewed: false, collapsed: false }
+  HeaderDebug { file_idx: 1, y: 30.0, sticky: false, title: "new.rs", counts: Some((12, 0)), badges: [], viewed: false, collapsed: false }
+texts:
+  (7.8, 0.0) ▾
+  (1384.4, 0.0) ⋯
+  (1325.9, 0.0) Viewed
+  (23.400002, 0.0) src/lib.rs
+  (117.00001, 0.0) +1
+  (140.40001, 0.0) −1
+  (31.2, 4.0) ⋯ 26 unchanged lines
+  (206.70003, 4.0) ↓ 20
+  (249.60002, 4.0) Expand all
+  (7.8, 40.0) ▾
+  (1384.4, 40.0) ⋯
+  (1325.9, 40.0) Viewed
+  (23.400002, 40.0) new.rs
+  (85.8, 40.0) +12
+  (719.5, 70.0) 1
+  (735.10004, 70.0) +
+  (746.8, 70.0) n 0
+  (719.5, 90.0) 2
+  (735.10004, 90.0) +
+  (746.8, 90.0) n 1
+  (719.5, 110.0) 3
+  (735.10004, 110.0) +
+  (746.8, 110.0) n 2
+  (719.5, 130.0) 4
+  (735.10004, 130.0) +
+  (746.8, 130.0) n 3
+  (719.5, 150.0) 5
+  (735.10004, 150.0) +
+  (746.8, 150.0) n 4
+  (719.5, 170.0) 6
+  (735.10004, 170.0) +
+  (746.8, 170.0) n 5
+  (719.5, 190.0) 7
+  (735.10004, 190.0) +
+  (746.8, 190.0) n 6
+  (719.5, 210.0) 8
+  (735.10004, 210.0) +
+  (746.8, 210.0) n 7
+  (719.5, 230.0) 9
+  (735.10004, 230.0) +
+  (746.8, 230.0) n 8
+  (711.7, 250.0) 10
+  (735.10004, 250.0) +
+  (746.8, 250.0) n 9
+  (711.7, 270.0) 11
+  (735.10004, 270.0) +
+  (746.8, 270.0) n 10
+  (711.7, 290.0) 12
+  (735.10004, 290.0) +
+  (746.8, 290.0) n 11
+controls:
+  ControlDebug { action: Collapse(0), bounds: (0.0, -10.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(0), bounds: (1376.6, -10.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(0), bounds: (1304.1, -10.0, 72.5, 40.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: Down(20) }, bounds: (202.80003, 2.0, 39.0, 24.0) }
+  ControlDebug { action: Expand { file_idx: 0, gap: GapId(1), by: All }, bounds: (245.70003, 2.0, 85.8, 24.0) }
+  ControlDebug { action: Collapse(1), bounds: (0.0, 30.0, 23.400002, 40.0) }
+  ControlDebug { action: Menu(1), bounds: (1376.6, 30.0, 23.400002, 40.0) }
+  ControlDebug { action: Viewed(1), bounds: (1304.1, 30.0, 72.5, 40.0) }

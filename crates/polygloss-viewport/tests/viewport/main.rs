@@ -2,6 +2,7 @@
 //! feature), so the GPUI-linking crate pays for one test link.
 
 mod blocks;
+mod cards;
 mod cursor;
 mod document;
 mod find;
