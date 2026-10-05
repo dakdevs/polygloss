@@ -2,7 +2,8 @@
 //! search reads every file's blobs in the background (loaded into the
 //! viewport or not), streams its matches into the find bar, and `⏎`/`⇧⏎`
 //! walk them, revealing hidden context, expanding collapsed files and
-//! loading generated or large ones on the way.
+//! loading generated or large ones on the way. Matches are listed in the
+//! viewport's display order, category sections last (T6.15).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -407,17 +408,19 @@ fn find_lists_matches_in_generated_files(cx: &mut TestAppContext) {
     let bar = bar(&mut shell, &tab);
 
     find_text(&mut shell, "serde");
+    // In display order (T6.15): `Cargo.lock` is in the Generated section,
+    // after the main files.
     assert_eq!(
         found(&mut shell, &bar),
-        [(0, Side::New, 81), (1, Side::New, 60)]
+        [(1, Side::New, 60), (0, Side::New, 81)]
     );
     let rows = bar.read_with(shell.cx, |b, _| b.list_rows());
     assert_eq!(
         rows,
         [
-            find::ListRow::File(0),
-            find::ListRow::Match(0),
             find::ListRow::File(1),
+            find::ListRow::Match(0),
+            find::ListRow::File(0),
             find::ListRow::Match(1),
         ]
     );
@@ -1068,4 +1071,48 @@ fn find_previews_draw_in_the_diff_code_font_without_ligatures(cx: &mut TestAppCo
     let text = cell.text_style();
     assert_eq!(text.font_family, Some(preview.family.clone()));
     assert_eq!(text.font_features, Some(preview.features.clone()));
+}
+
+/// T6.15: matches come in display order (category sections after the main
+/// files), `⏎` from the cursor walks that order, and going to a match in a
+/// closed section opens it and its sidebar panel.
+#[gpui_kit::test]
+fn find_lists_matches_in_display_order_and_opens_sections(cx: &mut TestAppContext) {
+    use crate::categories::{MIXED, mixed_repo, set_cursor};
+    let _sb = Sandbox::isolate();
+    // Line 1 of every file reads "<path> line 1 changed" on the new side.
+    let repo = mixed_repo(20);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let bar = bar(&mut shell, &tab);
+    find_text(&mut shell, "line 1 changed");
+    let files: Vec<u32> = found(&mut shell, &bar).iter().map(|m| m.0).collect();
+    // By hand: the main files 1, 2, 4, then Tests 3, 5, then Generated 0.
+    assert_eq!(files, [1, 2, 4, 3, 5, 0]);
+    assert_eq!(MIXED[3], "src/a.test.rs");
+
+    // `⏎` from the cursor in `src/b.rs` (below its match): the next match
+    // in display order is `src/a.test.rs`'s, in the closed Tests section.
+    set_cursor(&mut shell, &tab, 4, 5);
+    let input = bar.read_with(shell.cx, |b, _| b.input().clone());
+    shell.cx.update(|window, cx| {
+        let focus = input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    keys(&mut shell, "enter");
+    draw(shell.cx);
+    assert_eq!(cursor(&mut shell, &tab), Some(pos(3, Side::New, 0)));
+    let tests = crate::categories::section_id(&mut shell, &tab, "tests");
+    assert_eq!(
+        tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).section_open(tests)),
+        Some(true)
+    );
+    // Find shows in the tree's place; closing it brings back the accordion
+    // with the section's panel open.
+    keys(&mut shell, "escape");
+    let open = tab.read_with(shell.cx, |t, cx| {
+        polygloss_app::tree::file_tree(t)
+            .map(|tree| tree.read(cx).panels().open_key().map(ToString::to_string))
+    });
+    assert_eq!(open.flatten().as_deref(), Some("tests"));
 }

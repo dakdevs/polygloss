@@ -1,7 +1,8 @@
 //! View state and category sections (T6.14, design §11.12, §11.15): the
 //! open sections saved and restored per diff, saved state winning over the
 //! default and waiting-question rules, and a restored line in a closed
-//! section landing on its band.
+//! section landing on its band; the tree expansion of every sidebar panel
+//! (T6.15).
 
 use gpui_kit::TestAppContext;
 use polygloss_core::review::{OpenRequest, ScrollAnchorState, ViewState};
@@ -226,4 +227,43 @@ fn fresh_open_with_a_changed_generated_verdict_keeps_the_restored_view_state(
         sections(&mut shell, &tab),
         [section("generated", &[2], false)]
     );
+}
+
+/// T6.15: `tree_expanded` covers every panel of the Files accordion: a
+/// category panel's folders as `<category>:<path>`, Changes' plainly. A
+/// review reopened restores them before its first frame.
+#[gpui_kit::test]
+fn tree_expansion_of_every_panel_round_trips_through_view_state(cx: &mut TestAppContext) {
+    use polygloss_app::tree::file_tree;
+    let _sb = Sandbox::isolate();
+    // Changes: `docs/x.md`, `src/a.rs`, `src/b.rs`; Tests: `src/a.test.rs`,
+    // `tests/it.rs`; Generated: `Cargo.lock`.
+    let repo = mixed_repo(3);
+    let mut shell = start(cx);
+    let tab = shell.open(compare(&repo)).unwrap();
+    let expanded =
+        |shell: &mut Shell, tab: &gpui_kit::Entity<polygloss_app::review_tab::ReviewTab>| {
+            tab.read_with(shell.cx, |t, cx| {
+                file_tree(t).unwrap().read(cx).expanded_dirs()
+            })
+        };
+    assert_eq!(
+        expanded(&mut shell, &tab),
+        ["docs", "src", "tests:src", "tests:tests"]
+    );
+    // Collapse the Tests panel's `src/` (not Changes' `src/`).
+    crate::shell::click(shell.cx, "tree-panel-tests");
+    crate::shell::click(shell.cx, "tree-row-d:src");
+    let saved = ["docs", "src", "tests:tests"];
+    assert_eq!(expanded(&mut shell, &tab), saved);
+    settle(&mut shell);
+    assert_eq!(
+        stored(&mut shell, &tab).and_then(|s| s.tree_expanded),
+        Some(saved.map(String::from).to_vec())
+    );
+
+    close(&mut shell, &tab);
+    restart(&mut shell);
+    let tab = shell.open(compare(&repo)).unwrap();
+    assert_eq!(expanded(&mut shell, &tab), saved);
 }

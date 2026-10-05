@@ -3,7 +3,8 @@
 //! positions, the thread block (root and flat replies, author, agent,
 //! Draft, Question and Outdated badges, resolved threads and agent notes
 //! collapsed), "Hide agent notes", the panel, per-file invalidation and
-//! `.`/`,` between open threads.
+//! `.`/`,` between open threads, both in the viewport's display order
+//! (category sections last, T6.15).
 
 use gpui_kit::{Entity, VisualTestContext};
 use polygloss_app::keymap::actions::{tab as tab_actions, viewport as viewport_actions};
@@ -22,6 +23,8 @@ use polygloss_viewport::{BlockAnchor, CursorPos};
 
 use crate::shell::{Shell, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
+
+mod sections;
 
 pub fn human() -> Author {
     Author {
@@ -917,11 +920,12 @@ fn diff_order_puts_both_sides_in_one_coordinate() {
     assert_eq!(line_order(None, u, Side::Old, 40), (40, 1, 0));
     // Header threads first, panel-only threads last.
     assert!(
-        placement::diff_order(&ThreadPlace::File { file_idx: 0 }, c, u)
+        placement::diff_order(&ThreadPlace::File { file_idx: 7 }, 0, c, u)
             < line_diff_order(0, Side::Old, 0, c, u)
     );
     assert!(
-        line_diff_order(3, Side::New, 9, c, u) < placement::diff_order(&ThreadPlace::Panel, c, u)
+        line_diff_order(3, Side::New, 9, c, u)
+            < placement::diff_order(&ThreadPlace::Panel, 0, c, u)
     );
 }
 

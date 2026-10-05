@@ -7,14 +7,16 @@
 //! diff); closing it brings the tree back as it was. Typing starts a search of every file's old and new blobs on the
 //! background executor ([`search`]): files the viewport has not loaded
 //! included, several chunks of files at once, results streamed into the bar
-//! in file order with a count and a result list. A new query (or toggle)
-//! cancels the search in flight, and so does a change of the viewport's
-//! diff options or file list (the matches' rows would be stale): the
-//! search then runs again. `⏎` / `⇧⏎` go to the next and previous match
+//! in the viewport's display order (category sections last, design §11.14)
+//! with a count and a result list. A new query (or toggle) cancels the
+//! search in flight, and so does a change of the viewport's diff options,
+//! file list or display order (the matches' rows or order would be stale):
+//! the search then runs again. `⏎` / `⇧⏎` go to the next and previous match
 //! (wrapping; the first from the diff's cursor), and so does clicking a
-//! result: the file is expanded if
-//! collapsed, a generated or large file loads its diff, hidden context
-//! around the match is revealed, and the line cursor lands on the match.
+//! result: a closed category section holding it opens (and its sidebar
+//! panel, which follows the viewport), the file is expanded if collapsed,
+//! a generated or large file loads its diff, hidden context around the
+//! match is revealed, and the line cursor lands on the match.
 //! `Esc` closes the bar and gives the keyboard back to the diff. While the
 //! bar is open the diff marks every visible match of the query, the match
 //! gone to in a stronger color (`DiffViewport::set_find_highlights`); closing
@@ -43,6 +45,7 @@ use polygloss_viewport::{
 };
 use regex::bytes::Regex;
 
+use crate::categories::Repartitioned;
 use crate::keymap::actions::tab::Find;
 use crate::review_tab::ReviewTab;
 use search::{FindMatch, FindOptions};
@@ -90,6 +93,12 @@ pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewT
     let bar = cx.new(|cx| FindBar::new(viewport, diff_focus, window, cx));
     // Opening and closing swap the left pane.
     cx.observe(&bar, |_, _, cx| cx.notify()).detach();
+    // A new partition reorders the files: list the matches in the new order.
+    let reorder = bar.clone();
+    cx.subscribe_self(move |_: &mut ReviewTab, _: &Repartitioned, cx| {
+        reorder.update(cx, FindBar::order_changed)
+    })
+    .detach();
     tab.insert_extension(bar);
 }
 
@@ -159,6 +168,8 @@ pub struct FindBar {
     /// The diff options and file list the results were found with (`None`
     /// without a search): the search runs again when the viewport's change.
     source: Option<(DiffOptions, Arc<Vec<FileChange>>)>,
+    /// The display order the files were searched in.
+    order: Arc<[u32]>,
     /// The running search; dropping it cancels it.
     search: Option<Task<()>>,
     /// Bumped by every new search, so a stale batch is never applied.
@@ -220,6 +231,7 @@ impl FindBar {
             capped: false,
             cancel: Arc::new(AtomicBool::new(false)),
             source: None,
+            order: Arc::from([]),
             search: None,
             generation: 0,
             stats: FindStats::default(),
@@ -446,16 +458,18 @@ impl FindBar {
     }
 
     /// The match the first `⏎` (`forward`) or `⇧⏎` goes to (see
-    /// [`Self::next`], [`Self::prev`]); wraps when there is none that way.
+    /// [`Self::next`], [`Self::prev`]), in display order; wraps when there
+    /// is none that way.
     fn first(&self, forward: bool, cx: &App) -> usize {
         let last = self.matches.len().saturating_sub(1);
         let v = self.viewport.read(cx);
+        let rank = |f: u32| v.display_rank(f);
         let Some(c) = v.cursor() else {
-            let top = v.anchor().file_idx;
+            let top = rank(v.anchor().file_idx);
             return if forward {
-                self.matches.iter().position(|m| m.file_idx >= top)
+                self.matches.iter().position(|m| rank(m.file_idx) >= top)
             } else {
-                self.matches.iter().rposition(|m| m.file_idx <= top)
+                self.matches.iter().rposition(|m| rank(m.file_idx) <= top)
             }
             .unwrap_or(if forward { 0 } else { last });
         };
@@ -467,10 +481,12 @@ impl FindBar {
         };
         let at = diff.map(|fd| search::display_key(fd, c.side, c.line));
         let vs_cursor = |m: &FindMatch| {
-            m.file_idx.cmp(&c.file_idx).then_with(|| match (diff, at) {
-                (Some(fd), Some(at)) => search::display_key(fd, m.side, m.line).cmp(&at),
-                _ => std::cmp::Ordering::Equal,
-            })
+            rank(m.file_idx)
+                .cmp(&rank(c.file_idx))
+                .then_with(|| match (diff, at) {
+                    (Some(fd), Some(at)) => search::display_key(fd, m.side, m.line).cmp(&at),
+                    _ => std::cmp::Ordering::Equal,
+                })
         };
         if forward {
             self.matches
@@ -482,6 +498,15 @@ impl FindBar {
                 .iter()
                 .rposition(|m| vs_cursor(m).is_lt())
                 .unwrap_or(last)
+        }
+    }
+
+    /// The viewport's display order may have changed (a new partition):
+    /// a search listed in another order runs again.
+    fn order_changed(&mut self, cx: &mut Context<Self>) {
+        let stale = self.source.is_some() && *self.order != *self.viewport.read(cx).display_order();
+        if stale {
+            self.restart(cx);
         }
     }
 
@@ -527,15 +552,17 @@ impl FindBar {
     fn start(&mut self, re: Regex, cx: &mut Context<Self>) {
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
-        let (provider, files, diff) = {
+        let (provider, files, diff, order) = {
             let v = self.viewport.read(cx);
             (
                 v.provider().clone(),
                 v.document().files().clone(),
                 v.options().diff,
+                Arc::<[u32]>::from(v.display_order()),
             )
         };
         self.source = Some((diff, files.clone()));
+        self.order = order.clone();
         let generation = self.generation;
         self.stats.started += 1;
         self.searching = true;
@@ -545,18 +572,24 @@ impl FindBar {
             // a capped search from one with exactly `MAX_MATCHES`.
             let mut left = MAX_MATCHES + 1;
             let mut next = 0;
-            while next < files.len() {
+            while next < order.len() {
                 let mut round = Vec::with_capacity(PARALLEL);
                 for _ in 0..PARALLEL {
-                    if next >= files.len() {
+                    if next >= order.len() {
                         break;
                     }
-                    let chunk = next..(next + CHUNK).min(files.len());
+                    let chunk = next..(next + CHUNK).min(order.len());
                     next = chunk.end;
-                    let (provider, files, re, cancel) =
-                        (provider.clone(), files.clone(), re.clone(), cancel.clone());
+                    let (provider, files, order, re, cancel) = (
+                        provider.clone(),
+                        files.clone(),
+                        order.clone(),
+                        re.clone(),
+                        cancel.clone(),
+                    );
                     round.push(cx.background_spawn(async move {
-                        search::search_chunk(&files[chunk], &*provider, &re, &diff, &cancel, left)
+                        let chunk = order[chunk].iter().filter_map(|&f| files.get(f as usize));
+                        search::search_chunk(chunk, &*provider, &re, &diff, &cancel, left)
                     }));
                 }
                 let batches = futures::future::join_all(round).await;
@@ -577,8 +610,8 @@ impl FindBar {
         }));
     }
 
-    /// Adds a round of results (in file order). Returns whether the search
-    /// goes on.
+    /// Adds a round of results (in display order). Returns whether the
+    /// search goes on.
     fn append(
         &mut self,
         generation: u64,

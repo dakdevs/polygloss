@@ -2,7 +2,8 @@
 //! directories, rows (icons, right-aligned stats and status letters, the
 //! Viewed slot at the row's end), the filter field and its menu, the footer
 //! totals, filters, the nucleo fuzzy filter, tree ↔ viewport sync, ⌘P, no
-//! tree render on scroll frames and the 13k-file build budget.
+//! tree render on scroll frames and the 13k-file build budget; the
+//! accordion of panels (T6.15) in [`panels`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -11,10 +12,12 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{AppContext as _, Entity, Focusable as _, TestAppContext};
+use polygloss_app::categories::Partition;
 use polygloss_app::review_tab::ReviewTab;
-use polygloss_app::tree::filters::{self, StatusFilter, TreeFilters};
+use polygloss_app::tree::filters::{self, StatusFilter, TreeFilter};
 use polygloss_app::tree::model::{ItemId, NodeKind, TreeModel};
 use polygloss_app::tree::{FileTree, FileTreeEvent, file_tree, finder};
+use polygloss_core::categories::{CategoriesConfig, Categorizer};
 use polygloss_diff::{FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, ObjectFormat, Oid};
 use polygloss_viewport::{
     DiffProvider, DiffViewport, FileFlags, ScrollTarget, ViewportEvent, ViewportOptions,
@@ -24,6 +27,7 @@ use crate::shell::{Shell, bounds, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
 
 mod footer;
+mod panels;
 mod rows;
 
 /// `n` lines of numbered text, so every file is taller than the window
@@ -133,6 +137,7 @@ fn top_file(o: &mut Opened) -> u32 {
 fn selected_row(o: &mut Opened) -> Option<ItemId> {
     o.tree.read_with(o.shell.cx, |t, cx| {
         t.tree_state()
+            .expect("an open panel")
             .read(cx)
             .selected_item()
             .and_then(|i| ItemId::parse(&i.id))
@@ -140,7 +145,7 @@ fn selected_row(o: &mut Opened) -> Option<ItemId> {
 }
 
 /// Draws until every one of `tab`'s first `n` files has its line counts.
-fn settle_counts(shell: &mut Shell, tab: &Entity<ReviewTab>, n: usize) {
+pub fn settle_counts(shell: &mut Shell, tab: &Entity<ReviewTab>, n: usize) {
     for _ in 0..60 {
         draw(shell.cx);
         let counted = tab.read_with(shell.cx, |t, cx| {
@@ -372,7 +377,7 @@ fn tree_filters_unviewed_status_extension(cx: &mut TestAppContext) {
     let tree = o.tree.clone();
     o.shell.cx.update(|window, cx| {
         tree.update(cx, |t, cx| {
-            let mut f = TreeFilters::default();
+            let mut f = TreeFilter::default();
             f.extensions.insert("rs".into());
             t.set_filters(f, window, cx);
         })
@@ -777,17 +782,19 @@ impl DiffProvider for ListOnly {
     }
 }
 
-/// `n` changed files spread over nested directories, in git's path order.
+/// `n` changed files spread over nested directories, in git's path order;
+/// every third one in a `tests/` directory (Tests) and one lockfile per
+/// top directory (Generated).
 fn synthetic_files(n: usize) -> Vec<FileChange> {
     let zero = Oid::zero(ObjectFormat::Sha1);
     let mut paths: Vec<String> = (0..n)
         .map(|i| {
-            format!(
-                "drivers/d{:02}/sub{:02}/deep/part{:02}/file{i:05}.c",
-                i % 37,
-                i % 11,
-                i % 5
-            )
+            let dir = format!("drivers/d{:02}", i % 37);
+            match i % 3 {
+                _ if i < 37 => format!("{dir}/yarn.lock"),
+                0 => format!("{dir}/tests/sub{:02}/file{i:05}.c", i % 11),
+                _ => format!("{dir}/sub{:02}/deep/part{:02}/file{i:05}.c", i % 11, i % 5),
+            }
         })
         .collect();
     paths.sort();
@@ -816,27 +823,47 @@ fn tree_builds_13k_files_under_200ms(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let shell = start(cx);
     let files = Arc::new(synthetic_files(13_000));
+    // The partition is the categories feature's (timed by its own test).
+    let categorizer = Categorizer::new(&CategoriesConfig::default(), &[]).unwrap();
+    let partition = Arc::new(Partition::new(Arc::new(categorizer), &files));
+    let sizes: Vec<usize> = std::iter::once(partition.main.len())
+        .chain(partition.sections.iter().map(|s| s.files.len()))
+        .collect();
+    // By hand: 37 lockfiles; of the other 12,963, every third (i % 3 == 0
+    // for i in 37..13,000: 4,321) under `tests/`.
+    assert_eq!(sizes, [8_642, 4_321, 37]);
     let (tree, elapsed) = shell.cx.update(|window, cx| {
         let provider: Arc<dyn DiffProvider> = Arc::new(ListOnly(files.clone()));
         let viewport =
             cx.new(|cx| DiffViewport::new(provider, ViewportOptions::default(), window, cx));
         let start = Instant::now();
-        let tree = cx.new(|cx| FileTree::new(files.clone(), viewport, window, cx));
+        let tree = cx.new(|cx| {
+            let mut tree = FileTree::new(Arc::default(), viewport, window, cx);
+            tree.set_partition(files.clone(), Some(partition.clone()), Vec::new(), cx);
+            tree
+        });
         (tree, start.elapsed())
     });
     assert_under(
-        "building the 13k-file tree",
+        "building the 13k-file tree's panels",
         elapsed,
         Duration::from_millis(200),
     );
-    let (order, rows) = tree.read_with(shell.cx, |t, cx| {
-        (t.model().file_order().len(), t.rows(cx).len())
+    let (panels, order, rows) = tree.read_with(shell.cx, |t, cx| {
+        let panels: Vec<usize> = t
+            .panels()
+            .panels()
+            .iter()
+            .map(|p| p.model().file_order().len())
+            .collect();
+        (panels, t.model().file_order().len(), t.rows(cx).len())
     });
-    assert_eq!(order, 13_000);
-    // Every file and folder is a row (all expanded).
-    let dirs = tree.read_with(shell.cx, |t, _| t.expanded_dirs().len());
-    assert_eq!(rows, 13_000 + dirs);
-    // Filtering all 13k with nucleo stays interactive too.
+    assert_eq!(panels, sizes, "every panel is built");
+    assert_eq!(order, 8_642, "Changes is open");
+    // Every file and folder of the open panel is a row (all expanded).
+    let dirs = tree.read_with(shell.cx, |t, _| t.model().dir_paths().len());
+    assert_eq!(rows, 8_642 + dirs);
+    // Filtering all 13k with nucleo, every panel, stays interactive too.
     let start = Instant::now();
     shell
         .cx

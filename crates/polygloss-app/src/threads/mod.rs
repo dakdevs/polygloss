@@ -726,8 +726,9 @@ impl ReviewThreads {
         out
     }
 
-    /// The open threads `.` / `,` visit, in diff order: shown, placed in the
-    /// diff, not resolved (outdated included).
+    /// The open threads `.` / `,` visit, in display order: shown, placed in
+    /// the diff, not resolved (outdated included), in closed sections too
+    /// (going to one opens it).
     fn nav_targets(&self, order: &mut DiffOrderer<'_>) -> Vec<NavTarget> {
         let mut out: Vec<_> = self
             .threads
@@ -765,8 +766,8 @@ impl ReviewThreads {
 }
 
 /// Orders places and lines of one model top to bottom as the viewport
-/// shows them ([`placement::diff_order`]), looking each file's changes up
-/// once.
+/// shows them ([`placement::diff_order`]: files by display rank, category
+/// sections last), looking each file's changes up once.
 pub(crate) struct DiffOrderer<'a> {
     model: &'a ReviewThreads,
     viewport: &'a DiffViewport,
@@ -794,12 +795,16 @@ impl<'a> DiffOrderer<'a> {
 
     pub(crate) fn place(&mut self, place: &ThreadPlace) -> DiffOrder {
         let changes = place.file_idx().and_then(|f| self.file_changes(f));
-        placement::diff_order(place, changes.as_deref(), self.layout)
+        let rank = place
+            .file_idx()
+            .map_or(u32::MAX, |f| self.viewport.display_rank(f));
+        placement::diff_order(place, rank, changes.as_deref(), self.layout)
     }
 
     pub(crate) fn line(&mut self, file_idx: u32, side: Side, line: u32) -> DiffOrder {
         let changes = self.file_changes(file_idx);
-        placement::line_diff_order(file_idx, side, line, changes.as_deref(), self.layout)
+        let rank = self.viewport.display_rank(file_idx);
+        placement::line_diff_order(rank, side, line, changes.as_deref(), self.layout)
     }
 }
 
@@ -936,7 +941,7 @@ pub fn jump_to_open_thread(tab: &mut ReviewTab, step: Step, cx: &mut Context<Rev
                 (key, if step == Step::Next { usize::MAX } else { 0 })
             })
         });
-        (targets, from, v.anchor().file_idx)
+        (targets, from, v.display_rank(v.anchor().file_idx))
     };
     if targets.is_empty() {
         return;

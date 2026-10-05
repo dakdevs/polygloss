@@ -1,7 +1,8 @@
-//! The file tree's filters (design §11.5): unviewed, has comments, status
-//! (A/M/D/R), extension, and a fuzzy filter box ranked by `nucleo-matcher`
-//! (the same matcher the ⌘P finder uses, [`Fuzzy`]); and the filter menu
-//! that toggles them.
+//! The file tree's filter (design §11.5, OQ-44): unviewed, has comments,
+//! status (A/M/D/R), extension, and a fuzzy filter box ranked by
+//! `nucleo-matcher` (the same matcher the ⌘P finder uses, [`Fuzzy`]); and the
+//! filter menu that toggles them. The Files segment has one [`TreeFilter`];
+//! every panel applies it to its own files.
 
 use std::collections::BTreeSet;
 
@@ -53,9 +54,9 @@ impl StatusFilter {
     }
 }
 
-/// Which files the tree shows. Empty sets mean "any".
+/// Which files the tree's panels show. Empty sets mean "any".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TreeFilters {
+pub struct TreeFilter {
     /// Only files not marked Viewed.
     pub unviewed: bool,
     /// Only files with open threads.
@@ -67,8 +68,8 @@ pub struct TreeFilters {
     pub query: String,
 }
 
-impl TreeFilters {
-    /// Whether any filter hides files.
+impl TreeFilter {
+    /// Whether any part of it hides files.
     pub fn is_active(&self) -> bool {
         self.unviewed
             || self.has_comments
@@ -85,21 +86,24 @@ impl TreeFilters {
             || !self.extensions.is_empty()
     }
 
-    /// The files these filters keep, in diff order. `flags` has one entry
-    /// per file (missing entries count as all-false).
-    pub fn apply(&self, files: &[FileChange], flags: &[FileFlags]) -> Vec<u32> {
+    /// The files of `among` (indices into `files`, kept in their order)
+    /// this filter keeps. `flags` has one entry per file (missing entries
+    /// count as all-false).
+    pub fn apply(&self, files: &[FileChange], flags: &[FileFlags], among: &[u32]) -> Vec<u32> {
         let mut fuzzy = Fuzzy::new(&self.query);
-        files
+        among
             .iter()
-            .enumerate()
-            .filter(|(i, f)| {
-                let flags = flags.get(*i).copied().unwrap_or_default();
+            .copied()
+            .filter(|&i| {
+                let Some(f) = files.get(i as usize) else {
+                    return false;
+                };
+                let flags = flags.get(i as usize).copied().unwrap_or_default();
                 self.keeps(f, &flags)
                     && fuzzy
                         .as_mut()
                         .is_none_or(|z| z.score(f.display_path()).is_some())
             })
-            .map(|(i, _)| i as u32)
             .collect()
     }
 
@@ -187,7 +191,7 @@ type FilterToggle = Box<dyn Fn(&mut FileTree, &mut Context<FileTree>)>;
 /// menu opens.
 pub(super) fn menu(
     tree: &WeakEntity<FileTree>,
-    f: TreeFilters,
+    f: TreeFilter,
     extensions: Vec<(String, usize)>,
     mut menu: PopupMenu,
 ) -> PopupMenu {

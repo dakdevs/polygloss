@@ -141,39 +141,36 @@ pub fn line_order(
 }
 
 /// A place in the diff, top to bottom across files and sides:
-/// `(file, row, phase, offset, side)`, with [`line_order`]'s `row` plus one
-/// (0 is under the header), the old side first on a shared row. Panel-only
-/// places sort last.
+/// `(rank, row, phase, offset, side)`, `rank` being the file's display rank
+/// (the viewport's order, category sections last; T6.15), with
+/// [`line_order`]'s `row` plus one (0 is under the header), the old side
+/// first on a shared row. Panel-only places sort last.
 pub type DiffOrder = (u32, u32, u8, u32, u8);
 
-/// [`DiffOrder`] of a line (the cursor's, a thread's).
+/// [`DiffOrder`] of a line (the cursor's, a thread's) of the file at
+/// display rank `rank`.
 pub fn line_diff_order(
-    file_idx: u32,
+    rank: u32,
     side: Side,
     line: u32,
     changes: Option<&Changes>,
     layout: Layout,
 ) -> DiffOrder {
     let (row, phase, offset) = line_order(changes, layout, side, line);
-    (
-        file_idx,
-        row.saturating_add(1),
-        phase,
-        offset,
-        side_rank(side),
-    )
+    (rank, row.saturating_add(1), phase, offset, side_rank(side))
 }
 
-/// [`DiffOrder`] of `place`; `changes` are its file's.
-pub fn diff_order(place: &ThreadPlace, changes: Option<&Changes>, layout: Layout) -> DiffOrder {
+/// [`DiffOrder`] of `place`, whose file is at display rank `rank`;
+/// `changes` are its file's.
+pub fn diff_order(
+    place: &ThreadPlace,
+    rank: u32,
+    changes: Option<&Changes>,
+    layout: Layout,
+) -> DiffOrder {
     match *place {
-        ThreadPlace::File { file_idx } => (file_idx, 0, 0, 0, 0),
-        ThreadPlace::Line {
-            file_idx,
-            side,
-            line,
-            ..
-        } => line_diff_order(file_idx, side, line, changes, layout),
+        ThreadPlace::File { .. } => (rank, 0, 0, 0, 0),
+        ThreadPlace::Line { side, line, .. } => line_diff_order(rank, side, line, changes, layout),
         ThreadPlace::Panel => (u32::MAX, u32::MAX, u8::MAX, u32::MAX, u8::MAX),
     }
 }

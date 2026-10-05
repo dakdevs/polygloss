@@ -2,7 +2,8 @@
 //! ADR-0028): the synchronous first partition, the default open rule and
 //! the waiting-question rule, hot reloads and palette toggles re-partitioning
 //! in the background (latest result only), Generated verdicts flipping in
-//! place, the section actions and Explain file category.
+//! place, the section actions and Explain file category; the totals' chips
+//! and breakdown tooltip (T6.15).
 //!
 //! Expected partitions are written by hand from design §11.15's table and
 //! the catalog (`*.test.*`, `tests/`, `Cargo.lock`, `docs/`), never computed
@@ -26,6 +27,7 @@ use polygloss_viewport::{
 use crate::shell::{Shell, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
 use crate::threads::{agent, create, human, line};
+use crate::toolbar::shows;
 
 /// `name line <n>` for n in 1..=lines.
 fn text(name: &str, lines: usize) -> String {
@@ -816,4 +818,169 @@ fn explain_file_toasts_the_verdict(cx: &mut TestAppContext) {
             r#"tests/it.rs: no category ("!tests/" skips Tests)"#,
         ]
     );
+}
+
+/// `base` → `head` of a file: `keep` lines, of which the one after the first
+/// is replaced by `added` new lines when `removed` is 1, or `added` lines
+/// go in after the first when `removed` is 0 (git counts `+added
+/// −removed`).
+fn edit(name: &str, keep: usize, removed: usize, added: usize) -> (String, String) {
+    let base: Vec<String> = (0..keep).map(|i| format!("{name} {i}\n")).collect();
+    let mut head = vec![base[0].clone()];
+    head.extend((0..added).map(|i| format!("{name} new {i}\n")));
+    head.extend(base[1 + removed..].iter().cloned());
+    (base.concat(), head.concat())
+}
+
+/// The totals fixture, in diff order: 0 `Cargo.lock` (Generated, +1000
+/// −1), 1 `package-lock.json` (Generated, +8 −0), 2 `src/a.rs` (+10 −2),
+/// 3 `src/a.test.rs` (Tests, +20 −1), 4 `src/b.rs` (+2 −1). `only` keeps
+/// just those paths.
+pub fn totals_repo(only: Option<&[&str]>) -> FixtureRepo {
+    let files = [
+        ("Cargo.lock", 3, 1, 1000),
+        ("package-lock.json", 2, 0, 8),
+        ("src/a.rs", 4, 2, 10),
+        ("src/a.test.rs", 3, 1, 20),
+        ("src/b.rs", 3, 1, 2),
+    ];
+    let files: Vec<_> = files
+        .into_iter()
+        .filter(|(p, ..)| only.is_none_or(|o| o.contains(p)))
+        .collect();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    for &(path, keep, removed, added) in &files {
+        repo.write(path, edit(path, keep, removed, added).0.as_bytes());
+    }
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    for &(path, keep, removed, added) in &files {
+        repo.write(path, edit(path, keep, removed, added).1.as_bytes());
+    }
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    repo
+}
+
+/// `(files, added, removed)` of `git diff --numstat base head` over the
+/// paths `keep` accepts: the totals' oracle.
+pub fn numstat(repo: &FixtureRepo, keep: impl Fn(&str) -> bool) -> (u64, u64, u64) {
+    let out = repo.git(&["diff", "--numstat", "refs/tags/base", "refs/tags/head"]);
+    out.lines()
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .filter(|cols| keep(cols[2]))
+        .fold((0, 0, 0), |(n, a, d), cols| {
+            (
+                n + 1,
+                a + cols[0].parse::<u64>().unwrap(),
+                d + cols[1].parse::<u64>().unwrap(),
+            )
+        })
+}
+
+/// The categorized paths of [`totals_repo`], by hand (design §11.15's
+/// lockfiles and `*.test.*`).
+pub const TOTALS_CATEGORIZED: [&str; 3] = ["Cargo.lock", "package-lock.json", "src/a.test.rs"];
+
+/// Hovers `name` until its tooltip shows; whether each of `lines` is
+/// painted in it.
+pub fn tooltip_lines(shell: &mut Shell, name: &str, lines: &[&str]) -> Vec<bool> {
+    crate::shell::hover(shell.cx, name);
+    shell
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    draw(shell.cx);
+    let shown = lines
+        .iter()
+        .map(|l| crate::shell::painted(shell.cx, &format!("tooltip: {l}")).is_some())
+        .collect();
+    crate::shell::unhover(shell.cx);
+    shown
+}
+
+#[gpui_kit::test]
+fn chips_and_breakdown_tooltip(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = totals_repo(None);
+    // The fixture's numbers, from git: what the hand-written lines below
+    // say.
+    let categorized = |p: &str| TOTALS_CATEGORIZED.contains(&p);
+    assert_eq!(numstat(&repo, |p| !categorized(p)), (2, 12, 3));
+    assert_eq!(numstat(&repo, |_| true), (5, 1040, 5));
+    assert_eq!(numstat(&repo, categorized), (3, 1028, 2));
+
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    crate::tree::settle_counts(&mut shell, &tab, 5);
+    let (chips, lines) = tab.read_with(shell.cx, |t, cx| {
+        let p = categories::partition(t).expect("partitioned");
+        let chips: Vec<String> = categories::chips(&p)
+            .into_iter()
+            .map(|c| c.text.to_string())
+            .collect();
+        let lines = categories::breakdown_lines(&categories::breakdown(&p, t.viewport.read(cx)));
+        (chips, lines)
+    });
+    assert_eq!(chips, ["1 test", "2 generated"]);
+    let expected = [
+        "Without categorized files: 2 files · +12 −3",
+        "With categorized files: 5 files · +1,040 −5",
+        "Categorized only: 3 files · +1,028 −2",
+    ];
+    assert_eq!(lines, expected);
+
+    // The footer and the header card: the uncategorized totals, the chips,
+    // and the breakdown as their tooltip.
+    draw(shell.cx);
+    assert!(shows(shell.cx, "tree-footer", "Total: +12 −3"));
+    assert!(shows(shell.cx, "tree-chips", "1 test · 2 generated"));
+    assert!(shows(shell.cx, "header-stats", "2 files · +12 −3"));
+    assert!(shows(shell.cx, "header-chips", "1 test · 2 generated"));
+    assert_eq!(
+        tooltip_lines(&mut shell, "tree-footer: Total: +12 −3", &expected),
+        [true; 3]
+    );
+    assert_eq!(
+        tooltip_lines(&mut shell, "header-stats: 2 files · +12 −3", &expected),
+        [true; 3]
+    );
+
+    // Lines not counted yet read "…"; one file is singular.
+    let totals = |files, additions, deletions, counted| categories::Totals {
+        files,
+        additions,
+        deletions,
+        counted,
+    };
+    let b = categories::Breakdown {
+        excluding: totals(12, 300, 20, true),
+        including: totals(13, 301, 20, false),
+        categorized: totals(1, 1, 0, true),
+    };
+    assert_eq!(
+        categories::breakdown_lines(&b),
+        [
+            "Without categorized files: 12 files · +300 −20",
+            "With categorized files: 13 files · …",
+            "Categorized only: 1 file · +1 −0",
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn every_file_categorized_shows_chips_only(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = totals_repo(Some(&TOTALS_CATEGORIZED));
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    crate::tree::settle_counts(&mut shell, &tab, 3);
+    draw(shell.cx);
+    // The footer: the chips alone, no "Total:".
+    assert!(shows(shell.cx, "tree-footer", "1 test · 2 generated"));
+    assert!(shows(shell.cx, "tree-chips", "1 test · 2 generated"));
+    assert!(!shows(shell.cx, "tree-footer", "Total: +0 −0"));
+    // The header card: the chips alone, no "N files · …".
+    assert!(shows(shell.cx, "header-chips", "1 test · 2 generated"));
+    assert!(crate::shell::painted(shell.cx, "header-stats").is_none());
 }

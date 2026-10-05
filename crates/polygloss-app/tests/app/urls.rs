@@ -1,6 +1,8 @@
 //! `polygloss://` URLs in the app (T4.2, design §13.5): the system's
 //! `application:openURLs:` (and `polygloss://` launch arguments) open the
-//! review tab a URL names and focus its file, line or thread.
+//! review tab a URL names and focus its file, line or thread; a thread in
+//! a closed category section opens it and its sidebar panel (T6.15), also
+//! through the socket's `focus`.
 //!
 //! The platform callback only feeds a [`UrlInbox`]; these tests feed the
 //! inbox or call [`urls::open_url`] directly.
@@ -453,4 +455,77 @@ fn launch_args_accept_polygloss_urls() {
     // Other bare arguments are still errors; so is a URL of another scheme.
     assert!(parse(&["/some/path"]).is_err());
     assert!(parse(&["https://example.com"]).is_err());
+}
+
+/// T6.15: a thread in a closed category section, focused through the
+/// socket (`focus`) or a `polygloss://` URL, opens the section and its
+/// sidebar panel, with the cursor on the thread.
+#[gpui_kit::test]
+fn focus_and_url_to_a_thread_in_a_closed_section_open_it_and_its_panel(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use polygloss_core::ipc::Op;
+    let _sb = Sandbox::isolate();
+    // `tests/it.rs` (5) is in the Tests section, closed by default.
+    let repo = crate::categories::mixed_repo(20);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let thread_id = crate::threads::create(
+        &mut shell,
+        &tab,
+        crate::threads::line("tests/it.rs", Side::New, 4, 4),
+        ThreadKind::Comment,
+        "Does this cover the error path?",
+        crate::threads::human(),
+    );
+    crate::threads::reload(&mut shell, &tab);
+    let tests = crate::categories::section_id(&mut shell, &tab, "tests");
+    let state = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            let open = t.viewport.read(cx).section_open(tests);
+            let panel = polygloss_app::tree::file_tree(t)
+                .and_then(|tree| tree.read(cx).panels().open_key().map(ToString::to_string));
+            (open, panel)
+        })
+    };
+    let close = |shell: &mut Shell| {
+        tab.update(shell.cx, |t, cx| {
+            t.viewport
+                .update(cx, |v, cx| v.set_section_open(tests, false, cx))
+        });
+        crate::categories::go_to_file(shell, &tab, 2);
+        assert_eq!(state(shell), (Some(false), Some("changes".to_owned())));
+    };
+    let on_thread = Some(CursorPos {
+        file_idx: 5,
+        side: Side::New,
+        line: 3,
+        range_start: None,
+    });
+
+    close(&mut shell);
+    let task = shell.cx.update(|_, cx| {
+        polygloss_app::ipc::handle(
+            Op::Focus {
+                review_id: None,
+                diff_id: None,
+                path: None,
+                side: None,
+                line: None,
+                thread_id: Some(thread_id.clone()),
+            },
+            cx,
+        )
+    });
+    draw(shell.cx);
+    futures::FutureExt::now_or_never(task)
+        .expect("the focus finished")
+        .expect("focus the thread");
+    assert_eq!(state(&mut shell), (Some(true), Some("tests".to_owned())));
+    assert_eq!(cursor(&mut shell, &tab), on_thread);
+
+    close(&mut shell);
+    open(&mut shell, &format_url(&PolyglossUrl::Thread(thread_id))).unwrap();
+    assert_eq!(state(&mut shell), (Some(true), Some("tests".to_owned())));
+    assert_eq!(cursor(&mut shell, &tab), on_thread);
 }
