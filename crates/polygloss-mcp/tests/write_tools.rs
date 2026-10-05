@@ -1255,3 +1255,155 @@ fn focus_rejects_missing_sides_and_lines_past_the_end() {
     api::focus(&ctx, req("a.txt", SideParam::Old, 10)).unwrap();
     assert_eq!(ops.lock().unwrap().len(), 2);
 }
+
+// ---- file categories (T6.9, design §11.15) ----
+
+/// Writes the sandbox's `settings.json`.
+fn write_settings(core: &Core, text: &str) {
+    let dir = &core.paths.config_dir;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("settings.json"), text).unwrap();
+}
+
+/// `open_diff` of the live worktree since HEAD, without showing it, as JSON.
+fn open_live_json(w: &World, ctx: &ApiContext) -> serde_json::Value {
+    let r = api::open_diff(
+        ctx,
+        OpenDiffRequest {
+            repo: w.repo_arg(),
+            source: Some(SourceParam::Live {
+                since: Some("HEAD".into()),
+            }),
+            show: Some(false),
+            ..OpenDiffRequest::default()
+        },
+    )
+    .unwrap();
+    serde_json::to_value(&r).unwrap()
+}
+
+#[test]
+fn open_diff_files_carry_their_category() {
+    let w = world();
+    let ctx = w.ctx(no_launch());
+    write_settings(
+        &w.core,
+        r#"{
+          "categories": {
+            "docs": { "enabled": true },
+            "custom": [{ "id": "tokens", "name": "Design tokens", "patterns": ["*.tokens.json"] }]
+          }
+        }"#,
+    );
+    w.repo.write("Cargo.lock", b"lock\n");
+    w.repo.write("docs/x.md", b"# x\n");
+    w.repo.write("src/a.test.ts", b"test\n");
+    w.repo.write("src/a.ts", b"code\n");
+    w.repo.write("ui/colors.tokens.json", b"{}\n");
+    let v = open_live_json(&w, &ctx);
+    // Git order is unchanged; an uncategorized file has no `category`.
+    assert_eq!(
+        v["files"],
+        json!([
+            { "path": "Cargo.lock", "status": "added", "additions": 1, "deletions": 0, "category": "generated" },
+            { "path": "docs/x.md", "status": "added", "additions": 1, "deletions": 0, "category": "docs" },
+            { "path": "src/a.test.ts", "status": "added", "additions": 1, "deletions": 0, "category": "tests" },
+            { "path": "src/a.ts", "status": "added", "additions": 1, "deletions": 0 },
+            { "path": "ui/colors.tokens.json", "status": "added", "additions": 1, "deletions": 0, "category": "custom:tokens" },
+        ])
+    );
+}
+
+#[test]
+fn open_diff_stats_break_down_categories() {
+    let w = world();
+    let ctx = w.ctx(no_launch());
+    // Git order: Cargo.lock, a.test.ts, a.txt, f000.txt … f196.txt (the first
+    // 200), then z.test.ts, the 201st: counted as a file, its lines not.
+    w.repo.write("Cargo.lock", b"l1\nl2\nl3\n");
+    w.repo.write("a.test.ts", b"t1\nt2\n");
+    w.repo.write("a.txt", TEN_EDITED.as_bytes());
+    for i in 0..197 {
+        w.repo.write(&format!("f{i:03}.txt"), b"f\n");
+    }
+    w.repo.write("z.test.ts", b"1\n2\n3\n4\n5\n");
+    let v = open_live_json(&w, &ctx);
+    assert_eq!(
+        v["stats"],
+        json!({
+            "files": 201,
+            "additions": 3 + 2 + 1 + 197,
+            "deletions": 1,
+            "categories": {
+                "generated": { "files": 1, "additions": 3, "deletions": 0 },
+                "tests": { "files": 2, "additions": 2, "deletions": 0 },
+            },
+        })
+    );
+    assert_eq!(v["files_truncated"], true);
+    assert_eq!(v["files"].as_array().unwrap().len(), 200);
+    assert_eq!(v["files"][199]["path"], "f196.txt");
+    // With nothing categorized `stats` has no `categories` key at all
+    // (`open_diff_live_pins_assigns_and_counts`).
+}
+
+#[test]
+fn invalid_settings_use_the_default_categories() {
+    let w = world();
+    let ctx = w.ctx(no_launch());
+    w.repo.write("Cargo.lock", b"lock\n");
+    w.repo.write("docs/x.md", b"# x\n");
+    w.repo.write("src/a.test.ts", b"test\n");
+    let categories = |v: &serde_json::Value| -> Vec<(String, Option<String>)> {
+        v["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["path"].as_str().unwrap().to_owned(),
+                    f["category"].as_str().map(str::to_owned),
+                )
+            })
+            .collect()
+    };
+    let owned = |rows: &[(&str, Option<&str>)]| -> Vec<(String, Option<String>)> {
+        rows.iter()
+            .map(|(p, c)| ((*p).to_owned(), c.map(str::to_owned)))
+            .collect()
+    };
+
+    // Docs on, but a bad custom id invalidates the whole section: defaults.
+    write_settings(
+        &w.core,
+        r#"{ "categories": { "docs": { "enabled": true }, "custom": [{ "id": "Bad Id", "name": "x" }] } }"#,
+    );
+    assert_eq!(
+        categories(&open_live_json(&w, &ctx)),
+        owned(&[
+            ("Cargo.lock", Some("generated")),
+            ("docs/x.md", None),
+            ("src/a.test.ts", Some("tests")),
+        ])
+    );
+    // Unparseable JSON: the defaults too.
+    write_settings(&w.core, "{ not json");
+    assert_eq!(
+        categories(&open_live_json(&w, &ctx))[1],
+        ("docs/x.md".to_owned(), None)
+    );
+
+    // Fixed: docs apply on the next call.
+    write_settings(
+        &w.core,
+        r#"{ "categories": { "docs": { "enabled": true } } }"#,
+    );
+    assert_eq!(
+        categories(&open_live_json(&w, &ctx)),
+        owned(&[
+            ("Cargo.lock", Some("generated")),
+            ("docs/x.md", Some("docs")),
+            ("src/a.test.ts", Some("tests")),
+        ])
+    );
+}

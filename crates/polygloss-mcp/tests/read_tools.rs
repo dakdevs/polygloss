@@ -667,3 +667,50 @@ fn thread_reads_survive_a_deleted_repo() {
         assert!(md.contains("Why?") || md.contains("Review"), "{uri}: {md}");
     }
 }
+
+/// The diff resource's file table ends in a Category column (T6.9, design
+/// §15.3): the id agents see in `open_diff`, empty when uncategorized.
+#[test]
+fn diff_resource_has_a_category_column() {
+    let w = world();
+    let config = &w.ctx.core.paths.config_dir;
+    std::fs::create_dir_all(config).unwrap();
+    std::fs::write(
+        config.join("settings.json"),
+        r#"{ "categories": { "custom": [{ "id": "tokens", "name": "Design tokens", "patterns": ["tokens/"] }] } }"#,
+    )
+    .unwrap();
+    w.repo.git(&["checkout", "-q", "-b", "cats"]);
+    w.repo.write("Cargo.lock", b"lock\n");
+    w.repo.write("README.txt", b"read me\n");
+    w.repo.write("src/a.test.ts", b"t1\nt2\n");
+    w.repo.write("tokens/c.json", b"{}\n");
+    w.repo.commit("cats");
+    w.repo.checkout("main");
+    let opened = w
+        .ctx
+        .core
+        .open(&OpenRequest {
+            worktree: w.repo.path().to_path_buf(),
+            source: Source::Commit { rev: "cats".into() },
+            label: None,
+            pin: None,
+            actor: Actor::human(),
+        })
+        .unwrap();
+    let md = api::resources::read_resource(
+        &w.ctx,
+        &format!("polygloss://diff/{}", opened.diff_id.as_str()),
+    )
+    .unwrap();
+    let table = &md[md.find("| Status").expect("a table")..];
+    assert_eq!(
+        table,
+        "| Status | Path | + | - | Category |\n\
+         | --- | --- | --- | --- | --- |\n\
+         | added | Cargo.lock | +1 | -0 | generated |\n\
+         | added | README.txt | +1 | -0 |  |\n\
+         | added | src/a.test.ts | +2 | -0 | tests |\n\
+         | added | tokens/c.json | +1 | -0 | custom:tokens |\n"
+    );
+}

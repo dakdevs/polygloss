@@ -2,7 +2,8 @@
 //! `compare`, `open`, `snapshot`) open a review through `Core::open` as the
 //! human actor, then show it in the app (`app::show`, unless `--no-open`) and
 //! return a [`Report`]; `mcp`, `wait` and the JSON CLI (`json`) have their own
-//! output rules.
+//! output rules. Their reports count the files of each category from
+//! `settings.json` (design §11.15), as agents see them.
 
 pub mod app;
 pub mod compare;
@@ -17,11 +18,13 @@ pub mod wait;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use polygloss_core::categories::CategoryInfo;
 use polygloss_core::git::{ResolvedSide, Since};
 use polygloss_core::ipc::Op;
 use polygloss_core::review::{Core, CoreError, OpenRequest, OpenedDiff};
 use polygloss_core::urls::{PolyglossUrl, format_url};
-use serde_json::{Value, json};
+use polygloss_diff::FileChange;
+use serde_json::{Map, Value, json};
 
 use crate::cli::GlobalArgs;
 use crate::output::{CliError, Report};
@@ -87,7 +90,53 @@ pub fn open_and_show(global: &GlobalArgs, req: &OpenRequest) -> Result<Report, C
         app::show(&core.paths, op).map_err(|e| recorded_anyway(e, &url))?
     };
     let label = review_label(&core, &opened.review_id)?;
-    Ok(opened_report(&opened, label.as_deref(), &url, app))
+    let counts = category_counts(&core, &opened.files)?;
+    Ok(opened_report(&opened, label.as_deref(), &url, app, &counts))
+}
+
+/// The enabled categories that hold any of `files`, in match order, with
+/// their file counts, from `settings.json` as it is now.
+pub fn category_counts(
+    core: &Core,
+    files: &[FileChange],
+) -> Result<Vec<(CategoryInfo, usize)>, CliError> {
+    let categorizer = polygloss_mcp::api::categories::categorizer(&core.paths)?;
+    let ids = categorizer.categorize_files(files);
+    Ok(categorizer
+        .enabled()
+        .iter()
+        .filter_map(|info| {
+            let n = ids
+                .iter()
+                .filter(|id| id.as_ref() == Some(&info.id))
+                .count();
+            (n > 0).then(|| (info.clone(), n))
+        })
+        .collect())
+}
+
+/// Adds `"categories": {"tests": 6, …}` to a report, unless it is empty.
+pub fn add_categories(json: &mut Value, counts: &[(CategoryInfo, usize)]) {
+    if !counts.is_empty() {
+        let map: Map<String, Value> = counts
+            .iter()
+            .map(|(info, n)| (info.id.to_string(), json!(n)))
+            .collect();
+        json["categories"] = Value::Object(map);
+    }
+}
+
+/// "42 files (6 tests · 2 generated)": every file, then the categorized ones.
+pub fn files_text(files: usize, counts: &[(CategoryInfo, usize)]) -> String {
+    let mut text = match files {
+        1 => "1 file".to_owned(),
+        n => format!("{n} files"),
+    };
+    if !counts.is_empty() {
+        let chips: Vec<String> = counts.iter().map(|(info, n)| info.chip(*n)).collect();
+        let _ = write!(text, " ({})", chips.join(" · "));
+    }
+    text
 }
 
 /// An `app_unavailable` error after the review was recorded says where it is.
@@ -137,8 +186,15 @@ fn side_json(side: &ResolvedSide) -> Value {
     v
 }
 
-/// The JSON and human output of an opened review.
-pub fn opened_report(opened: &OpenedDiff, label: Option<&str>, url: &str, app: AppShown) -> Report {
+/// The JSON and human output of an opened review; `counts` are its
+/// [`category_counts`].
+pub fn opened_report(
+    opened: &OpenedDiff,
+    label: Option<&str>,
+    url: &str,
+    app: AppShown,
+    counts: &[(CategoryInfo, usize)],
+) -> Report {
     let repo = opened
         .repo
         .toplevel
@@ -149,7 +205,7 @@ pub fn opened_report(opened: &OpenedDiff, label: Option<&str>, url: &str, app: A
         head["commit"] = json!(commit.as_str());
     }
     let warnings: Vec<String> = opened.warnings.iter().map(ToString::to_string).collect();
-    let json = json!({
+    let mut json = json!({
         "review_id": opened.review_id,
         "review_key": opened.review_key,
         "kind": opened.kind.as_str(),
@@ -164,6 +220,7 @@ pub fn opened_report(opened: &OpenedDiff, label: Option<&str>, url: &str, app: A
         "warnings": warnings,
         "app": app.as_str(),
     });
+    add_categories(&mut json, counts);
 
     let mut human = String::new();
     let what = match opened.kind.as_str() {
@@ -176,10 +233,7 @@ pub fn opened_report(opened: &OpenedDiff, label: Option<&str>, url: &str, app: A
         let _ = writeln!(human, "  label      {label}");
     }
     let _ = writeln!(human, "  review     {}", opened.review_id);
-    let files = match opened.files.len() {
-        1 => "1 file".to_owned(),
-        n => format!("{n} files"),
-    };
+    let files = files_text(opened.files.len(), counts);
     let pinned = match &opened.iteration {
         Some(it) => format!("iteration {}", it.seq),
         None => "not pinned".to_owned(),
@@ -227,6 +281,37 @@ mod tests {
         assert_eq!(
             work_dir(None, &GlobalArgs::default()).expect("dir"),
             std::env::current_dir().expect("cwd")
+        );
+    }
+
+    #[test]
+    fn files_text_counts_every_file_then_the_categorized_ones() {
+        use polygloss_core::categories::{BuiltinCategory, CategoryId};
+        let info = |b: BuiltinCategory| CategoryInfo {
+            id: CategoryId::Builtin(b),
+            title: b.def().title.to_owned(),
+            icon: b.def().icon.to_owned(),
+            builtin: Some(b.def()),
+        };
+        assert_eq!(files_text(1, &[]), "1 file");
+        assert_eq!(files_text(0, &[]), "0 files");
+        let counts = [
+            (info(BuiltinCategory::Tests), 6),
+            (info(BuiltinCategory::Generated), 2),
+        ];
+        assert_eq!(files_text(42, &counts), "42 files (6 tests · 2 generated)");
+        assert_eq!(
+            files_text(1, &[(info(BuiltinCategory::Tests), 1)]),
+            "1 file (1 test)"
+        );
+
+        let mut json = json!({});
+        add_categories(&mut json, &[]);
+        assert_eq!(json, json!({}), "nothing categorized: no key");
+        add_categories(&mut json, &counts);
+        assert_eq!(
+            json,
+            json!({ "categories": { "tests": 6, "generated": 2 } })
         );
     }
 
