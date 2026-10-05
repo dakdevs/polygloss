@@ -1,0 +1,29 @@
+#include <stdio.h>
+#include <string.h>
+
+/* Records are saved through the store's own ops when it has them. */
+
+int save_record(struct store *store, struct record *rec)
+{
+	int err;
+
+	err = check_record(rec);
+	if (err)
+		return err;
+
+	/*
+	 * A read-only store is already locked by its owner, so
+	 * taking the lock again here would deadlock.
+	 */
+	if (!(store->flags & STORE_READONLY)) {
+		err = lock_store(store);
+		if (err)
+			return err;
+	}
+
+	if (store->ops->save)
+		err = store->ops->save(store, rec);
+	else
+		err = default_save(store, rec);
+	return err;
+}

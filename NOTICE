@@ -60,3 +60,16 @@ Project Authors, licensed under the SIL Open Font License, Version 1.1
 (assets/fonts/lilex/ofl.txt). The files are the release's static TrueType
 faces, renamed to kebab-case (Lilex-Regular.ttf → lilex-regular.ttf, …) and
 otherwise unmodified; the font is bundled with the app, not sold on its own.
+
+--------------------------------------------------------------------------------
+Myers diff core
+  crates/polygloss-diff/src/myers_core.rs
+
+Ported from gix-imara-diff 0.3.0 (https://github.com/GitoxideLabs/gitoxide;
+src/myers.rs, src/myers/middle_snake.rs, src/myers/slice.rs, src/util.rs),
+which gitoxide modified from the imara-diff crate
+(https://github.com/pascalkuthe/imara-diff), by Pascal Kuthe and Sebastian
+Thiel, licensed under the Apache License, Version 2.0 (LICENSE-APACHE). The
+port leaves out imara's preprocessing, replaces its raw-pointer k-vectors with
+safe vectors and changes three heuristic details to match git; the file's
+header lists every change.

@@ -11,11 +11,14 @@
 //! trimming, so both the limit and the counts come from the trimmed middle only. A
 //! blank line inside a rewritten block is then matched by imara but discarded by
 //! git, which splits one change into two (T1.16 found this with the parity repos).
-//! [`myers`] therefore runs git's step on the full token sequences, runs imara's
-//! Myers on the lines git keeps, and returns the result as an imara [`Diff`] for
-//! the usual post-processing (indent heuristic).
+//! imara's Myers also repeats the step on whatever it is given, pruning lines git
+//! keeps (S14). [`myers`] therefore runs git's step on the full token sequences
+//! and then [`myers_core`] (imara's Myers core without that step) on exactly the
+//! lines git keeps.
 
-use gix_imara_diff::{Algorithm, Diff, Token};
+use gix_imara_diff::Token;
+
+use crate::myers_core::{self, bogosqrt, common_postfix, common_prefix};
 
 /// `XDL_MAX_EQLIMIT`: cap on the multimatch frequency limit.
 const MAX_EQLIMIT: usize = 1024;
@@ -35,32 +38,16 @@ enum Occurs {
     Often,
 }
 
-/// git's `xdl_bogosqrt`: doubles once per two bits of `n`.
-pub(crate) fn bogosqrt(mut n: usize) -> usize {
-    let mut i = 1;
-    while n > 0 {
-        i <<= 1;
-        n >>= 2;
-    }
-    i
-}
-
 /// Diffs two token sequences the way `git diff --diff-algorithm=myers` does
-/// before its slider post-processing. `num_tokens` bounds every token id.
-pub(crate) fn myers(before: &[Token], after: &[Token], num_tokens: u32) -> Diff {
+/// before its slider post-processing: the removed and added flags of every
+/// line. `num_tokens` bounds every token id.
+pub(crate) fn myers(before: &[Token], after: &[Token], num_tokens: u32) -> (Vec<bool>, Vec<bool>) {
     let mut removed = vec![false; before.len()];
     let mut added = vec![false; after.len()];
 
     // xdl_trim_ends
-    let prefix = before.iter().zip(after).take_while(|(a, b)| a == b).count();
-    let limit = before.len().min(after.len()) - prefix;
-    let suffix = before
-        .iter()
-        .rev()
-        .zip(after.iter().rev())
-        .take(limit)
-        .take_while(|(a, b)| a == b)
-        .count();
+    let prefix = common_prefix(before, after);
+    let suffix = common_postfix(&before[prefix..], &after[prefix..]);
     let region1 = prefix..before.len() - suffix;
     let region2 = prefix..after.len() - suffix;
 
@@ -78,18 +65,17 @@ pub(crate) fn myers(before: &[Token], after: &[Token], num_tokens: u32) -> Diff 
         cleanup(after, region2, &count1, &mut added),
     );
 
-    // Myers over the kept lines.
+    // Myers over exactly the kept lines.
     let tokens1: Vec<Token> = keep1.iter().map(|&i| before[i]).collect();
     let tokens2: Vec<Token> = keep2.iter().map(|&i| after[i]).collect();
-    let mut inner = Diff::default();
-    inner.compute_with(Algorithm::Myers, &tokens1, &tokens2, num_tokens);
-    for (k, &i) in keep1.iter().enumerate() {
-        removed[i] = inner.is_removed(k as u32);
+    let (removed_kept, added_kept) = myers_core::diff(&tokens1, &tokens2);
+    for (&i, &changed) in keep1.iter().zip(&removed_kept) {
+        removed[i] = changed;
     }
-    for (k, &i) in keep2.iter().enumerate() {
-        added[i] = inner.is_added(k as u32);
+    for (&i, &changed) in keep2.iter().zip(&added_kept) {
+        added[i] = changed;
     }
-    diff_from_flags(&removed, &added)
+    (removed, added)
 }
 
 /// Marks the lines of `region` git discards in `changed` and returns the indexes
@@ -155,75 +141,12 @@ fn clean_mmatch(dis: &[Occurs], i: usize) -> bool {
     often * KPDIS_RUN < never + often
 }
 
-/// An imara [`Diff`] with exactly these removed/added flags (which must leave the
-/// same number of unchanged lines on both sides). imara has no constructor from
-/// flags, so this diffs synthetic tokens whose only alignment is the given one:
-/// the k-th unchanged line on each side gets token `k`, every changed line a token
-/// of its own.
-pub(crate) fn diff_from_flags(removed: &[bool], added: &[bool]) -> Diff {
-    let synth = |flags: &[bool], next_unique: &mut u32| -> Vec<Token> {
-        let mut equal = 0u32;
-        flags
-            .iter()
-            .map(|&changed| {
-                if changed {
-                    *next_unique += 1;
-                    Token(*next_unique - 1)
-                } else {
-                    equal += 1;
-                    Token(equal - 1)
-                }
-            })
-            .collect()
-    };
-    let unchanged = removed.iter().filter(|&&r| !r).count() as u32;
-    debug_assert_eq!(unchanged as usize, added.iter().filter(|&&a| !a).count());
-    let mut next = unchanged;
-    let before = synth(removed, &mut next);
-    let after = synth(added, &mut next);
-    let mut diff = Diff::default();
-    diff.compute_with(Algorithm::Myers, &before, &after, next);
-    diff
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn flags(diff: &Diff, before: usize, after: usize) -> (Vec<bool>, Vec<bool>) {
-        (
-            (0..before as u32).map(|i| diff.is_removed(i)).collect(),
-            (0..after as u32).map(|i| diff.is_added(i)).collect(),
-        )
-    }
-
     fn toks(ids: &[u32]) -> Vec<Token> {
         ids.iter().map(|&i| Token(i)).collect()
-    }
-
-    #[test]
-    fn bogosqrt_matches_git() {
-        let cases = [
-            (0, 1),
-            (1, 2),
-            (3, 2),
-            (4, 4),
-            (15, 4),
-            (16, 8),
-            (40, 8),
-            (150, 16),
-        ];
-        for (n, want) in cases {
-            assert_eq!(bogosqrt(n), want, "bogosqrt({n})");
-        }
-    }
-
-    #[test]
-    fn diff_from_flags_reproduces_the_flags() {
-        let removed = vec![false, true, true, false, false, true];
-        let added = vec![true, false, false, true, true, false];
-        let diff = diff_from_flags(&removed, &added);
-        assert_eq!(flags(&diff, 6, 6), (removed, added));
     }
 
     #[test]
@@ -260,8 +183,7 @@ mod tests {
             after.extend([0, 2]);
         }
         let (before, after) = (toks(&before), toks(&after));
-        let diff = myers(&before, &after, 27);
-        let (removed, added) = flags(&diff, before.len(), after.len());
+        let (removed, added) = myers(&before, &after, 27);
         let changed = |f: &[bool]| (0..f.len()).filter(|&i| f[i]).collect::<Vec<_>>();
         assert_eq!(changed(&removed), (16..24).collect::<Vec<_>>());
         assert_eq!(changed(&added), (16..24).collect::<Vec<_>>());

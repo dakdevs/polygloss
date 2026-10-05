@@ -8,7 +8,9 @@
 use std::ops::Range;
 
 use gix_imara_diff::sources::byte_lines;
-use gix_imara_diff::{Diff, IndentHeuristic, IndentLevel, InternedInput, Interner, Token};
+use gix_imara_diff::{
+    Diff, IndentHeuristic, IndentLevel, InternedInput, Interner, SliderHeuristic, Token,
+};
 
 use crate::git_myers;
 use crate::lines::LineIndex;
@@ -46,8 +48,8 @@ pub struct FileDiff {
 
 /// Diffs two blobs line by line: imara over `byte_lines` (the `\n` belongs to
 /// the line, so a missing final newline is a change, as in git; Myers runs
-/// behind git's own preprocessing, see [`crate::git_myers`]), then
-/// `postprocess_lines` (git's indent/slider heuristic, tab width 8), then
+/// behind git's own preprocessing, see [`crate::git_myers`]), then imara's
+/// slider post-processing in git's order (indent heuristic, tab width 8), then
 /// context grouping per `opts`.
 pub fn diff_blobs(old: &[u8], new: &[u8], opts: &DiffOptions) -> FileDiff {
     let changes = line_changes(old, new, opts);
@@ -79,21 +81,30 @@ pub(crate) fn line_changes(
         return changes_ignoring_whitespace(old, new, opts.algorithm);
     }
     let input = InternedInput::new(byte_lines(old), byte_lines(new));
-    let mut diff = compute(
+    changes(
         opts.algorithm,
         &input.before,
         &input.after,
         input.interner.num_tokens(),
-    );
-    diff.postprocess_lines(&input);
-    diff.hunks().map(|h| (h.before, h.after)).collect()
+        IndentHeuristic::new(|token: Token| {
+            IndentLevel::for_ascii_line(input.interner[token].iter().copied(), 8)
+        }),
+    )
 }
 
-/// The raw line diff before post-processing. Myers goes through git's
+/// The raw line diff, then the slider post-processing. Myers goes through git's
 /// preprocessing ([`git_myers::myers`]); Histogram is imara's as is (git skips
-/// that preprocessing for histogram too).
-fn compute(algorithm: Algorithm, before: &[Token], after: &[Token], num_tokens: u32) -> Diff {
-    match algorithm {
+/// that preprocessing for histogram too). git slides the old side's changes
+/// first and then the new side's, while imara's `postprocess_with` does the new
+/// side first, so it runs on the mirrored diff (old and new swapped).
+fn changes(
+    algorithm: Algorithm,
+    before: &[Token],
+    after: &[Token],
+    num_tokens: u32,
+    heuristic: impl SliderHeuristic,
+) -> Vec<(Range<u32>, Range<u32>)> {
+    let (removed, added) = match algorithm {
         Algorithm::Myers => git_myers::myers(before, after, num_tokens),
         Algorithm::Histogram => {
             let mut diff = Diff::default();
@@ -103,9 +114,48 @@ fn compute(algorithm: Algorithm, before: &[Token], after: &[Token], num_tokens: 
                 after,
                 num_tokens,
             );
-            diff
+            (
+                (0..before.len() as u32)
+                    .map(|i| diff.is_removed(i))
+                    .collect(),
+                (0..after.len() as u32).map(|i| diff.is_added(i)).collect(),
+            )
         }
-    }
+    };
+    let mut mirrored = diff_from_flags(&added, &removed);
+    mirrored.postprocess_with(after, before, heuristic);
+    mirrored.hunks().map(|h| (h.after, h.before)).collect()
+}
+
+/// An imara [`Diff`] with exactly these removed/added flags (which must leave the
+/// same number of unchanged lines on both sides). imara has no constructor from
+/// flags, so this diffs synthetic tokens whose only alignment is the given one:
+/// the k-th unchanged line on each side gets token `k`, every changed line a token
+/// of its own.
+fn diff_from_flags(removed: &[bool], added: &[bool]) -> Diff {
+    let synth = |flags: &[bool], next_unique: &mut u32| -> Vec<Token> {
+        let mut equal = 0u32;
+        flags
+            .iter()
+            .map(|&changed| {
+                if changed {
+                    *next_unique += 1;
+                    Token(*next_unique - 1)
+                } else {
+                    equal += 1;
+                    Token(equal - 1)
+                }
+            })
+            .collect()
+    };
+    let unchanged = removed.iter().filter(|&&r| !r).count() as u32;
+    debug_assert_eq!(unchanged as usize, added.iter().filter(|&&a| !a).count());
+    let mut next = unchanged;
+    let before = synth(removed, &mut next);
+    let after = synth(added, &mut next);
+    let mut diff = Diff::default();
+    diff.compute_with(gix_imara_diff::Algorithm::Myers, &before, &after, next);
+    diff
 }
 
 /// Changed ranges when lines compare with all whitespace removed. The slider
@@ -133,13 +183,13 @@ fn changes_ignoring_whitespace(
     };
     let before = tokens(old);
     let after = tokens(new);
-    let mut diff = compute(algorithm, &before, &after, interner.num_tokens());
-    diff.postprocess_with(
+    changes(
+        algorithm,
         &before,
         &after,
+        interner.num_tokens(),
         IndentHeuristic::new(|token: Token| indents[token.0 as usize]),
-    );
-    diff.hunks().map(|h| (h.before, h.after)).collect()
+    )
 }
 
 /// Groups imara's changed ranges into hunks with context, like git's
@@ -200,4 +250,21 @@ fn group(
         i = j;
     }
     hunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_from_flags_reproduces_the_flags() {
+        let removed = vec![false, true, true, false, false, true];
+        let added = vec![true, false, false, true, true, false];
+        let diff = diff_from_flags(&removed, &added);
+        let flags = (
+            (0..6).map(|i| diff.is_removed(i)).collect::<Vec<_>>(),
+            (0..6).map(|i| diff.is_added(i)).collect::<Vec<_>>(),
+        );
+        assert_eq!(flags, (removed, added));
+    }
 }
