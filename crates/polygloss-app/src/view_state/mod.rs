@@ -4,10 +4,10 @@
 //! position as a line (the first line shown below the pinned file header,
 //! never pixels, see [`polygloss_viewport::Document::top_line`]), collapsed
 //! files, revealed context, the split/unified choice, the file tree's
-//! expansion and unsaved composer text. It is restored when the diff opens again ([`attach`], before the
-//! first frame) and saved on change, [`SAVE_DEBOUNCE`] after the last one
-//! (trailing), off the main thread; closing the tab or quitting saves what is
-//! pending at once.
+//! expansion and unsaved composer text. It is restored when the diff opens
+//! again ([`attach`], before the first frame) and saved on change,
+//! [`SAVE_DEBOUNCE`] after the last one (trailing), off the main thread;
+//! closing the tab or quitting saves what is pending at once.
 //!
 //! What changed is found by observing the tab's viewport and file tree (every
 //! scroll, collapse, reveal or layout change notifies them) and comparing a

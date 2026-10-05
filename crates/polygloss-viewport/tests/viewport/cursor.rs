@@ -462,6 +462,45 @@ fn drag_line_numbers_selects_range(cx: &mut TestAppContext) {
     assert_eq!(comments(&events), [comment(0, Side::New, 4, 5)]);
 }
 
+/// On a card, rows start at its inner edge, 17 px in (a 16 px margin and a
+/// 1 px border); without a prelude the first card's rows are as high as in
+/// the flat layout. The gutter "+" and a text selection hit the same lines
+/// and characters as there, 17 px to the right.
+#[gpui_kit::test]
+fn gutter_plus_and_selection_hit_rows_inside_the_card(cx: &mut TestAppContext) {
+    const INSET: f32 = 17.0;
+    let _sb = sandbox();
+    let opts = card_options(LayoutMode::Unified);
+    let (view, cx) = open(cx, two_files(), opts, 1000., 2000.);
+    let (events, _sub) = record_events(&view, cx);
+    // Hovering context line 3's numbers shows its "+", in the card's gutter.
+    let at = point(px(INSET + 20.), px(row_y(1) + 10.));
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    settle(cx);
+    let plus = debug(&view, cx).plus_button.expect("a + button");
+    assert_eq!((plus.file_idx, plus.side, plus.line), (0, Side::New, 3));
+    let (x, y, w, h) = plus.bounds;
+    assert!(y >= row_y(1) && y + h <= row_y(2), "{:?}", plus.bounds);
+    assert!(
+        x >= INSET && x + w <= INSET + CODE_X + 1.0,
+        "{:?}",
+        plus.bounds
+    );
+    click_at(cx, x + w / 2.0, y + h / 2.0);
+    assert_eq!(comments(&events), [comment(0, Side::New, 3, 3)]);
+
+    // Drag through the code from "a 3" (after "a ") to "A 5" (after "A").
+    let from = point(px(INSET + CODE_X + 2.0 * ADVANCE + 1.0), px(row_y(1) + 10.));
+    let to = point(px(INSET + CODE_X + ADVANCE + 1.0), px(row_y(4) + 10.));
+    cx.simulate_mouse_move(from, None, Modifiers::default());
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    settle(cx);
+    let text = view.read_with(cx, |v, _| v.selected_text());
+    assert_eq!(text.as_deref(), Some("3\na 4\nA"));
+}
+
 #[gpui_kit::test]
 fn copy_excludes_gutters_and_markers(cx: &mut TestAppContext) {
     let _sb = sandbox();

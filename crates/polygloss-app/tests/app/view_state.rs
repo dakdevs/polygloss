@@ -667,7 +667,10 @@ fn view_state_top_line_round_trips_with_cards(cx: &mut TestAppContext) {
     settle(&mut shell);
     assert_eq!(stored_anchor(&mut shell, &tab), None);
     close(&mut shell, &tab);
+    // With the header card back, the top shows it (a line saved for the
+    // first file would put that line below the pinned header instead).
     let tab = shell.open(compare(&repo)).unwrap();
+    set_prelude(&mut shell, &tab);
     let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
     assert_eq!(
         viewport.read_with(shell.cx, |v, _| v.document().scroll_top()),

@@ -270,6 +270,11 @@ impl Painter<'_> {
         let header_h = self.doc.metrics().header_height;
         for f in visible.clone() {
             let top = (self.doc.header_top(f) - self.scroll_top) as f32;
+            if top >= height {
+                // Only its lead shows (the canvas above its card, or the
+                // prelude): nothing of the card is in view.
+                break;
+            }
             // The first file's header pins at the top while its body scrolls
             // under it, until its body's end (the next card in the flat
             // layout) pushes it up.

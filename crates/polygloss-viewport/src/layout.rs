@@ -124,7 +124,7 @@ pub(crate) struct Columns {
     pub x: f32,
     pub width: f32,
     pub advance: f32,
-    /// Where the right half starts (split); `width` in unified.
+    /// Where the right half starts (split); `x + width` in unified.
     pub half: f32,
     pub number_width: f32,
     pub indicator_width: f32,

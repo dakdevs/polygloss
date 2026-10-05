@@ -9,6 +9,7 @@
 //! so [`wait_until`] sleeps a little real time and advances the clock.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::IndexPath;
@@ -16,13 +17,15 @@ use gpui_kit::{Entity, SharedString};
 use polygloss_app::keymap::actions::tab as tab_actions;
 use polygloss_app::live::recompute::{self, Shown, Target};
 use polygloss_app::live::watcher::{PathFilter, Verdict};
-use polygloss_app::live::{self, base_picker};
+use polygloss_app::live::{self, base_picker, refresh as live_refresh};
 use polygloss_app::review_tab::{BannerKind, ReviewTab};
 use polygloss_core::git::{CompareMode, RepoInfo, Since, Source, discover};
 use polygloss_core::review::OpenRequest;
 use polygloss_core::store::events::Actor;
-use polygloss_diff::{ObjectFormat, Side};
-use polygloss_viewport::{FileFlags, RowKey, ScrollTarget};
+use polygloss_diff::{
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, ObjectFormat, Oid, Side,
+};
+use polygloss_viewport::{DiffProvider, FileFlags, RowKey, ScrollAnchor, ScrollTarget};
 
 use crate::shell::{Shell, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
@@ -809,5 +812,129 @@ fn live_refresh_keeps_the_line_below_the_header(cx: &mut gpui_kit::TestAppContex
     assert_eq!(
         viewport.read_with(shell.cx, |v, _| v.document().prelude_height()),
         Some(72.0)
+    );
+}
+
+#[gpui_kit::test]
+fn live_refresh_at_the_top_of_the_document_stays_there(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{IntoElement as _, Styled as _};
+    let _sb = Sandbox::isolate();
+    let repo = live_repo();
+    let mut shell = start(cx);
+    let tab = open_watched(&mut shell, live_req(repo.path(), Since::MergeBase));
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    // A 72 pt prelude (the header card's stand-in) above the first card.
+    let prelude: polygloss_viewport::RenderBlock =
+        std::rc::Rc::new(|_, _| gpui_kit::div().h(gpui_kit::px(72.)).into_any_element());
+    viewport.update(shell.cx, |v, cx| v.set_prelude(Some(prelude), cx));
+    draw(shell.cx);
+    let scroll_top =
+        |shell: &mut Shell| viewport.read_with(shell.cx, |v, _| v.document().scroll_top());
+    assert_eq!(scroll_top(&mut shell), 0.0);
+
+    // A file sorting before the first one appears: the review stays at the
+    // top (the prelude, then the new first card), not at the lead of the
+    // file that was first.
+    repo.write("notes.md", b"# Notes\n\nMore.\n");
+    wait_until(&mut shell, "the banner", |s| {
+        banner(s, &tab, BannerKind::LiveChanges).is_some()
+    });
+    refresh(&mut shell, &tab);
+    assert_eq!(
+        paths(&mut shell, &tab),
+        ["notes.md", "src/a.rs", "src/b.rs"]
+    );
+    assert_eq!(scroll_top(&mut shell), 0.0);
+
+    // 30 pt into the prelude, the first file goes away: still 30 pt into
+    // the prelude, not at the next card's header.
+    viewport.update(shell.cx, |v, cx| v.scroll_by(30.0, cx));
+    draw(shell.cx);
+    assert_eq!(scroll_top(&mut shell), 30.0);
+    repo.write("notes.md", b"# Notes\n");
+    wait_until(&mut shell, "the banner", |s| {
+        banner(s, &tab, BannerKind::LiveChanges).is_some()
+    });
+    refresh(&mut shell, &tab);
+    assert_eq!(paths(&mut shell, &tab), ["src/a.rs", "src/b.rs"]);
+    assert_eq!(scroll_top(&mut shell), 30.0);
+}
+
+/// Modified files at `paths`, in order.
+fn modified(paths: &[&str]) -> Vec<FileChange> {
+    let zero = Oid::zero(ObjectFormat::Sha1);
+    paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| FileChange {
+            idx: i as u32,
+            status: FileStatus::Modified,
+            old_path: Some(GitPath::from_bytes(p.as_bytes())),
+            new_path: Some(GitPath::from_bytes(p.as_bytes())),
+            old_mode: None,
+            new_mode: None,
+            old_blob: zero.clone(),
+            new_blob: zero.clone(),
+            similarity: None,
+            kind: FileKind::Text,
+            generated: false,
+            generated_attr: GeneratedAttr::Unspecified,
+        })
+        .collect()
+}
+
+/// Anchors in leads and headers map without line mapping: no blob is read.
+struct NoBlobs;
+
+impl DiffProvider for NoBlobs {
+    fn object_format(&self) -> ObjectFormat {
+        ObjectFormat::Sha1
+    }
+    fn files(&self) -> Arc<Vec<FileChange>> {
+        Arc::default()
+    }
+    fn load_blob(&self, oid: &Oid) -> anyhow::Result<Arc<[u8]>> {
+        anyhow::bail!("blob {oid} read")
+    }
+    fn blob_size(&self, oid: &Oid) -> anyhow::Result<u64> {
+        anyhow::bail!("blob {oid} sized")
+    }
+}
+
+#[test]
+fn refresh_plan_keeps_the_top_of_the_document_and_maps_leads() {
+    let at = |file_idx, row, offset_px| ScrollAnchor {
+        file_idx,
+        row,
+        offset_px,
+    };
+    let mapped = |anchor, old: &[&str], new: &[&str]| {
+        let kept = live_refresh::Kept {
+            anchor,
+            collapsed: Vec::new(),
+            expansions: Vec::new(),
+            flags: vec![FileFlags::default(); old.len()],
+        };
+        live_refresh::plan(&kept, &modified(old), &modified(new), &NoBlobs, &NoBlobs).anchor
+    };
+    // 30 pt into the prelude stays there when a file sorting first appears
+    // and when the first file goes away.
+    let top = at(0, RowKey::Lead, 30.0);
+    assert_eq!(mapped(top, &["b", "c"], &["a", "b", "c"]), top);
+    assert_eq!(mapped(top, &["a", "b", "c"], &["b", "c"]), top);
+    // Another file's lead (the canvas above its card) follows its file.
+    assert_eq!(
+        mapped(at(1, RowKey::Lead, 5.0), &["b", "c"], &["a", "b", "c"]),
+        at(2, RowKey::Lead, 5.0)
+    );
+    // Its file gone, a lead becomes the next file's lead and a header the
+    // next file's header.
+    assert_eq!(
+        mapped(at(1, RowKey::Lead, 5.0), &["a", "b", "c"], &["a", "c"]),
+        at(1, RowKey::Lead, 0.0)
+    );
+    assert_eq!(
+        mapped(at(1, RowKey::Header, 5.0), &["a", "b", "c"], &["a", "c"]),
+        at(1, RowKey::Header, 0.0)
     );
 }

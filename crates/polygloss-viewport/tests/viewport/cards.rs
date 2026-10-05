@@ -13,8 +13,8 @@ use gpui_kit::{
 use polygloss_diff::Side;
 use polygloss_diff::rows::Layout;
 use polygloss_viewport::{
-    BlockAnchor, BlockId, BlockSpec, DiffProvider, DiffViewport, LayoutMode, RenderBlock, RowKey,
-    ScrollAnchor, ScrollTarget, ViewportDebug, ViewportOptions,
+    BlockAnchor, BlockId, BlockSpec, ControlAction, DiffProvider, DiffViewport, LayoutMode,
+    RenderBlock, RowKey, ScrollAnchor, ScrollTarget, ViewportDebug, ViewportEvent, ViewportOptions,
 };
 
 use crate::support::*;
@@ -261,6 +261,25 @@ fn growing_the_prelude_keeps_scroll_top_0(cx: &mut TestAppContext) {
     assert_eq!(header_at(&d, 0), (412.0, false));
 }
 
+/// Below a prelude taller than the viewport only the first file's lead is
+/// in view: nothing of its card is painted until its top enters.
+#[gpui_kit::test]
+fn a_card_below_the_viewport_paints_nothing(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let h = Rc::new(Cell::new(500.0));
+    let opts = card_options(LayoutMode::Unified);
+    let (view, cx) = open_with_prelude(cx, two_added(20), opts, (1000., 400.), prelude_box(h));
+    let d = debug(&view, cx);
+    assert_eq!(d.prelude, Some((CARD.0, 0.0, CARD.1, 500.0)));
+    assert!(d.headers.is_empty(), "{:?}", d.headers);
+    assert!(d.visible_rows.is_empty(), "{:?}", d.visible_rows);
+    assert!(d.controls.is_empty(), "{:?}", d.controls);
+    // Its header starts at 512 (500 + a 12 px gap): scrolled 113 px, its
+    // top is 1 px above the bottom edge.
+    wheel(cx, 113.);
+    assert_eq!(header_at(&debug(&view, cx), 0), (399.0, false));
+}
+
 #[gpui_kit::test]
 fn growing_the_prelude_above_a_line_anchor_keeps_that_line(cx: &mut TestAppContext) {
     let _sb = sandbox();
@@ -412,6 +431,60 @@ fn split_threshold_uses_the_inner_width(cx: &mut TestAppContext) {
         400.,
     );
     assert_eq!(debug(&view, cx).layout, Layout::Split);
+}
+
+/// A header's content spans its card's inner width: the chevron sits 17 px
+/// (a 16 px margin and a 1 px border) right of where it is in the flat
+/// layout, Viewed and ⋯ 17 px left of theirs, and clicks there reach them.
+#[gpui_kit::test]
+fn header_controls_sit_and_take_clicks_inside_the_card(cx: &mut TestAppContext) {
+    const INSET: f32 = 17.0;
+    let _sb = sandbox();
+    let actions = [
+        ControlAction::Collapse(0),
+        ControlAction::Viewed(0),
+        ControlAction::Menu(0),
+    ];
+    let flat = {
+        let opts = options(LayoutMode::Unified);
+        let (view, cx) = open(cx, two_added(5), opts, 1000., 800.);
+        let d = debug(&view, cx);
+        actions.map(|a| control(&d, a))
+    };
+    let (view, cx) = open(
+        cx,
+        two_added(5),
+        card_options(LayoutMode::Unified),
+        1000.,
+        800.,
+    );
+    let (events, _sub) = record_events(&view, cx);
+    let d = debug(&view, cx);
+    let card = actions.map(|a| control(&d, a));
+    let shifted = |(x, y, w, h): (f32, f32, f32, f32), dx: f32| (x + dx, y, w, h);
+    assert_eq!(
+        card,
+        [
+            shifted(flat[0], INSET),
+            shifted(flat[1], -INSET),
+            shifted(flat[2], -INSET),
+        ]
+    );
+
+    // Clicks at the flat layout's centers, moved by the inset.
+    let click = |cx: &mut VisualTestContext, (x, y, w, h): (f32, f32, f32, f32), dx: f32| {
+        click_at(cx, x + w / 2.0 + dx, y + h / 2.0)
+    };
+    click(cx, flat[1], -INSET);
+    let toggled: Vec<ViewportEvent> = events
+        .borrow()
+        .iter()
+        .filter(|e| !matches!(e, ViewportEvent::FrameStats(_)))
+        .cloned()
+        .collect();
+    assert_eq!(toggled, [ViewportEvent::ViewedToggled(0)]);
+    click(cx, flat[0], INSET);
+    assert_eq!(view.read_with(cx, |v, _| v.collapsed()), [0]);
 }
 
 #[gpui_kit::test]
