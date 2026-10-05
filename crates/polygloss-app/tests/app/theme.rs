@@ -1,16 +1,18 @@
-//! Themes and fonts (T3.3, design §11.10, ADR-0024): Pierre → gpui-kit
-//! tokens, system appearance, user theme files, broken files, Lilex.
+//! Themes and fonts (T3.3, T6.2, design §11.10, ADR-0024, ADR-0027):
+//! Polygloss and Pierre → gpui-kit tokens, contrast, system appearance, user
+//! theme files, broken files and unknown names, Lilex.
 
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::theme::Theme;
 use gpui_kit::{Hsla, TestAppContext, VisualTestContext};
+use polygloss_app::markdown;
 use polygloss_app::settings::model::ThemeMode;
 use polygloss_app::settings::{Settings, SettingsStore};
 use polygloss_app::theme::fonts::{LILEX_FAMILY, LILEX_FONTS};
 use polygloss_app::theme::zed_to_kit::{REQUIRED_KIT_TOKENS, kit_colors, kit_theme_config};
 use polygloss_app::theme::{self, ThemeRegistry};
-use polygloss_highlight::{Appearance, Rgba, pierre_theme};
+use polygloss_highlight::{Appearance, Rgba, ZedTheme, default_theme, pierre_theme};
 use polygloss_viewport::kit::{SYSTEM_MONO_FONT, SYSTEM_UI_FONT};
 
 use crate::shell::{compare_req, draw, start};
@@ -69,14 +71,15 @@ fn pierre_light_maps_every_required_kit_token(cx: &mut TestAppContext) {
     );
     // Straight from Pierre's own keys.
     for (kit, zed) in [
-        ("background", "#ffffffff"),           // editor.background
-        ("foreground", "#0a0a0aff"),           // text
-        ("border", "#e5e5e5ff"),               // border
-        ("sidebar.background", "#f5f5f5ff"),   // panel.background
-        ("muted.foreground", "#525252ff"),     // text.muted
-        ("primary.background", "#009fffff"),   // text.accent
-        ("primary.foreground", "#ffffffff"),   // contrast on the accent
-        ("selection.background", "#009fff2e"), // players[0].selection
+        ("tab_bar.segmented.background", "#edededff"), // element.background
+        ("background", "#ffffffff"),                   // editor.background
+        ("foreground", "#0a0a0aff"),                   // text
+        ("border", "#e5e5e5ff"),                       // border
+        ("sidebar.background", "#f5f5f5ff"),           // panel.background
+        ("muted.foreground", "#525252ff"),             // text.muted
+        ("primary.background", "#009fffff"),           // text.accent
+        ("primary.foreground", "#ffffffff"),           // contrast on the accent
+        ("selection.background", "#009fff2e"),         // players[0].selection
         ("tab.active.background", "#ffffffff"),
         ("base.green", "#18a46cff"),
         ("base.red", "#d52c36ff"),
@@ -93,10 +96,17 @@ fn pierre_light_maps_every_required_kit_token(cx: &mut TestAppContext) {
         );
     }
     assert!(config.font_family.is_none() && config.mono_font_family.is_none());
+    assert_eq!((config.radius, config.radius_lg), (Some(6), Some(10)));
 
-    // Applied in the app: gpui-kit's theme holds Pierre's colors, and the
-    // fonts init_kit named stay (no font scan).
+    // Applied in the app by name: gpui-kit's theme holds Pierre's colors,
+    // and the fonts init_kit named stay (no font scan).
     let shell = start(cx);
+    shell.cx.update(|_, cx| {
+        let mut s = Settings::default();
+        s.theme.light = "Pierre Light".into();
+        SettingsStore::set(s, cx);
+    });
+    draw(shell.cx);
     shell.cx.update(|_, cx| {
         assert_eq!(theme::active_theme_name(cx), "Pierre Light");
         let kit = Theme::global(cx);
@@ -108,10 +118,157 @@ fn pierre_light_maps_every_required_kit_token(cx: &mut TestAppContext) {
         assert_eq!(kit.sidebar, color("#f5f5f5"));
         assert_eq!(kit.primary, color("#009fff"));
         assert_eq!(kit.green, color("#18a46c"));
+        assert_eq!(kit.tab_bar_segmented, color("#ededed"));
         assert_eq!(kit.tokens.background.color, kit.background);
         assert_eq!(kit.font_family, SYSTEM_UI_FONT);
         assert_eq!(kit.mono_font_family, LILEX_FAMILY);
     });
+}
+
+/// Every [`REQUIRED_KIT_TOKENS`] key is mapped from `t`, and `expected`
+/// `(kit key, color)` pairs hold.
+fn assert_kit_colors(t: &ZedTheme, expected: &[(&str, &str)]) {
+    let colors = kit_colors(t);
+    let missing: Vec<_> = REQUIRED_KIT_TOKENS
+        .iter()
+        .filter(|k| !colors.contains_key(**k))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "not mapped from {}: {missing:?}",
+        t.name
+    );
+    for (kit, hex) in expected {
+        assert_eq!(colors[*kit], *hex, "{}: {kit}", t.name);
+    }
+    let config = kit_theme_config(t);
+    assert_eq!((config.radius, config.radius_lg), (Some(6), Some(10)));
+}
+
+#[gpui_kit::test]
+fn polygloss_light_maps_every_required_kit_token(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // The research palette (docs/research/redesign-reference.md), by hand.
+    assert_kit_colors(
+        default_theme(Appearance::Light),
+        &[
+            ("background", "#ffffffff"),             // editor.background (cards)
+            ("foreground", "#18181bff"),             // text
+            ("border", "#e7e7e7ff"),                 // border
+            ("sidebar.background", "#ebebeaff"),     // panel.background
+            ("muted.foreground", "#6b6b73ff"),       // text.muted
+            ("primary.background", "#1f6febff"),     // text.accent
+            ("primary.foreground", "#ffffffff"),     // contrast on the accent
+            ("popover.background", "#ffffffff"),     // elevated_surface.background
+            ("title_bar.background", "#fcfcfbff"),   // title_bar.background
+            ("list.hover.background", "#0000000a"),  // ghost_element.hover
+            ("list.active.background", "#0000000f"), // ghost_element.selected
+            ("tab_bar.segmented.background", "#dcdcdbff"), // polygloss.sidebar.field
+        ],
+    );
+
+    // The default: fresh settings show Polygloss Light in the light test
+    // window, chrome and diff alike, with the kit's radii.
+    let mut shell = start(cx);
+    let repo = code_change_repo();
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    shell.cx.update(|_, cx| {
+        assert_eq!(theme::active_theme_name(cx), "Polygloss Light");
+        let kit = Theme::global(cx);
+        assert!(!kit.is_dark());
+        assert_eq!(kit.background, color("#ffffff"));
+        assert_eq!(kit.sidebar, color("#ebebea"));
+        assert_eq!(kit.tab_bar_segmented, color("#dcdcdb"));
+        assert_eq!(
+            (kit.radius, kit.radius_lg),
+            (gpui_kit::px(6.), gpui_kit::px(10.))
+        );
+        assert_eq!(kit.mono_font_family, LILEX_FAMILY);
+    });
+    let canvas = tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).options().theme.canvas);
+    assert_eq!(canvas, color("#f8f8f6"));
+}
+
+#[gpui_kit::test]
+fn polygloss_dark_maps_every_required_kit_token(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    assert_kit_colors(
+        default_theme(Appearance::Dark),
+        &[
+            ("background", "#18181bff"),
+            ("foreground", "#ececedff"),
+            ("border", "#2a2a2eff"),
+            ("sidebar.background", "#1c1c1fff"),
+            ("muted.foreground", "#a1a1aaff"),
+            ("primary.background", "#4c8dffff"),
+            ("primary.foreground", "#ffffffff"),
+            ("popover.background", "#202023ff"),
+            ("title_bar.background", "#161618ff"),
+            ("list.hover.background", "#ffffff0d"),
+            ("list.active.background", "#ffffff12"),
+            ("tab_bar.segmented.background", "#2a2a2eff"),
+        ],
+    );
+
+    // A dark system appearance with fresh settings: Polygloss Dark.
+    let shell = start(cx);
+    shell
+        .cx
+        .update(|_, cx| theme::system_appearance_changed(Appearance::Dark, cx));
+    draw(shell.cx);
+    shell.cx.update(|_, cx| {
+        assert_eq!(theme::active_theme_name(cx), "Polygloss Dark");
+        let kit = Theme::global(cx);
+        assert!(kit.is_dark());
+        assert_eq!(kit.background, color("#18181b"));
+        assert_eq!(kit.sidebar, color("#1c1c1f"));
+        assert_eq!(
+            (kit.radius, kit.radius_lg),
+            (gpui_kit::px(6.), gpui_kit::px(10.))
+        );
+    });
+}
+
+/// WCAG 2 relative luminance of an opaque sRGB color.
+fn luminance(c: Rgba) -> f64 {
+    let channel = |v: u8| {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+}
+
+/// WCAG 2 contrast ratio of two opaque colors.
+fn contrast(a: Rgba, b: Rgba) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+#[test]
+fn polygloss_themes_meet_contrast() {
+    // Polygloss only: Pierre is a published port this task does not change.
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        let t = default_theme(appearance);
+        let c = |key: &str| {
+            let c = t.color(key).unwrap_or_else(|| panic!("{}: {key}", t.name));
+            assert_eq!(c.a, 0xff, "{}: {key} is opaque", t.name);
+            c
+        };
+        for surface in ["background", "editor.background", "panel.background"] {
+            let ratio = contrast(c("text"), c(surface));
+            assert!(ratio >= 4.5, "{}: text on {surface} {ratio:.2}", t.name);
+        }
+        let editor = c("editor.background");
+        for (capture, style) in &t.syntax {
+            let fg = style.color.unwrap_or_else(|| panic!("{capture}"));
+            let ratio = contrast(fg, editor);
+            assert!(ratio >= 3.5, "{}: syntax.{capture} {ratio:.2}", t.name);
+        }
+    }
 }
 
 #[gpui_kit::test]
@@ -126,10 +283,11 @@ fn system_appearance_switch_changes_theme(cx: &mut TestAppContext) {
             (v.options().theme.name.clone(), v.options().theme.appearance)
         })
     };
-    // The test window is light: `theme.mode = "system"` picks Pierre Light.
+    // The test window is light: `theme.mode = "system"` picks Polygloss
+    // Light.
     assert_eq!(
         viewport_theme(shell.cx),
-        ("Pierre Light".into(), Appearance::Light)
+        ("Polygloss Light".into(), Appearance::Light)
     );
 
     shell
@@ -138,20 +296,20 @@ fn system_appearance_switch_changes_theme(cx: &mut TestAppContext) {
     draw(shell.cx);
     assert_eq!(
         viewport_theme(shell.cx),
-        ("Pierre Dark".into(), Appearance::Dark)
+        ("Polygloss Dark".into(), Appearance::Dark)
     );
     shell.cx.update(|_, cx| {
-        assert_eq!(theme::active_theme_name(cx), "Pierre Dark");
+        assert_eq!(theme::active_theme_name(cx), "Polygloss Dark");
         let kit = Theme::global(cx);
         assert!(kit.is_dark());
-        assert_eq!(kit.background, color("#0a0a0a"));
+        assert_eq!(kit.background, color("#18181b"));
     });
     // New tabs get it too.
     assert_eq!(
         shell
             .cx
             .update(|_, cx| theme::viewport_theme(cx).name.clone()),
-        "Pierre Dark"
+        "Polygloss Dark"
     );
 
     // With the mode pinned to light, the system appearance no longer
@@ -162,7 +320,7 @@ fn system_appearance_switch_changes_theme(cx: &mut TestAppContext) {
         SettingsStore::set(s, cx);
     });
     draw(shell.cx);
-    assert_eq!(viewport_theme(shell.cx).0, "Pierre Light");
+    assert_eq!(viewport_theme(shell.cx).0, "Polygloss Light");
     shell
         .cx
         .update(|_, cx| theme::system_appearance_changed(Appearance::Light, cx));
@@ -170,7 +328,7 @@ fn system_appearance_switch_changes_theme(cx: &mut TestAppContext) {
         .cx
         .update(|_, cx| theme::system_appearance_changed(Appearance::Dark, cx));
     draw(shell.cx);
-    assert_eq!(viewport_theme(shell.cx).0, "Pierre Light");
+    assert_eq!(viewport_theme(shell.cx).0, "Polygloss Light");
     assert!(!shell.cx.update(|_, cx| Theme::global(cx).is_dark()));
 }
 
@@ -187,7 +345,14 @@ fn user_theme_file_is_listed_and_applies(cx: &mut TestAppContext) {
     .unwrap();
     let mut shell = start(cx);
     let names = shell.cx.update(|_, cx| ThemeRegistry::global(cx).names());
-    for name in ["Midnight", "Pierre Dark", "Pierre Light"] {
+    // The four built-ins and the user's file.
+    for name in [
+        "Midnight",
+        "Pierre Dark",
+        "Pierre Light",
+        "Polygloss Dark",
+        "Polygloss Light",
+    ] {
         assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
     }
     let tab = shell.open(compare_req(repo.path())).unwrap();
@@ -307,7 +472,7 @@ fn broken_user_theme_is_skipped_with_toast(cx: &mut TestAppContext) {
     // The app still shows its default theme.
     assert_eq!(
         shell.cx.update(|_, cx| theme::active_theme_name(cx)),
-        "Pierre Light"
+        "Polygloss Light"
     );
 
     // A file that breaks while the app runs is toasted too; a reload that
@@ -331,8 +496,20 @@ fn broken_user_theme_is_skipped_with_toast(cx: &mut TestAppContext) {
             .cx
             .update(|_, cx| ThemeRegistry::global(cx).get("Good").is_none())
     );
+}
 
-    // A theme name nobody has: Pierre instead, and one toast.
+#[gpui_kit::test]
+fn unknown_theme_name_falls_back_to_polygloss(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let shell = start(cx);
+    let toasts = |cx: &mut VisualTestContext, name: &str| {
+        let toasts = shell.main.read_with(cx, |m, _| m.toasts().to_vec());
+        toasts
+            .iter()
+            .filter(|t| t.contains(&format!("\"{name}\"")))
+            .count()
+    };
+    // A light theme name nobody has: Polygloss Light instead, and one toast.
     shell.cx.update(|_, cx| {
         let mut s = Settings::default();
         s.theme.light = "Missing".into();
@@ -341,14 +518,22 @@ fn broken_user_theme_is_skipped_with_toast(cx: &mut TestAppContext) {
     draw(shell.cx);
     assert_eq!(
         shell.cx.update(|_, cx| theme::active_theme_name(cx)),
-        "Pierre Light"
+        "Polygloss Light"
     );
-    let toasts = shell.main.read_with(shell.cx, |m, _| m.toasts().to_vec());
-    assert_eq!(
-        toasts.iter().filter(|t| t.contains("\"Missing\"")).count(),
-        1,
-        "{toasts:?}"
-    );
+    assert_eq!(toasts(shell.cx, "Missing"), 1);
+    // A dark one: Polygloss Dark, the fallback of the wanted appearance.
+    shell.cx.update(|_, cx| {
+        let mut s = Settings::default();
+        s.theme.mode = ThemeMode::Dark;
+        s.theme.dark = "Also Missing".into();
+        SettingsStore::set(s, cx);
+    });
+    draw(shell.cx);
+    shell.cx.update(|_, cx| {
+        assert_eq!(theme::active_theme_name(cx), "Polygloss Dark");
+        assert!(Theme::global(cx).is_dark());
+    });
+    assert_eq!(toasts(shell.cx, "Also Missing"), 1);
 }
 
 #[gpui_kit::test]
@@ -403,4 +588,18 @@ fn lilex_is_default_code_font(cx: &mut TestAppContext) {
     assert_eq!(fonts(shell.cx), ("Menlo".into(), SYSTEM_MONO_FONT.into()));
     set_family(shell.cx, LILEX_FAMILY);
     assert_eq!(fonts(shell.cx), (LILEX_FAMILY.into(), LILEX_FAMILY.into()));
+    let snippets = shell.cx.update(|_, cx| markdown::code_font(cx).0);
+    assert_eq!(snippets, LILEX_FAMILY);
+    // "SF Mono" names the system monospaced font: the diff, gpui-kit and the
+    // code in thread blocks all draw it. (Last: the test text system gives
+    // every family one font id, so whether a family "is installed" depends
+    // on the families resolved before.)
+    set_family(shell.cx, "SF Mono");
+    assert_eq!(fonts(shell.cx), ("SF Mono".into(), SYSTEM_MONO_FONT.into()));
+    let drawn = tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).code_font().family.clone()
+    });
+    assert_eq!(drawn, SYSTEM_MONO_FONT);
+    let snippets = shell.cx.update(|_, cx| markdown::code_font(cx).0);
+    assert_eq!(snippets, SYSTEM_MONO_FONT);
 }

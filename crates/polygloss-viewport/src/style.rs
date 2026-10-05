@@ -3,8 +3,9 @@
 //! [`ViewportTheme`] resolves everything the viewport paints from one Zed
 //! theme: UI colors from `style`, diff colors from `created`/`deleted` and the
 //! `version_control.word_*` keys, syntax colors from `syntax` (through
-//! [`SyntaxTheme`]). Colors are converted to GPUI's [`Hsla`] once, so painting
-//! never parses or converts.
+//! [`SyntaxTheme`]). Colors Zed has no key for come from `polygloss.*` style
+//! keys, each derived from standard keys when a theme lacks it. Colors are
+//! converted to GPUI's [`Hsla`] once, so painting never parses or converts.
 
 use std::sync::Arc;
 
@@ -66,8 +67,13 @@ pub struct ViewportTheme {
     pub header_background: Hsla,
     /// File header text (`text`).
     pub header_foreground: Hsla,
-    /// Gap (hidden context) rows.
-    pub gap_background: Hsla,
+    /// Behind the file cards, and gap (hidden context) rows (`background`).
+    pub canvas: Hsla,
+    /// A file card (`editor.background`) and its 1 px border (`border`).
+    pub card_background: Hsla,
+    pub card_border: Hsla,
+    /// Pills: `+a −d`, review state (`element.background`).
+    pub pill_background: Hsla,
     /// The empty side of an unbalanced split row.
     pub empty_cell: Hsla,
     /// Added and removed rows (`created.background` / `deleted.background`).
@@ -79,6 +85,21 @@ pub struct ViewportTheme {
     /// `+`/`-` glyphs and bars (`created` / `deleted`).
     pub added_accent: Hsla,
     pub removed_accent: Hsla,
+    /// Line numbers of added and removed rows
+    /// (`polygloss.created.line_number`, else `created`; likewise deleted).
+    pub added_line_number: Hsla,
+    pub removed_line_number: Hsla,
+    /// Behind those line numbers (`polygloss.created.gutter_background`, else
+    /// `created.background` a little stronger; likewise deleted).
+    pub added_gutter: Hsla,
+    pub removed_gutter: Hsla,
+    /// `+a` and `−d` counts (`polygloss.stat.added`, else
+    /// `version_control.added`, else `added_accent`; likewise deleted).
+    pub stat_added: Hsla,
+    pub stat_removed: Hsla,
+    /// A commit's short SHA (`polygloss.commit_sha`, else syntax
+    /// `type.builtin`, else `terminal.ansi.yellow`).
+    pub commit_sha: Hsla,
     /// Clickable text (gap expanders, "Load diff") and a checked Viewed box
     /// (`text.accent`).
     pub accent: Hsla,
@@ -129,12 +150,20 @@ impl ViewportTheme {
         let background = pick(&["editor.background", "background"], bg);
         let foreground = pick(&["editor.foreground", "text"], fg);
         let muted = pick(&["text.muted", "editor.line_number"], muted);
+        let border = pick(&["border", "border.variant"], border);
         let subheader = pick(
             &["editor.subheader.background", "surface.background"],
             surface,
         );
         let added_accent = pick(&["created", "version_control.added"], 0x18a46cff);
         let removed_accent = pick(&["deleted", "version_control.deleted"], 0xd52c36ff);
+        let added_background = t
+            .color("created.background")
+            .map_or(added_accent.opacity(0.2), hsla);
+        let removed_background = t
+            .color("deleted.background")
+            .map_or(removed_accent.opacity(0.2), hsla);
+        let or = |key: &str, fallback: Hsla| t.color(key).map_or(fallback, hsla);
         let accent = pick(
             &["text.accent", "link_text.hover", "icon.accent"],
             0x009fffff,
@@ -163,6 +192,10 @@ impl ViewportTheme {
         // yellow comes from `terminal.ansi.yellow` too): it stays visible on
         // added and removed rows, where a translucent accent blue fades.
         let yellow = pick(&["terminal.ansi.yellow", "warning"], 0xffca00ff);
+        let commit_sha = t
+            .color("polygloss.commit_sha")
+            .or_else(|| t.syntax.get("type.builtin").and_then(|s| s.color))
+            .map_or(yellow, hsla);
         let find_match = yellow.opacity(0.35);
         let find_match_current = t
             .color("search.active_match_background")
@@ -190,23 +223,41 @@ impl ViewportTheme {
             foreground,
             line_number: pick(&["editor.line_number", "text.muted"], 0x737373ff),
             muted,
-            border: pick(&["border", "border.variant"], border),
+            border,
             header_background: subheader,
             header_foreground: pick(&["text", "editor.foreground"], fg),
-            gap_background: subheader,
+            canvas: or("background", subheader),
+            card_background: background,
+            card_border: border,
+            pill_background: badge_background,
             empty_cell: subheader.opacity(0.5),
-            added_background: t
-                .color("created.background")
-                .map_or(added_accent.opacity(0.2), hsla),
-            removed_background: t
-                .color("deleted.background")
-                .map_or(removed_accent.opacity(0.2), hsla),
+            added_background,
+            removed_background,
             added_word: t
                 .color("version_control.word_added")
                 .map_or(added_accent.opacity(0.4), hsla),
             removed_word: t
                 .color("version_control.word_deleted")
                 .map_or(removed_accent.opacity(0.4), hsla),
+            added_line_number: or("polygloss.created.line_number", added_accent),
+            removed_line_number: or("polygloss.deleted.line_number", removed_accent),
+            added_gutter: or(
+                "polygloss.created.gutter_background",
+                stronger(added_background, added_accent),
+            ),
+            removed_gutter: or(
+                "polygloss.deleted.gutter_background",
+                stronger(removed_background, removed_accent),
+            ),
+            stat_added: or(
+                "polygloss.stat.added",
+                or("version_control.added", added_accent),
+            ),
+            stat_removed: or(
+                "polygloss.stat.deleted",
+                or("version_control.deleted", removed_accent),
+            ),
+            commit_sha,
             added_accent,
             removed_accent,
             accent,
@@ -255,4 +306,26 @@ impl Default for ViewportTheme {
 /// A theme color as GPUI's [`Hsla`].
 pub fn hsla(c: Rgba) -> Hsla {
     gpui_kit::rgba(c.to_u32()).into()
+}
+
+/// `tint` slightly stronger: `accent` at 10% composited over it ("over",
+/// alpha included), so a translucent tint gains opacity and an opaque one
+/// leans toward the accent. Polygloss Light's sampled gutter is about this
+/// far from its row tint.
+fn stronger(tint: Hsla, accent: Hsla) -> Hsla {
+    const SHARE: f32 = 0.1;
+    let (bg, fg) = (gpui_kit::Rgba::from(tint), gpui_kit::Rgba::from(accent));
+    let fg_a = fg.a * SHARE;
+    let a = fg_a + bg.a * (1.0 - fg_a);
+    if a <= 0.0 {
+        return tint;
+    }
+    let mix = |f: f32, b: f32| (f * fg_a + b * bg.a * (1.0 - fg_a)) / a;
+    gpui_kit::Rgba {
+        r: mix(fg.r, bg.r),
+        g: mix(fg.g, bg.g),
+        b: mix(fg.b, bg.b),
+        a,
+    }
+    .into()
 }

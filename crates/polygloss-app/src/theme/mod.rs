@@ -1,15 +1,17 @@
-//! Themes and fonts (design §11.10, ADR-0024).
+//! Themes and fonts (design §11.10, ADR-0024, ADR-0027).
 //!
-//! - [`ThemeRegistry`] (a global): Pierre Light and Pierre Dark built in,
-//!   plus every Zed theme file in `~/.config/polygloss/themes/`,
-//!   hot-reloaded; broken files are skipped with a toast.
+//! - [`ThemeRegistry`] (a global): Polygloss Light/Dark and Pierre
+//!   Light/Dark built in, plus every Zed theme file in
+//!   `~/.config/polygloss/themes/`, hot-reloaded; broken files are skipped
+//!   with a toast.
 //! - [`apply_theme`]: one Zed theme drives everything: its `style` colors
 //!   become gpui-kit's theme tokens ([`zed_to_kit`]), its `syntax` the
 //!   highlighter's `SyntaxTheme` and, with created/deleted/modified, the
 //!   diff viewport's colors ([`viewport_theme`]).
 //! - Which theme: `theme.mode` (`system` follows the macOS appearance, the
-//!   main window reports changes), `theme.light` / `theme.dark` by name; a
-//!   name that no theme has falls back to Pierre of that appearance.
+//!   main window reports changes), `theme.light` / `theme.dark` by name
+//!   (Polygloss by default); a name that no theme has falls back to Polygloss
+//!   of that appearance.
 //! - [`fonts`]: the bundled Lilex, the default code font. The UI keeps the
 //!   system font.
 
@@ -22,7 +24,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::theme::Theme;
 use gpui_kit::{App, Global, SharedString, WindowAppearance};
-use polygloss_highlight::{Appearance, ZedTheme, pierre_theme};
+use polygloss_highlight::{Appearance, ZedTheme, default_theme};
 use polygloss_viewport::ViewportTheme;
 
 pub use registry::{THEMES_DIR, ThemeFileError, ThemeRegistry};
@@ -63,7 +65,7 @@ pub fn init(cx: &mut App) {
     let dir = AppState::global(cx).paths.config_dir.join(THEMES_DIR);
     ThemeRegistry::init_at(&dir, cx, sync);
     let system_appearance = appearance(cx.window_appearance());
-    let initial = pierre_theme(system_appearance);
+    let initial = default_theme(system_appearance);
     cx.set_global(ActiveTheme {
         zed: Arc::new(initial.clone()),
         viewport: viewport_theme::resolve(initial),
@@ -102,7 +104,7 @@ pub fn appearance(a: WindowAppearance) -> Appearance {
 pub fn viewport_theme(cx: &App) -> Arc<ViewportTheme> {
     match cx.try_global::<ActiveTheme>() {
         Some(active) => active.viewport.clone(),
-        None => Arc::new(ViewportTheme::pierre(Appearance::Light)),
+        None => Arc::new(ViewportTheme::from_zed(default_theme(Appearance::Light))),
     }
 }
 
@@ -153,8 +155,8 @@ fn sync(cx: &mut App) {
     cx.defer(flush_announcements);
 }
 
-/// The theme the settings ask for now; Pierre of the wanted appearance when
-/// no theme has the configured name (reported once).
+/// The theme the settings ask for now; Polygloss of the wanted appearance
+/// when no theme has the configured name (reported once).
 fn resolve_theme(cx: &mut App) -> Arc<ZedTheme> {
     let settings = SettingsStore::global(cx).shared();
     let system = ActiveTheme::global(cx).system_appearance;
@@ -170,7 +172,7 @@ fn resolve_theme(cx: &mut App) -> Arc<ZedTheme> {
     if let Some(theme) = ThemeRegistry::global(cx).get(name) {
         return theme;
     }
-    let fallback = pierre_theme(wanted);
+    let fallback = default_theme(wanted);
     let active = cx.global_mut::<ActiveTheme>();
     if active.missing_reported.as_deref() != Some(name.as_str()) {
         active.missing_reported = Some(name.clone());
@@ -200,7 +202,8 @@ fn apply(theme: Arc<ZedTheme>, force: bool, cx: &mut App) {
 
 /// Names the code font as gpui-kit's monospace family when it changes
 /// (`polygloss_viewport::kit::kit_fonts`: the family if installed, never
-/// Menlo, else SF Mono), as `init_kit` did at startup.
+/// Menlo, else SF Mono, which "SF Mono" and "System Mono" also name), as
+/// `init_kit` did at startup.
 fn sync_kit_mono_font(cx: &mut App) {
     if !cfg!(target_os = "macos") {
         return;

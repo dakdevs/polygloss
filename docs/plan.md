@@ -2151,6 +2151,8 @@ scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & t
 
 Then the standard completion block.
 
+**As built (T6.2):** extras beyond the contract: `polygloss_viewport::kit::code_family(name) -> &str` (an alias → `SYSTEM_MONO_FONT`, else the name), used by the viewport's font resolution, `kit_fonts` and the app's `markdown::code_font` (so thread snippets draw the same family as the diff; `crates/polygloss-app/src/markdown/mod.rs` is one more modified file). Fallbacks: `canvas` ← `background`, else the subheader color (for Pierre both are the old gap color, so Pierre baselines did not move); `card_background` ← `editor.background`; `card_border` ← `border`, `border.variant`; `pill_background` ← `element.background`; `stat_*` ← `polygloss.stat.*`, `version_control.*`, then the row accent; a derived gutter is the accent at 10% composited over the row tint (a translucent tint gains alpha, an opaque one leans toward the accent). Keys the research does not list follow Pierre's structure: `diff.minus` is the status red, `emphasis`/`markup.italic` the keyword color in italics, `emphasis.strong`/`markup.strong` the default color in bold; `terminal.ansi.yellow` is a true yellow (find matches tint with it), `warning` the amber of `version_control.modified`. `ViewportTheme::default()` stays Pierre Light (viewport tests and perf); the app's fallbacks use `default_theme`. 18 default-theme baselines were re-recorded and two added; the seven pinned to Pierre (the two Pierre theme, three viewport and two cursor screenshots) did not move.
+
 ### T6.3 Window chrome: inset titlebar and the sidebar shell
 
 **Files**

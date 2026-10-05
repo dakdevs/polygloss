@@ -1,5 +1,5 @@
 //! Screenshots of T3.10 (design §8.3, §8.7): the composer and the Submit
-//! review dialog, as the app draws them at 1280×800 in Pierre Light.
+//! review dialog, as the app draws them at 1280×800 in Polygloss Light.
 //!
 //! - `e2e_submit_dialog`: two drafts (a line comment and a review-level
 //!   comment) and an agent question; the dialog over the tab with a summary,
@@ -96,7 +96,7 @@ fn compare(repo: &std::path::Path) -> OpenRequest {
     }
 }
 
-/// Starts the app (Pierre Light, `layout`) and opens `req`; draws until the
+/// Starts the app (Polygloss Light, `layout`) and opens `req`; draws until the
 /// tab has settled.
 fn app(
     sb: &Sandbox,

@@ -14,8 +14,9 @@
 //! - UI: [`SYSTEM_UI_FONT`], the family GPUI's macOS text system loads for
 //!   `.SystemUIFont` (the same font, named directly).
 //! - Mono: the code font when it is installed, else the system monospaced
-//!   font ([`SYSTEM_MONO_FONT`], SF Mono). Never `Menlo` by name: gpui-kit
-//!   probes (and scans for) its default whenever it is named.
+//!   font ([`SYSTEM_MONO_FONT`], SF Mono, which the [`SYSTEM_MONO_ALIASES`]
+//!   also name). Never `Menlo` by name: gpui-kit probes (and scans for) its
+//!   default whenever it is named.
 //!
 //! [`DiffViewport`]: crate::DiffViewport
 
@@ -28,6 +29,10 @@ pub const SYSTEM_UI_FONT: &str = ".AppleSystemUIFont";
 /// The system monospaced font (SF Mono) by its system family name.
 pub const SYSTEM_MONO_FONT: &str = ".AppleSystemUIFontMonospaced";
 
+/// Code-font names that select [`SYSTEM_MONO_FONT`] (design §11.10): "SF
+/// Mono" by name resolves only where Apple's developer fonts are installed.
+pub const SYSTEM_MONO_ALIASES: &[&str] = &["SF Mono", "System Mono"];
+
 /// gpui-kit's default mono family on macOS (`TypographyTokens::default()`),
 /// which it probes whenever the theme names it.
 const KIT_DEFAULT_MONO: &str = "Menlo";
@@ -39,11 +44,22 @@ pub struct KitFonts {
     pub mono: SharedString,
 }
 
+/// The family a configured code font names: [`SYSTEM_MONO_FONT`] for one of
+/// the [`SYSTEM_MONO_ALIASES`], else the name itself.
+pub fn code_family(code_font: &str) -> &str {
+    if SYSTEM_MONO_ALIASES.contains(&code_font) {
+        SYSTEM_MONO_FONT
+    } else {
+        code_font
+    }
+}
+
 /// The families to name for a code font `code_font` (`installed`: whether the
 /// text system has it; see [`is_installed`]).
 pub fn kit_fonts(code_font: &str, installed: bool) -> KitFonts {
-    let mono = if installed && code_font != KIT_DEFAULT_MONO {
-        SharedString::from(code_font.to_owned())
+    let family = code_family(code_font);
+    let mono = if installed && family != KIT_DEFAULT_MONO {
+        SharedString::from(family.to_owned())
     } else {
         SharedString::new_static(SYSTEM_MONO_FONT)
     };

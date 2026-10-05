@@ -32,7 +32,7 @@ impl Global for Registered {}
 
 /// Registers the bundled Lilex faces with the app's text system (once per
 /// app; later calls do nothing). Failing to register is logged, not fatal:
-/// the viewport then falls back to Menlo.
+/// the viewport then falls back to the system monospaced font.
 pub fn register_fonts(cx: &mut App) {
     if cx.has_global::<Registered>() {
         return;

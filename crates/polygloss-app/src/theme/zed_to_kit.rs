@@ -80,6 +80,11 @@ pub const MAPPING: &[(&str, &[&str])] = &[
         "tab_bar.background",
         &["tab_bar.background", "title_bar.background"],
     ),
+    // The sidebar's segmented control (design §11.1).
+    (
+        "tab_bar.segmented.background",
+        &["polygloss.sidebar.field.background", "element.background"],
+    ),
     (
         "tab.background",
         &["tab.inactive_background", "tab_bar.background"],
@@ -142,7 +147,7 @@ const CONTRAST: &[(&str, &str)] = &[
 ];
 
 /// Every kit token the app's chrome paints with. A complete Zed theme (the
-/// built-in Pierre themes) sets each of them; a partial user theme may not,
+/// built-in themes) sets each of them; a partial user theme may not,
 /// and gpui-kit derives the rest.
 pub const REQUIRED_KIT_TOKENS: &[&str] = &[
     "background",
@@ -167,6 +172,7 @@ pub const REQUIRED_KIT_TOKENS: &[&str] = &[
     "sidebar.background",
     "sidebar.foreground",
     "tab_bar.background",
+    "tab_bar.segmented.background",
     "tab.background",
     "tab.active.background",
     "tab.foreground",
@@ -262,8 +268,9 @@ pub fn contrasting(fill: Rgba) -> Rgba {
     }
 }
 
-/// gpui-kit's theme for `t`: its name, mode and [`kit_colors`], no fonts,
-/// radius or syntax (the viewport paints the code).
+/// gpui-kit's theme for `t`: its name, mode, [`kit_colors`] and the corner
+/// radii every theme shares (controls 6, dialogs and notifications 10); no
+/// fonts or syntax (the viewport paints the code).
 pub fn kit_theme_config(t: &ZedTheme) -> Rc<ThemeConfig> {
     let colors: ThemeConfigColors = serde_json::from_value(Value::Object(kit_colors(t)))
         // Every value is a `#rrggbbaa` string under a key of the schema.
@@ -275,6 +282,8 @@ pub fn kit_theme_config(t: &ZedTheme) -> Rc<ThemeConfig> {
             Appearance::Dark => ThemeMode::Dark,
         },
         colors,
+        radius: Some(6),
+        radius_lg: Some(10),
         ..ThemeConfig::default()
     })
 }

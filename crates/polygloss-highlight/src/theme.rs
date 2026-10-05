@@ -1,5 +1,5 @@
-//! Zed theme JSON model (design §11.10, ADR-0024) and the built-in Pierre
-//! themes.
+//! Zed theme JSON model (design §11.10, ADR-0024, ADR-0027) and the built-in
+//! themes: Polygloss Light/Dark (the defaults) and Pierre Light/Dark.
 //!
 //! The format is Zed's theme family: `{ name, author?, themes: [{ name,
 //! appearance, style: { <ui color keys>…, syntax: { <capture>: { color,
@@ -201,21 +201,40 @@ pub const PIERRE_LIGHT_JSON: &str = include_str!("../../../assets/themes/pierre-
 /// Pierre Dark as Zed theme JSON: `assets/themes/pierre-dark.json`.
 pub const PIERRE_DARK_JSON: &str = include_str!("../../../assets/themes/pierre-dark.json");
 
+/// Polygloss Light as Zed theme JSON: `assets/themes/polygloss-light.json`,
+/// our own palette after the redesign reference
+/// (`docs/research/redesign-reference.md`), plus the `polygloss.*` keys.
+pub const POLYGLOSS_LIGHT_JSON: &str = include_str!("../../../assets/themes/polygloss-light.json");
+
+/// Polygloss Dark as Zed theme JSON: `assets/themes/polygloss-dark.json`.
+pub const POLYGLOSS_DARK_JSON: &str = include_str!("../../../assets/themes/polygloss-dark.json");
+
 static PIERRE_LIGHT: LazyLock<ZedTheme> = LazyLock::new(|| builtin(PIERRE_LIGHT_JSON));
 static PIERRE_DARK: LazyLock<ZedTheme> = LazyLock::new(|| builtin(PIERRE_DARK_JSON));
+static POLYGLOSS_LIGHT: LazyLock<ZedTheme> = LazyLock::new(|| builtin(POLYGLOSS_LIGHT_JSON));
+static POLYGLOSS_DARK: LazyLock<ZedTheme> = LazyLock::new(|| builtin(POLYGLOSS_DARK_JSON));
 
 fn builtin(json: &str) -> ZedTheme {
-    // The files are generated and committed; `load_pierre_light_and_dark`
-    // parses both, so a failure here is a build defect, not an input error.
-    let family = load_theme_family(json).expect("built-in Pierre theme parses");
+    // The files are committed and the theme tests parse each, so a failure
+    // here is a build defect, not an input error.
+    let family = load_theme_family(json).expect("built-in theme parses");
     family
         .themes
         .into_iter()
         .next()
-        .expect("built-in Pierre theme is non-empty")
+        .expect("built-in theme is non-empty")
 }
 
-/// The built-in default theme for `appearance` (design §11.10).
+/// The built-in default theme for `appearance`: Polygloss Light or Dark
+/// (design §11.10, ADR-0027).
+pub fn default_theme(appearance: Appearance) -> &'static ZedTheme {
+    match appearance {
+        Appearance::Light => &POLYGLOSS_LIGHT,
+        Appearance::Dark => &POLYGLOSS_DARK,
+    }
+}
+
+/// The built-in Pierre Light or Pierre Dark, selectable by name.
 pub fn pierre_theme(appearance: Appearance) -> &'static ZedTheme {
     match appearance {
         Appearance::Light => &PIERRE_LIGHT,
