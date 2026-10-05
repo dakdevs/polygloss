@@ -10,6 +10,7 @@
 //! - Request types derive `JsonSchema`; their doc comments are the MCP input
 //!   schema descriptions.
 
+pub mod categories;
 pub mod create_comment;
 pub mod delete_comment;
 pub mod edit_comment;

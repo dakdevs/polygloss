@@ -5,12 +5,14 @@
 //! "message"}}` on stdout), 2 a usage error from clap (in JSON mode with code
 //! `invalid_args`; `wait` exits 1 instead), or `polygloss wait` waking the
 //! session. `mcp`, `wait` and `debug` keep stdout for their own protocols and
-//! report errors on stderr only.
+//! report errors on stderr only, except `debug categorize`, which prints like
+//! the human commands.
 #![forbid(unsafe_code)]
 
 mod cli;
 mod commands;
 mod debug;
+mod debug_categorize;
 mod debug_human;
 mod output;
 
@@ -20,6 +22,7 @@ use std::process::ExitCode;
 
 use cli::{Cli, Command};
 use commands::json::JsonCommand;
+use debug::{DebugArgs, DebugCommand};
 use output::{CliError, Mode, Report};
 
 fn main() -> ExitCode {
@@ -45,6 +48,9 @@ fn main() -> ExitCode {
         Command::Snapshot(args) => report(mode, commands::snapshot::run(args, &global)),
         Command::Mcp(args) => on_stderr(commands::mcp::run(args).map(|()| ExitCode::SUCCESS)),
         Command::Wait(args) => on_stderr(commands::wait::run(args, &global)),
+        Command::Debug(DebugArgs {
+            command: DebugCommand::Categorize(args),
+        }) => report(mode, debug_categorize::run(args, &global)),
         Command::Debug(args) => on_stderr(debug::run(args, &global).map(|()| ExitCode::SUCCESS)),
         other => unreachable!("{other:?} is a JSON command"),
     }

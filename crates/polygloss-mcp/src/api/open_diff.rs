@@ -8,9 +8,15 @@
 //! - `stats.additions`/`deletions` and the per-file counts cover the listed
 //!   files (the first [`LISTED_FILES`] in `diff-tree` order); binaries and
 //!   submodules have no counts.
+//! - Files carry their category from `settings.json` (design §11.15). Unlike
+//!   the app's totals, `stats` count categorized files too; `stats.categories`
+//!   counts every file of each category and the lines of its listed ones.
 //! - `app` is `skipped` with `show: false`; an app that cannot be reached is
 //!   `unavailable`, never an error.
 
+use std::collections::BTreeMap;
+
+use polygloss_core::categories::CategoryId;
 use polygloss_core::git::ResolvedSide;
 use polygloss_core::objects::BlobReader;
 use polygloss_core::review::{AssignedBy, OpenRequest, PinnedBy};
@@ -19,6 +25,7 @@ use polygloss_diff::{FileChange, FileStatus};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::api::categories;
 use crate::api::resources::{file_status, line_counts_with};
 use crate::api::shapes::SourceParam;
 use crate::app_link::{self, AppShown};
@@ -61,8 +68,19 @@ pub struct DiffSide {
 }
 
 /// Totals: every file, and the lines of the listed ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiffStats {
+    pub files: usize,
+    pub additions: u32,
+    pub deletions: u32,
+    /// The same per category; absent when no file is categorized.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub categories: BTreeMap<CategoryId, CategoryStats>,
+}
+
+/// One category's files (all of them) and lines (of its listed files).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct CategoryStats {
     pub files: usize,
     pub additions: u32,
     pub deletions: u32,
@@ -81,6 +99,9 @@ pub struct DiffFile {
     pub additions: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deletions: Option<u32>,
+    /// `tests`, `custom:<id>`, …; absent when uncategorized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<CategoryId>,
 }
 
 /// `open_diff` result (design §15.2).
@@ -108,6 +129,8 @@ pub struct OpenDiffResult {
 /// Resolves the source, pins a live state, records the review and iteration,
 /// assigns it to the caller and asks the app to show it.
 pub fn open_diff(ctx: &ApiContext, req: OpenDiffRequest) -> Result<OpenDiffResult, ApiError> {
+    // Read before anything is recorded.
+    let categorizer = categories::categorizer(&ctx.core.paths)?;
     let worktree = ctx.default_repo(req.repo.as_deref());
     let source = req.source.unwrap_or_default();
     let live = matches!(source, SourceParam::Live { .. });
@@ -139,16 +162,29 @@ pub fn open_diff(ctx: &ApiContext, req: OpenDiffRequest) -> Result<OpenDiffResul
 
     // Counts need the objects; without them the list still has every file.
     let blobs = BlobReader::open(&opened.repo).ok();
+    let verdicts = categorizer.categorize_files(&opened.files);
     let listed: Vec<DiffFile> = opened
         .files
         .iter()
+        .zip(&verdicts)
         .take(LISTED_FILES)
-        .map(|f| listed_file(f, blobs.as_ref()))
+        .map(|(f, category)| listed_file(f, category.clone(), blobs.as_ref()))
         .collect();
+    let mut by_category = BTreeMap::<CategoryId, CategoryStats>::new();
+    for (i, category) in verdicts.into_iter().enumerate() {
+        let Some(category) = category else { continue };
+        let stats = by_category.entry(category).or_default();
+        stats.files += 1;
+        if let Some(f) = listed.get(i) {
+            stats.additions += f.additions.unwrap_or_default();
+            stats.deletions += f.deletions.unwrap_or_default();
+        }
+    }
     let stats = DiffStats {
         files: opened.files.len(),
         additions: listed.iter().filter_map(|f| f.additions).sum(),
         deletions: listed.iter().filter_map(|f| f.deletions).sum(),
+        categories: by_category,
     };
     let url = format_url(&PolyglossUrl::Diff {
         diff_id: opened.diff_id.as_str().to_owned(),
@@ -184,7 +220,11 @@ fn side(s: &ResolvedSide) -> DiffSide {
     }
 }
 
-fn listed_file(f: &FileChange, blobs: Option<&BlobReader>) -> DiffFile {
+fn listed_file(
+    f: &FileChange,
+    category: Option<CategoryId>,
+    blobs: Option<&BlobReader>,
+) -> DiffFile {
     let counts = blobs.and_then(|b| line_counts_with(f, b));
     DiffFile {
         path: f.display_path().to_owned(),
@@ -195,5 +235,6 @@ fn listed_file(f: &FileChange, blobs: Option<&BlobReader>) -> DiffFile {
         status: file_status(f.status),
         additions: counts.map(|c| c.0),
         deletions: counts.map(|c| c.1),
+        category,
     }
 }

@@ -402,6 +402,69 @@ describe("open_diff", () => {
       ).toBe("open");
     });
   });
+
+  test("open_diff returns categories per file and in stats", async () => {
+    const { env, home } = world();
+    const path = join(home, "cats");
+    mkdirSync(path, { recursive: true });
+    git(env, path, ["init", "-q", "-b", "main"]);
+    git(env, path, ["commit", "-q", "--allow-empty", "-m", "init"]);
+    const write = (file: string, text: string) => {
+      mkdirSync(join(path, file, ".."), { recursive: true });
+      writeFileSync(join(path, file), text);
+    };
+    write("src/a.ts", "a\n");
+    write("src/a.test.ts", "t1\nt2\nt3\nt4\n");
+    write("Cargo.lock", "l1\nl2\nl3\n");
+    write("docs/x.md", "# x\nbody\n");
+    // The sandbox's settings.json turns Docs on.
+    const config = join(env.XDG_CONFIG_HOME!, "polygloss");
+    mkdirSync(config, { recursive: true });
+    writeFileSync(
+      join(config, "settings.json"),
+      '{ "categories": { "docs": { "enabled": true } } }',
+    );
+
+    await withMcp(env, async (call) => {
+      const r = await openLive(call, realpathSync(path));
+      // Git order, unchanged; uncategorized files carry no `category`.
+      expect(r.files).toEqual([
+        {
+          path: "Cargo.lock",
+          status: "added",
+          additions: 3,
+          deletions: 0,
+          category: "generated",
+        },
+        {
+          path: "docs/x.md",
+          status: "added",
+          additions: 2,
+          deletions: 0,
+          category: "docs",
+        },
+        {
+          path: "src/a.test.ts",
+          status: "added",
+          additions: 4,
+          deletions: 0,
+          category: "tests",
+        },
+        { path: "src/a.ts", status: "added", additions: 1, deletions: 0 },
+      ]);
+      // `stats` keep counting categorized files.
+      expect(r.stats).toEqual({
+        files: 4,
+        additions: 10,
+        deletions: 0,
+        categories: {
+          docs: { files: 1, additions: 2, deletions: 0 },
+          generated: { files: 1, additions: 3, deletions: 0 },
+          tests: { files: 1, additions: 4, deletions: 0 },
+        },
+      });
+    });
+  });
 });
 
 describe("create_comment", () => {

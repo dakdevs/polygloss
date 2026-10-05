@@ -1,6 +1,7 @@
-//! Hidden `polygloss debug …` developer commands: `parity` (T1.16) and the
-//! test-only human (T4.4, `human-archive`: T4.7) and agent (T4.5, `assign`:
-//! T4.8) stand-ins in `debug_human`.
+//! Hidden `polygloss debug …` developer commands: `parity` (T1.16),
+//! `categorize` (T6.9, in `debug_categorize`; `main` runs it, since it prints
+//! like the human commands) and the test-only human (T4.4, `human-archive`:
+//! T4.7) and agent (T4.5, `assign`: T4.8) stand-ins in `debug_human`.
 //!
 //! `debug parity` checks our hunks against the system git on a real range (design
 //! §6.3 "Parity"): for every text modify/rename pair that `list_changes` reports
@@ -26,7 +27,7 @@ use polygloss_diff::{FileChange, FileKind, FileStatus, ObjectFormat, Oid};
 use serde::Serialize;
 
 use crate::cli::GlobalArgs;
-use crate::debug_human;
+use crate::{debug_categorize, debug_human};
 
 /// Developer tools; hidden from `--help`.
 #[derive(Debug, Args)]
@@ -39,6 +40,9 @@ pub struct DebugArgs {
 pub enum DebugCommand {
     /// Compare our hunks with `git diff` for every text pair between two revisions.
     Parity(ParityArgs),
+    /// Explain the file category of paths (settings.json, and with --repo its
+    /// HEAD's `linguist-generated`).
+    Categorize(debug_categorize::CategorizeArgs),
     /// Test-only: open a review as the human would.
     Seed(debug_human::SeedArgs),
     /// Test-only: add a human draft thread or reply.
@@ -117,6 +121,7 @@ pub fn run(args: DebugArgs, global: &GlobalArgs) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        DebugCommand::Categorize(_) => unreachable!("main runs debug categorize"),
         DebugCommand::Seed(args) => print_json(debug_human::seed(required_repo(global)?, args)?),
         DebugCommand::HumanComment(args) => print_json(debug_human::human_comment(args)?),
         DebugCommand::HumanViewed(args) => print_json(debug_human::human_viewed(args)?),
@@ -195,7 +200,7 @@ fn is_text_pair(c: &FileChange) -> bool {
 }
 
 /// `rev^{tree}` as a full object id.
-fn tree_of(git: &Git, fmt: ObjectFormat, rev: &str) -> anyhow::Result<Oid> {
+pub(crate) fn tree_of(git: &Git, fmt: ObjectFormat, rev: &str) -> anyhow::Result<Oid> {
     let spec = format!("{rev}^{{tree}}");
     let out = git
         .run(&[

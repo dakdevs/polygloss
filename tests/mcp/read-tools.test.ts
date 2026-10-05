@@ -660,4 +660,99 @@ describe("resources", () => {
       ).rejects.toThrow();
     });
   });
+
+  test("diff resource lists categories", async () => {
+    const { env, home } = world();
+    const r = repo(env, home, "cats");
+    r.write("Cargo.lock", ["lock"]);
+    mkdirSync(join(r.path, "src"));
+    r.write("src/a.test.ts", ["t1", "t2"]);
+    const seeded = debug(env, ["seed", "--repo", r.path, "--since", "HEAD"]);
+
+    await withClient(env, async (client) => {
+      const uri = `polygloss://diff/${seeded.diff_id}`;
+      const res = await client.readResource({ uri });
+      const text = (res.contents[0] as { text?: string }).text ?? "";
+      expect(text).toContain(
+        [
+          "| Status | Path | + | - | Category |",
+          "| --- | --- | --- | --- | --- |",
+          "| added | Cargo.lock | +1 | -0 | generated |",
+          "| added | src/a.test.ts | +2 | -0 | tests |",
+        ].join("\n"),
+      );
+    });
+  });
+});
+
+describe("file categories", () => {
+  test("open_diff reflects a settings.json edit made between two calls", async () => {
+    const { env, home } = world();
+    const r = repo(env, home, "docs");
+    mkdirSync(join(r.path, "docs"));
+    r.write("docs/x.md", ["# x"]);
+    const categoryOf = (res: Json, path: string) =>
+      (res.files as Json[]).find((f) => f.path === path)?.category;
+
+    // One `polygloss mcp` process for both calls.
+    await withMcp(env, async (call) => {
+      const args = {
+        repo: r.path,
+        source: { kind: "live", since: "HEAD" },
+        show: false,
+      };
+      const before = ok(await call("open_diff", args));
+      expect(categoryOf(before, "docs/x.md")).toBeUndefined();
+
+      const config = join(env.XDG_CONFIG_HOME!, "polygloss");
+      mkdirSync(config, { recursive: true });
+      writeFileSync(
+        join(config, "settings.json"),
+        '{ "categories": { "docs": { "enabled": true } } }',
+      );
+      const after = ok(await call("open_diff", args));
+      expect(after.review_id).toBe(before.review_id);
+      expect(categoryOf(after, "docs/x.md")).toBe("docs");
+    });
+  });
+
+  test("an invalid categories section counts as the defaults with one warning", async () => {
+    const { env, home } = world();
+    const r = repo(env, home, "invalid");
+    mkdirSync(join(r.path, "docs"));
+    r.write("docs/x.md", ["# x"]);
+    r.write("Cargo.lock", ["lock"]);
+    const config = join(env.XDG_CONFIG_HOME!, "polygloss");
+    mkdirSync(config, { recursive: true });
+    // Docs on, but the bad pattern invalidates the whole section.
+    writeFileSync(
+      join(config, "settings.json"),
+      '{ "categories": { "docs": { "enabled": true }, "tests": { "patterns": ["[abc"] } } }',
+    );
+
+    const mcp = await connectMcp({ env, clientName: "claude-code" });
+    try {
+      for (let i = 0; i < 2; i++) {
+        const res = await mcp.client.callTool({
+          name: "open_diff",
+          arguments: {
+            repo: r.path,
+            source: { kind: "live", since: "HEAD" },
+            show: false,
+          },
+        });
+        expect(res.isError).toBeFalsy();
+        const files = (res.structuredContent as Json).files as Json[];
+        expect(files.map((f) => [f.path, f.category])).toEqual([
+          ["Cargo.lock", "generated"],
+          ["docs/x.md", undefined],
+        ]);
+      }
+      const warnings = mcp.stderr().match(/settings\.json: /g) ?? [];
+      expect(warnings).toHaveLength(1);
+      expect(mcp.stderr()).toContain("[abc");
+    } finally {
+      await mcp.close();
+    }
+  });
 });

@@ -2624,6 +2624,8 @@ scripts/check-deps.sh
 
 Then the standard completion block.
 
+**As built (T6.9):** **Shared reader:** `polygloss_mcp::api::categories::categorizer(&DataPaths)` (a new file in `api/`) reads `settings.json` per call and builds the `Categorizer`; the MCP server (`open_diff`, the diff resource) and the CLI reports all go through it. Its invalid-section warning is written to stderr directly (the human and JSON CLI install no tracing subscriber; a write error is ignored), once per process (bun `an invalid categories section counts as the defaults with one warning`); `Categorizer::warnings`, `unknown_keys` and `unknown_groups` are not logged by agents (the app logs them). `open_diff` reads it before recording anything. **Shapes:** `DiffStats` loses `Copy` and gains `categories: BTreeMap<CategoryId, CategoryStats>` (skipped when empty); `DiffFile` gains `category: Option<CategoryId>`; the diff resource's Category cell is the id (`tests`, `custom:tokens`), empty when uncategorized. **CLI:** `snapshot` shares `opened_report`, so its report gains `categories` too; `open`'s human output gains the file count on its first line (`Diff <short>  4 files (2 tests · 1 generated)`). `debug categorize` is the one `debug` command that prints like the human commands (`main` routes it: JSON on stdout or text, errors as `{"error"}` in JSON mode); it does not need `POLYGLOSS_TEST`, never opens the store, and with `--repo` in a bare repo leaves every path unspecified (as `debug parity` skips `check-attr` there); an unborn HEAD is an `internal` error.
+
 ### T6.10 Viewport: display order and hidden files (**perf**)
 
 **Files**

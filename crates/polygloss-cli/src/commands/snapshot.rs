@@ -26,10 +26,12 @@ pub fn run(args: SnapshotArgs, global: &GlobalArgs) -> Result<Report, CliError> 
     super::nudge(&core);
     let url = super::url_for(&opened);
     let label = super::review_label(&core, &opened.review_id)?;
+    let counts = super::category_counts(&core, &opened.files)?;
     Ok(super::opened_report(
         &opened,
         label.as_deref(),
         &url,
         AppShown::Skipped,
+        &counts,
     ))
 }

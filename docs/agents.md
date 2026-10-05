@@ -55,7 +55,7 @@ Line numbers are 1-based lines of the file on one side: `old` is the base, `new`
 
 | Tool               | Parameters                                                                                                                                                 | Does                                                                                                                                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `open_diff`        | `repo?`, `source?` (`{kind: "live", since?}`, `{kind: "commit", rev}`, `{kind: "compare", base, head, mode?}`), `label?`, `show? = true`, `assign? = true` | Resolves the source, pins a live state, creates or refreshes the review and its iteration, assigns it to you, and opens it in the app. Returns `review_id`, `diff_id`, `url`, stats and the first 200 files |
+| `open_diff`        | `repo?`, `source?` (`{kind: "live", since?}`, `{kind: "commit", rev}`, `{kind: "compare", base, head, mode?}`), `label?`, `show? = true`, `assign? = true` | Resolves the source, pins a live state, records the review and iteration, assigns it to you, and opens it in the app. Returns `review_id`, `diff_id`, `url`, stats and the first 200 files, with categories |
 | `list_reviews`     | `repo?`, `status?`, `assigned? = "any" \| "me"`, `cursor?`, `limit? = 50`                                                                                  | Reviews with status, Viewed counts, open threads and questions, the last submission and any re-review request                                                                                               |
 | `list_threads`     | `review_id` or `diff_id`, `status? = "open"`, `author?`, `kind?`, `path?`, `since?` (event seq), `cursor?`, `limit? = 50`                                  | Submitted threads with their current position and last comment, plus `latest_seq` to pass as `since` next time                                                                                              |
 | `get_thread`       | `thread_id`, `cursor?`                                                                                                                                     | One thread: anchor, original and current snippets, the diff hunk, every comment with parsed suggestions, who resolved it. Long threads page their comments                                                  |
@@ -80,9 +80,18 @@ Resource templates, also usable as `@`-mentions in Claude Code and as `polygloss
 | `polygloss://review/{review_id}`         | Status, iterations, last verdict and summary, counts              |
 | `polygloss://review/{review_id}/threads` | Digest of the open threads: anchor, last comment, suggestion flag |
 | `polygloss://thread/{thread_id}`         | The full thread                                                   |
-| `polygloss://diff/{diff_id}`             | The file list with statuses and line counts                       |
+| `polygloss://diff/{diff_id}`             | The file list with statuses, line counts and categories           |
 
 `resources/list` returns the reviews assigned to your session plus the 20 most recent.
+
+### File categories
+
+A file's `category` says which supporting-file group the human's app moves it into, out of the main list: `tests`, `generated`, `vendored`, `agents`, `docs`, `tooling`, `stories`, or `custom:<id>`. Uncategorized files have none. Categories come from path patterns and the `linguist-generated` attribute, configured under `categories` in `settings.json` ([design §11.15](design.md#1115-file-categories-adr-0028) has the rules and built-in lists); by default only Tests and Generated are on. Every call reads the file again, so an edit applies to the next call; an invalid `categories` section counts as the defaults, with one warning on stderr.
+
+- `stats.files`, `stats.additions` and `stats.deletions` count categorized files too, while the app's totals leave them out.
+- `stats.categories` (`{"tests": {files, additions, deletions}, …}`, absent when nothing is categorized) counts every file of a category, but its lines only over the listed (first 200) files, like `stats`.
+- The app's per-tab palette toggles are invisible to agents, so an agent's `category` can differ from what the human sees.
+- `polygloss debug categorize [--repo <path>] [--json] <path>…` explains verdicts: the category, its title, the source (`built-in`, `extra`, `custom` or `attribute`), group and pattern, or the rescues that skipped one. The `attribute` source needs `--repo`, whose HEAD tree supplies `linguist-generated`. An invalid `categories` section is a `conflict` error here.
 
 ## JSON CLI
 
@@ -108,7 +117,7 @@ printf 'Fixed: the loop now stops at len - 1.\n' | polygloss reply "$THREAD_ID" 
 | `polygloss rereview <review_id> --summary-file -`                                                                              | `request_rereview` |
 | `polygloss focus <diff_id\|review_id> [--path … --side … --line …] [--thread <thread_id>]`                                     | `focus`            |
 
-`open_diff` has human-facing twins: `polygloss [--since …] [<path>]` (live), `polygloss show <rev>`, `polygloss compare <base> <head> [--direct] [--label …]` and `polygloss open <diff_id>`; `polygloss snapshot [<path>]` pins the live state as a new iteration.
+`open_diff` has human-facing twins: `polygloss [--since …] [<path>]` (live), `polygloss show <rev>`, `polygloss compare <base> <head> [--direct] [--label …]` and `polygloss open <diff_id>`; `polygloss snapshot [<path>]` pins the live state as a new iteration. Their reports count [categorized files](#file-categories) as `"categories": {"tests": 6, …}` (absent when none are), and their human output as "42 files (6 tests · 2 generated)".
 
 Global flags, before or after the subcommand: `--repo <path>`, `--json`, `--no-open` (resolve and print ids without opening or launching the app), `--agent <name>` (the author name for writes; default `$POLYGLOSS_AGENT`, else `agent`) and `--session <id>`.
 

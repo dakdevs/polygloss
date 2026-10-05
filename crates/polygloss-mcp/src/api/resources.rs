@@ -8,6 +8,8 @@
 //!   and `list_threads`' (open threads, positions relative to the review's
 //!   latest iteration).
 //! - An unknown URI or id is `not_found` (the server answers `-32002`).
+//! - The diff's file table names each file's category from `settings.json`
+//!   (design §11.15), as `open_diff` does.
 
 use std::fmt::Write as _;
 
@@ -17,6 +19,7 @@ use polygloss_diff::hunks::diff_blobs;
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::{FileChange, FileKind, FileStatus};
 
+use crate::api::categories;
 use crate::api::get_thread::{GetThreadRequest, GetThreadResult, get_thread};
 use crate::api::list_threads::{ListThreadsRequest, Query};
 use crate::api::shapes::{PAGE_BUDGET, ThreadSummary, timestamp};
@@ -82,7 +85,7 @@ pub fn resource_templates() -> Vec<ResourceTemplateEntry> {
             "polygloss://diff/{diff_id}",
             "diff",
             "Polygloss diff",
-            "The file list of a diff with statuses and line counts.",
+            "The file list of a diff with statuses, line counts and categories.",
         ),
     ]
 }
@@ -401,13 +404,14 @@ fn diff_md(ctx: &ApiContext, id: &str) -> Result<String, ApiError> {
         .core
         .files_for_diff(&diff)?
         .ok_or_else(|| ApiError::not_found(format!("diff not found: {diff}")))?;
+    let verdicts = categories::categorizer(&ctx.core.paths)?.categorize_files(&files);
     // Counts need the objects; without a repo the list still renders.
     let dc = DiffContext::load(ctx, &diff).ok();
     let mut md = format!("# Diff {}\n\n", diff.short());
     let _ = writeln!(md, "- Diff id: `{diff}`");
     let _ = writeln!(md, "- Files: {}\n", files.len());
-    md.push_str("| Status | Path | + | - |\n| --- | --- | --- | --- |\n");
-    for (i, f) in files.iter().enumerate() {
+    md.push_str("| Status | Path | + | - | Category |\n| --- | --- | --- | --- | --- |\n");
+    for (i, (f, category)) in files.iter().zip(&verdicts).enumerate() {
         let counts = if i < COUNTED_FILES {
             dc.as_ref().and_then(|dc| line_counts(f, dc))
         } else {
@@ -421,10 +425,12 @@ fn diff_md(ctx: &ApiContext, id: &str) -> Result<String, ApiError> {
             Some((a, d)) => (format!("+{a}"), format!("-{d}")),
             None => ("".to_owned(), "".to_owned()),
         };
+        let category = category.as_ref().map(ToString::to_string);
         let row = format!(
-            "| {} | {} | {add} | {del} |\n",
+            "| {} | {} | {add} | {del} | {} |\n",
             status_text(f),
-            path.replace('|', "\\|")
+            path.replace('|', "\\|"),
+            category.unwrap_or_default()
         );
         if md.len() + row.len() > PAGE_BUDGET {
             let _ = write!(md, "\n…{} more files.\n", files.len() - i);

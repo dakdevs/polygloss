@@ -279,6 +279,36 @@ describe("polygloss human commands", () => {
     }
   });
 
+  test("json show reports category counts", () => {
+    const repo = makeRepo("categories");
+    mkdirSync(join(repo, "src"));
+    for (const file of ["src/a.test.ts", "src/b.test.ts", "Cargo.lock"])
+      writeFileSync(join(repo, file), "x\n");
+    git(repo, ["add", "."]);
+    commitFile(repo, "src/c.ts", "code\n", "with tests");
+
+    // Every file is counted; `categories` counts the categorized ones.
+    const r = run(["show", "HEAD", "--no-open"], { cwd: repo });
+    expect(r.exitCode).toBe(0);
+    expect(r.json.files).toBe(4);
+    expect(r.json.categories).toEqual({ tests: 2, generated: 1 });
+    const tty = runOnTty(["show", "HEAD", "--no-open", "--repo", repo]);
+    expect(tty.exitCode).toBe(0);
+    expect(tty.output).toContain("4 files (2 tests · 1 generated)");
+
+    // `open` reports them too.
+    const opened = run(["open", r.json.diff_id, "--no-open"], { cwd: repo });
+    expect(opened.exitCode).toBe(0);
+    expect(opened.json.categories).toEqual({ tests: 2, generated: 1 });
+
+    // Nothing categorized: no `categories` key.
+    commitFile(repo, "a.txt", "plain\n", "plain");
+    const plain = run(["show", "HEAD", "--no-open"], { cwd: repo });
+    expect(plain.exitCode).toBe(0);
+    expect(plain.json.files).toBe(1);
+    expect("categories" in plain.json).toBe(false);
+  });
+
   test("non-tty stdout defaults to json", () => {
     const repo = makeRepo("tty");
     commitFile(repo, "a.txt", "tty\n", "second");
