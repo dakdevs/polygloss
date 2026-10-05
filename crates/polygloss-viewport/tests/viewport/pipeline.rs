@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gpui_kit::{Entity, TestAppContext, VisualTestContext};
+use gpui_kit::{Entity, TestAppContext, VisualTestContext, px, size};
 use polygloss_diff::rows::Layout;
 use polygloss_diff::{FileChange, FileKind, ObjectFormat, Oid, Side};
 use polygloss_highlight::{
@@ -15,7 +15,7 @@ use polygloss_highlight::{
 };
 use polygloss_viewport::{
     DiffProvider, DiffViewport, FileCounts, FileState, LayoutMode, LoadError, LoadOptions, Loaded,
-    MaterializedFile, ScrollTarget, ViewportEvent, ViewportTheme,
+    MaterializedFile, ScrollTarget, SlotRange, ViewportEvent, ViewportTheme,
 };
 
 use crate::support::*;
@@ -415,7 +415,7 @@ fn eviction_drops_rows_and_tokens_keeps_metadata(cx: &mut TestAppContext) {
         for f in 0..d.len() {
             assert_eq!(
                 d.state(f).is_materialized(),
-                visible.contains(&f),
+                d.contains_file(visible, f),
                 "file {f}"
             );
         }
@@ -766,8 +766,9 @@ fn theme_change_rehighlights_only_the_window(cx: &mut TestAppContext) {
     settle(cx);
     let window = view.read_with(cx, |v, _| v.document().visible(400.));
     assert!(top.end <= window.start, "{top:?} {window:?}");
-    // The files at the top are still resident, with tokens.
-    for f in top.clone() {
+    // The files at the top are still resident, with tokens. (Slots are file
+    // indices in the identity order.)
+    for f in top.start..top.end {
         match state(&view, cx, f) {
             FileState::Materialized(file) => assert!(file.new_tokens.is_some()),
             other => panic!("file {f}: {other:?}"),
@@ -785,7 +786,7 @@ fn theme_change_rehighlights_only_the_window(cx: &mut TestAppContext) {
     // Both sides of each file in the window, and nothing else.
     let after = pipeline_stats(&view, cx).highlights;
     assert_eq!(after - before, 2 * u64::from(window.end - window.start));
-    for f in window.clone() {
+    for f in window.start..window.end {
         let FileState::Materialized(file) = state(&view, cx, f) else {
             panic!("file {f}")
         };
@@ -793,7 +794,7 @@ fn theme_change_rehighlights_only_the_window(cx: &mut TestAppContext) {
         assert!(*tokens == rust_tokens(&shifted, &file.new_text), "file {f}");
     }
     // Resident files outside the window dropped the old tokens and wait.
-    for f in top.clone() {
+    for f in top.start..top.end {
         let FileState::Materialized(file) = state(&view, cx, f) else {
             panic!("file {f}")
         };
@@ -805,7 +806,7 @@ fn theme_change_rehighlights_only_the_window(cx: &mut TestAppContext) {
     settle(cx);
     let back = pipeline_stats(&view, cx).highlights;
     assert_eq!(back - after, 2 * u64::from(top.end - top.start));
-    for f in top {
+    for f in top.start..top.end {
         let FileState::Materialized(file) = state(&view, cx, f) else {
             panic!("file {f}")
         };
@@ -823,7 +824,10 @@ fn eviction_runs_after_tokens_arrive(cx: &mut TestAppContext) {
     opts.window_screens = 0.0;
     // A viewport shorter than one file: exactly one file is visible.
     let (view, cx) = open(cx, provider, opts, 1000., 100.);
-    assert_eq!(view.read_with(cx, |v, _| v.document().visible(100.)), 0..1);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.document().visible(100.)),
+        SlotRange { start: 0, end: 1 }
+    );
     let (with_tokens, tokens) = view.read_with(cx, |v, _| {
         let d = v.document();
         let FileState::Materialized(f) = d.state(0) else {
@@ -921,7 +925,7 @@ fn threshold_change_reloads_without_recounting(cx: &mut TestAppContext) {
     assert!(window.end < 40, "{window:?}");
     for f in 0..40u32 {
         let again = provider.loads_of(f as usize) - reads[f as usize];
-        assert_eq!(again, usize::from(window.contains(&f)), "file {f}");
+        assert_eq!(again, usize::from(window.contains(f)), "file {f}");
         assert_eq!(
             counts(&view, cx, f),
             Some(FileCounts {
@@ -1027,8 +1031,11 @@ fn queued_load_builds_rows_of_the_layout_on_screen(cx: &mut TestAppContext) {
         Layout::Split
     );
     let window = view.read_with(cx, |v, _| v.document().materialize_range(400., 2.0));
-    assert!(window.contains(&0) && window.len() > 2, "{window:?}");
-    for f in window {
+    assert!(
+        window.contains(0) && window.end - window.start > 2,
+        "{window:?}"
+    );
+    for f in window.start..window.end {
         let FileState::Materialized(file) = state(&view, cx, f) else {
             panic!("file {f}")
         };
@@ -1124,4 +1131,88 @@ fn counts_updated_is_emitted_once_per_batch(cx: &mut TestAppContext) {
     redraw(cx);
     wheel(cx, 0.0);
     assert_eq!(*updates.borrow(), before);
+}
+
+/// Opens a 1000 × 400 unified viewport over `provider` with `hidden` files
+/// hidden before its first frame, and lets every background task finish.
+fn open_with_hidden<'a>(
+    cx: &'a mut TestAppContext,
+    provider: Arc<MemProvider>,
+    hidden: &'static [u32],
+) -> (Entity<DiffViewport>, &'a mut VisualTestContext) {
+    assert_sandboxed();
+    let window = cx.open_window(size(px(1000.), px(400.)), move |window, cx| {
+        let mut view = DiffViewport::new(provider, options(LayoutMode::Unified), window, cx);
+        view.set_hidden(hidden, true, cx);
+        view
+    });
+    let view = window.root(cx).expect("window has a root view");
+    let cx = VisualTestContext::from_window(*window, cx).into_mut();
+    settle(cx);
+    (view, cx)
+}
+
+#[gpui_kit::test]
+fn pipeline_never_loads_hidden_files_but_counts_them(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(twenty_line_files(10));
+    let (view, cx) = open_with_hidden(cx, provider.clone(), &[1, 2]);
+    // The window at the top ([0, 1200): 400 px and two screens below) holds
+    // files 0 (0..445), 3 (445..890) and 4 (890..1335): hidden files have no
+    // height, so they are not in its way.
+    for f in [0, 3, 4] {
+        assert!(state(&view, cx, f).is_materialized(), "file {f}");
+    }
+    for f in [1, 2, 5] {
+        assert!(
+            matches!(state(&view, cx, f), FileState::Estimated),
+            "file {f}"
+        );
+    }
+    assert_eq!(pipeline_stats(&view, cx).loads, 3);
+    // The counts pass covers every file, hidden or not: 20 added lines each.
+    for f in 0..10 {
+        assert_eq!(
+            counts(&view, cx, f),
+            Some(FileCounts {
+                additions: 20,
+                deletions: 0
+            }),
+            "file {f}"
+        );
+    }
+    // Hidden files and files outside the window were read once (one blob
+    // per added file), by that pass alone.
+    for f in [1, 2, 5, 6, 7, 8, 9] {
+        assert_eq!(provider.loads_of(f), 1, "file {f}");
+    }
+    let rows = debug(&view, cx).visible_rows;
+    assert!(
+        !rows.iter().any(|r| r == "== f01.txt" || r == "== f02.txt"),
+        "{rows:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn hiding_a_loading_file_cancels_its_load(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let provider = MemProvider::new(twenty_line_files(10));
+    let (view, cx) = open_idle(
+        cx,
+        provider.clone(),
+        options(LayoutMode::Unified),
+        1000.,
+        400.,
+    );
+    // The first frame queued the window at the top: files 0, 1 and 2.
+    assert!(matches!(state(&view, cx, 1), FileState::Loading { .. }));
+    view.update(cx, |v, cx| v.set_hidden(&[1], true, cx));
+    redraw(cx);
+    assert!(matches!(state(&view, cx, 1), FileState::Estimated));
+    assert_eq!(pipeline_stats(&view, cx).cancelled, 1);
+    settle(cx);
+    // File 3 moved into the window instead; file 1 is only counted.
+    assert!(state(&view, cx, 3).is_materialized());
+    assert!(matches!(state(&view, cx, 1), FileState::Estimated));
+    assert_eq!(counts(&view, cx, 1).map(|c| c.additions), Some(20));
 }

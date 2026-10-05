@@ -1,6 +1,6 @@
 //! `HeightIndex`: a Fenwick tree over item heights with O(log n) update, prefix
-//! and offset lookup (design §12.4). The document keeps one over all files and
-//! every laid-out file keeps one over its rows.
+//! and offset lookup (design §12.4). The document keeps one over all files, by
+//! display slot, and every laid-out file keeps one over its rows.
 
 /// Prefix sums over item heights.
 ///
@@ -123,6 +123,37 @@ impl HeightIndex {
         } else {
             (n - 1, offset - self.prefix(n - 1))
         }
+    }
+
+    /// The last non-empty item that starts before `offset`: the one holding
+    /// the pixel just above it, so `last_before(prefix(i))` is the nearest
+    /// non-empty item above item `i`. Offsets past the total give the last
+    /// non-empty item; `None` at or below 0, or when every item is empty.
+    pub fn last_before(&self, offset: f64) -> Option<usize> {
+        let n = self.heights.len();
+        // `offset > 0.0` is false for NaN too.
+        let positive = offset > 0.0;
+        if n == 0 || !positive {
+            return None;
+        }
+        if offset > self.total {
+            return self.last_before(self.total);
+        }
+        // Binary lifting: the largest `pos` with `prefix(pos) < offset`. Item
+        // `pos` then starts before `offset` and ends at or after it, so it is
+        // not empty.
+        let mut pos = 0;
+        let mut rest = offset;
+        let mut step = 1usize << (usize::BITS - 1 - n.leading_zeros());
+        while step > 0 {
+            let next = pos + step;
+            if next <= n && self.tree[next] < rest {
+                pos = next;
+                rest -= self.tree[next];
+            }
+            step >>= 1;
+        }
+        (pos < n).then_some(pos)
     }
 
     /// Bytes owned on the heap.

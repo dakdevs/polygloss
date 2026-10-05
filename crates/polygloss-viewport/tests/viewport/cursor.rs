@@ -766,3 +766,104 @@ fn selection_on_an_added_file_copies_its_text(cx: &mut TestAppContext) {
     let clip = cx.read_from_clipboard().and_then(|c| c.text());
     assert_eq!(clip.as_deref(), Some("alpha\nbeta"));
 }
+
+/// Five added files `f<i>.txt` of three lines, shown in the order 3, 1, 2:
+/// file 0 is hidden between 1 and 2, file 4 after 2.
+fn permuted_with_hidden(cx: &mut TestAppContext) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+    let specs = (0..5)
+        .map(|i| {
+            Spec::added(
+                &format!("f{i}.txt"),
+                &numbered(&format!("f{i}"), 3).concat(),
+            )
+        })
+        .collect();
+    let (view, cx) = open(
+        cx,
+        MemProvider::new(specs),
+        options(LayoutMode::Unified),
+        1000.,
+        2000.,
+    );
+    view.update(cx, |v, cx| {
+        v.set_order(vec![3, 1, 0, 2, 4], cx);
+        v.set_hidden(&[0, 4], true, cx);
+    });
+    settle(cx);
+    (view, cx)
+}
+
+#[gpui_kit::test]
+fn stepwise_keys_walk_display_order_and_skip_hidden_files(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = permuted_with_hidden(cx);
+    let new = |f: u32, line: u32| Some(pos(f, Side::New, line));
+
+    // `j`: the first cursor is on the first line shown (file 3), then down
+    // through 3, 1 and 2, never into 0 or 4; it stays at the end.
+    move_cursor(&view, cx, Direction::Down);
+    assert_eq!(cursor(&view, cx), new(3, 0));
+    for (f, line) in [
+        (3, 1),
+        (3, 2),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (2, 2),
+    ] {
+        move_cursor(&view, cx, Direction::Down);
+        assert_eq!(cursor(&view, cx), new(f, line));
+    }
+    // `k`: back up the same way, staying at the top.
+    for (f, line) in [
+        (2, 1),
+        (2, 0),
+        (1, 2),
+        (1, 1),
+        (1, 0),
+        (3, 2),
+        (3, 1),
+        (3, 0),
+        (3, 0),
+    ] {
+        move_cursor(&view, cx, Direction::Up);
+        assert_eq!(cursor(&view, cx), new(f, line));
+    }
+
+    // `]` / `[`: each added file is one change.
+    let step = |view: &Entity<DiffViewport>, cx: &mut VisualTestContext, down: bool| {
+        view.update(cx, |v, cx| {
+            if down {
+                v.next_change(cx)
+            } else {
+                v.prev_change(cx)
+            }
+        });
+        settle(cx);
+        cursor(view, cx)
+    };
+    for f in [1, 2, 2] {
+        assert_eq!(step(&view, cx, true), new(f, 0));
+    }
+    for f in [1, 3, 3] {
+        assert_eq!(step(&view, cx, false), new(f, 0));
+    }
+
+    // `n` / `p`: file by file in display order, stopping at the last and
+    // the first shown file.
+    set_cursor(&view, cx, pos(3, Side::New, 1));
+    for f in [1, 2, 2] {
+        view.update(cx, |v, cx| v.next_file(cx));
+        settle(cx);
+        assert_eq!(cursor(&view, cx), new(f, 0));
+        assert_eq!(view.read_with(cx, |v, _| v.anchor().file_idx), f);
+    }
+    for f in [1, 3, 3] {
+        view.update(cx, |v, cx| v.prev_file(cx));
+        settle(cx);
+        assert_eq!(cursor(&view, cx), new(f, 0));
+    }
+}

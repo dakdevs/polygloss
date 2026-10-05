@@ -52,15 +52,15 @@ pub fn visible_line(
     let top = doc.scroll_top();
     let (bottom, mid) = (top + height, top + height / 2.0);
     let header = f64::from(doc.metrics().header_height);
-    let (mid_file, _) = doc.file_at(mid);
+    let (mid_file, _) = doc.file_at_offset(mid);
     let free = |f: u32| move |a: &BlockAnchor| !used.contains(&(f, *a));
-    let last = doc.file_at(bottom).0;
+    let last = doc.file_at_offset(bottom).0;
     for f in mid_file..=last {
         if let Some(a) = lines_in(doc, f, mid, bottom).into_iter().find(free(f)) {
             return Some((f, a));
         }
     }
-    let first = doc.file_at(top).0;
+    let first = doc.file_at_offset(top).0;
     for f in (first..=mid_file).rev() {
         // Rows right under the (pinned) header at the top are covered.
         let lines = lines_in(doc, f, top + header, mid);

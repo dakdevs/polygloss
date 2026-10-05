@@ -13,6 +13,9 @@
 //! header card, and a gap), the header, the body and the card's bottom
 //! padding, and the last file also holds the gap below its card. With a zero
 //! gap and padding and no prelude this is the flat v1 layout.
+//!
+//! Files are laid out in display order ([`slots`]): "first" and "last" above
+//! mean the first and last shown file, and hidden files have no height.
 
 mod anchor;
 mod file_layout;
@@ -20,6 +23,7 @@ mod file_state;
 mod height_index;
 mod metrics;
 mod placement;
+mod slots;
 mod window;
 
 use std::sync::Arc;
@@ -32,6 +36,7 @@ pub use file_state::FileState;
 pub use height_index::HeightIndex;
 pub use metrics::{Metrics, SizeHint};
 pub use placement::{BlockAnchor, PlacedBlock};
+pub use slots::{ShownFiles, SlotRange};
 pub use window::{DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS};
 
 use crate::materialize::MaterializedFile;
@@ -44,7 +49,13 @@ pub struct Document {
     files: Arc<Vec<FileChange>>,
     metrics: Metrics,
     entries: Vec<FileEntry>,
-    /// File heights: lead, header, body and card padding
+    /// File indices in display order (slot → file).
+    order: Vec<u32>,
+    /// Each file's display slot (file → slot).
+    slots: Vec<u32>,
+    /// The first and last shown slots; `None` when every file is hidden.
+    shown: Option<(u32, u32)>,
+    /// File heights by slot: lead, header, body and card padding
     /// ([`Document::file_height`]).
     heights: HeightIndex,
     anchor: ScrollAnchor,
@@ -73,12 +84,17 @@ impl Document {
                 body: Body::Estimated(metrics.estimate_body(change, None)),
                 blocks: Vec::new(),
                 block_sets: 0,
+                hidden: false,
             })
             .collect();
+        let n = files.len() as u32;
         let mut doc = Document {
             files,
             metrics,
             entries,
+            order: (0..n).collect(),
+            slots: (0..n).collect(),
+            shown: n.checked_sub(1).map(|last| (0, last)),
             heights: HeightIndex::default(),
             anchor: ScrollAnchor::default(),
             prelude: None,
@@ -125,9 +141,9 @@ impl Document {
         self.prelude
     }
 
-    /// Sets the prelude's height (`None`: no prelude). It is the first file's
-    /// lead, with a gap below it. The anchor stays put, so an anchor at the
-    /// top of the document keeps the prelude at the top while it grows.
+    /// Sets the prelude's height (`None`: no prelude). It is the first shown
+    /// file's lead, with a gap below it. The anchor stays put, so an anchor at
+    /// the top of the document keeps the prelude at the top while it grows.
     pub fn set_prelude_height(&mut self, h: Option<f32>) {
         let h = h.map(|h| if h.is_finite() { h.max(0.0) } else { 0.0 });
         if self.prelude == h {
@@ -135,16 +151,18 @@ impl Document {
         }
         self.prelude = h;
         if !self.entries.is_empty() {
-            self.refresh(0);
+            self.refresh(self.file_at(self.top_slot()));
         }
     }
 
     /// The canvas above file `idx`'s card: [`Metrics::card_gap`], except for
-    /// the first file, whose lead is the prelude and a gap when there is a
-    /// prelude, else nothing.
+    /// the first shown file, whose lead is the prelude and a gap when there
+    /// is a prelude, else nothing, and hidden files, which have none.
     pub fn lead(&self, idx: u32) -> f32 {
-        if idx == 0 {
+        if self.slot(idx) == self.top_slot() {
             self.prelude.map_or(0.0, |p| p + self.metrics.card_gap)
+        } else if self.is_hidden(idx) {
+            0.0
         } else {
             self.metrics.card_gap
         }
@@ -186,10 +204,13 @@ impl Document {
     }
 
     /// File `idx`'s height in the document: its lead, header, body and card
-    /// padding, plus the gap below the last card.
+    /// padding, plus the gap below the last card; only its lead when hidden.
     fn entry_height(&self, idx: u32) -> f32 {
+        if self.is_hidden(idx) {
+            return self.lead(idx);
+        }
         let body = self.padded(self.entries[idx as usize].body_height());
-        let tail = if idx + 1 == self.len() {
+        let tail = if self.last_shown_slot() == Some(self.slot(idx)) {
             self.metrics.card_gap
         } else {
             0.0
@@ -197,9 +218,9 @@ impl Document {
         self.lead(idx) + self.metrics.header_height + body + tail
     }
 
-    /// Rebuilds the height index from every entry.
+    /// Rebuilds the height index from every entry, in display order.
     fn reindex(&mut self) {
-        let heights: Vec<f32> = (0..self.len()).map(|i| self.entry_height(i)).collect();
+        let heights: Vec<f32> = self.order.iter().map(|&f| self.entry_height(f)).collect();
         self.heights = HeightIndex::new(&heights);
     }
 
@@ -231,19 +252,28 @@ impl Document {
 
     /// Top of file `idx`: the top of its lead.
     pub fn file_top(&self, idx: u32) -> f64 {
-        self.heights.prefix(idx as usize)
+        self.heights.prefix(self.slot(idx) as usize)
     }
 
     /// Height of file `idx`: lead, header, body and card padding (and the gap
-    /// below the last card).
+    /// below the last card); a hidden file's lead.
     pub fn file_height(&self, idx: u32) -> f32 {
-        self.heights.get(idx as usize)
+        self.heights.get(self.slot(idx) as usize)
     }
 
-    /// The file containing document offset `offset` and the offset within it.
-    pub fn file_at(&self, offset: f64) -> (u32, f64) {
-        let (idx, y) = self.heights.find(offset);
-        (idx as u32, y)
+    /// The file containing document offset `offset` and the offset within it;
+    /// past the end, the last file that has a height (files without one, such
+    /// as hidden files, never contain an offset).
+    pub fn file_at_offset(&self, offset: f64) -> (u32, f64) {
+        let (mut slot, mut y) = self.heights.find(offset);
+        // `find` gives its last slot past the end, whatever its height.
+        if !self.heights.is_empty()
+            && self.heights.get(slot) == 0.0
+            && let Some(last) = self.heights.last_before(self.heights.total())
+        {
+            (slot, y) = (last, offset - self.heights.prefix(last));
+        }
+        (self.order.get(slot).copied().unwrap_or(0), y)
     }
 
     pub fn anchor(&self) -> &ScrollAnchor {
@@ -265,12 +295,11 @@ impl Document {
         if to == self.scroll_top {
             return;
         }
-        let (f, y) = self.heights.find(to);
-        let pending = f as u32 == self.anchor.file_idx
-            && self.pending_target(f)
-            && y > f64::from(self.lead(f as u32));
+        let (f, y) = self.file_at_offset(to);
+        let pending =
+            f == self.anchor.file_idx && self.pending_target(f) && y > f64::from(self.lead(f));
         let key_y = if pending {
-            self.key_offset(f as u32, self.anchor.row)
+            self.key_offset(f, self.anchor.row)
         } else {
             None
         };
@@ -292,7 +321,9 @@ impl Document {
         });
     }
 
-    /// Restores a scroll position (view state, or a target above the row).
+    /// Restores a scroll position (view state, or a target above the row). A
+    /// position in a hidden file is the top of where it is: `(file, Lead,
+    /// 0)`.
     pub fn scroll_to_anchor(&mut self, anchor: ScrollAnchor) {
         if self.entries.is_empty() {
             return;
@@ -310,6 +341,10 @@ impl Document {
         // jump to that row when the file is expanded.
         if self.is_collapsed(self.anchor.file_idx) && !self.anchor.row.is_above_body() {
             self.anchor.row = RowKey::Header;
+            self.anchor.offset_px = 0.0;
+        }
+        if self.is_hidden(self.anchor.file_idx) {
+            self.anchor.row = RowKey::Lead;
             self.anchor.offset_px = 0.0;
         }
         // A key that does not resolve (a block or gap that is gone, an old line
@@ -623,7 +658,7 @@ impl Document {
     /// Re-reads file `idx`'s height into the index and keeps the anchor.
     fn refresh(&mut self, idx: u32) {
         let h = self.entry_height(idx);
-        self.heights.set(idx as usize, h);
+        self.heights.set(self.slot(idx) as usize, h);
         self.rebase();
     }
 
@@ -659,13 +694,12 @@ impl Document {
     /// placeholder body of a file without rows.
     fn anchor_at(&self, offset: f64) -> ScrollAnchor {
         if offset <= 0.0 {
-            return ScrollAnchor::default();
+            return self.top_anchor();
         }
-        let (idx, y) = self.heights.find(offset);
-        let file_idx = idx as u32;
+        let (file_idx, y) = self.file_at_offset(offset);
         let lead = f64::from(self.lead(file_idx));
         let body = lead + f64::from(self.metrics.header_height);
-        let entry = &self.entries[idx];
+        let entry = &self.entries[file_idx as usize];
         let (row, offset) = if y < lead {
             (RowKey::Lead, y)
         } else if y < body || entry.collapsed {
@@ -688,14 +722,17 @@ impl Document {
     /// The first pixel row below the header pinned at the viewport's top
     /// (`scroll_top` plus a header's height) as `(file, y)`, `y` relative to
     /// that file's body top (negative in its lead or header). In a card's
-    /// padding, where nothing of that card's body shows any more, it is the
-    /// next file's, above its body.
+    /// padding, where nothing of that card's body shows any more, or in a
+    /// hidden file's lead, it is the next shown file's, above its body.
     pub(crate) fn below_header(&self) -> (u32, f64) {
         let header = f64::from(self.metrics.header_height);
-        let (f, _) = self.file_at(self.scroll_top + header);
-        let y = self.scroll_top + header - self.body_top(f);
-        if y >= f64::from(self.body_height(f)) && f + 1 < self.len() {
-            return (f + 1, -1.0);
+        let at = self.scroll_top + header;
+        let (f, _) = self.file_at_offset(at);
+        let y = at - self.body_top(f);
+        if (self.is_hidden(f) || y >= f64::from(self.body_height(f)))
+            && let Some(next) = self.next_shown(f)
+        {
+            return (next, -1.0);
         }
         (f, y)
     }
@@ -759,8 +796,8 @@ impl Document {
 
     /// Whether the anchor is a target inside file `idx` that cannot resolve
     /// exactly yet: a line, gap or block of an expanded file without rows.
-    fn pending_target(&self, idx: usize) -> bool {
-        let entry = &self.entries[idx];
+    fn pending_target(&self, idx: u32) -> bool {
+        let entry = &self.entries[idx as usize];
         !entry.collapsed
             && entry.layout().is_none()
             && matches!(
