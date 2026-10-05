@@ -64,7 +64,9 @@ pub fn snapshot(cx: &App) -> Value {
         let t = tab.read(cx);
         let viewport = t.viewport.read(cx);
         let files = viewport.document().files();
-        let anchor = crate::view_state::top_line(viewport)
+        let anchor = viewport
+            .document()
+            .top_line()
             .map(|(f, side, line)| location(files, f, side, line));
         let cursor = viewport
             .cursor()

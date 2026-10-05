@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use gpui_kit::{Entity, TestAppContext};
+use gpui_kit::{Entity, IntoElement as _, Styled as _, TestAppContext, div, px};
 use polygloss_app::keymap::actions;
 use polygloss_app::palette::view_toggles::{self, LayoutChoices};
 use polygloss_app::review_tab::ReviewTab;
@@ -18,7 +18,7 @@ use polygloss_core::review::{OpenRequest, PinnedBy, ScrollAnchorState, ViewState
 use polygloss_core::store::events::Actor;
 use polygloss_diff::rows::Layout;
 use polygloss_diff::{ObjectFormat, Side};
-use polygloss_viewport::{LayoutMode, ScrollTarget};
+use polygloss_viewport::{LayoutMode, ScrollAnchor, ScrollTarget};
 
 use crate::shell::{Shell, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
@@ -255,7 +255,7 @@ fn reopen_restores_scroll_anchor_by_line_not_pixels(cx: &mut TestAppContext) {
     assert_eq!(top_header(&mut shell, &tab), "== src/alpha.rs");
     assert!(row_below_header(&mut shell, &tab).contains("alpha line 61"));
     assert_eq!(
-        tab.read_with(shell.cx, |t, cx| view_state::top_line(t.viewport.read(cx))),
+        tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).document().top_line()),
         Some((1, Side::New, 60))
     );
 }
@@ -607,5 +607,70 @@ fn unpinned_live_state_is_saved_once_pinned(cx: &mut TestAppContext) {
     assert_eq!(
         stored_anchor(&mut shell, &tab).map(|a| (a.path, a.line)),
         Some(("src/alpha.rs".to_owned(), 101))
+    );
+}
+
+/// Sets a 72 pt prelude on `tab`'s viewport, standing in for the header
+/// card (T6.13).
+fn set_prelude(shell: &mut Shell, tab: &Entity<ReviewTab>) {
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let prelude: polygloss_viewport::RenderBlock =
+        std::rc::Rc::new(|_, _| div().h(px(72.)).into_any_element());
+    viewport.update(shell.cx, |v, cx| v.set_prelude(Some(prelude), cx));
+    draw(shell.cx);
+}
+
+fn top_line(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Option<(u32, Side, u32)> {
+    tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).document().top_line())
+}
+
+#[gpui_kit::test]
+fn view_state_top_line_round_trips_with_cards(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = long_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare(&repo)).unwrap();
+    set_prelude(&mut shell, &tab);
+
+    // On cards, below a prelude: the line right below the pinned header is
+    // what is saved and restored.
+    scroll_to_line(&mut shell, &tab, 1, 60);
+    assert_eq!(top_line(&mut shell, &tab), Some((1, Side::New, 60)));
+    assert!(row_below_header(&mut shell, &tab).contains("alpha line 61"));
+    settle(&mut shell);
+    let saved = ScrollAnchorState {
+        path: "src/alpha.rs".into(),
+        side: Side::New,
+        line: 61,
+    };
+    assert_eq!(stored_anchor(&mut shell, &tab), Some(saved));
+    close(&mut shell, &tab);
+    let tab = shell.open(compare(&repo)).unwrap();
+    assert_eq!(top_line(&mut shell, &tab), Some((1, Side::New, 60)));
+    // The header card loading late does not move it.
+    set_prelude(&mut shell, &tab);
+    assert_eq!(top_line(&mut shell, &tab), Some((1, Side::New, 60)));
+    assert!(row_below_header(&mut shell, &tab).contains("alpha line 61"));
+
+    // 30 pt into the 72 pt prelude: the review is at its header card, so
+    // no anchor is saved and it reopens at the top.
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    viewport.update(shell.cx, |v, cx| {
+        v.scroll_to_anchor(ScrollAnchor::default(), cx);
+        v.scroll_by(30.0, cx);
+    });
+    draw(shell.cx);
+    assert_eq!(
+        viewport.read_with(shell.cx, |v, _| v.document().scroll_top()),
+        30.0
+    );
+    settle(&mut shell);
+    assert_eq!(stored_anchor(&mut shell, &tab), None);
+    close(&mut shell, &tab);
+    let tab = shell.open(compare(&repo)).unwrap();
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    assert_eq!(
+        viewport.read_with(shell.cx, |v, _| v.document().scroll_top()),
+        0.0
     );
 }

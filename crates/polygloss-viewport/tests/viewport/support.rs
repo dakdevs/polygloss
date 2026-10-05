@@ -319,8 +319,18 @@ pub fn numbered(prefix: &str, n: u32) -> Vec<String> {
     (0..n).map(|i| format!("{prefix} {i}\n")).collect()
 }
 
-/// Options with the test font size, Pierre Light and the given layout.
+/// Options with the test font size, Pierre Light, the given layout and the
+/// flat v1 layout (no cards), whose geometry the tests before T6.5 compute by
+/// hand. [`card_options`] has the cards.
 pub fn options(layout: LayoutMode) -> ViewportOptions {
+    ViewportOptions {
+        cards: None,
+        ..card_options(layout)
+    }
+}
+
+/// [`options`] with the default file cards (`CardStyle::default()`).
+pub fn card_options(layout: LayoutMode) -> ViewportOptions {
     ViewportOptions {
         layout,
         code_font_size: FONT_SIZE,
@@ -513,6 +523,51 @@ pub fn quads(cx: &mut VisualTestContext) -> Vec<(f32, f32, f32, f32, Hsla)> {
                     b.size.height.0 / scale,
                     color,
                 ))
+            })
+            .collect()
+    })
+}
+
+/// A quad of the last frame with its shape, in window points: bounds
+/// `(x, y, w, h)`, the clip it was painted under (same form), its solid
+/// fill, corner radii (top-left, top-right, bottom-right, bottom-left),
+/// border widths (top, right, bottom, left) and border color.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapedQuad {
+    pub bounds: (f32, f32, f32, f32),
+    pub clip: (f32, f32, f32, f32),
+    pub fill: Option<Hsla>,
+    pub radii: [f32; 4],
+    pub borders: [f32; 4],
+    pub border: Hsla,
+}
+
+/// Every quad of the last frame with its shape, in paint order.
+pub fn shaped_quads(cx: &mut VisualTestContext) -> Vec<ShapedQuad> {
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .into_iter()
+            .map(|q| {
+                let (r, w) = (q.corner_radii, q.border_widths);
+                let rect = |b: gpui_kit::Bounds<gpui_kit::ScaledPixels>| {
+                    (
+                        b.origin.x.0 / scale,
+                        b.origin.y.0 / scale,
+                        b.size.width.0 / scale,
+                        b.size.height.0 / scale,
+                    )
+                };
+                ShapedQuad {
+                    bounds: rect(q.bounds),
+                    clip: rect(q.content_mask.bounds),
+                    fill: q.background.as_solid(),
+                    radii: [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+                        .map(|v| v.0 / scale),
+                    borders: [w.top, w.right, w.bottom, w.left].map(|v| v.0 / scale),
+                    border: q.border_color,
+                }
             })
             .collect()
     })

@@ -116,15 +116,15 @@ fn block_pane(anchor: BlockAnchor, layout: Layout) -> Pane {
     }
 }
 
-/// Left edge and width of a block in `pane` of a viewport `width` px wide. A
-/// left-column block stops before the divider (the left half's last pixel
-/// column), which keeps running between the columns.
-fn block_column(pane: Pane, width: f32) -> (f32, f32) {
+/// Left edge and width of a block in `pane` of rows `x..x + width` (a card's
+/// inner width). A left-column block stops before the divider (the left
+/// half's last pixel column), which keeps running between the columns.
+fn block_column(pane: Pane, x: f32, width: f32) -> (f32, f32) {
     let half = (width / 2.0).floor();
     match pane {
-        Pane::Full => (0.0, width),
-        Pane::Half(0) => (0.0, (half - 1.0).max(0.0)),
-        Pane::Half(_) => (half, (width - half).max(0.0)),
+        Pane::Full => (x, width),
+        Pane::Half(0) => (x, (half - 1.0).max(0.0)),
+        Pane::Half(_) => (x + half, (width - half).max(0.0)),
     }
 }
 
@@ -158,15 +158,15 @@ impl<'a> Painter<'a> {
         let Some(spec) = blocks.spec(id) else {
             return;
         };
-        let width = self.bounds.size.width.as_f32();
+        let (x, width) = self.inner_x_w();
         let pane = block_pane(spec.anchor, self.layout);
         if let Pane::Half(k) = pane {
-            let half = (width / 2.0).floor();
+            let half = x + (width / 2.0).floor();
             let theme = self.theme;
             if k == 0 {
-                self.quad(2, half, y, width - half, h, theme.empty_cell);
+                self.quad(2, half, y, x + width - half, h, theme.empty_cell);
             } else {
-                self.quad(1, 0.0, y, half, h, theme.empty_cell);
+                self.quad(1, x, y, half - x, h, theme.empty_cell);
             }
             self.quad(1, half - 1.0, y, 1.0, h, theme.border);
         }
@@ -184,7 +184,7 @@ impl<'a> Painter<'a> {
             styled: false,
             content: DebugContent::BlockPair(old.0, new.0),
         });
-        let width = self.bounds.size.width.as_f32();
+        let (x0, width) = self.inner_x_w();
         let theme = self.theme;
         for (k, id) in [(0u8, old), (1, new)] {
             if self.blocks.spec(id).is_none() {
@@ -199,12 +199,12 @@ impl<'a> Painter<'a> {
                 .map_or(h, |b| b.height)
                 .min(h);
             if own < h {
-                let (x, w) = block_column(pane, width);
+                let (x, w) = block_column(pane, x0, width);
                 self.quad(pane_layer(pane), x, y + own, w, h - own, theme.empty_cell);
             }
             self.block_slot(f, id, pane, y, own, h);
         }
-        let half = (width / 2.0).floor();
+        let half = x0 + (width / 2.0).floor();
         self.quad(1, half - 1.0, y, 1.0, h, theme.border);
     }
 
@@ -216,8 +216,8 @@ impl<'a> Painter<'a> {
         let Some(spec) = blocks.spec(id) else {
             return;
         };
-        let width = self.bounds.size.width.as_f32();
-        let (x, w) = block_column(pane, width);
+        let (x0, width) = self.inner_x_w();
+        let (x, w) = block_column(pane, x0, width);
         let o = self.bounds.origin;
         let origin = point(o.x + px(x), o.y + px(y));
         let clip = Bounds::new(origin, size(px(w), px(row_h))).intersect(&self.bounds);
@@ -384,7 +384,6 @@ impl DiffViewport {
         let margin = f64::from(DEFAULT_WINDOW_SCREENS * h);
         let top = self.doc.scroll_top() - margin;
         let bottom = self.doc.scroll_top() + f64::from(h) + margin;
-        let header = f64::from(self.doc.metrics().header_height);
         for f in self.doc.materialize_range(h, DEFAULT_WINDOW_SCREENS) {
             if self.doc.blocks(f).is_empty() || self.doc.is_collapsed(f) {
                 continue;
@@ -392,7 +391,7 @@ impl DiffViewport {
             let Some(layout) = self.doc.file_layout(f) else {
                 continue;
             };
-            let body_top = self.doc.file_top(f) + header;
+            let body_top = self.doc.body_top(f);
             for &r in layout.block_rows() {
                 let r = r as usize;
                 let y = body_top + layout.row_top(r);
@@ -409,7 +408,8 @@ impl DiffViewport {
                     let Some(spec) = self.blocks.spec(id) else {
                         continue;
                     };
-                    let (_, width) = block_column(block_pane(spec.anchor, self.layout), self.width);
+                    let pane = block_pane(spec.anchor, self.layout);
+                    let (_, width) = block_column(pane, 0.0, self.width);
                     if self.blocks.measured.get(&id) == Some(&width) {
                         continue;
                     }
@@ -444,9 +444,10 @@ struct Laid {
     element: AnyElement,
 }
 
-/// A visible block's element, prepainted and ready to paint.
+/// A visible block's (or the prelude's) element, prepainted and ready to
+/// paint.
 pub(crate) struct PreparedBlock {
-    id: BlockId,
+    element_id: ElementId,
     element: AnyElement,
     clip: Bounds<Pixels>,
 }
@@ -457,8 +458,12 @@ fn element_id(id: BlockId) -> ElementId {
     ElementId::from(("polygloss-block", id.0))
 }
 
-/// Renders block `id` and lays it out `width` px wide; its height is rounded
-/// up to whole pixels so the rows below stay on the pixel grid.
+/// The prelude's element id.
+fn prelude_id() -> ElementId {
+    ElementId::from("polygloss-prelude")
+}
+
+/// Renders block `id` and lays it out `width` px wide.
 fn measure(
     id: BlockId,
     render: &RenderBlock,
@@ -466,7 +471,26 @@ fn measure(
     window: &mut Window,
     cx: &mut App,
 ) -> Laid {
-    window.with_id(element_id(id), |window| {
+    let (height, element) = lay_out(element_id(id), render, width, window, cx);
+    Laid {
+        id,
+        width,
+        height,
+        element,
+    }
+}
+
+/// Renders an element under `element_id` and lays it out `width` px wide;
+/// its height is rounded up to whole pixels so the rows below stay on the
+/// pixel grid.
+fn lay_out(
+    element_id: ElementId,
+    render: &RenderBlock,
+    width: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> (f32, AnyElement) {
+    window.with_id(element_id, |window| {
         let mut element = render(window, cx);
         let available = size(
             AvailableSpace::Definite(px(width)),
@@ -476,23 +500,20 @@ fn measure(
             .layout_as_root(available, window, cx)
             .height
             .as_f32();
-        Laid {
-            id,
-            width,
-            height: if height.is_finite() {
-                height.ceil().max(0.0)
-            } else {
-                0.0
-            },
-            element,
-        }
+        let height = if height.is_finite() {
+            height.ceil().max(0.0)
+        } else {
+            0.0
+        };
+        (height, element)
     })
 }
 
 /// The element's prepaint: builds the frame (see
-/// [`DiffViewport::prepare_frame`]), renders and measures its visible blocks,
-/// rebuilds it while block heights needed correcting, prepaints the blocks at
-/// their rows and measures blocks near the viewport.
+/// [`DiffViewport::prepare_frame`]), renders and measures its visible blocks
+/// and the prelude, rebuilds it while their heights needed correcting,
+/// prepaints them at their places and measures blocks near the viewport (and
+/// an unmeasured prelude off screen).
 pub(crate) fn prepare(
     view: &Entity<DiffViewport>,
     bounds: Bounds<Pixels>,
@@ -500,6 +521,7 @@ pub(crate) fn prepare(
     cx: &mut App,
 ) -> (Frame, Vec<PreparedBlock>) {
     let mut earlier: Vec<Laid> = Vec::new();
+    let mut earlier_prelude: Option<(f32, f32, AnyElement)> = None;
     let mut shaped = 0;
     let mut pass = 1;
     loop {
@@ -507,6 +529,20 @@ pub(crate) fn prepare(
         let mut laid = Vec::with_capacity(frame.blocks.len());
         let mut measured = Vec::with_capacity(frame.blocks.len());
         let mut stale = false;
+        // The prelude: an element an earlier pass laid out at this width is
+        // reused.
+        let prelude = frame.prelude.as_ref().map(|slot| {
+            let (height, element) = match earlier_prelude.take() {
+                Some((w, h, element)) if w == slot.width => (h, element),
+                _ => lay_out(prelude_id(), &slot.render, slot.width, window, cx),
+            };
+            stale |= height != slot.height;
+            (slot.width, height, element)
+        });
+        if let Some((width, height, _)) = &prelude {
+            let (width, height) = (*width, *height);
+            view.update(cx, |v, _| v.prelude_measured(width, height));
+        }
         for slot in &frame.blocks {
             // An element an earlier pass laid out at this width is reused.
             let l = match earlier
@@ -535,22 +571,25 @@ pub(crate) fn prepare(
                 request_frame(view, window);
             }
             frame.shaped += shaped;
-            let prepared = frame
-                .blocks
-                .iter()
-                .zip(laid)
-                .map(|(slot, mut l)| {
-                    window.with_id(element_id(slot.id), |window| {
-                        window.with_content_mask(Some(ContentMask { bounds: slot.clip }), |w| {
-                            l.element.prepaint_at(slot.origin, w, cx)
-                        })
-                    });
-                    PreparedBlock {
-                        id: slot.id,
-                        element: l.element,
-                        clip: slot.clip,
-                    }
-                })
+            let prelude = frame
+                .prelude
+                .as_ref()
+                .zip(prelude)
+                .map(|(slot, (_, _, element))| {
+                    prepaint(prelude_id(), element, slot.origin, slot.clip, window, cx)
+                });
+            let prepared = prelude
+                .into_iter()
+                .chain(frame.blocks.iter().zip(laid).map(|(slot, l)| {
+                    prepaint(
+                        element_id(slot.id),
+                        l.element,
+                        slot.origin,
+                        slot.clip,
+                        window,
+                        cx,
+                    )
+                }))
                 .collect();
             measure_nearby(view, &frame, window, cx);
             if !frame.blocks.is_empty() || !view.read(cx).blocks.painted.is_empty() {
@@ -563,13 +602,41 @@ pub(crate) fn prepare(
         shaped += frame.shaped;
         view.update(cx, |v, _| v.frame_pool = Some(frame));
         earlier = laid;
+        earlier_prelude = prelude;
         pass += 1;
     }
 }
 
+/// Prepaints an element at `origin`, clipped to `clip`.
+fn prepaint(
+    element_id: ElementId,
+    mut element: AnyElement,
+    origin: Point<Pixels>,
+    clip: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> PreparedBlock {
+    window.with_id(element_id.clone(), |window| {
+        window.with_content_mask(Some(ContentMask { bounds: clip }), |w| {
+            element.prepaint_at(origin, w, cx)
+        })
+    });
+    PreparedBlock {
+        element_id,
+        element,
+        clip,
+    }
+}
+
 /// Measures blocks near the viewport whose height is unknown, a few per
-/// frame. They are off screen, so nothing painted this frame moves.
+/// frame, and the prelude when it is off screen and was not measured at
+/// this width. They are off screen, so nothing painted this frame moves.
 fn measure_nearby(view: &Entity<DiffViewport>, frame: &Frame, window: &mut Window, cx: &mut App) {
+    let prelude = view.read(cx).prelude_to_measure();
+    if let Some((render, width)) = prelude.filter(|_| frame.prelude.is_none()) {
+        let (height, _) = lay_out(prelude_id(), &render, width, window, cx);
+        view.update(cx, |v, _| v.prelude_measured(width, height));
+    }
     let (todo, more) = view
         .read(cx)
         .blocks_to_measure(&frame.blocks, MAX_OFFSCREEN_MEASURES);
@@ -599,10 +666,10 @@ fn request_frame(view: &Entity<DiffViewport>, window: &mut Window) {
     window.on_next_frame(move |_, cx| cx.notify(view));
 }
 
-/// Paints the prepared blocks, each clipped to its row.
+/// Paints the prepared blocks (and the prelude), each clipped to its place.
 pub(crate) fn paint(blocks: &mut [PreparedBlock], window: &mut Window, cx: &mut App) {
     for b in blocks {
-        window.with_id(element_id(b.id), |window| {
+        window.with_id(b.element_id.clone(), |window| {
             window.with_content_mask(Some(ContentMask { bounds: b.clip }), |window| {
                 b.element.paint(window, cx)
             })

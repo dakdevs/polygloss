@@ -68,16 +68,16 @@ pub(crate) struct FileEntry {
 }
 
 impl FileEntry {
-    /// The file's height: the header, plus the body unless collapsed. The body
-    /// is rounded to `f32` on its own, so keeping a layout's height as an
+    /// The body's height below the header, blocks included; 0 when collapsed.
+    /// It is rounded to `f32` on its own, so keeping a layout's height as an
     /// explicit one (eviction) yields exactly the same file height.
-    pub(crate) fn height(&self, header: f32) -> f32 {
+    pub(crate) fn body_height(&self) -> f32 {
         if self.collapsed {
-            header
+            0.0
         } else if let Body::Estimated(body) = self.body {
-            header + body + self.blocks_height()
+            body + self.blocks_height()
         } else {
-            header + self.body.height() as f32
+            self.body.height() as f32
         }
     }
 

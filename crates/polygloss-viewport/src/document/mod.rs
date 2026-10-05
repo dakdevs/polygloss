@@ -7,6 +7,12 @@
 //! exact when the viewport hands over a [`FileLayout`]. Every height change
 //! re-derives the pixel scroll offset from the anchor, so corrections above
 //! the anchor never move what is on screen.
+//!
+//! Each file is a card on the canvas (design §11.6): its height is its lead
+//! (the canvas above the card; for the first file the prelude, the host's
+//! header card, and a gap), the header, the body and the card's bottom
+//! padding, and the last file also holds the gap below its card. With a zero
+//! gap and padding and no prelude this is the flat v1 layout.
 
 mod anchor;
 mod file_layout;
@@ -18,7 +24,7 @@ mod window;
 
 use std::sync::Arc;
 
-use polygloss_diff::{FileChange, FileKind};
+use polygloss_diff::{FileChange, FileKind, Side};
 
 pub use anchor::{BlockId, RowKey, ScrollAnchor};
 pub use file_layout::{BodyRow, FileLayout};
@@ -38,9 +44,12 @@ pub struct Document {
     files: Arc<Vec<FileChange>>,
     metrics: Metrics,
     entries: Vec<FileEntry>,
-    /// File heights (header plus body, or the header alone when collapsed).
+    /// File heights: lead, header, body and card padding
+    /// ([`Document::file_height`]).
     heights: HeightIndex,
     anchor: ScrollAnchor,
+    /// Height of the prelude above the first card, when there is one.
+    prelude: Option<f32>,
     /// Pixel offset of the viewport top, derived from `anchor`.
     scroll_top: f64,
     /// `scroll_top` relative to the anchor file's top, kept for anchors whose
@@ -66,20 +75,19 @@ impl Document {
                 block_sets: 0,
             })
             .collect();
-        let heights: Vec<f32> = entries
-            .iter()
-            .map(|e| e.height(metrics.header_height))
-            .collect();
-        Document {
+        let mut doc = Document {
             files,
             metrics,
             entries,
-            heights: HeightIndex::new(&heights),
+            heights: HeightIndex::default(),
             anchor: ScrollAnchor::default(),
+            prelude: None,
             scroll_top: 0.0,
             anchor_y: 0.0,
             viewport_h: 0.0,
-        }
+        };
+        doc.reindex();
+        doc
     }
 
     pub fn files(&self) -> &Arc<Vec<FileChange>> {
@@ -106,14 +114,93 @@ impl Document {
         for (entry, change) in self.entries.iter_mut().zip(self.files.iter()) {
             entry.body = Body::Estimated(metrics.estimate_body(change, entry.hint));
         }
-        let heights: Vec<f32> = self
-            .entries
-            .iter()
-            .map(|e| e.height(metrics.header_height))
-            .collect();
-        self.heights = HeightIndex::new(&heights);
         self.metrics = metrics;
+        self.reindex();
         self.rebase();
+    }
+
+    /// Height of the prelude above the first card (the host's header card),
+    /// or `None` without one.
+    pub fn prelude_height(&self) -> Option<f32> {
+        self.prelude
+    }
+
+    /// Sets the prelude's height (`None`: no prelude). It is the first file's
+    /// lead, with a gap below it. The anchor stays put, so an anchor at the
+    /// top of the document keeps the prelude at the top while it grows.
+    pub fn set_prelude_height(&mut self, h: Option<f32>) {
+        let h = h.map(|h| if h.is_finite() { h.max(0.0) } else { 0.0 });
+        if self.prelude == h {
+            return;
+        }
+        self.prelude = h;
+        if !self.entries.is_empty() {
+            self.refresh(0);
+        }
+    }
+
+    /// The canvas above file `idx`'s card: [`Metrics::card_gap`], except for
+    /// the first file, whose lead is the prelude and a gap when there is a
+    /// prelude, else nothing.
+    pub fn lead(&self, idx: u32) -> f32 {
+        if idx == 0 {
+            self.prelude.map_or(0.0, |p| p + self.metrics.card_gap)
+        } else {
+            self.metrics.card_gap
+        }
+    }
+
+    /// Top of file `idx`'s header (its card): [`Document::file_top`] plus its
+    /// [`Document::lead`].
+    pub fn header_top(&self, idx: u32) -> f64 {
+        self.file_top(idx) + f64::from(self.lead(idx))
+    }
+
+    /// Top of file `idx`'s body: [`Document::header_top`] plus the header.
+    pub fn body_top(&self, idx: u32) -> f64 {
+        self.header_top(idx) + f64::from(self.metrics.header_height)
+    }
+
+    /// Height of file `idx`'s body (rows and blocks, without the card's
+    /// padding); 0 when collapsed.
+    pub fn body_height(&self, idx: u32) -> f32 {
+        self.entries
+            .get(idx as usize)
+            .map_or(0.0, FileEntry::body_height)
+    }
+
+    /// Bottom of file `idx`'s card: the body's bottom plus the card's
+    /// padding (none under an empty or collapsed body).
+    pub fn card_bottom(&self, idx: u32) -> f64 {
+        self.body_top(idx) + f64::from(self.padded(self.body_height(idx)))
+    }
+
+    /// A body of height `body` with the card's padding below it, if it is not
+    /// empty.
+    fn padded(&self, body: f32) -> f32 {
+        if body > 0.0 {
+            body + self.metrics.card_pad_bottom
+        } else {
+            0.0
+        }
+    }
+
+    /// File `idx`'s height in the document: its lead, header, body and card
+    /// padding, plus the gap below the last card.
+    fn entry_height(&self, idx: u32) -> f32 {
+        let body = self.padded(self.entries[idx as usize].body_height());
+        let tail = if idx + 1 == self.len() {
+            self.metrics.card_gap
+        } else {
+            0.0
+        };
+        self.lead(idx) + self.metrics.header_height + body + tail
+    }
+
+    /// Rebuilds the height index from every entry.
+    fn reindex(&mut self) {
+        let heights: Vec<f32> = (0..self.len()).map(|i| self.entry_height(i)).collect();
+        self.heights = HeightIndex::new(&heights);
     }
 
     /// The viewport height, used to clamp scrolling at the bottom and to find
@@ -142,12 +229,13 @@ impl Document {
         (self.heights.total() - f64::from(self.viewport_h)).max(0.0)
     }
 
-    /// Top of file `idx`.
+    /// Top of file `idx`: the top of its lead.
     pub fn file_top(&self, idx: u32) -> f64 {
         self.heights.prefix(idx as usize)
     }
 
-    /// Height of file `idx`, header included.
+    /// Height of file `idx`: lead, header, body and card padding (and the gap
+    /// below the last card).
     pub fn file_height(&self, idx: u32) -> f32 {
         self.heights.get(idx as usize)
     }
@@ -166,9 +254,9 @@ impl Document {
     /// re-derives the anchor from the new position. Inside a file that has no
     /// rows yet, a pending target from [`Document::scroll_to`] (a line, gap or
     /// block) is kept and only its offset moves, so the target still resolves
-    /// exactly once the file is laid out. That holds anywhere below the
-    /// file's top edge, where the viewport pins the file's header over its
-    /// body; at the top edge the anchor is the header.
+    /// exactly once the file is laid out. That holds anywhere below the top
+    /// of the file's header, where the viewport pins the header over its
+    /// body; at or above it the anchor is the header or the lead.
     pub fn scroll_by(&mut self, dy: f32) {
         if self.entries.is_empty() || dy.is_nan() {
             return;
@@ -178,7 +266,9 @@ impl Document {
             return;
         }
         let (f, y) = self.heights.find(to);
-        let pending = f as u32 == self.anchor.file_idx && self.pending_target(f) && y > 0.0;
+        let pending = f as u32 == self.anchor.file_idx
+            && self.pending_target(f)
+            && y > f64::from(self.lead(f as u32));
         let key_y = if pending {
             self.key_offset(f as u32, self.anchor.row)
         } else {
@@ -218,25 +308,31 @@ impl Document {
         };
         // A collapsed file shows only its header; a row key kept there would
         // jump to that row when the file is expanded.
-        if self.is_collapsed(self.anchor.file_idx) && self.anchor.row != RowKey::Header {
+        if self.is_collapsed(self.anchor.file_idx) && !self.anchor.row.is_above_body() {
             self.anchor.row = RowKey::Header;
             self.anchor.offset_px = 0.0;
         }
         // A key that does not resolve (a block or gap that is gone, an old line
         // of an added file) falls back to the top of the body.
-        self.anchor_y = f64::from(self.metrics.header_height) + f64::from(self.anchor.offset_px);
+        let body = self.lead(self.anchor.file_idx) + self.metrics.header_height;
+        self.anchor_y = f64::from(body) + f64::from(self.anchor.offset_px);
         self.rebase();
     }
 
-    /// Offset of row `key` from the top of file `idx`: exact when the file is
-    /// laid out, estimated otherwise. Every key of a collapsed file resolves
-    /// to its header (0).
+    /// Offset of row `key` from the top of file `idx` (the top of its lead):
+    /// exact when the file is laid out, estimated otherwise. `Lead` is 0 and
+    /// `Header` the lead's height; every other key of a collapsed file
+    /// resolves to its header.
     pub fn key_offset(&self, idx: u32, key: RowKey) -> Option<f64> {
         let entry = self.entries.get(idx as usize)?;
-        if key == RowKey::Header || entry.collapsed {
+        if key == RowKey::Lead {
             return Some(0.0);
         }
-        let header = f64::from(self.metrics.header_height);
+        let lead = f64::from(self.lead(idx));
+        if key == RowKey::Header || entry.collapsed {
+            return Some(lead);
+        }
+        let header = lead + f64::from(self.metrics.header_height);
         match &entry.body {
             Body::Laid(layout) => layout.find(key).map(|r| header + layout.row_top(r)),
             Body::Estimated(body) | Body::Explicit(body) => {
@@ -261,9 +357,10 @@ impl Document {
         }
     }
 
-    /// Sets file `idx`'s exact height (header included) for a body that has no
-    /// rows; the file's blocks add to it. Content on screen does not move: the
-    /// anchor stays put.
+    /// Sets file `idx`'s exact header and body height (the lead and the card's
+    /// padding are not part of it) for a body that has no rows; the file's
+    /// blocks add to it. Content on screen does not move: the anchor stays
+    /// put.
     pub fn set_file_height(&mut self, idx: u32, h: f32) {
         let body = if h.is_finite() {
             (h - self.metrics.header_height).max(0.0)
@@ -436,14 +533,14 @@ impl Document {
     }
 
     /// Collapses file `idx` to its header, or expands it. Collapsing the file
-    /// the anchor is in moves the anchor to its header.
+    /// the anchor is in moves an anchor in its body to its header.
     pub fn set_collapsed(&mut self, idx: u32, collapsed: bool) {
         let entry = &mut self.entries[idx as usize];
         if entry.collapsed == collapsed {
             return;
         }
         entry.collapsed = collapsed;
-        if collapsed && self.anchor.file_idx == idx && self.anchor.row != RowKey::Header {
+        if collapsed && self.anchor.file_idx == idx && !self.anchor.row.is_above_body() {
             self.anchor.row = RowKey::Header;
             self.anchor.offset_px = 0.0;
         }
@@ -525,7 +622,7 @@ impl Document {
 
     /// Re-reads file `idx`'s height into the index and keeps the anchor.
     fn refresh(&mut self, idx: u32) {
-        let h = self.entries[idx as usize].height(self.metrics.header_height);
+        let h = self.entry_height(idx);
         self.heights.set(idx as usize, h);
         self.rebase();
     }
@@ -557,19 +654,28 @@ impl Document {
         self.scroll_top = desired.clamp(0.0, self.max_scroll());
     }
 
-    /// The anchor for document offset `offset`: the header, the row at that
-    /// pixel, or the placeholder body of a file without rows.
+    /// The anchor for document offset `offset`: the top of the document at
+    /// (or above) 0, else the lead, the header, the row at that pixel, or the
+    /// placeholder body of a file without rows.
     fn anchor_at(&self, offset: f64) -> ScrollAnchor {
+        if offset <= 0.0 {
+            return ScrollAnchor::default();
+        }
         let (idx, y) = self.heights.find(offset);
         let file_idx = idx as u32;
-        let header = f64::from(self.metrics.header_height);
+        let lead = f64::from(self.lead(file_idx));
+        let body = lead + f64::from(self.metrics.header_height);
         let entry = &self.entries[idx];
-        let (row, offset) = if y < header || entry.collapsed {
-            (RowKey::Header, y)
+        let (row, offset) = if y < lead {
+            (RowKey::Lead, y)
+        } else if y < body || entry.collapsed {
+            (RowKey::Header, y - lead)
         } else {
             match &entry.body {
-                Body::Laid(layout) => layout.key_at(y - header).unwrap_or((RowKey::Header, y)),
-                Body::Estimated(_) | Body::Explicit(_) => (RowKey::Placeholder, y - header),
+                Body::Laid(layout) => layout
+                    .key_at(y - body)
+                    .unwrap_or((RowKey::Header, y - lead)),
+                Body::Estimated(_) | Body::Explicit(_) => (RowKey::Placeholder, y - body),
             }
         };
         ScrollAnchor {
@@ -577,6 +683,78 @@ impl Document {
             row,
             offset_px: offset as f32,
         }
+    }
+
+    /// The first pixel row below the header pinned at the viewport's top
+    /// (`scroll_top` plus a header's height) as `(file, y)`, `y` relative to
+    /// that file's body top (negative in its lead or header). In a card's
+    /// padding, where nothing of that card's body shows any more, it is the
+    /// next file's, above its body.
+    pub(crate) fn below_header(&self) -> (u32, f64) {
+        let header = f64::from(self.metrics.header_height);
+        let (f, _) = self.file_at(self.scroll_top + header);
+        let y = self.scroll_top + header - self.body_top(f);
+        if y >= f64::from(self.body_height(f)) && f + 1 < self.len() {
+            return (f + 1, -1.0);
+        }
+        (f, y)
+    }
+
+    /// The first line shown below the header pinned at the top, as
+    /// `(file_idx, side, line)` with a 0-based line: the new side where a
+    /// row has it, else the old one; a gap row counts as its first hidden
+    /// (old) line. Restoring it with a line target puts it right below the
+    /// header again, so the same line is first at any width, height or font
+    /// size. In a lead or a header it is the first line of that file's body;
+    /// a collapsed file (or one without lines) gives its first line, which
+    /// restores to its header at the top; a file not laid out yet gives the
+    /// line a pending scroll target aims at, else an estimate. `None` for an
+    /// empty diff.
+    pub fn top_line(&self) -> Option<(u32, Side, u32)> {
+        if self.is_empty() {
+            return None;
+        }
+        let (f, y) = self.below_header();
+        let side = if self.files[f as usize].new_path.is_none() {
+            Side::Old
+        } else {
+            Side::New
+        };
+        if self.is_collapsed(f) {
+            return Some((f, side, 0));
+        }
+        let Some(layout) = self.file_layout(f) else {
+            if self.anchor.file_idx == f
+                && let RowKey::Line { side, line } = self.anchor.row
+            {
+                return Some((f, side, line));
+            }
+            let row = f64::from(self.metrics.row_height).max(1.0);
+            return Some((f, side, (y.max(0.0) / row) as u32));
+        };
+        let rows = layout.rows();
+        if rows.is_empty() {
+            return Some((f, side, 0));
+        }
+        let first = if y >= 0.0 {
+            layout.row_at(y).0.min(rows.len() - 1)
+        } else {
+            0
+        };
+        let line_of = |row: &BodyRow| match *row {
+            BodyRow::Line { new: Some(l), .. } => Some((Side::New, l)),
+            BodyRow::Line { old: Some(l), .. } => Some((Side::Old, l)),
+            BodyRow::Gap { old_start, .. } => Some((Side::Old, old_start)),
+            _ => None,
+        };
+        // Blocks and markers have no line: the next line down, else the one
+        // above them (the end of the file).
+        let (side, line) = rows[first..]
+            .iter()
+            .find_map(line_of)
+            .or_else(|| rows[..first].iter().rev().find_map(line_of))
+            .unwrap_or((side, 0));
+        Some((f, side, line))
     }
 
     /// Whether the anchor is a target inside file `idx` that cannot resolve

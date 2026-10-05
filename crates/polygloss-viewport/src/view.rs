@@ -21,6 +21,7 @@ use polygloss_diff::word::Granularity;
 use polygloss_diff::{FileChange, FileKind, Side};
 
 use crate::blocks::Blocks;
+use crate::card::{CardStyle, Prelude, inner_bounds, inset};
 use crate::controls::Pressed;
 use crate::cursor::Cursor;
 use crate::document::{
@@ -80,6 +81,9 @@ pub struct ViewportOptions {
     /// Materialized data above this many bytes is evicted, farthest file
     /// first (design §12.4: 256 MiB, **Provisional**).
     pub eviction_budget_bytes: usize,
+    /// Each file as a card on the canvas (design §11.6); `None` is the flat
+    /// v1 layout.
+    pub cards: Option<CardStyle>,
 }
 
 impl Default for ViewportOptions {
@@ -98,6 +102,7 @@ impl Default for ViewportOptions {
             syntax: true,
             window_screens: DEFAULT_WINDOW_SCREENS,
             eviction_budget_bytes: DEFAULT_EVICTION_BUDGET_BYTES,
+            cards: Some(CardStyle::default()),
         }
     }
 }
@@ -195,7 +200,13 @@ pub struct DiffViewport {
     /// The effective layout; `measured` once a frame has seen the width.
     pub(crate) layout: Layout,
     pub(crate) measured: bool,
+    /// The rows' width: a card's inner width (the viewport's in the flat
+    /// layout), which the layout, wrapping and blocks go by.
     pub(crate) width: f32,
+    /// The viewport's width.
+    pub(crate) outer_width: f32,
+    /// The host's prelude ([`DiffViewport::set_prelude`]).
+    pub(crate) prelude: Option<Prelude>,
     layout_keys: Vec<Option<LayoutKey>>,
     /// What a file's body shows when it has no code rows (special files,
     /// large diffs, load errors).
@@ -254,7 +265,8 @@ impl DiffViewport {
         let (code_font, geometry) = resolve_font(&opts, window);
         // A first guess from the window; the first frame decides with the
         // viewport's real width.
-        let width = window.viewport_size().width.as_f32();
+        let outer_width = window.viewport_size().width.as_f32();
+        let width = (outer_width - 2.0 * inset(opts.cards)).max(0.0);
         let layout = resolve_layout(
             opts.layout,
             width / geometry.advance,
@@ -263,7 +275,7 @@ impl DiffViewport {
         );
         let doc = Document::new(
             files.clone(),
-            geometry.metrics(layout, opts.large_file_changed_lines),
+            geometry.metrics(layout, opts.large_file_changed_lines, opts.cards),
         );
         let special = Specials::default();
         let file_count = files.len();
@@ -285,6 +297,8 @@ impl DiffViewport {
             layout,
             measured: false,
             width,
+            outer_width,
+            prelude: None,
             labels,
             text_cache: TextCache::new(TEXT_CACHE_CAPACITY),
             frame_pool: None,
@@ -482,10 +496,10 @@ impl DiffViewport {
 
     /// Shows another diff in this view (a live refresh or a new iteration):
     /// `provider`'s files replace the current ones. The options, the code
-    /// font, the measured width and layout stay, and so does every
-    /// subscription to the view; everything per file starts over (loads,
-    /// layouts, collapse, revealed context, flags, blocks, the cursor, the
-    /// selection, the ⋯ menu) with the scroll at the top. The host restores
+    /// font, the measured width and layout, the prelude (it is not per file)
+    /// and every subscription to the view stay; everything per file starts
+    /// over (loads, layouts, collapse, revealed context, flags, blocks, the
+    /// cursor, the selection, the ⋯ menu) with the scroll at the top. The host restores
     /// what it keeps ([`DiffViewport::set_collapsed`],
     /// [`DiffViewport::set_expansions`], [`DiffViewport::set_file_flags`],
     /// [`DiffViewport::set_blocks`], [`DiffViewport::scroll_to_anchor`])
@@ -504,11 +518,14 @@ impl DiffViewport {
     ) {
         self.close_menu(cx);
         let files = provider.files();
-        let metrics = self
-            .geometry
-            .metrics(self.layout, self.opts.large_file_changed_lines);
+        let metrics = self.geometry.metrics(
+            self.layout,
+            self.opts.large_file_changed_lines,
+            self.opts.cards,
+        );
         let mut doc = Document::new(files.clone(), metrics);
         doc.set_viewport_height(self.doc.viewport_height());
+        doc.set_prelude_height(self.doc.prelude_height());
         let mut old_doc = std::mem::replace(&mut self.doc, doc);
         let pipeline = Pipeline::new(
             provider.clone(),
@@ -644,6 +661,16 @@ impl DiffViewport {
                 file_idx: m.file_idx,
                 items: m.items.iter().map(|(l, e)| ((*l).to_owned(), *e)).collect(),
             }),
+            prelude: self.frame_pool.as_ref().and_then(|frame| {
+                let p = frame.prelude.as_ref()?;
+                let o = frame.origin;
+                Some((
+                    (p.origin.x - o.x).as_f32(),
+                    (p.origin.y - o.y).as_f32(),
+                    p.width,
+                    p.height,
+                ))
+            }),
         }
     }
 
@@ -712,6 +739,9 @@ impl DiffViewport {
                 font: &self.code_font,
                 layout: self.layout,
                 bounds,
+                inner: inner_bounds(bounds, self.opts.cards),
+                cards: self.opts.cards,
+                prelude: self.prelude.as_ref().map(|p| &p.render),
                 scroll_top: (self.doc.scroll_top() * scale).round() / scale,
                 cache: &mut self.text_cache,
                 pipeline: &self.pipeline,
@@ -764,8 +794,10 @@ impl DiffViewport {
         cx.emit(ViewportEvent::FrameStats(stats));
     }
 
-    /// Re-decides the layout for a viewport `width` px wide.
-    fn fit_width(&mut self, width: f32) {
+    /// Re-decides the layout for a viewport `outer_width` px wide, by the
+    /// rows' width (a card's inner width).
+    fn fit_width(&mut self, outer_width: f32) {
+        let width = (outer_width - 2.0 * inset(self.opts.cards)).max(0.0);
         let columns = width / self.geometry.advance;
         let previous = self.measured.then_some(self.layout);
         self.layout = resolve_layout(
@@ -776,9 +808,12 @@ impl DiffViewport {
         );
         self.measured = true;
         self.width = width;
-        let metrics = self
-            .geometry
-            .metrics(self.layout, self.opts.large_file_changed_lines);
+        self.outer_width = outer_width;
+        let metrics = self.geometry.metrics(
+            self.layout,
+            self.opts.large_file_changed_lines,
+            self.opts.cards,
+        );
         if *self.doc.metrics() != metrics {
             self.doc.set_metrics(metrics);
         }
@@ -809,6 +844,7 @@ impl DiffViewport {
         let lines = file.map_or(0, |m| m.diff.old.len().max(m.diff.new.len()));
         Columns::new(
             self.layout,
+            0.0,
             self.width,
             self.geometry.advance,
             digits(lines),

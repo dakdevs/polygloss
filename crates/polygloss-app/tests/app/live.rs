@@ -767,3 +767,47 @@ fn recompute_counts_changed_files_and_reads_sources_from_keys() {
         })
     );
 }
+
+#[gpui_kit::test]
+fn live_refresh_keeps_the_line_below_the_header(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{IntoElement as _, Styled as _};
+    let _sb = Sandbox::isolate();
+    let repo = live_repo();
+    let mut shell = start(cx);
+    let tab = open_watched(&mut shell, live_req(repo.path(), Since::MergeBase));
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    // On cards, below a 72 pt prelude (the header card's stand-in).
+    let prelude: polygloss_viewport::RenderBlock =
+        std::rc::Rc::new(|_, _| gpui_kit::div().h(gpui_kit::px(72.)).into_any_element());
+    viewport.update(shell.cx, |v, cx| v.set_prelude(Some(prelude), cx));
+    draw(shell.cx);
+    // What is painted right below the pinned header, and the line saved for
+    // it.
+    let below_header = |shell: &mut Shell| {
+        viewport.read_with(shell.cx, |v, _| {
+            let header = v.document().metrics().header_height;
+            let d = v.debug();
+            let i = d.row_bounds.iter().position(|(y, _)| *y == header).unwrap();
+            (v.document().top_line(), d.visible_rows[i].clone())
+        })
+    };
+    scroll_to_line(&mut shell, &tab, 0, 60);
+    let (line, row) = below_header(&mut shell);
+    assert_eq!(line, Some((0, Side::New, 60)));
+    assert!(row.ends_with("fn a_60() { edited(); }"), "{row}");
+
+    // Five lines are added on top: the same line, now 65, is still right
+    // below the header.
+    repo.write("src/a.rs", a_edited(5).as_bytes());
+    wait_until(&mut shell, "the banner", |s| {
+        banner(s, &tab, BannerKind::LiveChanges).is_some()
+    });
+    refresh(&mut shell, &tab);
+    let (line, row) = below_header(&mut shell);
+    assert_eq!(line, Some((0, Side::New, 65)));
+    assert!(row.ends_with("fn a_60() { edited(); }"), "{row}");
+    assert_eq!(
+        viewport.read_with(shell.cx, |v, _| v.document().prelude_height()),
+        Some(72.0)
+    );
+}

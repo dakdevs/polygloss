@@ -810,3 +810,63 @@ fn tree_builds_13k_files_under_200ms(cx: &mut TestAppContext) {
         "filtering took {filtered:?}"
     );
 }
+
+#[gpui_kit::test]
+fn tree_marks_a_jump_landed_only_at_header_top(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // `a.rs` (modified, tall) and `z.rs` (added, 20 lines: its card is
+    // 12 + 40 + 400 + 8 px, then 12 px of canvas below it).
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.rs", lines("a", 60).as_bytes());
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    repo.write("a.rs", (lines("a", 60) + "more\n").as_bytes());
+    repo.write("z.rs", lines("z", 20).as_bytes());
+    repo.commit("head");
+    repo.git(&["tag", "head"]);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    draw(shell.cx);
+    let tree = tab.read_with(shell.cx, |t, _| file_tree(t).cloned().expect("a file tree"));
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let doc = |shell: &mut Shell, f: fn(&polygloss_viewport::Document) -> f64| {
+        viewport.read_with(shell.cx, |v, _| f(v.document()))
+    };
+    let select = |shell: &mut Shell, idx: u32| {
+        tree.update(shell.cx, |t, cx| t.select_file(idx, cx));
+        draw(shell.cx);
+    };
+    select(&mut shell, 1);
+    let last = doc(&mut shell, |d| f64::from(d.file_height(1)));
+    assert_eq!(last, 472.0);
+    // A viewport 6 px shorter than z.rs's card and the canvas around it:
+    // the furthest the diff scrolls leaves z.rs's header 6 px below the top
+    // (the top edge in the canvas above its card).
+    let (window, viewport_h) = shell.cx.update(|window, cx| {
+        let h = viewport.read(cx).document().viewport_height();
+        (window.viewport_size(), h)
+    });
+    let height = window.height.as_f32() - viewport_h + 466.0;
+    shell
+        .cx
+        .simulate_resize(gpui_kit::size(window.width, gpui_kit::px(height)));
+    draw(shell.cx);
+    // z.rs at the top already (as far as it goes), then chosen in the tree.
+    viewport.update(shell.cx, |v, cx| v.scroll_to(ScrollTarget::File(1), cx));
+    draw(shell.cx);
+    select(&mut shell, 1);
+    let (top, header) = (
+        doc(&mut shell, |d| d.scroll_top()),
+        doc(&mut shell, |d| d.header_top(1)),
+    );
+    assert_eq!(header - top, 6.0);
+    assert_eq!(viewport.read_with(shell.cx, |v, _| v.anchor().file_idx), 1);
+
+    // Not landed (its header is not at the top): scrolling up into a.rs
+    // keeps z.rs marked while it shows.
+    viewport.update(shell.cx, |v, cx| v.scroll_by(-10.0, cx));
+    draw(shell.cx);
+    assert_eq!(viewport.read_with(shell.cx, |v, _| v.anchor().file_idx), 0);
+    let selected = tree.read_with(shell.cx, |t, _| t.selected_file());
+    assert_eq!(selected, Some(1));
+}

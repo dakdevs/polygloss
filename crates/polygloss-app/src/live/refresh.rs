@@ -257,7 +257,7 @@ fn map_anchor(
                 None => header,
             }
         }
-        RowKey::Header | RowKey::Placeholder => ScrollAnchor {
+        RowKey::Lead | RowKey::Header | RowKey::Placeholder => ScrollAnchor {
             file_idx: i,
             ..anchor
         },

@@ -3,19 +3,20 @@
 //! Prepaint asks the view for the frame's display list (visible rows only,
 //! shaped through the cache), renders and measures the visible host blocks
 //! ([`crate::blocks`]) and inserts the hitboxes of its controls, clipped to
-//! the viewport like everything it paints; paint replays it layer by layer,
-//! every row quad before any row text so GPUI batches them into few draw
-//! calls, then the host blocks, then the file headers on top, and wires the
-//! scroll wheel and the controls. Both phases are timed and reported as
+//! the viewport like everything it paints; paint replays it layer by layer:
+//! the canvas and the cards, every row quad before any row text so GPUI
+//! batches them into few draw calls, then the host blocks and the prelude,
+//! then the file headers on top, and wires the scroll wheel and the
+//! controls. Both phases are timed and reported as
 //! [`crate::ViewportEvent::FrameStats`].
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    App, BorderStyle, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, Entity,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    Pixels, ScrollWheelEvent, Style, Window, fill, px, quad, relative,
+    App, BorderStyle, Bounds, ContentMask, CursorStyle, DispatchPhase, Edges, Element, ElementId,
+    Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    LayoutId, Pixels, ScrollWheelEvent, Style, Window, fill, px, quad, relative,
 };
 
 use crate::blocks::{self, PreparedBlock};
@@ -158,6 +159,8 @@ impl Element for DiffElement {
         );
         let (rows, headers) = frame.layers.split_at(HEADERS);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            paint_quads(&frame.cards, None, window);
+            paint_rounded(&frame.cards, window);
             for layer in rows {
                 paint_quads(layer, None, window);
             }
@@ -170,7 +173,7 @@ impl Element for DiffElement {
             for layer in rows {
                 paint_texts(layer, &frame, window, cx);
             }
-            // Host blocks over the rows, under the headers.
+            // Host blocks and the prelude over the rows, under the headers.
             blocks::paint(&mut prepainted.blocks, window, cx);
             // Headers last: the pinned one covers the rows and blocks under
             // it.
@@ -217,8 +220,8 @@ fn paint_rounded(layer: &Layer, window: &mut Window) {
     window.with_content_mask(clip, |window| {
         for r in &layer.rounded {
             let (border_width, border_color) = match r.border {
-                Some(color) => (px(1.), color),
-                None => (px(0.), Hsla::transparent_black()),
+                Some(color) => (r.border_widths, color),
+                None => (Edges::all(px(0.)), Hsla::transparent_black()),
             };
             window.paint_quad(quad(
                 r.bounds,

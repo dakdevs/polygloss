@@ -18,7 +18,12 @@ pub struct BlockId(pub u64);
 /// expansions and heights, so it survives every relayout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RowKey {
-    /// The file header (the top of the file).
+    /// The top of the file's lead: the canvas above its card (and, for the
+    /// first file, the prelude above that). The default anchor, `(0, Lead,
+    /// 0)`, is the top of the document, so it stays at the top while the
+    /// prelude loads or grows.
+    Lead,
+    /// The file header (the top of the card).
     Header,
     /// The row showing `line` (0-based) of `side`. A line hidden in a gap
     /// resolves to that gap's row; a split row matches either of its lines.
@@ -35,6 +40,14 @@ pub enum RowKey {
     Placeholder,
 }
 
+impl RowKey {
+    /// The lead or the header: a key above the body, which stays valid when
+    /// the file is collapsed.
+    pub(crate) fn is_above_body(self) -> bool {
+        matches!(self, RowKey::Lead | RowKey::Header)
+    }
+}
+
 /// The scroll position: the viewport's top edge is `offset_px` below the top
 /// of row `row` of file `file_idx`. `offset_px` is usually within the row, but
 /// may be larger or negative (see [`crate::document::Document::scroll_by`]).
@@ -46,11 +59,11 @@ pub struct ScrollAnchor {
 }
 
 impl Default for ScrollAnchor {
-    /// The top of the first file.
+    /// The top of the document: the top of the first file's lead.
     fn default() -> ScrollAnchor {
         ScrollAnchor {
             file_idx: 0,
-            row: RowKey::Header,
+            row: RowKey::Lead,
             offset_px: 0.0,
         }
     }

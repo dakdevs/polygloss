@@ -605,3 +605,63 @@ fn reveal_line_before_the_file_loads_applies_once_it_does(cx: &mut TestAppContex
         [(0, vec![[47, 54]])]
     );
 }
+
+#[gpui_kit::test]
+fn cursor_reveal_and_top_row_use_header_top(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Cards with a 72 px prelude: a.rs's header starts at 84 (72 + a 12 px
+    // gap), its body (30 rows) at 124 and ends at 724, its card at 732;
+    // b.rs's header starts at 744, its body (60 rows) at 784.
+    let provider = MemProvider::new(vec![
+        Spec::added("a.rs", &numbered("a", 30).concat()),
+        Spec::added("b.rs", &numbered("b", 60).concat()),
+    ]);
+    let window = cx.open_window(gpui_kit::size(px(1000.), px(400.)), move |window, cx| {
+        let opts = card_options(LayoutMode::Unified);
+        let mut v = DiffViewport::new(provider, opts, window, cx);
+        let prelude: polygloss_viewport::RenderBlock = Rc::new(|_, _| {
+            use gpui_kit::{IntoElement as _, Styled as _};
+            gpui_kit::div().h(px(72.)).into_any_element()
+        });
+        v.set_prelude(Some(prelude), cx);
+        v
+    });
+    let view = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(*window, cx).into_mut();
+    settle(cx);
+
+    // Line 11 of a.rs right below the pinned header (its row starts at
+    // 124 + 200 = 324): without a cursor, `j` puts one on it.
+    view.update(cx, |v, cx| {
+        v.scroll_to(
+            polygloss_viewport::ScrollTarget::Line {
+                file_idx: 0,
+                side: Side::New,
+                line: 10,
+            },
+            cx,
+        )
+    });
+    settle(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.document().scroll_top()),
+        324.0 - HEADER_H as f64
+    );
+    move_cursor(&view, cx, Direction::Down);
+    assert_eq!(cursor(&view, cx), Some(pos(0, Side::New, 10)));
+
+    // A jump to line 16 of b.rs (its row starts at 784 + 300 = 1084) puts it
+    // a third of the way below the header: 40 + 360 / 3 = 160 px down.
+    set_cursor(&view, cx, pos(1, Side::New, 15));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.document().scroll_top()),
+        1084.0 - 160.0
+    );
+    let d = debug(&view, cx);
+    let i = d
+        .visible_rows
+        .iter()
+        .position(|r| *r == unified(None, Some(16), '+', "b 15"))
+        .unwrap();
+    assert_eq!(d.row_bounds[i].0, 160.0);
+}

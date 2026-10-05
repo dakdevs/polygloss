@@ -13,9 +13,16 @@ pub struct Metrics {
     pub layout: Layout,
     /// One code row (a line, or a `\ No newline` marker).
     pub row_height: f32,
-    /// The file header, including any separator above it. A collapsed file is
+    /// The file header, including any separator above it. A collapsed card is
     /// exactly this tall.
     pub header_height: f32,
+    /// Canvas between file cards: above every card but the first (whose lead
+    /// is the prelude and a gap, or nothing), and below the last one. 0 in the
+    /// flat layout.
+    pub card_gap: f32,
+    /// Card padding below the last row of a non-empty body. 0 in the flat
+    /// layout.
+    pub card_pad_bottom: f32,
     /// A gap expander row.
     pub gap_height: f32,
     /// A body that is a single message: binary, "Load diff", loading, failed.
@@ -37,6 +44,8 @@ impl Default for Metrics {
             layout: Layout::Split,
             row_height: 20.0,
             header_height: 40.0,
+            card_gap: 0.0,
+            card_pad_bottom: 0.0,
             gap_height: 32.0,
             placeholder_height: 48.0,
             context_lines: 3,

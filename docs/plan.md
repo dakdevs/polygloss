@@ -2332,8 +2332,8 @@ pub struct CardStyle { pub margin_x: f32 /* 16 */, pub gap: f32 /* 12 */, pub ra
 // ViewportOptions.cards: Option<CardStyle>; default Some(CardStyle::default()); None = the flat v1 layout
 impl Document {
     pub fn lead(&self, file_idx: u32) -> f32;       // canvas above the card (gap; + the prelude for the first file)
-    pub fn header_top(&self, file_idx: u32) -> f32; // file_top + lead
-    pub fn body_top(&self, file_idx: u32) -> f32;   // header_top + header height
+    pub fn header_top(&self, file_idx: u32) -> f64; // file_top + lead (f64 like file_top: document offsets)
+    pub fn body_top(&self, file_idx: u32) -> f64;   // header_top + header height
     pub fn top_line(&self) -> Option<(u32, Side, u32)>; // the first line below the (pinned) header; was app view_state's top_line and live refresh's
 }
 impl DiffViewport { pub fn set_prelude(&mut self, render: Option<RenderBlock>, cx: &mut Context<Self>); } // debug "prelude"
@@ -2371,6 +2371,18 @@ bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets
 ```
 
 Then the standard completion block.
+
+**As built (T6.5):** the card's interfaces, with these differences and details.
+
+- **Deviation:** `Document::header_top` and `body_top` return `f64`, like `file_top`: they are document offsets, and `f32` has a 2 px resolution at the heights a Linux-sized diff reaches (`HeightIndex`).
+- **Extras:** `Metrics::{card_gap, card_pad_bottom}` (0 in `Metrics::default()`, the flat layout; `Geometry::metrics(layout, load_diff, cards)` fills them from `ViewportOptions::cards`); `Document::{lead, prelude_height, set_prelude_height, body_height, card_bottom}`; `CardStyle` at the crate root; `ViewportDebug.prelude` (`(x, y, w, h)` where the last frame placed it, `None` when unset or out of view). `set_file_height` still takes the header and body (not the lead or padding).
+- **Geometry:** a file's height is lead + header + body + padding (padding only under a body taller than 0, so a collapsed or empty card is its header) and the last file also holds the gap below its card. `Columns` gained a left edge (`x`), so every row, gutter, cell, block column and selection position is the card's inner rect; the full-width row layer is clipped to it (text cut at the card's inner edge, never over its border) and the split halves to its halves.
+- **The top:** `anchor_at` returns the top anchor `(0, Lead, 0)` for any offset at or above 0, so scrolling back to the top is the top again (not file 0's header) and a prelude that arrives later still opens at the top. `top_line` in a card's padding (nothing of that body below the pinned header) reports the next file's first line.
+- **Header strip on a card:** in place it has the card's border on all four edges and its top corners (all four when the card has no body); pinned it is square with left, right and bottom borders and no top border. Content (chevron, title, pills, Viewed, ⋯) spans the inner width.
+- **Prelude:** placed at the document's top at a card's width (margin to margin), rendered and measured with the blocks (`blocks::prepare`), re-measured every frame it reaches the viewport; off screen it is measured only when it was never measured at the current width (`set_prelude` again resets that). With no files it is painted at the top but cannot scroll (the document has no lead to hold it).
+- **Tests:** `support::options()` keeps `cards: None`, the flat layout every pre-T6.5 test computes by hand; `support::card_options()` has the default cards, which every new test uses (non-zero gap and padding). Extra tests: `the_top_of_the_document_is_the_first_lead_and_stays_at_the_top`, `top_line_is_the_first_line_below_the_pinned_header_with_cards`. `large_file_over_threshold_shows_load_diff` now expects `RowKey::Lead` at the top. `flat_layout_without_cards_paints_as_before` compares rows with bounds, headers, painted text and controls of four documents (unified, scrolled, collapsed, split with a pushed header) against the fixture recorded before any change (commit `test(viewport): T6.5 record the flat v1 layout before cards`). `tree_marks_a_jump_landed_only_at_header_top` chooses the last file while it is already the top file and its header stops 6 px below the top edge (in its lead): with `file_top` the jump counted as landed and scrolling up 10 px marked the file above. The app view-state test uses a 72 pt `set_prelude` box standing in for T6.13's header card.
+- **Perf** (`--check-budgets --compare-baseline`, load ≈ 5): every budget holds and nothing regressed; scroll p95 at most 1.0 ms (linux split; linux unified 0.6). A run that started at load 24 flagged `first_paint_ms` on linux (767 ms vs 645); its `open_ms` (the core's open before the first frame) was 687 ms against 525 ms in the quiet run, and the frame after it took the same ≈ 65–100 ms in both, so that was load, not the cards.
+- **Baselines:** 23 re-recorded, every one showing the review viewport (the 10 others did not move): `e2e-viewport-{split-pierre-light,unified-pierre-dark,special-files}`, `e2e-cursor-{range-and-plus,text-selection}`, `e2e-composer-line`, `e2e-find-bar-results`, `e2e-feed-banners`, `e2e-live-banner`, `e2e-iterations-changes-since{,-menu}`, `e2e-palette-{command-palette,cheat-sheet}`, `e2e-shell-review-tab`, `e2e-submit-dialog`, `e2e-theme-{pierre-light-split,pierre-dark-unified,polygloss-light-split,polygloss-dark-unified}`, `e2e-threads-{split,unified,outdated}`, `e2e-tree-badges`.
 
 ### T6.6 Navigation: review keys, the Reviews list and Home
 

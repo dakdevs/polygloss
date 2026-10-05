@@ -1244,3 +1244,161 @@ fn set_kind_reestimates_unless_exact() {
     assert_eq!(shared[0].kind, FileKind::Text);
     assert_eq!(d.files()[0].kind, FileKind::Binary);
 }
+
+// ---------------------------------------------------------------------------
+// cards (T6.5): leads, padding, the prelude
+
+/// Metrics with the cards' gap (12) and padding (8): header 40, rows 20.
+fn card_metrics() -> Metrics {
+    Metrics {
+        card_gap: 12.0,
+        card_pad_bottom: 8.0,
+        ..Metrics::default()
+    }
+}
+
+/// Four files on cards: 0 has 5 rows (100 px), 1 an empty body, 2 is
+/// collapsed, 3 (the last) has 3 rows (60 px).
+fn card_doc() -> Document {
+    let mut d = Document::new(files(4), card_metrics());
+    d.set_viewport_height(200.0);
+    d.set_file_layout(0, context_layout(5, 20.0));
+    d.set_file_height(1, 40.0);
+    d.set_collapsed(2, true);
+    d.set_file_layout(3, context_layout(3, 20.0));
+    d
+}
+
+#[test]
+fn lead_and_pad_shape_file_heights() {
+    let d = card_doc();
+    // No prelude: the first file has no lead; padding only under a body;
+    // the last file holds the gap below its card.
+    assert_eq!(
+        (0..4).map(|f| d.file_height(f)).collect::<Vec<_>>(),
+        [
+            40.0 + 100.0 + 8.0,
+            12.0 + 40.0,
+            12.0 + 40.0,
+            12.0 + 40.0 + 60.0 + 8.0 + 12.0
+        ]
+    );
+    assert_eq!(d.total_height(), 148.0 + 52.0 + 52.0 + 132.0);
+    assert_eq!((d.lead(0), d.lead(1), d.lead(3)), (0.0, 12.0, 12.0));
+    assert_eq!(
+        (d.header_top(0), d.body_top(0), d.card_bottom(0)),
+        (0.0, 40.0, 148.0)
+    );
+    assert_eq!(
+        (d.header_top(1), d.body_top(1), d.card_bottom(1)),
+        (160.0, 200.0, 200.0)
+    );
+    assert_eq!((d.header_top(2), d.card_bottom(2)), (212.0, 252.0));
+    assert_eq!(
+        (d.header_top(3), d.body_top(3), d.card_bottom(3)),
+        (264.0, 304.0, 372.0)
+    );
+    assert_eq!(d.body_height(2), 0.0);
+
+    // A 70 px prelude is the first file's lead, with a gap below it.
+    let mut d = d;
+    d.set_prelude_height(Some(70.0));
+    assert_eq!(d.lead(0), 82.0);
+    assert_eq!(d.file_height(0), 82.0 + 40.0 + 100.0 + 8.0);
+    assert_eq!((d.header_top(0), d.body_top(0)), (82.0, 122.0));
+    assert_eq!(d.header_top(1), 230.0 + 12.0);
+    d.set_prelude_height(None);
+    assert_eq!(d.file_height(0), 148.0);
+
+    // The flat layout is unchanged: no leads, no padding.
+    let mut flat = Document::new(files(2), metrics());
+    flat.set_file_layout(0, context_layout(5, 20.0));
+    flat.set_file_layout(1, context_layout(3, 20.0));
+    assert_eq!((flat.file_height(0), flat.file_height(1)), (140.0, 100.0));
+    assert_eq!(flat.header_top(1), 140.0);
+}
+
+#[test]
+fn anchor_in_the_gap_above_a_card_uses_the_lead_key_and_survives_height_changes() {
+    let mut d = card_doc();
+    // 2 px into the canvas above file 1's card (it starts at 148).
+    d.scroll_by(150.0);
+    assert_eq!(
+        *d.anchor(),
+        ScrollAnchor {
+            file_idx: 1,
+            row: RowKey::Lead,
+            offset_px: 2.0,
+        }
+    );
+    assert_eq!(d.key_offset(1, RowKey::Lead), Some(0.0));
+    assert_eq!(d.key_offset(1, RowKey::Header), Some(12.0));
+    // File 0 grows above it (5 → 10 rows): the canvas stays at the top.
+    d.set_file_layout(0, context_layout(10, 20.0));
+    assert_eq!(d.file_top(1), 248.0);
+    assert_eq!(d.scroll_top(), 250.0);
+    // A prelude appears above everything: still the same place.
+    d.set_prelude_height(Some(70.0));
+    assert_eq!(d.scroll_top(), 82.0 + 248.0 + 2.0);
+    assert_eq!(d.anchor().row, RowKey::Lead);
+    // Collapsing the file keeps a lead anchor (it is above the body).
+    d.set_collapsed(1, true);
+    assert_eq!(d.anchor().row, RowKey::Lead);
+    // Its header at the top: a header anchor, the lead above the viewport
+    // (files: 330, 52, 52, then 12 px of canvas above file 3's card).
+    d.set_viewport_height(50.0);
+    d.scroll_to(3, RowKey::Header);
+    assert_eq!(d.scroll_top(), 330.0 + 52.0 + 52.0 + 12.0);
+    // Scrolled up into the lead above the card: the lead key again.
+    d.scroll_by(-5.0);
+    assert_eq!((d.anchor().file_idx, d.anchor().row), (3, RowKey::Lead));
+    assert_eq!(d.anchor().offset_px, 7.0);
+}
+
+#[test]
+fn the_top_of_the_document_is_the_first_lead_and_stays_at_the_top() {
+    let mut d = card_doc();
+    assert_eq!(*d.anchor(), ScrollAnchor::default());
+    assert_eq!(ScrollAnchor::default().row, RowKey::Lead);
+    // A prelude set late, then growing: the top stays the top.
+    d.set_prelude_height(Some(70.0));
+    assert_eq!(d.scroll_top(), 0.0);
+    d.set_prelude_height(Some(400.0));
+    assert_eq!(d.scroll_top(), 0.0);
+    // Scrolling down and back to 0 is the top again, not file 0's header.
+    d.set_prelude_height(None);
+    d.scroll_by(30.0);
+    d.scroll_by(-30.0);
+    assert_eq!(*d.anchor(), ScrollAnchor::default());
+    d.set_prelude_height(Some(70.0));
+    assert_eq!(d.scroll_top(), 0.0);
+}
+
+#[test]
+fn top_line_is_the_first_line_below_the_pinned_header_with_cards() {
+    let mut d = Document::new(files(2), card_metrics());
+    d.set_viewport_height(200.0);
+    d.set_prelude_height(Some(70.0));
+    d.set_file_layout(0, context_layout(10, 20.0));
+    d.set_file_layout(1, context_layout(10, 20.0));
+    // At the top: the prelude and file 0's header in view, its first line.
+    assert_eq!(d.top_line(), Some((0, Side::New, 0)));
+    // File 0's body (122..322) under its pinned header: line 4's row starts
+    // 80 px into it.
+    d.scroll_to_anchor(ScrollAnchor {
+        file_idx: 0,
+        row: RowKey::Line {
+            side: Side::New,
+            line: 4,
+        },
+        offset_px: -40.0,
+    });
+    assert_eq!(d.scroll_top(), 122.0 + 80.0 - 40.0);
+    assert_eq!(d.top_line(), Some((0, Side::New, 4)));
+    // The pixel below the pinned header in file 0's padding (322..330):
+    // nothing of file 0's body shows, then come the canvas and file 1's
+    // card, so it is file 1's first line.
+    d.scroll_by(123.0);
+    assert_eq!(d.scroll_top() + 40.0, 325.0);
+    assert_eq!(d.top_line(), Some((1, Side::New, 0)));
+}

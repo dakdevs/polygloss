@@ -1242,3 +1242,42 @@ fn split_blocks_pair_up_with_wrap_on(cx: &mut TestAppContext) {
     assert_quads(&quads_of(cx, left), &[(0.0, y, 499.0, 40.0)]);
     assert_quads(&quads_of(cx, right), &[(500.0, y, 500.0, 50.0)]);
 }
+
+#[gpui_kit::test]
+fn blocks_measure_at_the_card_inner_width(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Five 200 px boxes wrap at a card's inner width (1000 − 2 × 17 = 966):
+    // two rows, 40 px. At the viewport's width they would fit in one.
+    let wrapping = |id: u64, anchor: BlockAnchor, c: Hsla| BlockSpec {
+        id: BlockId(id),
+        anchor,
+        render: Rc::new(move |_, _| {
+            use gpui_kit::ParentElement as _;
+            div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .bg(c)
+                .children((0..5).map(|_| div().w(px(200.)).h(px(20.))))
+                .into_any_element()
+        }),
+    };
+    let provider = MemProvider::new(vec![
+        one_change(),
+        Spec::added("src/b.rs", &numbered("b", 60).concat()),
+    ]);
+    let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 600.);
+    let c = color(0.3);
+    set_blocks(&view, cx, 0, vec![wrapping(1, new(4), c)]);
+    // One far below the viewport (b.rs's card starts at 324, its line 50
+    // ends at 324 + 40 + 1000): measured off screen, at the same width.
+    set_blocks(&view, cx, 1, vec![wrapping(2, new(49), color(0.6))]);
+
+    // Below "+LINE 4": 40 (header) + 32 (gap row) + 5 rows.
+    let y = HEADER_H + 32.0 + 5.0 * ROW_H;
+    assert_eq!(bounds_of(&view, cx, "[block 1]"), (y, 40.0));
+    assert_quads(&quads_of(cx, c), &[(17.0, y, 966.0, 40.0)]);
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.document().blocks(1), &[placed(2, new(49), 40.0)]);
+    });
+}
