@@ -5,9 +5,10 @@
 //! - [`Highlighter`] runs lumis over a whole blob under a [`Budget`] and a
 //!   cancellation flag and returns [`Tokens`]: per-line [`Span`]s of byte
 //!   offsets plus a [`StyleId`].
-//! - [`load_theme_family`] parses Zed theme JSON (Pierre Light/Dark are
-//!   built in: [`pierre_theme`]); [`SyntaxTheme`] maps lumis scopes to styles by
-//!   longest dotted prefix.
+//! - [`load_theme_family`] parses Zed theme JSON (Polygloss Light/Dark, the
+//!   defaults, and Pierre Light/Dark are built in: [`default_theme`],
+//!   [`pierre_theme`]); [`SyntaxTheme`] maps lumis scopes to styles by longest
+//!   dotted prefix.
 //! - [`TokenCache`] keeps tokens per `(blob, language, theme)` under a byte
 //!   budget.
 //!
@@ -27,7 +28,8 @@ pub use highlighter::{Budget, HighlightError, Highlighter};
 pub use language::{Language, guess_language};
 pub use scope_map::{SyntaxTheme, ThemeId};
 pub use theme::{
-    Appearance, FontStyle, PIERRE_DARK_JSON, PIERRE_LIGHT_JSON, Rgba, SyntaxStyle, ThemeError,
-    ZedTheme, ZedThemeFamily, load_theme_family, pierre_theme,
+    Appearance, FontStyle, PIERRE_DARK_JSON, PIERRE_LIGHT_JSON, POLYGLOSS_DARK_JSON,
+    POLYGLOSS_LIGHT_JSON, Rgba, SyntaxStyle, ThemeError, ZedTheme, ZedThemeFamily, default_theme,
+    load_theme_family, pierre_theme,
 };
 pub use tokens::{Span, StyleId, Tokens};

@@ -61,13 +61,15 @@ pub fn configure(view: TextView, cx: &mut App) -> TextView {
         .shared_code_block_highlighter(code_blocks::highlighter(cx))
 }
 
-/// The code font family and size (settings `buffer_font`), for code the
-/// thread blocks draw themselves (snippets, suggestions).
+/// The code font family and size (settings `buffer_font`; "SF Mono" and
+/// "System Mono" name the system monospaced font, as in the diff), for code
+/// the thread blocks draw themselves (snippets, suggestions).
 pub fn code_font(cx: &App) -> (SharedString, f32) {
     match cx.try_global::<SettingsStore>() {
         Some(store) => {
             let font = &store.settings().buffer_font;
-            (font.family.clone().into(), font.size)
+            let family = polygloss_viewport::kit::code_family(&font.family);
+            (family.to_owned().into(), font.size)
         }
         None => (crate::theme::fonts::LILEX_FAMILY.into(), 13.0),
     }

@@ -338,7 +338,7 @@ impl Painter<'_> {
             return;
         };
         let width = self.bounds.size.width.as_f32();
-        self.quad(FULL, 0.0, y, width, h, self.theme.gap_background);
+        self.quad(FULL, 0.0, y, width, h, self.theme.canvas);
         let s = if len == 1 { "" } else { "s" };
         let right = self.label_at(f, &format!("⋯ {len} unchanged line{s}"), y, h);
         // While the file reloads there is no diff to expand against.

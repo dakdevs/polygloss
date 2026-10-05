@@ -1,10 +1,11 @@
-//! [`ThemeRegistry`]: the built-in Pierre Light/Dark plus every Zed theme
-//! file in `~/.config/polygloss/themes/` (design §11.10, §18), hot-reloaded.
+//! [`ThemeRegistry`]: the built-in Polygloss Light/Dark and Pierre
+//! Light/Dark plus every Zed theme file in `~/.config/polygloss/themes/`
+//! (design §11.10, §18), hot-reloaded.
 //!
 //! A file is a Zed theme family (`{ name, themes: [...] }`) and may hold
 //! several themes; each is listed by its own `name`. Files load in file-name
 //! order, and a theme named like an earlier one (a built-in included)
-//! replaces it, so a user can ship their own "Pierre Dark". A file that does
+//! replaces it, so a user can ship their own "Polygloss Dark". A file that does
 //! not parse is skipped and reported ([`ThemeRegistry::errors`]; the main
 //! window toasts each new error once).
 
@@ -18,7 +19,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use gpui_kit::{App, AsyncApp, Global, SharedString};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
-use polygloss_highlight::{Appearance, ZedTheme, load_theme_family, pierre_theme};
+use polygloss_highlight::{Appearance, ZedTheme, default_theme, load_theme_family, pierre_theme};
 
 use crate::settings::loader::take_changes;
 
@@ -63,8 +64,9 @@ struct Scan {
 fn scan(dir: &Path) -> Scan {
     let mut themes = BTreeMap::new();
     for appearance in [Appearance::Light, Appearance::Dark] {
-        let t = pierre_theme(appearance);
-        themes.insert(SharedString::from(t.name.clone()), Arc::new(t.clone()));
+        for t in [default_theme(appearance), pierre_theme(appearance)] {
+            themes.insert(SharedString::from(t.name.clone()), Arc::new(t.clone()));
+        }
     }
     let mut errors = Vec::new();
     let mut files: Vec<PathBuf> = match std::fs::read_dir(dir) {

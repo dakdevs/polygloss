@@ -1,5 +1,6 @@
-//! Screenshots of T3.3 (design §11.10): the whole app in Pierre Light (split)
-//! and Pierre Dark (unified), chrome and diff from one theme, code in the
+//! Screenshots of T3.3 and T6.2 (design §11.10): the whole app in the
+//! default Polygloss Light (split) and Polygloss Dark (unified), and in Pierre
+//! Light and Dark picked by name; chrome and diff from one theme, code in the
 //! bundled Lilex. Plus Lilex on the real macOS text system.
 
 use std::sync::Arc;
@@ -25,6 +26,8 @@ pub const TESTS: &[Test] = &crate::tests![
     e2e_lilex_resolves_on_the_real_text_system,
     e2e_theme_pierre_light_split,
     e2e_theme_pierre_dark_unified,
+    e2e_theme_polygloss_light_split,
+    e2e_theme_polygloss_dark_unified,
 ];
 
 /// Frames drawn at most while waiting for loads and highlights.
@@ -50,17 +53,36 @@ fn e2e_lilex_resolves_on_the_real_text_system() {
 }
 
 fn e2e_theme_pierre_light_split() {
-    capture_app(ThemeMode::Light, LayoutSetting::Split, false);
+    capture_app(
+        ThemeMode::Light,
+        Some("Pierre Light"),
+        LayoutSetting::Split,
+        false,
+    );
 }
 
 fn e2e_theme_pierre_dark_unified() {
-    capture_app(ThemeMode::Dark, LayoutSetting::Unified, true);
+    capture_app(
+        ThemeMode::Dark,
+        Some("Pierre Dark"),
+        LayoutSetting::Unified,
+        true,
+    );
+}
+
+fn e2e_theme_polygloss_light_split() {
+    capture_app(ThemeMode::Light, None, LayoutSetting::Split, false);
+}
+
+fn e2e_theme_polygloss_dark_unified() {
+    capture_app(ThemeMode::Dark, None, LayoutSetting::Unified, true);
 }
 
 /// Opens the app's main window at 1280×800 on the code-change fixture with
-/// `mode` and `layout` pinned, waits for the tab to settle and compares it
-/// with the test's baseline.
-fn capture_app(mode: ThemeMode, layout: LayoutSetting, threads_panel: bool) {
+/// `mode`, the theme `named` for it (`None`: the default, Polygloss) and
+/// `layout` pinned, waits for the tab to settle and compares it with the
+/// test's baseline.
+fn capture_app(mode: ThemeMode, named: Option<&str>, layout: LayoutSetting, threads_panel: bool) {
     let sb = Sandbox::isolate();
     let repo = code_change_repo();
     // The settings file the app reads at startup (the headless context runs
@@ -69,6 +91,16 @@ fn capture_app(mode: ThemeMode, layout: LayoutSetting, threads_panel: bool) {
     let mut settings = Settings::default();
     settings.theme.mode = mode;
     settings.diff.layout = layout;
+    if let Some(name) = named {
+        match mode {
+            ThemeMode::Dark => settings.theme.dark = name.into(),
+            _ => settings.theme.light = name.into(),
+        }
+    }
+    let expected = named.unwrap_or(match mode {
+        ThemeMode::Dark => "Polygloss Dark",
+        _ => "Polygloss Light",
+    });
     let file = sb.config_dir().join("polygloss/settings.json");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, serde_json::to_string(&settings).unwrap()).unwrap();
@@ -81,10 +113,6 @@ fn capture_app(mode: ThemeMode, layout: LayoutSetting, threads_panel: bool) {
             .expect("open the main window")
     });
     screenshot::park_pointer(&mut cx, handle);
-    let expected = match mode {
-        ThemeMode::Dark => "Pierre Dark",
-        _ => "Pierre Light",
-    };
     assert_eq!(cx.update(|cx| theme::active_theme_name(cx)), expected);
     let req = OpenRequest {
         worktree: repo.path().to_path_buf(),

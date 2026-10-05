@@ -47,8 +47,8 @@ impl Default for ThemeSettings {
     fn default() -> ThemeSettings {
         ThemeSettings {
             mode: ThemeMode::System,
-            light: "Pierre Light".to_owned(),
-            dark: "Pierre Dark".to_owned(),
+            light: "Polygloss Light".to_owned(),
+            dark: "Polygloss Dark".to_owned(),
         }
     }
 }

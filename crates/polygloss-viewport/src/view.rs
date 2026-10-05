@@ -44,9 +44,6 @@ use crate::special::{BodyLabel, Specials, large_label, needs_blobs};
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{TEXT_CACHE_CAPACITY, TextCache};
 
-/// Font used when the configured code font is not installed.
-const FALLBACK_CODE_FONT: &str = "Menlo";
-
 /// Times a frame is built at most while wrapped rows are measured (each pass
 /// fixes the heights of the rows the previous one found mis-estimated).
 const WRAP_PASSES: usize = 3;
@@ -63,7 +60,8 @@ pub struct ViewportOptions {
     pub word_diff: Option<Granularity>,
     pub diff: DiffOptions,
     pub style: DiffStyle,
-    /// Code font family (design §18: Lilex; Menlo when it is not installed).
+    /// Code font family (design §18: Lilex; "SF Mono" and "System Mono" name
+    /// the system monospaced font, which also replaces a missing family).
     pub code_font: SharedString,
     pub code_font_size: f32,
     /// OpenType ligatures in the code font (settings `buffer_font.ligatures`,
@@ -1006,8 +1004,8 @@ pub fn code_font(family: impl Into<SharedString>, ligatures: bool) -> Font {
     }
 }
 
-/// The code font (the configured family, or Menlo when it is missing) and its
-/// geometry.
+/// The code font (the configured family, or the system monospaced font for
+/// one of its aliases or when the family is missing) and its geometry.
 ///
 /// Resolving a font falls back to GPUI's default stack when the family is not
 /// installed; the family the result belongs to tells which happened. This is
@@ -1015,12 +1013,13 @@ pub fn code_font(family: impl Into<SharedString>, ligatures: bool) -> Font {
 /// installed family.
 fn resolve_font(opts: &ViewportOptions, window: &Window) -> (Font, Geometry) {
     let text_system = window.text_system();
-    let family = if crate::kit::is_installed(text_system, &opts.code_font) {
-        opts.code_font.clone()
+    let family = crate::kit::code_family(&opts.code_font);
+    let family = if crate::kit::is_installed(text_system, family) {
+        family
     } else {
-        SharedString::new_static(FALLBACK_CODE_FONT)
+        crate::kit::SYSTEM_MONO_FONT
     };
-    let code = code_font(family, opts.ligatures);
+    let code = code_font(SharedString::from(family.to_owned()), opts.ligatures);
     let font_id = text_system.resolve_font(&code);
     let size = opts.code_font_size.max(1.0);
     let advance = text_system

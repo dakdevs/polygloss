@@ -1,5 +1,5 @@
 //! Screenshots of T3.9 (design §8, §11.6 "Threads"): thread blocks in the
-//! diff and the threads panel, as the app draws them at 1280×800 in Pierre
+//! diff and the threads panel, as the app draws them at 1280×800 in Polygloss
 //! Light.
 //!
 //! - `e2e_threads_split` / `e2e_threads_unified`: on `src/config.rs`, an

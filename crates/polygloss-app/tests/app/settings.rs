@@ -44,8 +44,8 @@ fn buffer_font_ligatures_setting_reaches_the_viewport_font() {
 fn settings_defaults_match_design_table() {
     let s = Settings::default();
     assert_eq!(s.theme.mode, ThemeMode::System);
-    assert_eq!(s.theme.light, "Pierre Light");
-    assert_eq!(s.theme.dark, "Pierre Dark");
+    assert_eq!(s.theme.light, "Polygloss Light");
+    assert_eq!(s.theme.dark, "Polygloss Dark");
     assert_eq!(s.buffer_font.family, "Lilex");
     assert_eq!(s.buffer_font.size, 13.0);
     assert!(!s.buffer_font.ligatures, "ligatures are off by default");
@@ -90,7 +90,7 @@ fn settings_defaults_match_design_table() {
     )
     .unwrap();
     assert_eq!(parsed.theme.mode, ThemeMode::Dark);
-    assert_eq!(parsed.theme.light, "Pierre Light");
+    assert_eq!(parsed.theme.light, "Polygloss Light");
     assert_eq!(parsed.buffer_font.size, 15.0);
     assert_eq!(parsed.buffer_font.family, "Lilex");
     assert_eq!(parsed.diff.layout, LayoutSetting::Unified);
