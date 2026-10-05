@@ -194,6 +194,28 @@ pub fn sidebar_max(window_width: f32, threads_shown: bool) -> f32 {
     (window_width - main_min_width(threads_shown)).clamp(SIDEBAR_RANGE.0, SIDEBAR_RANGE.1)
 }
 
+/// The main column's width in `window` as [`shell`] lays it out: the
+/// window's, less the sidebar's while it shows (its stored width, the default
+/// before the first layout, within [`SIDEBAR_RANGE`] and [`sidebar_max`]).
+pub fn main_column_width(threads_shown: bool, window: &Window, cx: &App) -> f32 {
+    let window_width = window.viewport_size().width.as_f32();
+    let chrome = chrome(cx).read(cx);
+    if !chrome.sidebar_visible {
+        return window_width;
+    }
+    // Until the split is first laid out its sizes are placeholders, below
+    // the sidebar's minimum.
+    let stored = chrome
+        .shell
+        .read(cx)
+        .sizes()
+        .first()
+        .map(|w| w.as_f32())
+        .filter(|w| *w >= SIDEBAR_RANGE.0)
+        .unwrap_or(SIDEBAR_WIDTH);
+    window_width - stored.clamp(SIDEBAR_RANGE.0, sidebar_max(window_width, threads_shown))
+}
+
 /// A page: `sidebar` (its top row included) beside `main`, or `main` alone
 /// while the sidebar is hidden. `threads_shown`: the page's threads panel
 /// shows, so the main column needs [`THREADS_MAIN_MIN_WIDTH`].

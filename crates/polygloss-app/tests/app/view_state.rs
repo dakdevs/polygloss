@@ -677,3 +677,132 @@ fn view_state_top_line_round_trips_with_cards(cx: &mut TestAppContext) {
         0.0
     );
 }
+
+fn threads_shown(shell: &mut Shell, tab: &Entity<ReviewTab>) -> bool {
+    tab.read_with(shell.cx, |t, _| t.threads_panel_visible())
+}
+
+/// The View menu's and the palette's Toggle Threads Panel.
+fn toggle_threads(shell: &mut Shell) {
+    shell
+        .cx
+        .dispatch_action(polygloss_app::review_tab::panes::ToggleThreadsPanel);
+    draw(shell.cx);
+}
+
+#[gpui_kit::test]
+fn threads_panel_visibility_round_trips_through_view_state(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = long_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare(&repo)).unwrap();
+    assert!(!threads_shown(&mut shell, &tab));
+    settle(&mut shell);
+    assert_eq!(stored(&mut shell, &tab), None, "untouched: nothing saved");
+
+    // Showing the panel is a change of its own, saved even though nothing
+    // else changed.
+    toggle_threads(&mut shell);
+    settle(&mut shell);
+    assert_eq!(
+        stored(&mut shell, &tab),
+        Some(ViewState {
+            threads_panel: Some(true),
+            ..ViewState::default()
+        })
+    );
+    close(&mut shell, &tab);
+    restart(&mut shell);
+    let tab = shell.open(compare(&repo)).unwrap();
+    assert!(threads_shown(&mut shell, &tab), "restored");
+    assert!(shell.cx.debug_bounds("threads-pane").is_some());
+
+    // Hidden again: remembered as hidden.
+    toggle_threads(&mut shell);
+    settle(&mut shell);
+    assert_eq!(
+        stored(&mut shell, &tab).and_then(|s| s.threads_panel),
+        Some(false)
+    );
+    close(&mut shell, &tab);
+    restart(&mut shell);
+    let tab = shell.open(compare(&repo)).unwrap();
+    assert!(!threads_shown(&mut shell, &tab));
+    assert!(shell.cx.debug_bounds("threads-pane").is_none());
+}
+
+#[gpui_kit::test]
+fn threads_panel_survives_refresh_and_iteration_switches(cx: &mut TestAppContext) {
+    use polygloss_app::iterations::{self, Choice, Showing};
+    let _sb = Sandbox::isolate();
+    let repo = long_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare(&repo)).unwrap();
+    let diff_id = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| t.opened.diff_id.clone());
+    let first = diff_id(&mut shell);
+    toggle_threads(&mut shell);
+    settle(&mut shell);
+    // Iteration 1 is reviewed; then `head` moves on.
+    let review_id = tab.read_with(shell.cx, |t, _| t.review_id.clone());
+    shell
+        .core
+        .submit_review(
+            &review_id,
+            polygloss_core::review::Verdict::Comment,
+            "",
+            None,
+        )
+        .unwrap();
+    tab.update(shell.cx, iterations::reload);
+    repo.write(
+        "src/alpha.rs",
+        text("alpha", |n| n % 4 == 0 || n == 1).as_bytes(),
+    );
+    repo.commit("more");
+    repo.git(&["tag", "-f", "head"]);
+
+    // Refresh: iteration 2, a new diff, in the same tab.
+    tab.update_in(shell.cx, polygloss_app::live::refresh_tab);
+    draw(shell.cx);
+    let second = diff_id(&mut shell);
+    assert_ne!(second, first, "refreshed");
+    assert!(threads_shown(&mut shell, &tab), "kept across Refresh");
+    assert!(shell.cx.debug_bounds("threads-pane").is_some());
+    settle(&mut shell);
+    // The new diff remembers it too.
+    assert_eq!(
+        shell
+            .core
+            .load_view_state(&second)
+            .unwrap()
+            .and_then(|s| s.threads_panel),
+        Some(true)
+    );
+
+    // "Changes since last review": still shown.
+    tab.update_in(shell.cx, iterations::toggle_changes_since);
+    draw(shell.cx);
+    assert_eq!(
+        tab.read_with(shell.cx, |t, _| iterations::showing(t)),
+        Showing::ChangesSince { since: 1 }
+    );
+    assert!(threads_shown(&mut shell, &tab), "kept across Changes since");
+
+    // Hidden while iteration 1 shows, it stays hidden on the way back to
+    // the current state, whose own saved state says shown: the tab's
+    // choice is carried, not each diff's.
+    tab.update_in(shell.cx, |t, window, cx| {
+        iterations::show(t, Choice::Iteration(1), window, cx)
+    });
+    draw(shell.cx);
+    assert_eq!(diff_id(&mut shell), first);
+    assert!(threads_shown(&mut shell, &tab), "kept across iterations");
+    toggle_threads(&mut shell);
+    tab.update_in(shell.cx, |t, window, cx| {
+        iterations::show(t, Choice::Current, window, cx)
+    });
+    draw(shell.cx);
+    assert_eq!(diff_id(&mut shell), second);
+    assert!(!threads_shown(&mut shell, &tab));
+    assert!(shell.cx.debug_bounds("threads-pane").is_none());
+}

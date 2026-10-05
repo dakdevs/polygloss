@@ -2,9 +2,10 @@
 //!
 //! Stored per `diff_id` as `{ "v": 1, "scroll_anchor": { "path", "side", "line" },
 //! "collapsed": [path], "expanded": { path: [[start, end]] }, "layout": "split" |
-//! "unified" | null, "tree_expanded": [dir], "composer": { key: text } }`. Missing
-//! fields load as their defaults (a missing `tree_expanded` is `None`: never
-//! saved, unlike `[]`) and unknown fields are ignored; a state with
+//! "unified" | null, "tree_expanded": [dir], "composer": { key: text },
+//! "threads_panel": bool }`. Missing fields load as their defaults (a missing
+//! `tree_expanded` or `threads_panel` is `None`: never saved, unlike `[]` or
+//! `false`) and unknown fields are ignored; a state with
 //! another `v`, or one that does not parse, loads as `None` (ignored, never an
 //! error). View state is UI state saved on change (debounced by the app), so it
 //! appends no event.
@@ -49,6 +50,10 @@ pub struct ViewState {
     /// Unsaved composer text by composer key (autosave, design §8.3).
     #[serde(default)]
     pub composer: BTreeMap<String, String>,
+    /// Whether the threads panel shows (design §11.1). `None` when it was
+    /// never shown or hidden (left out of the JSON): the panel is hidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads_panel: Option<bool>,
 }
 
 impl Default for ViewState {
@@ -61,6 +66,7 @@ impl Default for ViewState {
             layout: None,
             tree_expanded: None,
             composer: BTreeMap::new(),
+            threads_panel: None,
         }
     }
 }

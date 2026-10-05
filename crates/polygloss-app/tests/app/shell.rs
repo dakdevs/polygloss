@@ -281,6 +281,8 @@ fn review_tab_has_toolbar_banner_strip_and_three_panes(cx: &mut TestAppContext) 
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
     let toolbar = bounds(shell.cx, "review-toolbar");
     let banners = bounds(shell.cx, "banner-strip");
     let tree = bounds(shell.cx, "file-tree-pane");
@@ -310,6 +312,63 @@ fn review_tab_has_toolbar_banner_strip_and_three_panes(cx: &mut TestAppContext) 
         .dispatch_action(polygloss_app::review_tab::panes::ToggleThreadsPanel);
     draw(shell.cx);
     assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+}
+
+#[gpui_kit::test]
+fn threads_panel_is_hidden_by_default(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    assert!(!tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    assert_eq!(painted(shell.cx, "threads-pane"), None);
+    assert_eq!(painted(shell.cx, "threads-panel"), None);
+    // The diff takes the whole main column.
+    let main = bounds(shell.cx, "main-column");
+    let viewport = bounds(shell.cx, "viewport-pane");
+    assert_eq!(
+        (viewport.left(), viewport.right()),
+        (main.left(), main.right())
+    );
+    // A second review starts hidden too, whatever the first one shows.
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
+    assert!(painted(shell.cx, "threads-pane").is_some());
+    let other = shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
+    assert!(!other.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    assert_eq!(painted(shell.cx, "threads-pane"), None);
+}
+
+#[gpui_kit::test]
+fn threads_panel_gives_way_at_720pt(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let widths = |shell: &mut Shell| {
+        ["sidebar", "viewport-pane", "threads-pane"].map(|name| bounds(shell.cx, name).size.width)
+    };
+    // Shown first in the smallest window: sidebar 720 − 480 = 240; the
+    // main column's 480 holds the viewport's 260 and the panel's 220.
+    resize_window(&mut shell, 720., 480.);
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
+    assert_eq!(widths(&mut shell), [px(240.), px(260.), px(220.)]);
+    assert_eq!(bounds(shell.cx, "threads-pane").right(), px(720.));
+    assert_eq!(bounds(shell.cx, "main-column").right(), px(720.));
+    // Wider: the stored 340 pt comes back (sidebar 280, viewport
+    // 1,200 − 280 − 340 = 580), and stays 340 wider still.
+    resize_window(&mut shell, 1200., 800.);
+    assert_eq!(widths(&mut shell), [px(280.), px(580.), px(340.)]);
+    resize_window(&mut shell, 1440., 900.);
+    assert_eq!(widths(&mut shell), [px(280.), px(820.), px(340.)]);
+    // Narrow again, then back.
+    resize_window(&mut shell, 720., 480.);
+    assert_eq!(widths(&mut shell), [px(240.), px(260.), px(220.)]);
+    resize_window(&mut shell, 1200., 800.);
+    assert_eq!(widths(&mut shell), [px(280.), px(580.), px(340.)]);
 }
 
 /// The painted bounds of debug selector `name` (any string: leaked, as
@@ -625,7 +684,8 @@ fn sidebar_gives_way_to_the_main_column_minimum(cx: &mut TestAppContext) {
     resize_window(&mut shell, 1440., 900.);
     set_sidebar_width(&mut shell, 480.);
     assert_eq!(sidebar(&mut shell), px(480.));
-    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
 
     // 720 pt: the threads panel shows, so the main column keeps 480 pt
     // (viewport 260 + panel 220) and the sidebar gets 720 − 480.
@@ -1448,7 +1508,9 @@ fn toolbar_and_banner_buttons_reach_the_tab_without_focus(cx: &mut TestAppContex
         shell.cx.simulate_click(at, gpui_kit::Modifiers::none());
         draw(shell.cx);
     };
-    assert!(visible(&mut shell));
+    assert!(!visible(&mut shell));
+    click(&mut shell, "toggle-threads-panel");
+    assert!(visible(&mut shell), "the toolbar toggle showed the panel");
     click(&mut shell, "toggle-threads-panel");
     assert!(!visible(&mut shell), "the toolbar toggle hid the panel");
 

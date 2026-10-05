@@ -94,7 +94,9 @@ pub fn toolbar_button(
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         // Straight to the tab, not an action dispatched from the focused
         // element: the click works wherever focus is.
-        .on_click(cx.listener(|tab, _, _, cx| tab.toggle_threads_panel(cx)))
+        .on_click(
+            cx.listener(|tab, _, window, cx| tab.toggle_threads_panel_from_toolbar(window, cx)),
+        )
         .child(icon)
         .child(text("threads-count", open.to_string()))
         .tooltip(tooltip(tip))

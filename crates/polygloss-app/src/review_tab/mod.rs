@@ -128,13 +128,32 @@ impl ReviewTab {
         opts
     }
 
+    /// Whether the threads panel shows (hidden until shown, design §11.1).
     pub fn threads_panel_visible(&self) -> bool {
-        self.panes.threads_visible
+        self.panes.threads_shown()
+    }
+
+    /// Shows or hides the threads panel at once; the choice is kept for the
+    /// tab (across Refresh and iteration switches) and saved in the diff's
+    /// view state.
+    pub fn set_threads_panel_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.panes.set_threads_shown(visible) {
+            crate::view_state::changed(self, cx);
+            cx.notify();
+        }
     }
 
     pub fn toggle_threads_panel(&mut self, cx: &mut Context<Self>) {
-        self.panes.threads_visible = !self.panes.threads_visible;
-        cx.notify();
+        self.set_threads_panel_visible(!self.threads_panel_visible(), cx);
+    }
+
+    /// The toolbar's threads button: [`Self::toggle_threads_panel`]; opened
+    /// with the pointer, the panel's content slides in (design §11.16).
+    pub fn toggle_threads_panel_from_toolbar(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.toggle_threads_panel(cx);
+        if self.threads_panel_visible() && crate::motion::pointer_initiated(window) {
+            self.panes.enter_threads(cx.background_executor().now());
+        }
     }
 
     /// Keeps a feature's per-tab state (one value per type).
@@ -199,7 +218,7 @@ impl Render for ReviewTab {
             .child(self.banners.clone())
             .child(gpui_kit::div().flex_1().min_h_0().child(panes))
             .into_any_element();
-        let shell = crate::chrome::shell(sidebar, main, self.panes.threads_visible, window, cx);
+        let shell = crate::chrome::shell(sidebar, main, self.threads_panel_visible(), window, cx);
         crate::keymap::handlers::apply(v_flex(), cx)
             .key_context("Tab")
             .track_focus(&self.focus)

@@ -130,9 +130,7 @@ fn capture_app(mode: ThemeMode, named: Option<&str>, layout: LayoutSetting, thre
         .update_window(handle, |_, window, cx| open_review(req, window, cx))
         .expect("the window is open");
     let tab = settle(&mut cx, handle, &main);
-    if !threads_panel {
-        cx.update(|cx| tab.update(cx, |t, cx| t.toggle_threads_panel(cx)));
-    }
+    cx.update(|cx| tab.update(cx, |t, cx| t.set_threads_panel_visible(threads_panel, cx)));
     for _ in 0..3 {
         screenshot::draw(&mut cx, handle);
     }

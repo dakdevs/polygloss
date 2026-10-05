@@ -339,7 +339,7 @@ impl ReviewThreads {
         };
         let ix = ix.min(last);
         self.selected = Some(rows[ix].0.clone());
-        // The list's children: the rows, with the "RESOLVED" title before
+        // The list's children: the rows, with the "Resolved" title before
         // the first resolved one.
         let title = rows[..=ix].iter().any(|(_, open)| !open);
         self.panel_scroll.scroll_to_item(ix + usize::from(title));

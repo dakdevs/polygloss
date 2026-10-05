@@ -129,6 +129,8 @@ fn threads_are_placed_by_their_carry_forward_position(cx: &mut gpui_kit::TestApp
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
     let on_line = create(
         &mut shell,
         &tab,
@@ -244,6 +246,8 @@ fn agent_note_collapsed_and_hidden_by_toggle(cx: &mut gpui_kit::TestAppContext) 
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
     let note = create(
         &mut shell,
         &tab,
@@ -305,6 +309,8 @@ fn question_badge_visible(cx: &mut gpui_kit::TestAppContext) {
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
     let question = create(
         &mut shell,
         &tab,
@@ -372,6 +378,8 @@ fn outdated_thread_inline_with_snippet_and_in_panel(cx: &mut gpui_kit::TestAppCo
     repo.write("src/config.rs", changed.as_bytes());
     repo.commit("pre-size");
     let tab = shell.open(req).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
     assert_ne!(
         tab.read_with(shell.cx, |t, _| t.opened.diff_id.clone()),
         first.diff_id
@@ -595,6 +603,8 @@ fn dot_and_comma_jump_between_open_threads_across_files(cx: &mut gpui_kit::TestA
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
     // A: on a line hidden between two hunks of `src/config.rs` (new 16).
     let a = create(
         &mut shell,
@@ -938,8 +948,49 @@ fn threads_of_a_fresh_review_load_on_open(cx: &mut gpui_kit::TestAppContext) {
         )
         .unwrap();
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
     let m = model(&mut shell, &tab);
     assert!(m.read_with(shell.cx, |m, _| m.is_loaded()));
     assert_eq!(block_ids(&mut shell, &tab, 2), [placement::block_id(&id).0]);
     assert!(painted(shell.cx, format!("threads-panel-{id}")));
+}
+
+#[gpui_kit::test]
+fn threads_panel_rows_are_cards_on_the_canvas(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    let ids = [1, 5].map(|n| {
+        let subject = line("src/config.rs", Side::New, n, n);
+        create(
+            &mut shell,
+            &tab,
+            subject,
+            ThreadKind::Comment,
+            "Hm.",
+            human(),
+        )
+    });
+    reload(&mut shell, &tab);
+    let pane = bounds(shell.cx, "threads-pane".into());
+    let rows = ids.map(|id| bounds(shell.cx, format!("threads-panel-{id}")));
+    // Cards: inset from the panel's edges and apart from each other.
+    for row in rows {
+        assert!(
+            row.left() - pane.left() >= gpui_kit::px(12.),
+            "{row:?} in {pane:?}"
+        );
+        assert!(
+            pane.right() - row.right() >= gpui_kit::px(12.),
+            "{row:?} in {pane:?}"
+        );
+    }
+    assert!(
+        rows[1].top() - rows[0].bottom() >= gpui_kit::px(8.),
+        "{rows:?}"
+    );
+    assert!(painted(shell.cx, "threads-panel-count".into()));
 }

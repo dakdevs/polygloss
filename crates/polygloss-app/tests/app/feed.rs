@@ -612,12 +612,7 @@ fn next_unread_opens_a_thread_the_diff_cannot_show_in_the_panel(cx: &mut gpui_ki
     let other = other_core();
     let question = agent_thread(&other, &mut shell, &tab, Subject::Review, "Ship it?");
     nudge(&mut shell);
-    tab.update(shell.cx, |t, cx| {
-        if t.threads_panel_visible() {
-            t.toggle_threads_panel(cx);
-        }
-    });
-    draw(shell.cx);
+    assert!(!tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
     click_banner(&mut shell, &tab, BannerKind::AgentReplies);
     assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
     let m = model(&mut shell, &tab);
@@ -630,6 +625,25 @@ fn next_unread_opens_a_thread_the_diff_cannot_show_in_the_panel(cx: &mut gpui_ki
             .thread(&question, Viewer::Human)
             .is_ok_and(|t| t.comments.len() == 1)
     );
+}
+
+#[gpui_kit::test]
+fn agent_replies_show_opens_the_panel(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let other = other_core();
+    let note = agent_thread(&other, &mut shell, &tab, Subject::Review, "Done.");
+    nudge(&mut shell);
+    // A new review hides the panel; "Show" on the agent replies banner
+    // opens it, the reply's thread open in it.
+    assert!(shell.cx.debug_bounds("threads-panel").is_none());
+    click_banner(&mut shell, &tab, BannerKind::AgentReplies);
+    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    assert!(shell.cx.debug_bounds("threads-panel").is_some());
+    let row: &'static str = Box::leak(format!("threads-panel-{note}").into_boxed_str());
+    assert!(shell.cx.debug_bounds(row).is_some());
 }
 
 #[gpui_kit::test]

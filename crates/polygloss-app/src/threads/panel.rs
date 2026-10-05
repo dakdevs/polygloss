@@ -8,6 +8,10 @@
 //! place. Hidden agent notes are left out unless outdated (then they open
 //! under their row, since the diff does not show them).
 //!
+//! The panel sits on the diff's canvas (its pane's background): a header
+//! ("Threads · n open · k notes" and Comment on review), then each row as a
+//! rounded card.
+//!
 //! Counts: the header's "n open" counts open threads that wait on someone,
 //! like the file headers' and the tree's badges (agent notes are FYI: they
 //! are counted apart, "· k notes"); review-level threads and threads this
@@ -32,6 +36,9 @@ use super::block::{author_name, excerpt, pill};
 use super::placement::ThreadPlace;
 use super::{DiffOrderer, ReviewThreads, activate_thread, block};
 use crate::review_tab::ReviewTab;
+
+/// A row card's corner radius, the file cards' (ADR-0027).
+const CARD_RADIUS: f32 = 8.0;
 
 /// The panel's rows, in order: `(thread id, open)`. Threads in the diff
 /// are in its top-to-bottom order (old and new sides interleaved as the
@@ -159,7 +166,7 @@ pub fn render(
     for (id, is_open) in &rows {
         if !is_open && !resolved_title {
             resolved_title = true;
-            list.push(section_title(format!("RESOLVED {resolved}"), cx).into_any_element());
+            list.push(section_title(format!("Resolved · {resolved}"), cx).into_any_element());
         }
         let is_selected = selected.as_deref() == Some(id.as_str());
         list.push(row(model, id, is_selected, focused, window, cx));
@@ -167,17 +174,19 @@ pub fn render(
     let theme = cx.theme();
     let header = h_flex()
         .flex_none()
-        .h(px(32.))
-        .px_3()
-        .gap_2()
-        .border_b_1()
-        .border_color(theme.border)
-        .text_xs()
-        .font_semibold()
-        .text_color(theme.muted_foreground)
-        .child("THREADS")
+        .h(px(40.))
+        .pl_3()
+        .pr_2()
+        .gap_1()
+        .text_sm()
+        .child(
+            div()
+                .font_semibold()
+                .text_color(theme.foreground)
+                .child("Threads"),
+        )
         .when(!rows.is_empty(), |el| {
-            let mut text = format!("{open} open");
+            let mut text = format!("· {open} open");
             match notes {
                 0 => {}
                 1 => text.push_str(" · 1 note"),
@@ -186,7 +195,7 @@ pub fn render(
             el.child(
                 div()
                     .debug_selector(|| "threads-panel-count".into())
-                    .font_normal()
+                    .text_color(theme.muted_foreground)
                     .child(text),
             )
         })
@@ -221,12 +230,16 @@ pub fn render(
             .child(div().text_xs().child("Press C on a line to comment."))
             .into_any_element()
     } else {
-        div()
+        v_flex()
             .id("threads-panel-list")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&scroll)
+            .px_3()
+            .pt_1()
+            .pb_3()
+            .gap_2()
             .children(list)
             .into_any_element()
     };
@@ -235,7 +248,6 @@ pub fn render(
         .key_context("ThreadsPanel")
         .track_focus(&focus)
         .size_full()
-        .bg(theme.sidebar)
         .child(header)
         .when_some(composer, |el, c| el.child(c))
         .child(body)
@@ -245,9 +257,7 @@ pub fn render(
 fn section_title(text: String, cx: &Context<ReviewTab>) -> impl IntoElement {
     let theme = cx.theme();
     div()
-        .px_3()
-        .pt_3()
-        .pb_1()
+        .pt_2()
         .text_xs()
         .font_semibold()
         .text_color(theme.muted_foreground)
@@ -285,6 +295,13 @@ fn row(
     let replies = thread.comments.len().saturating_sub(1);
     let card = expanded.then(|| block::card(model, &thread, position.as_ref(), window, cx));
     let theme = cx.theme();
+    // A rounded card, tinted on hover and when selected (the theme's
+    // colors are translucent), like Home's rows.
+    let surface = crate::theme::viewport_theme(cx);
+    let (hover, selected_bg) = (
+        surface.card_background.blend(theme.list_hover),
+        surface.card_background.blend(theme.list_active),
+    );
     let (icon, color) = match (resolved, thread.kind) {
         (true, _) => (IconName::CircleCheck, theme.success),
         (false, ThreadKind::Question) => (IconName::CircleAlert, theme.info),
@@ -303,8 +320,10 @@ fn row(
     );
     v_flex()
         .w_full()
-        .border_b_1()
-        .border_color(theme.border)
+        .bg(surface.card_background)
+        .border_1()
+        .border_color(surface.card_border)
+        .rounded(px(CARD_RADIUS))
         .child(
             v_flex()
                 .id(SharedString::from(format!("threads-panel-{id}")))
@@ -314,17 +333,21 @@ fn row(
                 .px_3()
                 .py_2()
                 .gap_1()
+                // Inside the card's 1 px border.
+                .rounded(px(CARD_RADIUS - 1.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.list_hover))
+                .hover(move |s| s.bg(hover))
                 .when(selected, |el| {
-                    el.bg(theme.list_active).child(
+                    // A bar inside the left edge, clear of the corners.
+                    el.bg(selected_bg).child(
                         div()
                             .debug_selector(move || format!("threads-panel-selected-{mark_sel}"))
                             .absolute()
-                            .left_0()
-                            .top_0()
-                            .bottom_0()
+                            .left(px(3.))
+                            .top(px(6.))
+                            .bottom(px(6.))
                             .w(px(if focused { 3. } else { 2. }))
+                            .rounded_full()
                             .bg(if focused {
                                 theme.ring
                             } else {

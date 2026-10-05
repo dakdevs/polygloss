@@ -228,8 +228,8 @@ fn iteration_review(shell: &mut Shell, repo: &Path) -> Entity<ReviewTab> {
         .submit_review(&review, Verdict::Comment, "", None)
         .unwrap();
     tab.update(shell.cx, polygloss_app::iterations::reload);
-    tab.update(shell.cx, |t, cx| t.toggle_threads_panel(cx));
     draw(shell.cx);
+    assert!(!tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
     tab
 }
 
@@ -416,8 +416,6 @@ fn display_menu_opens_from_its_button_and_acts_on_the_diff(cx: &mut TestAppConte
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
-    tab.update(shell.cx, |t, cx| t.toggle_threads_panel(cx));
-    draw(shell.cx);
     let wrap = |shell: &mut Shell| {
         tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).options().style.wrap)
     };
@@ -490,12 +488,13 @@ fn threads_button_counts_open_threads_and_toggles_the_panel(cx: &mut gpui_kit::T
     assert!(shows(shell.cx, "threads-count", "2"));
 
     let visible = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| t.threads_panel_visible());
-    assert!(visible(&mut shell));
+    assert!(!visible(&mut shell), "hidden by default");
     click(shell.cx, "toggle-threads-panel");
-    assert!(!visible(&mut shell), "a click hides the panel");
-    assert!(!painted(shell.cx, "threads-pane").is_some());
+    assert!(visible(&mut shell), "a click shows the panel");
+    assert!(painted(shell.cx, "threads-pane").is_some());
     click(shell.cx, "toggle-threads-panel");
-    assert!(visible(&mut shell), "and shows it again");
+    assert!(!visible(&mut shell), "and hides it again");
+    assert!(painted(shell.cx, "threads-pane").is_none());
 }
 
 #[gpui_kit::test]
@@ -517,17 +516,17 @@ fn threads_button_marks_hidden_notes(cx: &mut gpui_kit::TestAppContext) {
             .advance_clock(std::time::Duration::from_secs(2));
         draw(shell.cx);
         let shown = [
-            "Hide threads panel",
-            "Hide threads panel · 2 agent notes hidden",
+            "Show threads panel",
+            "Show threads panel · 2 agent notes hidden",
         ]
         .into_iter()
         .find(|t| painted(shell.cx, &format!("tooltip: {t}")).is_some());
         unhover(shell.cx);
         shown
     };
-    // Notes showing: no dot, a plain tooltip.
+    // Notes showing: no dot, a plain tooltip (the panel is hidden).
     assert!(!painted(shell.cx, "threads-notes-hidden").is_some());
-    assert_eq!(tooltip(&mut shell), Some("Hide threads panel"));
+    assert_eq!(tooltip(&mut shell), Some("Show threads panel"));
 
     shell.cx.dispatch_action(tab_actions::ToggleAgentNotes);
     draw(shell.cx);
@@ -537,11 +536,11 @@ fn threads_button_marks_hidden_notes(cx: &mut gpui_kit::TestAppContext) {
     );
     assert_eq!(
         tooltip(&mut shell),
-        Some("Hide threads panel · 2 agent notes hidden")
+        Some("Show threads panel · 2 agent notes hidden")
     );
 
     shell.cx.dispatch_action(tab_actions::ToggleAgentNotes);
     draw(shell.cx);
     assert!(!painted(shell.cx, "threads-notes-hidden").is_some());
-    assert_eq!(tooltip(&mut shell), Some("Hide threads panel"));
+    assert_eq!(tooltip(&mut shell), Some("Show threads panel"));
 }

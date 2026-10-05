@@ -6,8 +6,8 @@
 //!   agent question with a draft reply (first line), an old-side draft
 //!   (split: left column with a spacer on the right), a draft with a
 //!   ` ```suggestion ` (mini-diff), and an agent note collapsed to a chip;
-//!   the panel lists them with a review-level comment and a resolved
-//!   thread.
+//!   unified shows the panel (hidden by default), which lists them with a
+//!   review-level comment and a resolved thread.
 //! - `e2e_threads_outdated`: a thread whose line changed in the next
 //!   iteration, inline at the nearest line with the Outdated badge and the
 //!   original snippet, and in the panel.
@@ -234,6 +234,14 @@ fn settle(
     panic!("the review tab never settled: {rows:#?}");
 }
 
+/// Shows the threads panel (hidden by default) and lets it draw.
+fn show_panel(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, tab: &Entity<ReviewTab>) {
+    cx.update(|cx| tab.update(cx, |t, cx| t.set_threads_panel_visible(true, cx)));
+    for _ in 0..6 {
+        screenshot::draw(cx, handle);
+    }
+}
+
 fn e2e_threads_split() {
     capture_review(LayoutSetting::Split);
 }
@@ -253,13 +261,10 @@ fn capture_review(layout: LayoutSetting) {
     let (mut cx, handle, tab) = app(&sb, layout, core, req);
     let blocks = cx.update(|cx| tab.read(cx).viewport.read(cx).document().blocks(0).len());
     assert_eq!(blocks, 4, "four threads on src/config.rs");
-    if layout == LayoutSetting::Split {
-        // The diff gets the panel's width, as someone reviewing split would
-        // give it (the unified capture shows the panel).
-        cx.update(|cx| tab.update(cx, |t, cx| t.toggle_threads_panel(cx)));
-        for _ in 0..6 {
-            screenshot::draw(&mut cx, handle);
-        }
+    if layout == LayoutSetting::Unified {
+        // The unified capture shows the panel; split leaves it hidden (the
+        // default), as someone reviewing split would.
+        show_panel(&mut cx, handle, &tab);
     }
     let image = screenshot::capture(&mut cx, handle);
     assert_screenshot(&image);
@@ -306,6 +311,7 @@ fn e2e_threads_outdated() {
             .count()
     });
     assert_eq!(outdated, 1);
+    show_panel(&mut cx, handle, &tab);
     let image = screenshot::capture(&mut cx, handle);
     assert_screenshot(&image);
 }
