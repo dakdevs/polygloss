@@ -1,7 +1,10 @@
-//! File headers (design §11.6 "Sticky header", §6.4): the collapse chevron,
-//! the path (`old → new` for renames), +/− counts, badges (similarity, mode,
-//! binary, symlink, submodule, generated, LFS, plus the host's review flags),
-//! the Viewed checkbox and the ⋯ menu.
+//! File headers (design §11.6 "File header", §6.4), 2.25 rows tall: the
+//! collapse chevron, the path in the code font with the directory dim and
+//! the name bold (`old → new` for renames), muted kind pills (similarity,
+//! mode, binary, symlink, submodule, generated, LFS), then right-aligned the
+//! host's review-state pills, open in editor, the `+a −d` pill, the Viewed
+//! pill and the ⋯ menu. Icons are Lucide SVGs ([`Painter::icon`]); pills
+//! and "Viewed" use the UI font.
 //!
 //! Headers are painted in their own layer after every row, so the header of
 //! the first visible file can pin at the top while its body scrolls under it;
@@ -17,16 +20,19 @@ use std::rc::Rc;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{
     Anchor, AnyElement, AnyWindowHandle, App, Bounds, ClipboardItem, Context, DismissEvent, Entity,
-    FocusHandle, Focusable as _, IntoElement as _, ParentElement as _, Pixels, Point, Subscription,
-    Window, anchored, deferred, point, px,
+    FocusHandle, Focusable as _, Font, FontWeight, Hsla, IntoElement as _, ParentElement as _,
+    Pixels, Point, Subscription, Window, anchored, deferred, point, px,
 };
 use polygloss_diff::hunks::Block;
 use polygloss_diff::{FileChange, FileKind, FileStatus, Side};
 
 use crate::controls::{ControlAction, ControlLayer};
+use crate::debug::TitleStyle;
 use crate::document::{BodyRow, FileState, SizeHint};
+use crate::numbers::group_digits;
 use crate::paint_rows::{Frame, HEADERS, Painter};
 use crate::text_cache::{ShapedText, Shaper, TextKey};
+use crate::title::Title;
 use crate::view::{DiffViewport, ViewportEvent};
 
 /// Color slots of cached labels (the same text in another color is another
@@ -40,18 +46,6 @@ pub(crate) const SLOT_ON_ACCENT: u8 = 5;
 
 /// Columns the title keeps before badges and counts give way.
 const MIN_TITLE_COLUMNS: f32 = 12.0;
-
-/// The header title: the path, or `old → new` for a rename. Control chars
-/// in a path (git allows newlines and tabs) are shown as Control Pictures
-/// when the title is shaped ([`crate::text_cache::Shaper::label`]).
-pub(crate) fn header_title(change: &FileChange) -> Cow<'_, str> {
-    match (&change.old_path, &change.new_path) {
-        (Some(old), Some(new)) if old.text != new.text => {
-            Cow::Owned(format!("{} → {}", old.text, new.text))
-        }
-        _ => Cow::Borrowed(change.display_path()),
-    }
-}
 
 /// Badges describing the change itself, left to right (design §6.4).
 pub(crate) fn kind_badges(change: &FileChange, lfs: bool) -> Vec<Cow<'static, str>> {
@@ -81,15 +75,47 @@ pub(crate) fn kind_badges(change: &FileChange, lfs: bool) -> Vec<Cow<'static, st
     badges
 }
 
-/// A badge to paint: its shaped text and its width with padding.
-struct Badge {
+/// Header geometry in px (design §11.6, the reference's file header).
+const GAP: f32 = 6.0;
+/// Inside a pill, left and right.
+const PILL_PAD: f32 = 6.0;
+const PILL_RADIUS: f32 = 6.0;
+/// The chevron, open-in-editor, the Viewed box and ⋯.
+const ICON: f32 = 16.0;
+/// In a review-state pill, and the gap after it.
+const SMALL_ICON: f32 = 14.0;
+const ICON_GAP: f32 = 4.0;
+/// The open-in-editor button: its icon and 4 px around it.
+const BUTTON: f32 = ICON + 8.0;
+/// Inside the Viewed pill, left and right, and between its box and label.
+const VIEWED_PAD: f32 = 8.0;
+const VIEWED_GAP: f32 = 6.0;
+
+const CHEVRON_DOWN: &str = "icons/chevron-down.svg";
+const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
+const ELLIPSIS: &str = "icons/ellipsis.svg";
+const OPEN_IN_EDITOR: &str = "icons/square-arrow-out-up-right.svg";
+const VIEWED_BOX: &str = "icons/square.svg";
+const VIEWED_CHECKED: &str = "icons/square-check.svg";
+
+/// A pill to paint: its label, its icon and its width with padding.
+struct Pill {
     text: Rc<ShapedText>,
+    icon: Option<(&'static str, Hsla)>,
     width: f32,
 }
 
 impl Painter<'_> {
     /// Paints file `f`'s header with its top at `y` (`sticky` when pinned
     /// away from its place in the document) and records its controls.
+    ///
+    /// Left to right: the chevron, the title, the kind pills; right-aligned
+    /// the review-state pills, open in editor, the `+a −d` pill, Viewed and
+    /// ⋯. As it narrows the kind pills go first (right to left), then the
+    /// review-state pills, then the `+a −d` pill; the title keeps 12
+    /// columns. At very narrow widths the "Viewed" label gives way, then
+    /// open in editor and the Viewed box (when they would not fit right of
+    /// the chevron).
     pub(crate) fn header(&mut self, f: u32, y: f32, h: f32, sticky: bool) {
         let files = self.files;
         let change = &files[f as usize];
@@ -100,13 +126,24 @@ impl Painter<'_> {
         let a = self.geometry.advance;
         let row_h = self.geometry.row_height;
         let ty = y + (h - row_h) / 2.0;
+        let icon_y = y + (h - ICON).max(0.0) / 2.0;
         self.frame.rows += 1;
         self.header_strip(f, y, h, sticky);
 
-        // The chevron, left.
+        // The chevron, left; ⋯, right.
         let collapsed = self.doc.is_collapsed(f);
-        let chevron = self.label(if collapsed { "▸" } else { "▾" }, SLOT_MUTED, theme.muted);
-        self.text(HEADERS, x0 + a, ty, chevron);
+        let chevron = if collapsed {
+            CHEVRON_RIGHT
+        } else {
+            CHEVRON_DOWN
+        };
+        self.icon(
+            chevron,
+            x0 + (3.0 * a - ICON) / 2.0,
+            icon_y,
+            ICON,
+            theme.muted,
+        );
         self.control(
             ControlAction::Collapse(f),
             ControlLayer::Header,
@@ -115,12 +152,14 @@ impl Painter<'_> {
             3.0 * a,
             h,
         );
-
-        // The ⋯ menu, right.
         let menu_x = x0 + width - 3.0 * a;
-        let dots = self.label("⋯", SLOT_MUTED, theme.muted);
-        let dots_x = menu_x + (3.0 * a - dots.shaped.width()) / 2.0;
-        self.text(HEADERS, dots_x, ty, dots);
+        self.icon(
+            ELLIPSIS,
+            menu_x + (3.0 * a - ICON) / 2.0,
+            icon_y,
+            ICON,
+            theme.muted,
+        );
         self.control(
             ControlAction::Menu(f),
             ControlLayer::Header,
@@ -130,142 +169,150 @@ impl Painter<'_> {
             h,
         );
 
-        // The Viewed checkbox (with its label) left of the menu, and between
-        // it and the chevron the title, counts, change badges and review
-        // flags, dropped in reverse priority until the title keeps some room.
-        // At very narrow widths the "Viewed" label gives way too, then the
-        // checkbox (when it would not fit right of the chevron).
+        // Viewed (labeled while the title keeps its room, else its box
+        // alone) and open in editor, each while it fits right of the
+        // chevron.
         let left = x0 + 3.0 * a;
-        let title_text = header_title(change);
-        let full_title = self.label(&title_text, SLOT_HEADER, theme.header_foreground);
+        let title = Title::of(change);
+        let full_title = self.title(f, &title, f32::INFINITY);
         let min_title = full_title.shaped.width().min(MIN_TITLE_COLUMNS * a);
         let flags = self.flags.get(f as usize).copied().unwrap_or_default();
-        let box_size = (row_h * 0.7).round();
-        let viewed = self.label("Viewed", SLOT_HEADER, theme.header_foreground);
-        let box_w = 0.5 * a + box_size + 0.5 * a;
-        let labeled_w = box_w + viewed.shaped.width() + 0.5 * a;
-        let viewed_w = if menu_x - labeled_w - a - left >= min_title {
-            Some(labeled_w)
-        } else if menu_x - box_w >= left {
-            Some(box_w)
+        let viewed_label = self.ui_label("Viewed", SLOT_HEADER, theme.header_foreground);
+        let box_w = VIEWED_PAD + ICON + VIEWED_PAD;
+        let labeled_w = box_w + VIEWED_GAP + viewed_label.shaped.width();
+        let fixed = |viewed_w: f32| GAP + viewed_w + GAP + BUTTON + GAP;
+        let (viewed_w, editor) = if menu_x - fixed(labeled_w) - left >= min_title {
+            (Some(labeled_w), true)
+        } else if menu_x - GAP - box_w >= left {
+            (Some(box_w), menu_x - fixed(box_w) + GAP >= left)
         } else {
-            None
-        };
-        let right = match viewed_w {
-            Some(viewed_w) => {
-                let viewed_x = menu_x - viewed_w;
-                self.viewed_checkbox(flags.viewed, viewed_x, y, h, box_size);
-                if viewed_w == labeled_w {
-                    self.text(HEADERS, viewed_x + box_w, ty, viewed);
-                }
-                self.control(
-                    ControlAction::Viewed(f),
-                    ControlLayer::Header,
-                    viewed_x,
-                    y,
-                    viewed_w,
-                    h,
-                );
-                viewed_x - a
-            }
-            None => menu_x - a,
+            (None, false)
         };
 
         let counts = self.counts(f);
-        let (added, removed) = match counts {
-            Some((adds, dels)) => (
-                (adds > 0).then(|| self.count(adds, true)),
-                (dels > 0).then(|| self.count(dels, false)),
-            ),
-            None => (None, None),
-        };
-        let mut counts_w = 0.0;
-        for t in added.iter().chain(removed.iter()) {
-            counts_w += a + t.shaped.width();
-        }
-        if counts_w > 0.0 {
-            counts_w += a;
-        }
-        let mut kinds: Vec<Badge> = kind_badges(change, self.special.is_lfs(f))
+        let counts_pill = counts.map(|(adds, dels)| {
+            let added = self.count(adds, true);
+            let removed = self.count(dels, false);
+            let w = PILL_PAD + added.shaped.width() + a + removed.shaped.width() + PILL_PAD;
+            (added, removed, w)
+        });
+        let mut kinds: Vec<Pill> = kind_badges(change, self.special.is_lfs(f))
             .iter()
-            .map(|b| self.badge(b, SLOT_MUTED, theme.muted))
+            .map(|b| self.pill(b, None, SLOT_MUTED, theme.muted))
             .collect();
-        let mut flag_badges: Vec<Badge> = flags
+        let mut reviews: Vec<Pill> = flags
             .badges()
             .iter()
-            .map(|(b, accent)| {
-                if *accent {
-                    self.badge(b, SLOT_ACCENT, theme.accent)
+            .map(|b| {
+                let (slot, color) = if b.accent {
+                    (SLOT_ACCENT, theme.accent)
                 } else {
-                    self.badge(b, SLOT_MUTED, theme.muted)
-                }
+                    (SLOT_MUTED, theme.muted)
+                };
+                self.pill(&b.text, b.icon, slot, color)
             })
             .collect();
-        let row_w = |badges: &[Badge]| {
-            badges.iter().map(|b| b.width + 0.5 * a).sum::<f32>()
-                + if badges.is_empty() { 0.0 } else { a }
+        // Where the title and kind pills must end: left of the right
+        // cluster, which the review pills and the counts widen.
+        let limit = |reviews: &[Pill], counts: bool| {
+            let mut rx = menu_x;
+            if let Some(w) = viewed_w {
+                rx -= GAP + w;
+            }
+            if let Some((_, _, w)) = counts_pill.as_ref().filter(|_| counts) {
+                rx -= GAP + w;
+            }
+            if editor {
+                rx -= GAP + BUTTON;
+            }
+            rx - reviews.iter().map(|p| GAP + p.width).sum::<f32>() - GAP
         };
-        let mut show_counts = true;
-        loop {
-            let used =
-                row_w(&kinds) + row_w(&flag_badges) + if show_counts { counts_w } else { 0.0 };
-            if min_title + used <= right - left {
+        let kinds_w = |kinds: &[Pill]| kinds.iter().map(|p| GAP + p.width).sum::<f32>();
+        let mut show_counts = counts_pill.is_some();
+        while left + min_title + kinds_w(&kinds) > limit(&reviews, show_counts) {
+            if kinds.pop().is_some() || reviews.pop().is_some() {
+                continue;
+            }
+            if !show_counts {
                 break;
             }
-            if kinds.pop().is_some() || flag_badges.pop().is_some() {
-                continue;
-            }
-            if show_counts {
-                show_counts = false;
-                continue;
-            }
-            break;
+            show_counts = false;
         }
-        let used = row_w(&kinds) + row_w(&flag_badges) + if show_counts { counts_w } else { 0.0 };
-        let title = self.fit_title(&title_text, full_title, (right - left - used).max(a));
-        self.text(HEADERS, left, ty, title.clone());
-        let mut x = left + title.shaped.width();
-        if show_counts {
-            x += a;
-            for t in added.iter().chain(removed.iter()) {
-                x += a;
-                self.text(HEADERS, x, ty, t.clone());
-                x += t.shaped.width();
-            }
+
+        // Right to left: Viewed, the counts, open in editor, review pills.
+        let pill_h = row_h + 2.0;
+        let pill_y = y + (h - pill_h) / 2.0;
+        let mut rx = menu_x;
+        if let Some(w) = viewed_w {
+            rx -= GAP + w;
+            self.viewed_pill(f, flags.viewed, rx, y, h, w, viewed_label);
         }
-        if !kinds.is_empty() {
-            x += a;
+        if let Some((added, removed, w)) = counts_pill.filter(|_| show_counts) {
+            rx -= GAP + w;
+            self.rounded(
+                HEADERS,
+                (rx, pill_y, w, pill_h),
+                theme.pill_background,
+                None,
+                PILL_RADIUS,
+            );
+            let tx = rx + PILL_PAD;
+            let removed_x = tx + added.shaped.width() + a;
+            self.text(HEADERS, tx, ty, added);
+            self.text(HEADERS, removed_x, ty, removed);
         }
-        for b in &kinds {
-            self.paint_badge(b, x, y, h);
-            x += b.width + 0.5 * a;
+        if editor {
+            rx -= GAP + BUTTON;
+            let by = y + (h - BUTTON) / 2.0;
+            self.icon(OPEN_IN_EDITOR, rx + 4.0, by + 4.0, ICON, theme.muted);
+            let action = ControlAction::OpenInEditor(f);
+            self.control(action, ControlLayer::Header, rx, by, BUTTON, BUTTON);
         }
-        // Review flags end where the Viewed checkbox starts.
-        let mut fx = right - flag_badges.iter().map(|b| b.width + 0.5 * a).sum::<f32>() + 0.5 * a;
-        for b in &flag_badges {
-            self.paint_badge(b, fx, y, h);
-            fx += b.width + 0.5 * a;
+        rx -= GAP;
+        for p in reviews.iter().rev() {
+            rx -= p.width;
+            self.paint_pill(p, rx, pill_y, pill_h, ty);
+            rx -= GAP;
+        }
+
+        // The title, cut to what is left, and the kind pills after it.
+        let avail = (rx - left - kinds_w(&kinds)).max(a);
+        let fitted = self.title(f, &title, avail);
+        self.text(HEADERS, left, ty, fitted.clone());
+        let mut x = left + fitted.shaped.width();
+        for p in &kinds {
+            x += GAP;
+            self.paint_pill(p, x, pill_y, pill_h, ty);
+            x += p.width;
         }
 
         #[cfg(feature = "debug-inspect")]
         {
             use crate::paint_rows::{DebugContent, DebugRow};
+            let painted = fitted.text();
+            let runs = if painted == title.text {
+                title.styled()
+            } else {
+                let keep = painted.chars().count().saturating_sub(1);
+                title.cut(keep).styled()
+            };
             self.debug.push(DebugRow {
                 y,
                 height: h,
                 styled: false,
-                content: DebugContent::Header(title.clone()),
+                content: DebugContent::Header(fitted.clone()),
             });
             self.debug_headers.push(crate::debug::HeaderDebug {
                 file_idx: f,
                 y,
                 sticky,
-                title: title.text().to_owned(),
+                title: painted.to_owned(),
+                title_runs: runs,
                 counts: counts.filter(|_| show_counts),
                 badges: kinds
                     .iter()
-                    .chain(&flag_badges)
-                    .map(|b| b.text.text().to_owned())
+                    .chain(&reviews)
+                    .map(|p| p.text.text().to_owned())
                     .collect(),
                 viewed: flags.viewed,
                 collapsed,
@@ -290,36 +337,60 @@ impl Painter<'_> {
         (adds + dels > 0).then_some((adds, dels))
     }
 
-    /// The Viewed checkbox at `x` (its left padding included), checked
-    /// with an accent fill and a check mark.
-    fn viewed_checkbox(&mut self, checked: bool, x: f32, y: f32, h: f32, size: f32) {
+    /// The Viewed pill of file `f` at `x`, `w` wide: a rounded, bordered
+    /// pill holding a box (checked: `square-check` in the accent color) and,
+    /// when it is wide enough, "Viewed" in the UI font.
+    #[allow(clippy::too_many_arguments)]
+    fn viewed_pill(
+        &mut self,
+        f: u32,
+        checked: bool,
+        x: f32,
+        y: f32,
+        h: f32,
+        w: f32,
+        label: Rc<ShapedText>,
+    ) {
         let theme = self.theme;
-        let box_x = x + 0.5 * self.geometry.advance;
-        let rect = (box_x, y + (h - size) / 2.0, size, size);
-        if checked {
-            self.rounded(HEADERS, rect, theme.accent, Some(theme.accent), 3.0);
-            let check = self.label("✓", SLOT_ON_ACCENT, theme.background);
-            let check_x = box_x + (size - check.shaped.width()) / 2.0;
-            let ty = y + (h - self.geometry.row_height) / 2.0;
-            self.text(HEADERS, check_x, ty, check);
+        let pill_h = (self.geometry.row_height + 8.0).min(h);
+        let pill_y = y + (h - pill_h) / 2.0;
+        let rect = (x, pill_y, w, pill_h);
+        self.rounded(
+            HEADERS,
+            rect,
+            theme.card_background,
+            Some(theme.card_border),
+            PILL_RADIUS,
+        );
+        let (icon, color) = if checked {
+            (VIEWED_CHECKED, theme.accent)
         } else {
-            self.rounded(
-                HEADERS,
-                rect,
-                theme.background,
-                Some(theme.line_number),
-                3.0,
-            );
+            (VIEWED_BOX, theme.line_number)
+        };
+        let box_x = x + VIEWED_PAD;
+        self.icon(icon, box_x, y + (h - ICON) / 2.0, ICON, color);
+        if w > VIEWED_PAD + ICON + VIEWED_PAD {
+            let ty = y + (h - self.geometry.row_height) / 2.0;
+            self.text(HEADERS, box_x + ICON + VIEWED_GAP, ty, label);
         }
+        self.control(
+            ControlAction::Viewed(f),
+            ControlLayer::Header,
+            x,
+            pill_y,
+            w,
+            pill_h,
+        );
     }
 
-    /// `+n` (added) or `−n` (removed) in its accent color, cached by value
-    /// (no string is built unless it has to be shaped).
+    /// `+n` (added) or `−n` (removed) with its thousands grouped, in its
+    /// stat color, cached by value (no string is built unless it has to be
+    /// shaped).
     fn count(&mut self, n: u32, added: bool) -> Rc<ShapedText> {
         let (slot, color, sign) = if added {
-            (SLOT_ADDED, self.theme.added_accent, '+')
+            (SLOT_ADDED, self.theme.stat_added, '+')
         } else {
-            (SLOT_REMOVED, self.theme.removed_accent, '−')
+            (SLOT_REMOVED, self.theme.stat_removed, '−')
         };
         let shaper = Shaper {
             theme: self.theme,
@@ -329,48 +400,88 @@ impl Painter<'_> {
         };
         self.cache
             .get_or_shape(TextKey::Count { n, color: slot }, || {
-                shaper.label(&format!("{sign}{n}"), color)
+                shaper.label(&format!("{sign}{}", group_digits(u64::from(n))), color)
             })
     }
 
-    fn badge(&mut self, text: &str, slot: u8, color: gpui_kit::Hsla) -> Badge {
-        let text = self.label(text, slot, color);
-        let width = text.shaped.width() + self.geometry.advance;
-        Badge { text, width }
-    }
-
-    fn paint_badge(&mut self, badge: &Badge, x: f32, y: f32, h: f32) {
-        let row_h = self.geometry.row_height;
-        let badge_h = (row_h - 4.0).max(1.0);
-        let rect = (x, y + (h - badge_h) / 2.0, badge.width, badge_h);
-        self.rounded(HEADERS, rect, self.theme.badge_background, None, 4.0);
-        let tx = x + 0.5 * self.geometry.advance;
-        self.text(HEADERS, tx, y + (h - row_h) / 2.0, badge.text.clone());
-    }
-
-    /// The title, cut from the left with `…` to fit `avail` px (the end of a
-    /// path is the part that tells files apart).
-    fn fit_title(&mut self, title: &str, full: Rc<ShapedText>, avail: f32) -> Rc<ShapedText> {
-        if full.shaped.width() <= avail {
-            return full;
+    /// A pill with `text` in the UI font and `color`, and `icon` before it.
+    fn pill(&mut self, text: &str, icon: Option<&'static str>, slot: u8, color: Hsla) -> Pill {
+        let text = self.ui_label(text, slot, color);
+        let icon_w = if icon.is_some() {
+            SMALL_ICON + ICON_GAP
+        } else {
+            0.0
+        };
+        let width = PILL_PAD + icon_w + text.shaped.width() + PILL_PAD;
+        Pill {
+            text,
+            icon: icon.map(|i| (i, color)),
+            width,
         }
+    }
+
+    fn paint_pill(&mut self, pill: &Pill, x: f32, y: f32, h: f32, ty: f32) {
+        let rect = (x, y, pill.width, h);
+        self.rounded(HEADERS, rect, self.theme.pill_background, None, PILL_RADIUS);
+        let mut tx = x + PILL_PAD;
+        if let Some((icon, color)) = pill.icon {
+            self.icon(icon, tx, y + (h - SMALL_ICON) / 2.0, SMALL_ICON, color);
+            tx += SMALL_ICON + ICON_GAP;
+        }
+        self.text(HEADERS, tx, ty, pill.text.clone());
+    }
+
+    /// File `f`'s title fitted to `avail` px, cached by file and width: the
+    /// whole title when it fits, else cut from the left with `…`.
+    fn title(&mut self, f: u32, title: &Title, avail: f32) -> Rc<ShapedText> {
+        let theme = self.theme;
+        let mut bold = self.font.clone();
+        bold.weight = FontWeight::BOLD;
+        let runs = |t: &Title| -> Vec<(usize, Hsla, Font)> {
+            t.runs
+                .iter()
+                .map(|&(len, style)| match style {
+                    TitleStyle::Dim => (len, theme.muted, self.font.clone()),
+                    TitleStyle::Bold => (len, theme.header_foreground, bold.clone()),
+                })
+                .collect()
+        };
+        let shaper = Shaper {
+            theme,
+            font: self.font,
+            geometry: self.geometry,
+            text_system: &self.text_system,
+        };
+        let full = TextKey::Title {
+            file_idx: f,
+            width: u32::MAX,
+        };
+        let whole = self
+            .cache
+            .get_or_shape(full, || shaper.runs(&title.text, &runs(title)));
+        if whole.shaped.width() <= avail {
+            return whole;
+        }
+        let avail = avail.floor();
+        let key = TextKey::Title {
+            file_idx: f,
+            width: avail as u32,
+        };
         let a = self.geometry.advance;
-        let chars: Vec<char> = title.chars().collect();
-        let mut keep = ((avail / a).floor() as usize)
-            .saturating_sub(1)
-            .min(chars.len());
-        loop {
-            let cut: String = std::iter::once('…')
-                .chain(chars[chars.len() - keep..].iter().copied())
-                .collect();
-            let shaped = self.label(&cut, SLOT_HEADER, self.theme.header_foreground);
-            let over = shaped.shaped.width() - avail;
-            if over <= 0.0 || keep == 0 {
-                return shaped;
+        self.cache.get_or_shape(key, || {
+            let chars = title.text.chars().count();
+            let mut keep = ((avail / a).floor() as usize).saturating_sub(1).min(chars);
+            loop {
+                let cut = title.cut(keep);
+                let shaped = shaper.runs(&cut.text, &runs(&cut));
+                let over = shaped.shaped.width() - avail;
+                if over <= 0.0 || keep == 0 {
+                    return shaped;
+                }
+                // Wide chars (CJK, emoji) take more than one column.
+                keep = keep.saturating_sub(((over / a).ceil() as usize).max(1));
             }
-            // Wide chars (CJK, emoji) take more than one column.
-            keep = keep.saturating_sub(((over / a).ceil() as usize).max(1));
-        }
+        })
     }
 }
 
@@ -673,7 +784,7 @@ impl DiffViewport {
     /// Where "Open in editor" points: the new side (the old one for a deleted
     /// file), at the first line shown below the pinned header while this
     /// file's body scrolls under it, else at the file's first change.
-    fn editor_target(&self, f: u32) -> (Side, u32) {
+    pub(crate) fn editor_target(&self, f: u32) -> (Side, u32) {
         let change = &self.files[f as usize];
         let side = if change.new_path.is_none() {
             Side::Old

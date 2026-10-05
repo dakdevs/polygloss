@@ -86,7 +86,8 @@ impl Setup {
             theme: Arc::new(ViewportTheme::pierre(Appearance::Light)),
             ..ViewportOptions::default()
         };
-        let mut cx = screenshot::headless_app();
+        // The app's asset source: the headers' Lucide icons (T6.7).
+        let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
         let window = screenshot::open_window(&mut cx, |window, cx| {
             cx.new(|cx| DiffViewport::new(provider, opts, window, cx))
         });

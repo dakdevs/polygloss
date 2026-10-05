@@ -6,8 +6,8 @@
 //! the viewport like everything it paints; paint replays it layer by layer:
 //! the canvas and the cards, every row quad before any row text so GPUI
 //! batches them into few draw calls, then the host blocks and the prelude,
-//! then the file headers on top, and wires the scroll wheel and the
-//! controls. Both phases are timed and reported as
+//! then the file headers on top (quads, SVG icons, text), and wires the
+//! scroll wheel and the controls. Both phases are timed and reported as
 //! [`crate::ViewportEvent::FrameStats`].
 
 use std::rc::Rc;
@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::{
     App, BorderStyle, Bounds, ContentMask, CursorStyle, DispatchPhase, Edges, Element, ElementId,
     Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, Pixels, ScrollWheelEvent, Style, Window, fill, px, quad, relative,
+    LayoutId, Pixels, ScrollWheelEvent, Style, TransformationMatrix, Window, fill, px, quad,
+    relative,
 };
 
 use crate::blocks::{self, PreparedBlock};
@@ -24,6 +25,9 @@ use crate::controls::{self, ControlLayer, Target};
 use crate::paint_rows::{Frame, HEADERS, Layer};
 use crate::selection;
 use crate::view::{DiffViewport, FrameStats};
+
+/// Corner radius of a header control's highlight (the header pills').
+const HOVER_RADIUS: f32 = 6.0;
 
 pub(crate) struct DiffElement {
     view: Entity<DiffViewport>,
@@ -159,10 +163,10 @@ impl Element for DiffElement {
         );
         let (rows, headers) = frame.layers.split_at(HEADERS);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            paint_quads(&frame.cards, None, window);
+            paint_quads(&frame.cards, window);
             paint_rounded(&frame.cards, window);
             for layer in rows {
-                paint_quads(layer, None, window);
+                paint_quads(layer, window);
             }
             if let Some((b, color)) = hover(ControlLayer::Body) {
                 window.paint_quad(fill(b, color));
@@ -176,10 +180,13 @@ impl Element for DiffElement {
             // Host blocks and the prelude over the rows, under the headers.
             blocks::paint(&mut prepainted.blocks, window, cx);
             // Headers last: the pinned one covers the rows and blocks under
-            // it.
+            // it. The highlight goes over a header's strip and pills (rounded
+            // quads on a card), its icons over that, its text on top.
             for layer in headers {
-                paint_quads(layer, hover(ControlLayer::Header), window);
+                paint_quads(layer, window);
                 paint_rounded(layer, window);
+                paint_hover(layer, hover(ControlLayer::Header), window);
+                paint_icons(layer, &frame, window, cx);
                 paint_texts(layer, &frame, window, cx);
             }
         });
@@ -198,17 +205,25 @@ impl Element for DiffElement {
     }
 }
 
-/// A layer's plain quads, then `hover` (the highlighted control) on top of
-/// them.
-fn paint_quads(layer: &Layer, hover: Option<(Bounds<Pixels>, Hsla)>, window: &mut Window) {
+/// A layer's plain quads.
+fn paint_quads(layer: &Layer, window: &mut Window) {
     let clip = layer.clip.map(|bounds| ContentMask { bounds });
     window.with_content_mask(clip, |window| {
         for (bounds, color) in &layer.quads {
             window.paint_quad(fill(*bounds, *color));
         }
-        if let Some((bounds, color)) = hover {
-            window.paint_quad(fill(bounds, color));
-        }
+    });
+}
+
+/// The highlighted header control, rounded like the header's pills, under
+/// `layer`'s clip.
+fn paint_hover(layer: &Layer, hover: Option<(Bounds<Pixels>, Hsla)>, window: &mut Window) {
+    let Some((bounds, color)) = hover else {
+        return;
+    };
+    let clip = layer.clip.map(|bounds| ContentMask { bounds });
+    window.with_content_mask(clip, |window| {
+        window.paint_quad(fill(bounds, color).corner_radii(px(HOVER_RADIUS)));
     });
 }
 
@@ -231,6 +246,30 @@ fn paint_rounded(layer: &Layer, window: &mut Window) {
                 border_color,
                 BorderStyle::Solid,
             ));
+        }
+    });
+}
+
+/// The frame's SVG icons, under `layer`'s clip. An icon no asset source
+/// has draws nothing.
+fn paint_icons(layer: &Layer, frame: &Frame, window: &mut Window, cx: &mut App) {
+    if frame.icons.is_empty() {
+        return;
+    }
+    let clip = layer.clip.map(|bounds| ContentMask { bounds });
+    window.with_content_mask(clip, |window| {
+        for (bounds, path, color) in &frame.icons {
+            // A failed render (an unregistered path) has nothing to paint.
+            window
+                .paint_svg(
+                    *bounds,
+                    path.clone(),
+                    None,
+                    TransformationMatrix::unit(),
+                    *color,
+                    cx,
+                )
+                .ok();
         }
     });
 }

@@ -22,14 +22,14 @@ use crate::support::*;
 
 /// `n` added `.txt` files of exactly 20 lines: 20 rows is also the estimate
 /// for a file nothing is known about, so loading them never changes a height
-/// (every file is `HEADER_H + 20 × ROW_H` = 440 px tall from the start).
+/// (every file is `HEADER_H + 20 × ROW_H` = 445 px tall from the start).
 fn twenty_line_files(n: usize) -> Vec<Spec> {
     (0..n)
         .map(|i| Spec::added(&format!("f{i:02}.txt"), &numbered("line", 20).concat()))
         .collect()
 }
 
-const FILE_H: f64 = 440.0;
+const FILE_H: f64 = 445.0;
 
 /// `n` modified Rust files of 30 functions each, one renamed.
 fn rust_files(n: usize) -> Vec<Spec> {
@@ -78,9 +78,9 @@ fn counts(view: &Entity<DiffViewport>, cx: &mut VisualTestContext, f: u32) -> Op
 fn materializes_visible_files_first(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let provider = MemProvider::new(twenty_line_files(30));
-    // The first frame is drawn at file 20, which starts at 20 × 440 = 8800:
-    // files 20 and 21 are visible (8800..9400) and the ±2-screen window
-    // (7600..10600) spans 17..=24.
+    // The first frame is drawn at file 20, which starts at 20 × 445 = 8900:
+    // files 20 and 21 are visible (8900..9500) and the ±2-screen window
+    // (7700..10700) spans 17..=24.
     let (view, cx) = open_idle_at(
         cx,
         provider.clone(),
@@ -95,8 +95,8 @@ fn materializes_visible_files_first(cx: &mut TestAppContext) {
     );
     cx.run_until_parked();
     // Visible files first, top to bottom; then the rest of the window by
-    // distance from the viewport: 19 (0 px above), 22 (280 px below), 18
-    // (440 above), 23 (720 below), 17 (880 above), 24 (1160 below). Only then
+    // distance from the viewport: 19 (0 px above), 22 (290 px below), 18
+    // (445 above), 23 (735 below), 17 (890 above), 24 (1180 below). Only then
     // does the background pass (started by the first frame that showed every
     // visible row) read the other files.
     let order = provider.load_order();
@@ -250,14 +250,16 @@ fn tokens_swap_in_without_moving_anchor(cx: &mut TestAppContext) {
         v.set_options(o, cx)
     });
     redraw(cx);
+    // 21 code rows: line 30 and the 17.75 below it, and the 2.25 the 45 px
+    // pinned header covers above it.
     let waiting = last_stats(&events);
-    assert_eq!(waiting.unhighlighted_rows, 20, "{waiting:?}");
+    assert_eq!(waiting.unhighlighted_rows, 21, "{waiting:?}");
     assert_eq!(debug(&view, cx).styled_rows, 0);
 
     // Tokens swap in: same rows, same places, same anchor, same heights.
     settle(cx);
     let styled = debug(&view, cx);
-    assert_eq!(styled.styled_rows, 20);
+    assert_eq!(styled.styled_rows, 21);
     assert_eq!(styled.visible_rows, plain.visible_rows);
     assert_eq!(styled.row_bounds, plain.row_bounds);
     assert_eq!(styled.anchor, plain.anchor);
@@ -1002,7 +1004,14 @@ fn binary_file_is_not_counted_again_after_reload(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn queued_load_builds_rows_of_the_layout_on_screen(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    let provider = MemProvider::new(twenty_line_files(10));
+    // Nine modified files after an added one, whose rows are unified in
+    // both layouts (one full-width pane).
+    let mut specs = vec![Spec::added("new.txt", &numbered("line", 20).concat())];
+    specs.extend((1..10).map(|i| {
+        let (old, new) = with_changes(20, &[3]);
+        Spec::modified(&format!("f{i:02}.txt"), &old, &new)
+    }));
+    let provider = MemProvider::new(specs);
     let (view, cx) = open_idle(cx, provider, options(LayoutMode::Unified), 1000., 400.);
     // The first frame queued the window's loads for unified rows; the layout
     // changes before they run.
@@ -1018,12 +1027,14 @@ fn queued_load_builds_rows_of_the_layout_on_screen(cx: &mut TestAppContext) {
         Layout::Split
     );
     let window = view.read_with(cx, |v, _| v.document().materialize_range(400., 2.0));
+    assert!(window.contains(&0) && window.len() > 2, "{window:?}");
     for f in window {
         let FileState::Materialized(file) = state(&view, cx, f) else {
             panic!("file {f}")
         };
-        assert!(file.rows_split.get().is_some(), "file {f}");
-        assert!(file.rows_unified.get().is_none(), "file {f}");
+        let one_sided = f == 0;
+        assert_eq!(file.rows_split.get().is_some(), !one_sided, "file {f}");
+        assert_eq!(file.rows_unified.get().is_some(), one_sided, "file {f}");
     }
 }
 
@@ -1058,4 +1069,59 @@ fn counts_of_window_files_repaint_as_they_arrive(cx: &mut TestAppContext) {
     let seen = seen.borrow();
     assert_eq!(seen.first(), Some(&None), "{seen:?}");
     assert_eq!(seen.last(), Some(&counted), "{seen:?}");
+}
+
+#[gpui_kit::test]
+fn counts_updated_is_emitted_once_per_batch(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let specs: Vec<Spec> = (0..50)
+        .map(|i| {
+            let (old, new) = with_changes(40, &[2, 20]);
+            Spec::modified(&format!("src/f{i:02}.txt"), &old, &new)
+        })
+        .collect();
+    let provider = MemProvider::new(specs);
+    let (view, cx) = open_idle(cx, provider, options(LayoutMode::Unified), 1000., 400.);
+    let updates = Rc::new(RefCell::new(0usize));
+    let sink = updates.clone();
+    let _sub = cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, e: &ViewportEvent, _| {
+            if *e == ViewportEvent::CountsUpdated {
+                *sink.borrow_mut() += 1;
+            }
+        })
+    });
+    let known = |cx: &mut VisualTestContext| {
+        (0..50)
+            .filter(|&f| view.read_with(cx, |v, _| v.file_counts(f)).is_some())
+            .count()
+    };
+    // One task at a time: a task that lands counts (a load, or a chunk of
+    // the background pass) emits exactly one event; any other emits none.
+    let mut landed = 0;
+    loop {
+        let (k, n) = (known(cx), *updates.borrow());
+        if !cx.executor().tick() {
+            break;
+        }
+        let (k2, n2) = (known(cx), *updates.borrow());
+        assert!(n2 - n <= 1, "{} events in one task", n2 - n);
+        if k2 > k {
+            assert_eq!(n2 - n, 1, "counts {k} → {k2} without an event");
+            landed += 1;
+        }
+    }
+    assert_eq!(known(cx), 50);
+    // Far fewer events than files: the pass counts many files per batch.
+    let total = *updates.borrow();
+    assert!(
+        total >= landed && total < 30,
+        "{total} events, {landed} landings"
+    );
+    // Frames alone emit none.
+    settle(cx);
+    let before = *updates.borrow();
+    redraw(cx);
+    wheel(cx, 0.0);
+    assert_eq!(*updates.borrow(), before);
 }

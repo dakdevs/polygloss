@@ -24,21 +24,31 @@ pub struct FileFlags {
     pub agent_threads: bool,
 }
 
+/// A review-state pill of a file header.
+pub(crate) struct FlagBadge {
+    pub text: Cow<'static, str>,
+    /// Drawn in the accent color.
+    pub accent: bool,
+    /// Its icon (`icons/<name>.svg`), left of the text.
+    pub icon: Option<&'static str>,
+}
+
 impl FileFlags {
-    /// The header badges for this state, left to right, each with whether it
-    /// is drawn in the accent color.
-    pub(crate) fn badges(&self) -> Vec<(Cow<'static, str>, bool)> {
+    /// The header's review-state pills for this state, left to right.
+    pub(crate) fn badges(&self) -> Vec<FlagBadge> {
         let mut badges = Vec::new();
+        let mut push = |text, accent, icon| badges.push(FlagBadge { text, accent, icon });
         if self.changed_since_viewed {
-            badges.push((Cow::Borrowed("changed since viewed"), true));
+            push(Cow::Borrowed("changed since viewed"), true, None);
         }
+        let threads = Some("icons/message-square.svg");
         match self.open_threads {
             0 => {}
-            1 => badges.push((Cow::Borrowed("1 open thread"), false)),
-            n => badges.push((Cow::Owned(format!("{n} open threads")), false)),
+            1 => push(Cow::Borrowed("1 open thread"), false, threads),
+            n => push(Cow::Owned(format!("{n} open threads")), false, threads),
         }
         if self.agent_threads {
-            badges.push((Cow::Borrowed("agent"), true));
+            push(Cow::Borrowed("agent"), true, Some("icons/bot.svg"));
         }
         badges
     }

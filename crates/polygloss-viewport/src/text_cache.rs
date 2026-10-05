@@ -6,9 +6,10 @@
 //! GPUI's own line-layout cache keeps only the current and previous frame, so
 //! scrolling back to rows seen a second ago would shape them again. This cache
 //! keeps shaped lines across frames, keyed by what they show (file, side and
-//! line; whether syntax tokens were applied; the wrap width), and is cleared
-//! when the theme or the code font changes. Entries are least-recently-used
-//! evicted by count.
+//! line; whether syntax tokens were applied; the wrap width; a header title
+//! by file and width; labels by content, color and font), and is cleared
+//! when the theme, a font or the files change. Entries are
+//! least-recently-used evicted by count.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -27,6 +28,18 @@ use crate::style::ViewportTheme;
 /// Entries kept; a screen of split rows uses a few hundred.
 pub(crate) const TEXT_CACHE_CAPACITY: usize = 4096;
 
+/// Which rows a line number belongs to: changed rows tint their numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum NumberKind {
+    Context,
+    Added,
+    Removed,
+}
+
+/// The font a label is shaped in.
+pub(crate) const FONT_CODE: u8 = 0;
+pub(crate) const FONT_UI: u8 = 1;
+
 /// What a cached shaped line shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TextKey {
@@ -39,13 +52,17 @@ pub(crate) enum TextKey {
         styled: bool,
         wrap: u32,
     },
-    /// A 1-based line number.
-    Number(u32),
+    /// A 1-based line number on a row of `kind`.
+    Number { n: u32, kind: NumberKind },
     /// A header's `+n` or `−n`, by value and color slot.
     Count { n: u32, color: u8 },
-    /// Any other text (headers, gap labels, markers), by content hash and a
-    /// color slot.
-    Label { hash: u64, color: u8 },
+    /// File `file_idx`'s header title fitted to `width` px (cut from the
+    /// left when it does not fit): several runs, the directory muted and the
+    /// name bold.
+    Title { file_idx: u32, width: u32 },
+    /// Any other text (pills, gap labels, markers), by content hash, a color
+    /// slot and a font ([`FONT_CODE`], [`FONT_UI`]).
+    Label { hash: u64, color: u8, font: u8 },
 }
 
 /// A shaped line. Always a GPUI `WrappedLine` (wrapped or not): unlike
@@ -133,6 +150,9 @@ pub(crate) struct WordRect {
 pub(crate) struct ShapedText {
     pub shaped: Shaped,
     pub words: Vec<WordRect>,
+    /// The color of its first run (what a single-color label is drawn in).
+    #[cfg_attr(not(feature = "debug-inspect"), allow(dead_code))]
+    pub color: Hsla,
 }
 
 impl ShapedText {
@@ -227,6 +247,13 @@ pub(crate) const MAX_CHARS_UNWRAPPED: usize = 1024;
 /// Chars shaped per line with wrap on (hundreds of visual rows); a longer
 /// line (minified code) is cut with `…`.
 pub(crate) const MAX_CHARS_WRAPPED: usize = 16 * 1024;
+
+/// `text` with its control chars as Control Pictures ([`control_picture`]).
+pub(crate) fn with_control_pictures(text: &str) -> String {
+    text.chars()
+        .map(|c| control_picture(c).unwrap_or(c))
+        .collect()
+}
 
 /// The Control Picture shown for a C0 control char or DEL (`␊` for a
 /// newline, `␡` for DEL), or `None` for any other char.
@@ -410,6 +437,7 @@ pub(crate) fn code_runs(
 /// Turns source lines and labels into [`ShapedText`] (on cache misses).
 pub(crate) struct Shaper<'a> {
     pub theme: &'a ViewportTheme,
+    /// The code font.
     pub font: &'a Font,
     pub geometry: Geometry,
     pub text_system: &'a WindowTextSystem,
@@ -432,6 +460,7 @@ impl Shaper<'_> {
         let spans = tokens.map_or(&[][..], |t| t.line(line));
         let runs = code_runs(&display, spans, self.theme, self.font);
         let wrap = (wrap_width > 0.0).then(|| px(wrap_width));
+        let color = runs.first().map_or(self.theme.foreground, |r| r.color);
         let shaped = self.shape(SharedString::from(display.text.clone()), &runs, wrap);
         let words = if words {
             word_rects(
@@ -446,31 +475,44 @@ impl Shaper<'_> {
         } else {
             Vec::new()
         };
-        ShapedText { shaped, words }
+        ShapedText {
+            shaped,
+            words,
+            color,
+        }
     }
 
-    /// `text` on one line in `color`. Control chars (a newline or tab in a
-    /// path, in an error message) are shown as Control Pictures, so nothing
-    /// splits the label or disappears from it.
+    /// `text` on one line in `color`, in the code font.
     pub fn label(&self, text: &str, color: Hsla) -> ShapedText {
-        let text: String = if text.chars().any(|c| control_picture(c).is_some()) {
-            text.chars()
-                .map(|c| control_picture(c).unwrap_or(c))
-                .collect()
-        } else {
-            text.to_owned()
-        };
-        let run = TextRun {
-            len: text.len(),
-            font: self.font.clone(),
-            color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
+        self.label_in(text, color, self.font)
+    }
+
+    /// `text` on one line in `color` and `font`. Control chars (a newline or
+    /// tab in a path, in an error message) are shown as Control Pictures, so
+    /// nothing splits the label or disappears from it.
+    pub fn label_in(&self, text: &str, color: Hsla, font: &Font) -> ShapedText {
+        let text = with_control_pictures(text);
+        self.runs(&text, &[(text.len(), color, font.clone())])
+    }
+
+    /// `text` on one line in runs of `(bytes, color, font)`.
+    pub fn runs(&self, text: &str, runs: &[(usize, Hsla, Font)]) -> ShapedText {
+        let runs: Vec<TextRun> = runs
+            .iter()
+            .map(|(len, color, font)| TextRun {
+                len: *len,
+                font: font.clone(),
+                color: *color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            })
+            .collect();
+        let color = runs.first().map_or(self.theme.foreground, |r| r.color);
         ShapedText {
-            shaped: self.shape(SharedString::from(text), &[run], None),
+            shaped: self.shape(SharedString::from(text.to_owned()), &runs, None),
             words: Vec::new(),
+            color,
         }
     }
 

@@ -14,14 +14,15 @@ use polygloss_highlight::{
     Appearance, FontStyle, Rgba, StyleId, SyntaxTheme, ThemeId, ZedTheme, pierre_theme,
 };
 
-/// Change markers next to the code (Pierre's diff-style setting).
+/// Change markers (Pierre's diff-style setting, design §11.6 "Styles").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Indicators {
-    /// `+` and `-` glyphs in a column before the code.
+    /// A 3 px bar at the left edge of each changed row's pane (each half's
+    /// own edge in split), no glyph.
     #[default]
-    PlusMinus,
-    /// A thin colored bar at the code's left edge.
     Bars,
+    /// `+` and `-` glyphs in a column before the code.
+    PlusMinus,
     /// No markers (the backgrounds, if on, still show the change).
     None,
 }
@@ -38,11 +39,11 @@ pub struct DiffStyle {
 }
 
 impl Default for DiffStyle {
-    /// Backgrounds on, `+`/`-` indicators, no wrap (design §18).
+    /// Backgrounds on, bars, no wrap (design §18).
     fn default() -> DiffStyle {
         DiffStyle {
             backgrounds: true,
-            indicators: Indicators::PlusMinus,
+            indicators: Indicators::Bars,
             wrap: false,
         }
     }

@@ -1,6 +1,6 @@
 //! Clickable controls the viewport paints itself (design §11.6): the header's
-//! collapse chevron, Viewed checkbox and ⋯ menu button, gap expanders and
-//! "Load diff".
+//! collapse chevron, open-in-editor icon, Viewed pill and ⋯ menu button, gap
+//! expanders and "Load diff".
 //!
 //! The painter records each control's bounds and action in the frame. The
 //! element turns them into hitboxes: body controls first, then every header's
@@ -28,12 +28,15 @@ use crate::view::{DiffViewport, ViewportEvent};
 pub enum ControlAction {
     /// The header's chevron: collapse or expand the file.
     Collapse(u32),
-    /// The header's Viewed checkbox: emits [`ViewportEvent::ViewedToggled`]
+    /// The header's Viewed pill: emits [`ViewportEvent::ViewedToggled`]
     /// (Viewed is the host's state, pushed back with
     /// [`DiffViewport::set_file_flags`]).
     Viewed(u32),
     /// The header's ⋯ button: opens the file menu.
     Menu(u32),
+    /// The header's open-in-editor icon: emits
+    /// [`ViewportEvent::OpenInEditor`] (the ⋯ menu item's target).
+    OpenInEditor(u32),
     /// A gap expander ("↑ 20", "↓ 20", "Expand all").
     Expand {
         file_idx: u32,
@@ -195,6 +198,14 @@ impl DiffViewport {
             }
             ControlAction::Viewed(f) => cx.emit(ViewportEvent::ViewedToggled(f)),
             ControlAction::Menu(f) => self.open_menu(f, control.bounds, window, cx),
+            ControlAction::OpenInEditor(f) => {
+                let (side, line) = self.editor_target(f);
+                cx.emit(ViewportEvent::OpenInEditor {
+                    file_idx: f,
+                    side,
+                    line,
+                });
+            }
             ControlAction::Expand { file_idx, gap, by } => match &control.run {
                 Some(run) => self.expand_run(file_idx, run.clone(), by, cx),
                 None => self.expand(file_idx, gap, by, cx),

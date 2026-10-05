@@ -1,12 +1,13 @@
 //! Horizontal and vertical geometry: split vs unified (design §11.6, OQ-15),
 //! row heights from the code font, and the columns of a row.
 
-use polygloss_diff::Side;
 use polygloss_diff::rows::{Layout, LineKind, Row};
+use polygloss_diff::{FileChange, Side};
 
 use crate::card::CardStyle;
 use crate::document::{BodyRow, FileLayout, Metrics};
 use crate::materialize::MaterializedFile;
+use crate::numbers::one_sided;
 use crate::style::Indicators;
 use crate::text_cache::MAX_CHARS_WRAPPED;
 
@@ -80,8 +81,8 @@ impl Geometry {
         }
     }
 
-    /// Document metrics for `layout`: a header is two rows, a gap row 1.6 and
-    /// a placeholder 2.4 (20/40/32/48 px at 13 px); the cards' gap and
+    /// Document metrics for `layout`: a header is 2.25 rows, a gap row 1.6
+    /// and a placeholder 2.4 (20/45/32/48 px at 13 px); the cards' gap and
     /// padding when `cards` is set.
     pub fn metrics(
         &self,
@@ -93,7 +94,7 @@ impl Geometry {
         Metrics {
             layout,
             row_height: row,
-            header_height: 2.0 * row,
+            header_height: (2.25 * row).round(),
             card_gap: cards.map_or(0.0, |c| c.gap),
             card_pad_bottom: cards.map_or(0.0, |c| c.pad_bottom),
             gap_height: (1.6 * row).round(),
@@ -110,16 +111,30 @@ pub(crate) fn row_height_for(font_size: f32) -> f32 {
     (font_size * 1.5).round().max(1.0)
 }
 
+/// The layout file `change` is drawn in: unified for a one-sided file
+/// (added or deleted text, [`one_sided`]), whose rows are the same in both
+/// layouts; `layout` for any other.
+pub(crate) fn layout_for(change: &FileChange, layout: Layout) -> Layout {
+    if one_sided(change).is_some() {
+        Layout::Unified
+    } else {
+        layout
+    }
+}
+
 /// The columns of a code row, relative to the viewport's left edge: a row
 /// spans `x..x + width` (a card's inner width).
 ///
-/// Unified: `[old number][new number][indicator][code]`. Split: each half is
+/// Unified: `[old number][new number][indicator][code]`; a one-sided file
+/// has only its side's number. Split: each half is
 /// `[number][indicator][code]`, the old side on the left. Numbers are right
 /// aligned in a column one character wider than the file's longest line
 /// number on each side.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Columns {
     pub layout: Layout,
+    /// The side a one-sided file shows (its one number column).
+    pub one_sided: Option<Side>,
     /// The row's left edge.
     pub x: f32,
     pub width: f32,
@@ -154,17 +169,31 @@ impl Columns {
         };
         let indicator_width = match indicators {
             Indicators::PlusMinus => 2.0 * advance,
-            Indicators::Bars => advance,
-            Indicators::None => 0.5 * advance,
+            Indicators::Bars | Indicators::None => 0.5 * advance,
         };
         Columns {
             layout,
+            one_sided: None,
             x,
             width,
             advance,
             half,
             number_width: (digits.max(1) + 1) as f32 * advance,
             indicator_width,
+        }
+    }
+
+    /// The columns of file `change` drawn in `layout`: one pane with one
+    /// number column for a one-sided file ([`layout_for`]).
+    pub fn for_file(self, change: &FileChange) -> Columns {
+        match one_sided(change) {
+            Some(side) => Columns {
+                layout: Layout::Unified,
+                one_sided: Some(side),
+                half: self.x + self.width,
+                ..self
+            },
+            None => self,
         }
     }
 
@@ -179,9 +208,20 @@ impl Columns {
 
     /// Number of line-number columns in a pane.
     fn numbers(&self) -> f32 {
-        match self.layout {
-            Layout::Unified => 2.0,
-            Layout::Split => 1.0,
+        match (self.layout, self.one_sided) {
+            (Layout::Unified, None) => 2.0,
+            _ => 1.0,
+        }
+    }
+
+    /// The line-number column `side`'s numbers go into (0 = the first), or
+    /// `None` when this pane has none for it (the other side of a one-sided
+    /// file).
+    pub fn number_column(&self, side: Side) -> Option<u8> {
+        match (self.layout, self.one_sided, side) {
+            (_, Some(shown), side) => (shown == side).then_some(0),
+            (Layout::Unified, None, Side::New) => Some(1),
+            _ => Some(0),
         }
     }
 
@@ -191,9 +231,15 @@ impl Columns {
         x + self.number_width * f32::from(i + 1)
     }
 
+    /// Right edge of the last line-number column in `pane` (where the
+    /// number gutter ends).
+    pub fn gutter_right(&self, pane: Pane) -> f32 {
+        self.pane(pane).0 + self.numbers() * self.number_width
+    }
+
     /// Left edge of the indicator column in `pane`.
     pub fn indicator_x(&self, pane: Pane) -> f32 {
-        self.pane(pane).0 + self.numbers() * self.number_width
+        self.gutter_right(pane)
     }
 
     /// Left edge of the code in `pane`.

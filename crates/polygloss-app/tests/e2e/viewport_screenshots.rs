@@ -53,7 +53,8 @@ fn render(opened: &OpenedDiff, layout: LayoutMode, appearance: Appearance) -> Sh
         theme: Arc::new(ViewportTheme::pierre(appearance)),
         ..ViewportOptions::default()
     };
-    let mut cx = screenshot::headless_app();
+    // The app's asset source: the headers' Lucide icons (T6.7).
+    let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
     let window = screenshot::open_window(&mut cx, |window, cx| {
         cx.new(|cx| DiffViewport::new(provider, opts, window, cx))
     });
@@ -226,12 +227,14 @@ fn e2e_viewport_special_files() {
     ] {
         assert!(rows.iter().any(|r| r == row), "no {row:?} in {rows:#?}");
     }
-    // The symlink's target and the deleted file's lines are real rows.
+    // The symlink's target and the deleted file's lines are real rows; the
+    // deleted file is one full-width pane with its old numbers (T6.7,
+    // OQ-54).
     assert_rows(
         &shot.debug,
         &[
             split(Some((1, '-', "v1")), Some((1, '+', "v2"))),
-            split(Some((1, '-', "This file is no longer used.")), None),
+            unified(Some(1), None, '-', "This file is no longer used."),
         ],
     );
     assert_screenshot(&shot.image);

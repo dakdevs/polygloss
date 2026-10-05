@@ -47,6 +47,7 @@ use polygloss_highlight::{
 };
 
 use crate::document::{Document, FileState, SizeHint};
+use crate::layout::layout_for;
 use crate::materialize::{LoadError, LoadOptions, Loaded, MaterializedFile, is_binary, read_blob};
 use crate::provider::DiffProvider;
 use crate::special::needs_blobs;
@@ -460,12 +461,14 @@ impl Shared {
         let change = &self.changes[file as usize];
         match work {
             Work::Load { opts, theme } => {
-                // The layout on screen now, not when the job was queued.
+                // The layout on screen now, not when the job was queued (a
+                // one-sided file's rows are unified in both).
                 let layout = if self.split.load(Ordering::Relaxed) {
                     Layout::Split
                 } else {
                     Layout::Unified
                 };
+                let layout = layout_for(change, layout);
                 let opts = LoadOptions {
                     rows: Some(layout),
                     ..opts
@@ -634,6 +637,8 @@ pub(crate) struct Applied {
     pub binary: Vec<u32>,
     /// Resident bytes grew: check the eviction budget.
     pub grew: bool,
+    /// New line counts landed ([`crate::ViewportEvent::CountsUpdated`]).
+    pub counts: bool,
     /// Something the window shows changed: paint again. (Sizes and counts of
     /// files outside it only refine estimates, which never move what is on
     /// screen.)
@@ -1132,6 +1137,7 @@ impl Pipeline {
                             if w.counts.is_none() {
                                 w.counts = Some(counts);
                                 doc.set_size_hint(f, counts_hint(counts, hunks));
+                                out.counts = true;
                             }
                         }
                     }
@@ -1177,6 +1183,7 @@ impl Pipeline {
                 self.shared.counted[f as usize].store(true, Ordering::Relaxed);
                 self.stats.token_cache_hits += u64::from(cached);
                 let w = &mut self.work[f as usize];
+                out.counts |= w.counts != Some(counts);
                 w.counts = Some(counts);
                 w.languages = languages;
                 w.syntax = SIDES.map(|side| {

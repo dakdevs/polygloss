@@ -815,7 +815,7 @@ fn tree_builds_13k_files_under_200ms(cx: &mut TestAppContext) {
 fn tree_marks_a_jump_landed_only_at_header_top(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     // `a.rs` (modified, tall) and `z.rs` (added, 20 lines: its card is
-    // 12 + 40 + 400 + 8 px, then 12 px of canvas below it).
+    // 12 + 45 + 400 + 8 px, then 12 px of canvas below it).
     let repo = FixtureRepo::init(ObjectFormat::Sha1);
     repo.write("a.rs", lines("a", 60).as_bytes());
     repo.commit("base");
@@ -838,7 +838,7 @@ fn tree_marks_a_jump_landed_only_at_header_top(cx: &mut TestAppContext) {
     };
     select(&mut shell, 1);
     let last = doc(&mut shell, |d| f64::from(d.file_height(1)));
-    assert_eq!(last, 472.0);
+    assert_eq!(last, 477.0);
     // A viewport 6 px shorter than z.rs's card and the canvas around it:
     // the furthest the diff scrolls leaves z.rs's header 6 px below the top
     // (the top edge in the canvas above its card).
@@ -846,7 +846,7 @@ fn tree_marks_a_jump_landed_only_at_header_top(cx: &mut TestAppContext) {
         let h = viewport.read(cx).document().viewport_height();
         (window.viewport_size(), h)
     });
-    let height = window.height.as_f32() - viewport_h + 466.0;
+    let height = window.height.as_f32() - viewport_h + 471.0;
     shell
         .cx
         .simulate_resize(gpui_kit::size(window.width, gpui_kit::px(height)));

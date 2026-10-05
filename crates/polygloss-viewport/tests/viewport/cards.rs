@@ -91,7 +91,7 @@ fn flat_fixture() -> Arc<MemProvider> {
 }
 
 /// What a frame painted, as the fixture records it: rows with their bounds,
-/// headers, painted text and controls (the anchor is left out: v1's
+/// headers, painted text, icons and controls (the anchor is left out: v1's
 /// document top was `(0, Header, 0)`).
 fn dump(name: &str, d: &ViewportDebug) -> String {
     let mut out = format!("## {name}\nrows:\n");
@@ -105,6 +105,10 @@ fn dump(name: &str, d: &ViewportDebug) -> String {
     out.push_str("texts:\n");
     for (x, y, t) in &d.painted_text {
         writeln!(out, "  ({x:?}, {y:?}) {t}").unwrap();
+    }
+    out.push_str("icons:\n");
+    for i in &d.icons {
+        writeln!(out, "  {i:?}").unwrap();
     }
     out.push_str("controls:\n");
     for c in &d.controls {
@@ -170,6 +174,15 @@ fn flat_layout_without_cards_paints_as_before(cx: &mut TestAppContext) {
     wheel(vcx, first - 30.);
     out += &dump("split, header pushed", &debug(&view, vcx));
 
+    // `UPDATE_FIXTURES=1` writes what was painted as the new fixture
+    // (review its diff before committing it).
+    if std::env::var_os("UPDATE_FIXTURES").is_some() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/viewport/fixtures/flat-layout-v1.txt"
+        );
+        std::fs::write(path, &out).expect("write the fixture");
+    }
     let expected = include_str!("fixtures/flat-layout-v1.txt");
     assert!(
         out == expected,
@@ -293,7 +306,7 @@ fn growing_the_prelude_above_a_line_anchor_keeps_that_line(cx: &mut TestAppConte
         prelude_box(h.clone()),
     );
     // Line 3 of a.rs 150 px below the top: its row starts at 82 (lead) +
-    // 40 (header) + 40, so the prelude still shows 58 px of itself.
+    // 45 (header) + 40, so the prelude still shows 53 px of itself.
     let anchor = ScrollAnchor {
         file_idx: 0,
         row: RowKey::Line {
@@ -310,13 +323,13 @@ fn growing_the_prelude_above_a_line_anchor_keeps_that_line(cx: &mut TestAppConte
         let i = d.visible_rows.iter().position(|r| *r == line).unwrap();
         (d.row_bounds[i].0, d.prelude)
     };
-    assert_eq!(scroll_top(&view, cx), 12.0);
-    assert_eq!(at(cx), (150.0, Some((CARD.0, -12.0, CARD.1, 70.0))));
+    assert_eq!(scroll_top(&view, cx), 17.0);
+    assert_eq!(at(cx), (150.0, Some((CARD.0, -17.0, CARD.1, 70.0))));
     h.set(400.0);
     settle(cx);
     // The line did not move; the prelude grew above it.
-    assert_eq!(scroll_top(&view, cx), 412.0 + 40.0 + 40.0 - 150.0);
-    assert_eq!(at(cx), (150.0, Some((CARD.0, -342.0, CARD.1, 400.0))));
+    assert_eq!(scroll_top(&view, cx), 412.0 + 45.0 + 40.0 - 150.0);
+    assert_eq!(at(cx), (150.0, Some((CARD.0, -347.0, CARD.1, 400.0))));
     assert_eq!(view.read_with(cx, |v, _| v.anchor()), anchor);
 }
 
@@ -385,12 +398,12 @@ fn scroll_to_file_puts_the_header_at_the_top_edge(cx: &mut TestAppContext) {
     let h = Rc::new(Cell::new(72.0));
     let opts = card_options(LayoutMode::Unified);
     let (view, cx) = open_with_prelude(cx, two_added(20), opts, (1000., 400.), prelude_box(h));
-    // a.rs: 84 lead + 40 header + 600 body + 8 padding = 732, then 12 px
+    // a.rs: 84 lead + 45 header + 600 body + 8 padding = 737, then 12 px
     // of canvas above b.rs's card.
     view.update(cx, |v, cx| v.scroll_to(ScrollTarget::File(1), cx));
     settle(cx);
     let d = debug(&view, cx);
-    assert_eq!(scroll_top(&view, cx), 744.0);
+    assert_eq!(scroll_top(&view, cx), 749.0);
     assert_eq!(d.visible_rows[0], "== b.rs");
     assert_eq!(header_at(&d, 1), (0.0, false));
     assert_eq!(d.anchor.row, RowKey::Header);
@@ -518,8 +531,8 @@ fn card_quads_are_clamped_to_the_viewport(cx: &mut TestAppContext) {
     // In the middle of its 10,000 px body: 10 px past both edges.
     wheel(cx, 3000.);
     assert_eq!(cards(cx), [card((CARD.0, -10.0, CARD.1, 420.0))]);
-    // At the end: its bottom (40 + 10,000 + 8) and 12 px of canvas below.
+    // At the end: its bottom (45 + 10,000 + 8) and 12 px of canvas below.
     wheel(cx, 10_000.);
-    assert_eq!(scroll_top(&view, cx), 10_060.0 - 400.0);
+    assert_eq!(scroll_top(&view, cx), 10_065.0 - 400.0);
     assert_eq!(cards(cx), [card((CARD.0, -10.0, CARD.1, 388.0 + 10.0))]);
 }

@@ -607,7 +607,7 @@ impl DiffViewport {
         if let FileState::Materialized(file) = self.doc.state(f) {
             match self
                 .gaps
-                .painted_rows(f, file, self.layout)
+                .painted_rows(f, file, self.file_layout_mode(f))
                 .get(diff_row as usize)
             {
                 Some(Row::Unified { kind, .. }) => return *kind != LineKind::Context,

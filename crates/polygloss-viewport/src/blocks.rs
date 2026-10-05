@@ -96,8 +96,9 @@ impl Blocks {
     }
 }
 
-/// Where a block goes in a row: its side's column in split, else the whole
-/// width.
+/// Where a block goes in a row of a file drawn in `layout`: its side's
+/// column in split, else the whole width (unified, a one-sided file in
+/// either layout, a file-level block).
 fn block_pane(anchor: BlockAnchor, layout: Layout) -> Pane {
     match (layout, anchor) {
         (
@@ -159,7 +160,7 @@ impl<'a> Painter<'a> {
             return;
         };
         let (x, width) = self.inner_x_w();
-        let pane = block_pane(spec.anchor, self.layout);
+        let pane = block_pane(spec.anchor, self.file_layout(f));
         if let Pane::Half(k) = pane {
             let half = x + (width / 2.0).floor();
             let theme = self.theme;
@@ -408,7 +409,7 @@ impl DiffViewport {
                     let Some(spec) = self.blocks.spec(id) else {
                         continue;
                     };
-                    let pane = block_pane(spec.anchor, self.layout);
+                    let pane = block_pane(spec.anchor, self.file_layout_mode(f));
                     let (_, width) = block_column(pane, 0.0, self.width);
                     if self.blocks.measured.get(&id) == Some(&width) {
                         continue;

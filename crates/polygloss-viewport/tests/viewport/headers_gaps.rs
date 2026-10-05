@@ -11,7 +11,7 @@ use polygloss_viewport::{
 
 use crate::support::*;
 
-/// Two added files: `a.rs` (30 lines, 640 px with its header) and `b.rs` (20
+/// Two added files: `a.rs` (30 lines, 645 px with its header) and `b.rs` (20
 /// lines), unified.
 fn two_added() -> std::sync::Arc<MemProvider> {
     MemProvider::new(vec![
@@ -56,8 +56,9 @@ fn sticky_header_pins_while_file_scrolls(cx: &mut TestAppContext) {
     assert_eq!(header(&d, 0).y, 0.0);
     assert!(!header(&d, 0).sticky);
 
-    // 300 px into a.rs: its header stays at the top, over the rows it hides.
-    wheel(cx, 300.);
+    // 305 px into a.rs (a row's top under the 45 px header): its header
+    // stays at the top, over the rows it hides.
+    wheel(cx, 305.);
     let d = debug(&view, cx);
     assert_eq!(d.visible_rows[0], "== a.rs");
     assert_eq!(d.row_bounds[0], (0.0, HEADER_H));
@@ -106,19 +107,19 @@ fn sticky_header_pushed_by_next_header(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let (view, cx) = open(cx, two_added(), options(LayoutMode::Unified), 1000., 400.);
 
-    // a.rs ends 30 px below the top: b.rs's header pushes a.rs's up by 10.
+    // a.rs ends 35 px below the top: b.rs's header pushes a.rs's up by 10.
     wheel(cx, 610.);
     let d = debug(&view, cx);
     let (a, b) = (header(&d, 0), header(&d, 1));
     assert!(a.sticky && !b.sticky, "{:?}", d.headers);
-    assert_eq!((a.y, b.y), (-10.0, 30.0));
+    assert_eq!((a.y, b.y), (-10.0, 35.0));
     assert_eq!(d.visible_rows[0], "== a.rs");
     assert_eq!(d.row_bounds[0], (-10.0, HEADER_H));
     let bi = d.visible_rows.iter().position(|r| r == "== b.rs").unwrap();
-    assert_eq!(d.row_bounds[bi], (30.0, HEADER_H));
+    assert_eq!(d.row_bounds[bi], (35.0, HEADER_H));
 
     // At b.rs's top it is in place; one pixel further it pins.
-    wheel(cx, 30.);
+    wheel(cx, 35.);
     let d = debug(&view, cx);
     assert_eq!(d.headers.len(), 1, "{:?}", d.headers);
     assert_eq!((header(&d, 1).y, header(&d, 1).sticky), (0.0, false));
@@ -195,15 +196,15 @@ fn gap_expand_up_20_keeps_anchor(cx: &mut TestAppContext) {
         200.,
     );
 
-    // The gap is above the viewport and the anchor below it (new line 89,
-    // below the two rows under the pinned header): expanding the gap moves
+    // The gap is above the viewport and the anchor below it (new line 90,
+    // below the 2.25 rows under the pinned header): expanding the gap moves
     // nothing on screen.
     view.update(cx, |v, cx| {
         v.scroll_to(
             ScrollTarget::Line {
                 file_idx: 0,
                 side: Side::New,
-                line: 89,
+                line: 90,
             },
             cx,
         )
@@ -846,29 +847,63 @@ fn header_menu_comment_on_file_emits_event(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn header_menu_highlight_anyway_while_syntax_is_skipped(cx: &mut TestAppContext) {
+fn header_menu_keeps_highlight_anyway(cx: &mut TestAppContext) {
     let _sb = sandbox();
     init_kit(cx);
     // 100,001 lines a side, one changed in the middle: plain until
-    // "Highlight anyway" (design §11.11, T2.6).
+    // "Highlight anyway" (design §11.11, T2.6). A small file below it,
+    // whose rows are out of view (big.py's card is 45 + 32 + 7 × 20 + 32 =
+    // 249 px tall).
     let old = "1\n".repeat(100_001);
     let new = format!("{}2\n{}", "1\n".repeat(50_000), "1\n".repeat(50_000));
-    let provider = MemProvider::new(vec![Spec::modified("big.py", &old, &new)]);
-    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 800.);
+    let provider = MemProvider::new(vec![
+        Spec::modified("big.py", &old, &new),
+        Spec::modified("small.py", "a = 1\n", "a = 2\n"),
+    ]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 280.);
     assert!(view.read_with(cx, |v, _| v.syntax_skipped(0)));
+    assert!(!view.read_with(cx, |v, _| v.syntax_skipped(1)));
     assert_eq!(debug(&view, cx).styled_rows, 0);
+    let labels = |d: &polygloss_viewport::ViewportDebug| -> Vec<String> {
+        d.menu
+            .as_ref()
+            .expect("the menu is open")
+            .items
+            .iter()
+            .map(|(l, _)| l.clone())
+            .collect()
+    };
+
+    // The small file's menu: every v1 item, no "Highlight anyway".
+    view.update(cx, |v, cx| v.scroll_to(ScrollTarget::File(1), cx));
+    settle(cx);
+    click_control(&view, cx, ControlAction::Menu(1));
+    assert_eq!(
+        labels(&debug(&view, cx)),
+        [
+            "Open in editor",
+            "Comment on file",
+            "Copy path",
+            "Expand all",
+            "Load diff"
+        ]
+    );
+    view.update(cx, |v, cx| v.scroll_to(ScrollTarget::File(0), cx));
+    settle(cx);
 
     click_control(&view, cx, ControlAction::Menu(0));
     let d = debug(&view, cx);
-    let labels: Vec<&str> = d
-        .menu
-        .as_ref()
-        .expect("the menu is open")
-        .items
-        .iter()
-        .map(|(l, _)| l.as_str())
-        .collect();
-    assert_eq!(labels.last(), Some(&"Highlight anyway"), "{labels:?}");
+    assert_eq!(
+        labels(&d),
+        [
+            "Open in editor",
+            "Comment on file",
+            "Copy path",
+            "Expand all",
+            "Load diff",
+            "Highlight anyway"
+        ]
+    );
     assert!(menu_enabled(&d, "Highlight anyway"));
     click_menu_item(cx, "Highlight anyway");
     assert!(!view.read_with(cx, |v, _| v.syntax_skipped(0)));
@@ -973,7 +1008,7 @@ fn viewed_checkbox_emits_event_and_flags_render(cx: &mut TestAppContext) {
         ["changed since viewed", "3 open threads", "agent"]
     );
     assert_eq!(b.badges, ["1 open thread"]);
-    // Painted: the "Viewed" label on both headers, a checkmark on b.rs's.
+    // Painted: the "Viewed" label on both headers, a checked box on b.rs's.
     let viewed_labels = d
         .painted_text
         .iter()
@@ -982,13 +1017,11 @@ fn viewed_checkbox_emits_event_and_flags_render(cx: &mut TestAppContext) {
     assert_eq!(viewed_labels, 2);
     let (x, y, w, h) = control(&d, ControlAction::Viewed(1));
     assert!(
-        d.painted_text.iter().any(|(tx, ty, t)| t == "✓"
-            && *tx >= x
-            && *tx < x + w
-            && *ty >= y
-            && *ty < y + h),
+        icons_named(&d, "square-check")
+            .iter()
+            .any(|i| i.0 >= x && i.0 + i.2 <= x + w && i.1 >= y && i.1 + i.3 <= y + h),
         "{:?}",
-        d.painted_text
+        d.icons
     );
 }
 
@@ -1086,8 +1119,11 @@ fn header_fits_narrow_widths(cx: &mut TestAppContext) {
         files[0].new_mode = Some(Mode(0o100755));
     });
     // Wide enough for the counts (known for generated files too, from the
-    // background pass) and the review flag, not for the change badges.
-    let width = 440.;
+    // background pass) and the review flag, not for the change badges:
+    // the title's 12 columns (93.6), the "3 open threads" pill (139.2), the
+    // counts (51), open in editor (24), Viewed (84.8), ⋯ (23.4), the chevron
+    // (23.4) and 6 px gaps fit from 470 px, the mode badge from 613.
+    let width = 520.;
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), width, 300.);
     view.update(cx, |v, cx| {
         v.set_file_flags(
@@ -1576,16 +1612,26 @@ fn header_keeps_its_controls_apart_at_tiny_widths(cx: &mut TestAppContext) {
         }
         viewed.is_some()
     };
-    // 150 px: the "Viewed" label gives way to the title; the checkbox stays.
+    // 150 px: the "Viewed" label gives way to the title; the box and open
+    // in editor stay (58.6..82.6, the box at 88.6), the title keeps "…rs".
     let d = debug(&view, cx);
     assert!(apart(&d));
     assert!(!d.painted_text.iter().any(|(_, _, t)| t == "Viewed"));
     let h = header(&d, 0);
-    assert!(h.title.chars().count() >= 5, "{h:?}");
-    // 110 px: still apart.
+    assert_eq!(h.title, "…rs");
+    let (ex, _, ew, _) = control(&d, ControlAction::OpenInEditor(0));
+    let (vx, _, _, _) = control(&d, ControlAction::Viewed(0));
+    assert!(ex >= 3.0 * ADVANCE && ex + ew <= vx, "{:?}", d.controls);
+    // 110 px: still apart; open in editor no longer fits.
     cx.simulate_resize(size(px(110.), px(300.)));
     settle(cx);
-    assert!(apart(&debug(&view, cx)));
+    let d = debug(&view, cx);
+    assert!(apart(&d));
+    assert!(
+        !d.controls
+            .iter()
+            .any(|c| c.action == ControlAction::OpenInEditor(0))
+    );
     // 60 px: no room for the checkbox; the chevron and the menu remain.
     cx.simulate_resize(size(px(60.), px(300.)));
     settle(cx);
@@ -1709,18 +1755,18 @@ fn sticky_header_pins_square_and_flush(cx: &mut TestAppContext) {
     assert_eq!(pinned.bounds, (16.0, 0.0, 968.0, HEADER_H));
     assert_eq!(pinned.radii, [0.0; 4]);
     assert_eq!(pinned.borders, [0.0, 1.0, 1.0, 1.0]);
-    // b.rs's card starts below a.rs's (648 = 40 + 600 + 8) and 12 px of
+    // b.rs's card starts below a.rs's (653 = 45 + 600 + 8) and 12 px of
     // canvas: its header is in place, with the card's top corners.
-    assert_eq!((header(&d, 1).y, header(&d, 1).sticky), (360.0, false));
-    assert_eq!(header_strip(cx, &theme, 360.0).radii, [8.0, 8.0, 0.0, 0.0]);
+    assert_eq!((header(&d, 1).y, header(&d, 1).sticky), (365.0, false));
+    assert_eq!(header_strip(cx, &theme, 365.0).radii, [8.0, 8.0, 0.0, 0.0]);
 
-    // The end of a.rs's body (640) pushes it up: at 610 it is 10 px up,
-    // still square, while b.rs's card is 50 px below the top.
+    // The end of a.rs's body (645) pushes it up: at 610 it is 10 px up,
+    // still square, while b.rs's card is 55 px below the top.
     wheel(cx, 310.);
     let d = debug(&view, cx);
     assert_eq!((header(&d, 0).y, header(&d, 0).sticky), (-10.0, true));
     assert_eq!(header_strip(cx, &theme, -10.0).radii, [0.0; 4]);
-    assert_eq!(header(&d, 1).y, 50.0);
+    assert_eq!(header(&d, 1).y, 55.0);
 }
 
 #[gpui_kit::test]
@@ -1736,7 +1782,8 @@ fn header_in_place_has_rounded_top_corners(cx: &mut TestAppContext) {
     // A collapsed card is its header alone: all four corners.
     view.update(cx, |v, cx| v.set_collapsed(1, true, cx));
     settle(cx);
-    assert_eq!(header_strip(cx, &theme, 660.0).radii, [8.0; 4]);
+    // b.rs's card starts at 45 + 600 + 8 + 12 = 665.
+    assert_eq!(header_strip(cx, &theme, 665.0).radii, [8.0; 4]);
 }
 
 #[gpui_kit::test]
@@ -1771,18 +1818,52 @@ fn gap_rows_paint_inside_the_card_border(cx: &mut TestAppContext) {
         canvas,
         [
             (0.0, 0.0, 1000.0, 600.0),
-            (17.0, 40.0, 966.0, 32.0),
-            (17.0, 40.0 + 32.0 + 8.0 * ROW_H, 966.0, 32.0)
+            (17.0, HEADER_H, 966.0, 32.0),
+            (17.0, HEADER_H + 32.0 + 8.0 * ROW_H, 966.0, 32.0)
         ]
     );
-    // Its label at the indicator column: 17 + two 4-column number columns.
+    // Its label at the indicator column: 17 + two 4-column number columns,
+    // centered in the 32 px row (45 + 6).
     assert!(
         d.painted_text
             .iter()
             .any(|(x, y, t)| t == "⋯ 1 unchanged line"
                 && (*x - (17.0 + 8.0 * ADVANCE)).abs() < 0.01
-                && *y == 46.0),
+                && *y == 51.0),
         "{:?}",
         d.painted_text
+    );
+}
+
+#[gpui_kit::test]
+fn gap_rows_use_the_canvas_color(cx: &mut TestAppContext) {
+    use polygloss_highlight::{Appearance, default_theme};
+    let _sb = sandbox();
+    let old = numbered("line", 10);
+    let mut new = old.clone();
+    new[4] = "LINE 4\n".to_owned();
+    let provider = MemProvider::new(vec![Spec::modified(
+        "src/a.rs",
+        &old.concat(),
+        &new.concat(),
+    )]);
+    let mut opts = card_options(LayoutMode::Unified);
+    opts.theme = std::sync::Arc::new(ViewportTheme::from_zed(default_theme(Appearance::Light)));
+    let theme = opts.theme.clone();
+    // Polygloss Light: a gray canvas around white cards.
+    assert_ne!(theme.canvas, theme.card_background);
+    let (view, cx) = open(cx, provider, opts, 1000., 600.);
+    assert_eq!(debug(&view, cx).visible_rows[1], "⋯ 1 unchanged line");
+    // The gap rows inside the card (17..983) are canvas, not card.
+    let gaps: Vec<(f32, f32, f32, f32)> = quads_of(cx, theme.canvas)
+        .into_iter()
+        .filter(|q| q.0 > 0.0)
+        .collect();
+    assert_eq!(
+        gaps,
+        [
+            (17.0, HEADER_H, 966.0, 32.0),
+            (17.0, HEADER_H + 32.0 + 8.0 * ROW_H, 966.0, 32.0)
+        ]
     );
 }

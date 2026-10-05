@@ -1093,8 +1093,10 @@ fn scroll_to_block_lands_on_it_before_its_file_is_laid_out(cx: &mut TestAppConte
 #[gpui_kit::test]
 fn block_elements_are_interactive_and_the_wheel_still_scrolls(cx: &mut TestAppContext) {
     let _sb = sandbox();
+    // Filled from empty: split rows with only the new side (an added file
+    // would be one full-width pane).
     let text = numbered("line", 80).concat();
-    let provider = MemProvider::new(vec![Spec::added("src/a.rs", &text)]);
+    let provider = MemProvider::new(vec![Spec::modified("src/a.rs", "", &text)]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Split), 1000., 400.);
     let clicks = Rc::new(Cell::new(0));
     let counter = clicks.clone();
@@ -1168,7 +1170,7 @@ fn pinned_header_covers_blocks_and_takes_their_clicks(cx: &mut TestAppContext) {
     // (T2.5): the header is painted over it and takes the clicks there.
     wheel(cx, 160.0);
     let d = debug(&view, cx);
-    assert_eq!(bounds_of(&view, cx, "[block 1]"), (-60.0, 200.0));
+    assert_eq!(bounds_of(&view, cx, "[block 1]"), (-55.0, 200.0));
     let h = &d.headers[0];
     assert!(h.sticky && h.y == 0.0, "{h:?}");
     cx.simulate_click(point(px(500.), px(HEADER_H / 2.0)), Modifiers::default());
@@ -1280,4 +1282,35 @@ fn blocks_measure_at_the_card_inner_width(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| {
         assert_eq!(v.document().blocks(1), &[placed(2, new(49), 40.0)]);
     });
+}
+
+#[gpui_kit::test]
+fn thread_on_an_added_file_spans_the_card(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Five 200 px boxes: two rows (40 px) at the card's inner width (966),
+    // three (60 px) at a split half's (482).
+    let wrapping = |id: u64, anchor: BlockAnchor, c: Hsla| BlockSpec {
+        id: BlockId(id),
+        anchor,
+        render: Rc::new(move |_, _| {
+            use gpui_kit::ParentElement as _;
+            div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .bg(c)
+                .children((0..5).map(|_| div().w(px(200.)).h(px(20.))))
+                .into_any_element()
+        }),
+    };
+    let provider = MemProvider::new(vec![Spec::added("src/b.rs", &numbered("b", 5).concat())]);
+    let (view, cx) = open(cx, provider, card_options(LayoutMode::Split), 1000., 600.);
+    let c = color(0.3);
+    set_blocks(&view, cx, 0, vec![wrapping(1, new(1), c)]);
+    // Below line 2: the header and two rows. No spacer beside it.
+    let y = HEADER_H + 2.0 * ROW_H;
+    assert_eq!(bounds_of(&view, cx, "[block 1]"), (y, 40.0));
+    assert_quads(&quads_of(cx, c), &[(17.0, y, 966.0, 40.0)]);
+    let theme = view.read_with(cx, |v, _| v.options().theme.clone());
+    assert!(quads_of(cx, theme.empty_cell).is_empty());
 }
