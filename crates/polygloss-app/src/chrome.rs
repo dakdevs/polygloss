@@ -35,6 +35,18 @@ use gpui_kit::{
     WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, px, size,
 };
 
+gpui_kit::actions!(
+    window,
+    [
+        /// ⌃⌘S: hide or show the sidebar.
+        ToggleSidebar,
+        /// Show the sidebar on its Files segment.
+        ShowFiles,
+        /// Show the sidebar on its Reviews segment.
+        ShowReviews,
+    ]
+);
+
 /// The height of both top rows: the sidebar's and the main column's toolbar.
 pub const TOP_ROW_HEIGHT: f32 = 52.0;
 /// Where AppKit puts the close button: a 14 pt button centred in the top row
@@ -290,7 +302,14 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
                     })
             })
             .child(Icon::new(icon).small())
-            .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+            .tooltip(move |window, cx| {
+                Tooltip::element(move |_, _| {
+                    div()
+                        .debug_selector(move || format!("tooltip: {tooltip}"))
+                        .child(tooltip)
+                })
+                .build(window, cx)
+            })
     };
     let segments = h_flex()
         .debug_selector(|| "sidebar-segments".into())
@@ -317,7 +336,7 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
         .icon(IconName::PanelLeft)
         .ghost()
         .small()
-        .tooltip("Hide sidebar")
+        .tooltip("Hide sidebar (⌃⌘S)")
         .debug_selector(|| "toggle-sidebar".into())
         .on_click(move |_, _, cx| {
             chrome.update(cx, |c, cx| c.set_sidebar_visible(false, cx));
@@ -357,7 +376,7 @@ pub fn toolbar_row(
             .icon(IconName::PanelLeftOpen)
             .ghost()
             .small()
-            .tooltip("Show sidebar")
+            .tooltip("Show sidebar (⌃⌘S)")
             .debug_selector(|| "show-sidebar".into())
             .on_click(move |_, _, cx| {
                 chrome.update(cx, |c, cx| c.set_sidebar_visible(true, cx));

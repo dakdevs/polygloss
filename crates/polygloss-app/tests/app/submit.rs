@@ -435,3 +435,41 @@ fn submit_dialog_shows_waiter_state(cx: &mut gpui_kit::TestAppContext) {
     );
     assert_eq!(waiter.text(), "claude-code is listening");
 }
+
+/// ⌘1–⌘3 pick the dialog's verdict while it is open; the window's ⌘1–⌘9
+/// (the open reviews, T6.6) never reach past it.
+#[gpui_kit::test]
+fn submit_dialog_keeps_cmd_1_for_its_verdict(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    shell.open(compare_req(repo.path())).unwrap();
+    let tab = shell
+        .open(polygloss_core::review::OpenRequest {
+            source: polygloss_core::git::Source::Commit {
+                rev: "refs/tags/head".into(),
+            },
+            ..compare_req(repo.path())
+        })
+        .unwrap();
+    assert_eq!(shell.tabs(), (3, 2));
+    let d = open(&mut shell, &tab);
+    let verdict = |shell: &mut Shell| d.read_with(shell.cx, |d, _| d.verdict());
+    for (keys, expected) in [
+        ("cmd-3", Verdict::RequestChanges),
+        ("cmd-1", Verdict::Comment),
+        ("cmd-2", Verdict::Approve),
+    ] {
+        shell.cx.simulate_keystrokes(keys);
+        draw(shell.cx);
+        assert_eq!(verdict(&mut shell), expected, "{keys}");
+        assert_eq!(shell.tabs(), (3, 2), "{keys}: the active review stays");
+        assert!(painted(shell.cx, "submit-dialog"));
+    }
+    // Closed, ⌘1 is the first open review again.
+    shell.cx.simulate_keystrokes("escape");
+    draw(shell.cx);
+    shell.cx.simulate_keystrokes("cmd-1");
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (3, 1));
+}

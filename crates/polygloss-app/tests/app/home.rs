@@ -1,6 +1,8 @@
 //! Home and recents (T3.4, design §11.2, §17, OQ-32, OQ-34): the two
 //! sections, what a row shows, the row actions (open, archive, prune, mute,
-//! assign to session) and the automatic prune at launch.
+//! assign to session) and the automatic prune at launch. Also the sidebar's
+//! Reviews segment (T6.6, OQ-36): Home, the open reviews, and with a review
+//! active Awaiting you and Recent with Home's row menu.
 
 use std::path::Path;
 use std::time::Duration;
@@ -21,7 +23,7 @@ use polygloss_core::review::{
 };
 use polygloss_core::store::events::{Actor, ActorKind, now_ms};
 
-use crate::shell::{Shell, compare_req, draw, start};
+use crate::shell::{Shell, bounds, click, compare_req, draw, hover, painted, start, unhover};
 use crate::support::{Sandbox, code_change_repo};
 
 const HOUR: i64 = 60 * 60 * 1000;
@@ -742,4 +744,262 @@ fn relative_times_read_like_github() {
     assert_eq!(relative_time(now, late, 0), "Sep 3");
     assert_eq!(relative_time(now, late, 2 * 3600), "Sep 4");
     assert_eq!(relative_time(now, 0, 0), "Jan 1, 1970");
+}
+
+/// `review_id`'s live open: the code-change fixture's working tree since
+/// HEAD.
+fn live_req(repo: &Path) -> OpenRequest {
+    OpenRequest {
+        worktree: repo.to_path_buf(),
+        source: Source::Live { since: Since::Head },
+        label: None,
+        pin: None,
+        actor: Actor::human(),
+    }
+}
+
+/// Three reviews of `repo`: a compare awaiting you (re-review requested),
+/// then two commits under Recent, `head` more recent than `base`.
+fn three_reviews(core: &Core, repo: &Path) -> (OpenedDiff, OpenedDiff, OpenedDiff) {
+    let compare = core.open(&compare_req(repo)).unwrap();
+    let head = core.open(&commit_req(repo, "refs/tags/head")).unwrap();
+    let base = core.open(&commit_req(repo, "refs/tags/base")).unwrap();
+    core.request_rereview(&compare.review_id, "Fixed the parser", &agent(), None)
+        .unwrap();
+    let now = now_ms();
+    set_updated_at(core, &compare.review_id, now - 3 * DAY);
+    set_updated_at(core, &head.review_id, now - HOUR);
+    set_updated_at(core, &base.review_id, now - 2 * DAY);
+    (compare, head, base)
+}
+
+/// The tops of `selectors`, asserting each one is painted below the
+/// previous one.
+fn assert_stacked(shell: &mut Shell, selectors: &[String]) {
+    let mut last = None;
+    for name in selectors {
+        let top = bounds(shell.cx, name).top();
+        if let Some((prev_name, prev)) = last {
+            assert!(top > prev, "{name} is below {prev_name}");
+        }
+        last = Some((name.clone(), top));
+    }
+}
+
+#[gpui_kit::test]
+fn reviews_segment_lists_home_open_awaiting_and_recent(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let core = Core::open_default().unwrap();
+    let (compare, head, base) = three_reviews(&core, repo.path());
+    let mut shell = start(cx);
+    sections(&mut shell);
+    shell.open(compare_req(repo.path())).unwrap();
+    std::fs::write(repo.path().join("NOTES.md"), "live\n").unwrap();
+    let live = shell.open(live_req(repo.path())).unwrap();
+    let live_id = live.read_with(shell.cx, |t, _| t.review_id.clone());
+    shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
+    sections(&mut shell);
+    click(shell.cx, "segment-reviews");
+
+    let open = |id: &str| format!("open-review-{id}");
+    let row = |id: &str| format!("nav-row-{id}");
+    // Home (one review awaits you), Open with its reviews in tab order,
+    // Awaiting you, then Recent, most recent first.
+    assert_stacked(
+        &mut shell,
+        &[
+            "nav-home".into(),
+            "nav-section-open".into(),
+            open(&compare.review_id),
+            open(&live_id),
+            open(&head.review_id),
+            "nav-section-awaiting".into(),
+            row(&compare.review_id),
+            "nav-section-recent".into(),
+            row(&head.review_id),
+            row(&base.review_id),
+        ],
+    );
+    assert!(painted(shell.cx, "nav-home-awaiting-1").is_some());
+    // Open… sits in the Open heading.
+    let heading = bounds(shell.cx, "nav-section-open");
+    let open_button = bounds(shell.cx, "nav-open");
+    assert!(heading.contains(&open_button.center()));
+    // Only the live review has the live dot.
+    assert!(painted(shell.cx, &format!("nav-live-dot-{live_id}")).is_some());
+    for id in [&compare.review_id, &head.review_id] {
+        assert!(painted(shell.cx, &format!("nav-live-dot-{id}")).is_none());
+    }
+    // Awaiting you and Recent list Home's sections, row for row.
+    let home = home(&mut shell);
+    let (awaiting, recent) =
+        home.read_with(shell.cx, |h, _| (ids(h.awaiting_you()), ids(h.recent())));
+    assert_eq!(awaiting, std::slice::from_ref(&compare.review_id));
+    assert!(recent.contains(&live_id), "the live review is recent too");
+    for id in awaiting.iter().chain(&recent) {
+        assert!(painted(shell.cx, &row(id)).is_some(), "{id}");
+    }
+}
+
+#[gpui_kit::test]
+fn reviews_segment_on_home_lists_only_home_and_open(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let core = Core::open_default().unwrap();
+    let (compare, head, base) = three_reviews(&core, repo.path());
+    let mut shell = start(cx);
+    sections(&mut shell);
+    // No review open: Home, and Open with its button only.
+    assert!(painted(shell.cx, "nav-home").is_some());
+    assert!(painted(shell.cx, "nav-section-open").is_some());
+    assert!(painted(shell.cx, "nav-open").is_some());
+    assert!(painted(shell.cx, "nav-home-awaiting-1").is_some());
+    // One open, Home showing: Home and Open, never the cards' lists.
+    shell.open(compare_req(repo.path())).unwrap();
+    shell.cx.simulate_keystrokes("cmd-0");
+    sections(&mut shell);
+    assert_eq!(shell.tabs(), (2, 0));
+    assert!(painted(shell.cx, &format!("open-review-{}", compare.review_id)).is_some());
+    for name in ["nav-section-awaiting", "nav-section-recent"] {
+        assert!(painted(shell.cx, name).is_none(), "{name}");
+    }
+    for o in [&compare, &head, &base] {
+        assert!(painted(shell.cx, &format!("nav-row-{}", o.review_id)).is_none());
+    }
+    // With the review active again, both lists come back.
+    shell.cx.simulate_keystrokes("cmd-1");
+    draw(shell.cx);
+    click(shell.cx, "segment-reviews");
+    assert!(painted(shell.cx, "nav-section-recent").is_some());
+}
+
+#[gpui_kit::test]
+fn nav_row_click_opens_or_focuses(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let core = Core::open_default().unwrap();
+    let (compare, head, _) = three_reviews(&core, repo.path());
+    let mut shell = start(cx);
+    sections(&mut shell);
+    shell.open(compare_req(repo.path())).unwrap();
+    click(shell.cx, "segment-reviews");
+
+    // A Recent row of a review not open opens it (a first open, so the
+    // sidebar shows its files).
+    click(shell.cx, &format!("nav-row-{}", head.review_id));
+    assert_eq!(shell.tabs(), (3, 2));
+    let active = shell.active_review().expect("a review");
+    assert_eq!(
+        active.read_with(shell.cx, |t, _| t.review_id.clone()),
+        head.review_id
+    );
+    assert!(painted(shell.cx, "file-tree-pane").is_some());
+    // An Awaiting you row of an open review focuses its tab.
+    click(shell.cx, "segment-reviews");
+    click(shell.cx, &format!("nav-row-{}", compare.review_id));
+    assert_eq!(shell.tabs(), (3, 1), "the existing tab, not a new one");
+    assert!(painted(shell.cx, "nav").is_some(), "the segment stays");
+    // An Open row focuses its review; Home's row shows Home.
+    click(shell.cx, &format!("open-review-{}", head.review_id));
+    assert_eq!(shell.tabs(), (3, 2));
+    click(shell.cx, "nav-home");
+    assert_eq!(shell.tabs(), (3, 0));
+}
+
+#[gpui_kit::test]
+fn nav_open_button_opens_the_open_flow(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let flow_open = |shell: &mut Shell| {
+        shell.cx.update(|window, cx| {
+            polygloss_app::open_flow::current(cx).is_some() && window.has_active_dialog(cx)
+        })
+    };
+    // On Home.
+    click(shell.cx, "nav-open");
+    assert!(flow_open(&mut shell));
+    shell.cx.simulate_keystrokes("escape");
+    draw(shell.cx);
+    assert!(!flow_open(&mut shell));
+    // In a review, from the Reviews segment.
+    shell.open(compare_req(repo.path())).unwrap();
+    click(shell.cx, "segment-reviews");
+    click(shell.cx, "nav-open");
+    assert!(flow_open(&mut shell));
+}
+
+/// Opens `review_id`'s ⋯ menu in the Reviews segment (it shows on hover).
+fn open_nav_row_menu(shell: &mut Shell, review_id: &str) {
+    hover(shell.cx, &format!("nav-row-{review_id}"));
+    click(shell.cx, &format!("nav-row-menu-{review_id}"));
+}
+
+#[gpui_kit::test]
+fn nav_row_menu_archives_mutes_and_assigns(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let core = Core::open_default().unwrap();
+    let (compare, head, base) = three_reviews(&core, repo.path());
+    core.upsert_session(&SessionInfo {
+        id: "session-one".into(),
+        client_name: "claude-code".into(),
+        client_version: None,
+        owner_pid: None,
+        cwd: Some(repo.path().to_path_buf()),
+    })
+    .unwrap();
+    let mut shell = start(cx);
+    sections(&mut shell);
+    shell.open(compare_req(repo.path())).unwrap();
+    click(shell.cx, "segment-reviews");
+    let has_dialog = |shell: &mut Shell| shell.cx.update(|window, cx| window.has_active_dialog(cx));
+
+    // Home's menu: Open, Mute, Assign to session…, Archive, Prune…. Its ⋯
+    // stays while the menu is open, wherever the pointer goes, and hides
+    // with it.
+    let menu_button = format!("nav-row-menu-{}", head.review_id);
+    open_nav_row_menu(&mut shell, &head.review_id);
+    unhover(shell.cx);
+    assert!(painted(shell.cx, &menu_button).is_some(), "kept while open");
+    shell.cx.simulate_keystrokes("down down enter");
+    draw(shell.cx);
+    assert!(summary(&core, &head.review_id).unwrap().muted, "muted");
+    assert_eq!(shell.tabs(), (2, 1), "nothing opened");
+    assert!(painted(shell.cx, &menu_button).is_none(), "hidden again");
+
+    // The context menu is the same menu: archive.
+    let at = bounds(shell.cx, &format!("nav-row-{}", base.review_id)).center();
+    shell.cx.simulate_mouse_down(
+        at,
+        gpui_kit::MouseButton::Right,
+        gpui_kit::Modifiers::none(),
+    );
+    shell.cx.simulate_mouse_up(
+        at,
+        gpui_kit::MouseButton::Right,
+        gpui_kit::Modifiers::none(),
+    );
+    draw(shell.cx);
+    shell.cx.simulate_keystrokes("down down down down enter");
+    draw(shell.cx);
+    sections(&mut shell);
+    let archived = core
+        .review_summaries(&ReviewFilter::default())
+        .unwrap()
+        .into_iter()
+        .all(|s| s.review_id != base.review_id);
+    assert!(archived, "archived: hidden from the list");
+    assert!(summary(&core, &base.review_id).is_some(), "not deleted");
+    assert!(painted(shell.cx, &format!("nav-row-{}", base.review_id)).is_none());
+
+    // Assign to session… opens the picker.
+    open_nav_row_menu(&mut shell, &compare.review_id);
+    shell.cx.simulate_keystrokes("down down down enter");
+    draw(shell.cx);
+    assert!(has_dialog(&mut shell), "the session picker");
+    assert!(painted(shell.cx, "assign-session-0").is_some());
 }

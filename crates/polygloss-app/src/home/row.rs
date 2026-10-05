@@ -24,6 +24,8 @@ use crate::review_tab::short_ref;
 
 /// A row's height.
 pub const ROW_HEIGHT: f32 = 60.0;
+/// A row card's corner radius, the file cards' (ADR-0027).
+const CARD_RADIUS: f32 = 8.0;
 
 /// One review on Home, ready to draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,13 +329,12 @@ pub fn local_utc_offset_s(at_ms: i64) -> i64 {
 /// Where a row sits for drawing.
 pub struct RowPlace {
     pub ix: usize,
-    pub first: bool,
-    pub last: bool,
     pub selected: bool,
 }
 
-/// Draws `row`: kind badge, title and source, then status, questions,
-/// viewed, threads, agent, time and the trailing ⋯ (`actions`).
+/// Draws `row` as a card (the viewport theme's card colors, radius 8): kind
+/// badge, title and source, then status, questions, viewed, threads, agent,
+/// time and the trailing ⋯ (`actions`).
 pub fn render_row(
     row: &HomeRow,
     place: RowPlace,
@@ -354,6 +355,13 @@ pub fn render_row(
             .child(text)
     };
     let review_id = s.review_id.clone();
+    let card = crate::theme::viewport_theme(cx);
+    // Hover and selection tint the card (the theme's colors are
+    // translucent).
+    let (hover, selected) = (
+        card.card_background.blend(theme.list_hover),
+        card.card_background.blend(theme.list_active),
+    );
     h_flex()
         .id(("home-row", place.ix))
         .debug_selector(move || format!("home-row-{review_id}"))
@@ -362,21 +370,13 @@ pub fn render_row(
         .pl_4()
         .pr_2()
         .gap_3()
-        .bg(theme.background)
-        .border_x_1()
-        .border_b_1()
-        .border_color(theme.border)
-        .when(place.first, |d| {
-            d.border_t_1()
-                .rounded_tl(theme.radius_lg)
-                .rounded_tr(theme.radius_lg)
-        })
-        .when(place.last, |d| {
-            d.rounded_bl(theme.radius_lg).rounded_br(theme.radius_lg)
-        })
+        .bg(card.card_background)
+        .border_1()
+        .border_color(card.card_border)
+        .rounded(px(CARD_RADIUS))
         .cursor_pointer()
-        .hover(|d| d.bg(theme.list_hover))
-        .when(place.selected, |d| d.bg(theme.list_active))
+        .hover(|d| d.bg(hover))
+        .when(place.selected, |d| d.bg(selected))
         .relative()
         // The keyboard selection: a bar on the left edge, taking no space.
         .when(place.selected, |d| {

@@ -17,6 +17,8 @@ pub struct CheatRow {
     pub title: &'static str,
     /// GPUI keys (`j`, `down`).
     pub keys: Vec<String>,
+    /// The keys are a run (⌘1 … ⌘8), drawn as the first and the last.
+    pub span: bool,
 }
 
 /// The sections, in order: `(heading, contexts they cover)`.
@@ -56,11 +58,38 @@ pub fn sections(resolved: &Resolved) -> Vec<(&'static str, Vec<CheatRow>)> {
                 action: binding.action,
                 title: actions::find(binding.action).map_or(binding.action, |a| a.title),
                 keys: vec![binding.keys.clone()],
+                span: false,
             }),
         }
     }
     out.retain(|(_, rows)| !rows.is_empty());
+    for (_, rows) in &mut out {
+        fold_review_numbers(rows);
+    }
     out
+}
+
+/// "Show review 1" … "Show review 8" on their default keys become one row,
+/// "Show review 1 to 8" (⌘1 … ⌘8), as design §11.9 lists them: eight rows
+/// would push the sheet past a 1280×800 window. Rebound, they stay apart.
+fn fold_review_numbers(rows: &mut Vec<CheatRow>) {
+    let defaults = |n: usize, r: &CheatRow| {
+        r.action == format!("window::ActivateTab{n}") && r.keys == [format!("cmd-{n}")]
+    };
+    let Some(first) = rows.iter().position(|r| defaults(1, r)) else {
+        return;
+    };
+    if rows.len() < first + 8 || !(1..=8).all(|n| defaults(n, &rows[first + n - 1])) {
+        return;
+    }
+    let keys = rows
+        .drain(first + 1..first + 8)
+        .flat_map(|r| r.keys)
+        .collect::<Vec<_>>();
+    let row = &mut rows[first];
+    row.title = "Show review 1 to 8";
+    row.keys.extend(keys);
+    row.span = true;
 }
 
 /// The open cheat sheet (a dialog's content).
@@ -120,18 +149,31 @@ fn section(heading: &'static str, rows: &[CheatRow], cx: &App) -> impl IntoEleme
                 .justify_between()
                 .text_sm()
                 .child(div().truncate().child(row.title))
-                .child(
-                    h_flex().flex_none().gap_1().children(
-                        row.keys
-                            .iter()
-                            .filter_map(|k| {
-                                k.split_whitespace()
-                                    .next()
-                                    .and_then(|k| Keystroke::parse(k).ok())
-                            })
-                            .map(|k| key_cap(&k, cx)),
-                    ),
-                )
+                .child({
+                    let caps = row.keys.iter().filter_map(|k| {
+                        k.split_whitespace()
+                            .next()
+                            .and_then(|k| Keystroke::parse(k).ok())
+                    });
+                    let caps: Vec<_> = if row.span {
+                        // The first and the last of the run, "…" between.
+                        let caps: Vec<_> = caps.collect();
+                        let ellipsis = div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("…")
+                            .into_any_element();
+                        caps.first()
+                            .map(|k| key_cap(k, cx))
+                            .into_iter()
+                            .chain([ellipsis])
+                            .chain(caps.last().map(|k| key_cap(k, cx)))
+                            .collect()
+                    } else {
+                        caps.map(|k| key_cap(&k, cx)).collect()
+                    };
+                    h_flex().flex_none().gap_1().children(caps)
+                })
         }))
 }
 

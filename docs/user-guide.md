@@ -39,9 +39,11 @@ In the app, **⌘O** opens the open flow: pick a repository (recent ones first, 
 
 ### Home
 
-The first tab lists recent reviews across all repositories, most recently active first, in two sections: **Awaiting you** (an agent asked for a re-review, or an agent question is still unanswered) and **Recent**. Each row shows the repository, title, kind, status or last verdict, Viewed progress, open threads and the agent the review is assigned to.
+Home (`⌘0`) lists recent reviews across all repositories, most recently active first, in two sections: **Awaiting you** (an agent asked for a re-review, or an agent question is still unanswered) and **Recent**. Each row is a card showing the repository, title, kind, status or last verdict, Viewed progress, open threads and the agent the review is assigned to.
 
 Select a row with `j`/`k` or the arrows and press `⏎` to open it. The row's ⋯ menu (or a right click) also offers archive (`e`), mute (`m`), "Assign to session…" (`a`) and prune (`⌘⌫`, after a confirmation). Pruning deletes the review and its comments from Polygloss; it never touches your repository. With `storage.prune_reviews_after_days` set, stale reviews are pruned at launch and once a day, except reviews with drafts, reviews awaiting you and reviews whose repository is gone.
+
+The sidebar's **Reviews** segment is the same list for the mouse: **Home** with the number of reviews awaiting you, **Open** with one row per open review (a green dot marks live ones; × closes one like `⌘W`) and its **+** button for `⌘O`, and, while a review is showing, **Awaiting you** and **Recent** with the same ⋯ and right-click menus. Click a row to open its review or bring it forward. On Home the segment lists only Home and Open. From the keyboard, `⌘1` to `⌘8` show the first to eighth open review, `⌘9` the last one, `⌃Tab` and `⌃⇧Tab` (or `⌘}` and `⌘{`) step through Home and the open reviews, and `⌃⌘S` hides or shows the sidebar. Opening a review for the first time switches the sidebar to its files.
 
 ## Reviewing
 
@@ -160,13 +162,24 @@ Everything works without a mouse. In a review tab, `⇥` and `⇧⇥` move the k
 | `⌘F`    | `cmd-f`           | Find in all files            | `tab::Find`                     | Tab          |
 | `⇧⌘⏎`   | `cmd-shift-enter` | Submit review                | `tab::SubmitReview`             | Tab          |
 | `?`     | `?`               | Keyboard shortcuts           | `window::CheatSheet`            | Window       |
+| `⌃⌘S`   | `ctrl-cmd-s`      | Toggle sidebar               | `window::ToggleSidebar`         | Window       |
+| `⌘0`    | `cmd-0`           | Show Home                    | `window::ShowHome`              | Window       |
+| `⌘1`    | `cmd-1`           | Show review 1                | `window::ActivateTab1`          | Window       |
+| `⌘2`    | `cmd-2`           | Show review 2                | `window::ActivateTab2`          | Window       |
+| `⌘3`    | `cmd-3`           | Show review 3                | `window::ActivateTab3`          | Window       |
+| `⌘4`    | `cmd-4`           | Show review 4                | `window::ActivateTab4`          | Window       |
+| `⌘5`    | `cmd-5`           | Show review 5                | `window::ActivateTab5`          | Window       |
+| `⌘6`    | `cmd-6`           | Show review 6                | `window::ActivateTab6`          | Window       |
+| `⌘7`    | `cmd-7`           | Show review 7                | `window::ActivateTab7`          | Window       |
+| `⌘8`    | `cmd-8`           | Show review 8                | `window::ActivateTab8`          | Window       |
+| `⌘9`    | `cmd-9`           | Show last review             | `window::ActivateTab9`          | Window       |
 | `Esc`   | `escape`          | Cancel comment               | `composer::Cancel`              | Composer     |
 | `⌘C`    | `cmd-c`           | Copy selection               | `viewport::Copy`                | Viewport     |
-| `⌘W`    | `cmd-w`           | Close tab                    | `window::CloseTab`              | Anywhere     |
-| `⌘}`    | `cmd-}`           | Next tab                     | `window::NextTab`               | Anywhere     |
-| `⌘{`    | `cmd-{`           | Previous tab                 | `window::PrevTab`               | Anywhere     |
-| `⌃Tab`  | `ctrl-tab`        | Next tab                     | `window::NextTab`               | Anywhere     |
-| `⌃⇧Tab` | `ctrl-shift-tab`  | Previous tab                 | `window::PrevTab`               | Anywhere     |
+| `⌘W`    | `cmd-w`           | Close review                 | `window::CloseTab`              | Anywhere     |
+| `⌘}`    | `cmd-}`           | Next review                  | `window::NextTab`               | Anywhere     |
+| `⌘{`    | `cmd-{`           | Previous review              | `window::PrevTab`               | Anywhere     |
+| `⌃Tab`  | `ctrl-tab`        | Next review                  | `window::NextTab`               | Anywhere     |
+| `⌃⇧Tab` | `ctrl-shift-tab`  | Previous review              | `window::PrevTab`               | Anywhere     |
 | `⌘,`    | `cmd-,`           | Open settings                | `window::OpenSettings`          | Window       |
 | `⌘Q`    | `cmd-q`           | Quit Polygloss               | `window::Quit`                  | Anywhere     |
 | `⌘M`    | `cmd-m`           | Minimize                     | `window::Minimize`              | Anywhere     |
@@ -213,6 +226,8 @@ These are in the command palette (and some in the toolbar or menus); bind them i
 | Next unread reply         | `tab::NextUnreadThread`             |
 | Toggle threads panel      | `tab::ToggleThreadsPanel`           |
 | Install CLI               | `window::InstallCli`                |
+| Show files                | `window::ShowFiles`                 |
+| Show reviews              | `window::ShowReviews`               |
 | Zoom                      | `window::Zoom`                      |
 | Check for updates         | `window::CheckForUpdates`           |
 
