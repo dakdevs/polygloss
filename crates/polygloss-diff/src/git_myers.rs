@@ -18,7 +18,7 @@
 
 use gix_imara_diff::Token;
 
-use crate::myers_core;
+use crate::myers_core::{self, bogosqrt, common_postfix, common_prefix};
 
 /// `XDL_MAX_EQLIMIT`: cap on the multimatch frequency limit.
 const MAX_EQLIMIT: usize = 1024;
@@ -38,16 +38,6 @@ enum Occurs {
     Often,
 }
 
-/// git's `xdl_bogosqrt`: doubles once per two bits of `n`.
-pub(crate) fn bogosqrt(mut n: usize) -> usize {
-    let mut i = 1;
-    while n > 0 {
-        i <<= 1;
-        n >>= 2;
-    }
-    i
-}
-
 /// Diffs two token sequences the way `git diff --diff-algorithm=myers` does
 /// before its slider post-processing: the removed and added flags of every
 /// line. `num_tokens` bounds every token id.
@@ -56,15 +46,8 @@ pub(crate) fn myers(before: &[Token], after: &[Token], num_tokens: u32) -> (Vec<
     let mut added = vec![false; after.len()];
 
     // xdl_trim_ends
-    let prefix = before.iter().zip(after).take_while(|(a, b)| a == b).count();
-    let limit = before.len().min(after.len()) - prefix;
-    let suffix = before
-        .iter()
-        .rev()
-        .zip(after.iter().rev())
-        .take(limit)
-        .take_while(|(a, b)| a == b)
-        .count();
+    let prefix = common_prefix(before, after);
+    let suffix = common_postfix(&before[prefix..], &after[prefix..]);
     let region1 = prefix..before.len() - suffix;
     let region2 = prefix..after.len() - suffix;
 
@@ -85,9 +68,7 @@ pub(crate) fn myers(before: &[Token], after: &[Token], num_tokens: u32) -> (Vec<
     // Myers over exactly the kept lines.
     let tokens1: Vec<Token> = keep1.iter().map(|&i| before[i]).collect();
     let tokens2: Vec<Token> = keep2.iter().map(|&i| after[i]).collect();
-    let mut removed_kept = vec![false; tokens1.len()];
-    let mut added_kept = vec![false; tokens2.len()];
-    myers_core::diff(&tokens1, &tokens2, &mut removed_kept, &mut added_kept);
+    let (removed_kept, added_kept) = myers_core::diff(&tokens1, &tokens2);
     for (&i, &changed) in keep1.iter().zip(&removed_kept) {
         removed[i] = changed;
     }
@@ -166,23 +147,6 @@ mod tests {
 
     fn toks(ids: &[u32]) -> Vec<Token> {
         ids.iter().map(|&i| Token(i)).collect()
-    }
-
-    #[test]
-    fn bogosqrt_matches_git() {
-        let cases = [
-            (0, 1),
-            (1, 2),
-            (3, 2),
-            (4, 4),
-            (15, 4),
-            (16, 8),
-            (40, 8),
-            (150, 16),
-        ];
-        for (n, want) in cases {
-            assert_eq!(bogosqrt(n), want, "bogosqrt({n})");
-        }
     }
 
     #[test]

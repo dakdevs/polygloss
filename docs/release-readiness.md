@@ -1,6 +1,6 @@
 # Release readiness (v1)
 
-Status of Polygloss v1 against the plan's [Definition of done](plan.md#definition-of-done-v1), written by T5.8 on 2026-09-30 at `polygloss-v1` `2d49248` (plus the T5.8 changes). Every automated check that this machine could run passed. **v1 is not releasable yet**: the items under [Left for the user](#left-for-the-user) need a human, a credential, a GitHub remote or an unlocked screen, and two Definition-of-done lines are open, both on perf: the budgets re-check and the gate's perf commands (git parity on the Linux corpus, open at T5.8, was fixed by S14).
+Status of Polygloss v1 against the plan's [Definition of done](plan.md#definition-of-done-v1), written by T5.8 on 2026-09-30 at `polygloss-v1` `2d49248` (plus the T5.8 changes). Every automated check that this machine could run passed. **v1 is not releasable yet**: the items under [Left for the user](#left-for-the-user) need a human, a credential, a GitHub remote or an unlocked screen, and two Definition-of-done lines are open, both on perf: the budgets re-check and the gate's perf commands. Git parity on the Linux corpus, open at T5.8, is fixed (S14: 100%).
 
 ## M5 exit gate
 

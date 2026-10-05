@@ -179,12 +179,24 @@ fn shuffled_blocks(seed: u64, blocks: usize, near: usize, far: usize) -> (Vec<u8
 
 #[test]
 fn hunks_match_git_past_the_myers_cost_limit() {
-    // About 45,000 lines a side: the cost limit is 512 d-steps, so both the
-    // good-snake split (past 256) and the cost cutoff decide splits here.
+    // (seed, blocks, near, far). 3,000 blocks are about 45,000 lines a side: the
+    // cost limit is 512 d-steps, so both the good-snake split (past 256) and the
+    // cost cutoff decide splits. 1,500 blocks keep the limit at 256, so only the
+    // cutoff does. Undoing any one of `myers_core`'s three heuristic fixes fails
+    // the first two cases; the last three each fail without exactly one: the edit
+    // cost counting from 1, the mid-diagonal score, the forward snake check.
+    let cases = [
+        (1, 3000, 300, 30),
+        (2, 3000, 300, 30),
+        (1, 1500, 300, 30),
+        (13, 3000, 200, 0),
+        (1, 3000, 20, 0),
+    ];
     let git = GitSandbox::new();
     let (old_path, new_path) = (git.dir.path().join("old"), git.dir.path().join("new"));
-    for seed in [1, 2] {
-        let (old, new) = shuffled_blocks(seed, 3000, 300, 30);
+    let mut bad = Vec::new();
+    for case @ (seed, blocks, near, far) in cases {
+        let (old, new) = shuffled_blocks(seed, blocks, near, far);
         fs::write(&old_path, &old).expect("write old");
         fs::write(&new_path, &new).expect("write new");
         let ours = unified_text(&diff_blobs(&old, &new, &DiffOptions::default()), &old, &new);
@@ -193,12 +205,15 @@ fn hunks_match_git_past_the_myers_cost_limit() {
             &new_path,
             &["--diff-algorithm=myers", "--indent-heuristic"],
         );
-        let first_difference = ours.lines().zip(theirs.lines()).position(|(a, b)| a != b);
-        assert!(
-            ours == theirs,
-            "seed {seed}: hunks differ from git (first differing output line: {first_difference:?})"
-        );
+        if ours != theirs {
+            let first_difference = ours.lines().zip(theirs.lines()).position(|(a, b)| a != b);
+            bad.push((case, first_difference));
+        }
     }
+    assert!(
+        bad.is_empty(),
+        "hunks differ from git on (case, first differing output line): {bad:?}"
+    );
 }
 
 #[test]

@@ -28,8 +28,6 @@
 
 use gix_imara_diff::Token;
 
-use crate::git_myers::bogosqrt;
-
 /// Minimum edit cost before the good-snake heuristic may cut the search.
 const HEUR_MIN_COST: u32 = 256;
 /// Minimum value for the maximum cost threshold.
@@ -39,27 +37,58 @@ const SNAKE_CNT: u32 = 20;
 /// Heuristic multiplier used to evaluate snake quality.
 const K_HEUR: u32 = 4;
 
-/// Marks the changed tokens of `before` in `removed` and of `after` in `added`
-/// (each the length of its tokens; callers pass them all `false`). The cost limit
+/// The changed flags of `before` (removed) and of `after` (added). The cost limit
 /// is `bogosqrt(before.len() + after.len() + 3)`, at least 256, as in git.
-pub(crate) fn diff(before: &[Token], after: &[Token], removed: &mut [bool], added: &mut [bool]) {
+pub(crate) fn diff(before: &[Token], after: &[Token]) -> (Vec<bool>, Vec<bool>) {
     assert!(
         before.len() < i32::MAX as usize && after.len() < i32::MAX as usize,
         "the Myers core supports fewer than {} tokens per side",
         i32::MAX
     );
-    assert_eq!((before.len(), after.len()), (removed.len(), added.len()));
+    let mut removed = vec![false; before.len()];
+    let mut added = vec![false; after.len()];
     Myers::new(before.len(), after.len()).run(
         FileSlice {
             tokens: before,
-            changed: removed,
+            changed: &mut removed,
         },
         FileSlice {
             tokens: after,
-            changed: added,
+            changed: &mut added,
         },
         false,
     );
+    (removed, added)
+}
+
+/// git's `xdl_bogosqrt`: doubles once per two bits of `n`.
+pub(crate) fn bogosqrt(mut n: usize) -> usize {
+    let mut i = 1;
+    while n > 0 {
+        i <<= 1;
+        n >>= 2;
+    }
+    i
+}
+
+/// How a `split` ended.
+#[derive(Clone, Copy)]
+enum Exit {
+    MiddleSnake,
+    GoodSnake,
+    CostCutoff,
+}
+
+/// Counts `exit` for the tests that check every way out of `split` runs; a no-op
+/// outside tests.
+#[cfg_attr(not(test), expect(unused_variables))]
+fn probe(exit: Exit) {
+    #[cfg(test)]
+    tests::EXITS.with(|exits| {
+        let mut counts = exits.get();
+        counts[exit as usize] += 1;
+        exits.set(counts);
+    });
 }
 
 /// The linear-space Myers state: one k-vector per search direction, shared by
@@ -112,13 +141,11 @@ impl Myers {
         }
     }
 
-    /// See "An O(ND) Difference Algorithm and its Variations", by Eugene Myers.
-    /// Basically considers a "box" (off1, off2, lim1, lim2) and scan from both
-    /// the forward diagonal starting from (off1, off2) and the backward diagonal
-    /// starting from (lim1, lim2). If the K values on the same diagonal crosses
-    /// returns the furthest point of reach. We might encounter expensive edge cases
-    /// using this algorithm, so a little bit of heuristic is needed to cut the
-    /// search and to return a suboptimal point.
+    /// Where to split the box `file1` x `file2` (Myers, "An O(ND) Difference
+    /// Algorithm and its Variations"): one search walks forward from the top-left
+    /// corner and one backward from the bottom-right, one edit per step, until
+    /// they meet on a diagonal. Unless `need_min`, a good snake or the cost limit
+    /// may end the search sooner at a non-minimal split.
     fn split(&mut self, file1: &FileSlice, file2: &FileSlice, need_min: bool) -> Split {
         let mut forward_search =
             MiddleSnakeSearch::<false>::new(&mut self.kforward, self.origin, file1, file2);
@@ -130,6 +157,8 @@ impl Myers {
         // searched one d-step more before the cost cutoff.
         let mut ec = 1;
 
+        // git never cuts a `need_min` box off, and this bound never does either:
+        // such a box costs at most the `ec <= max_cost` its parent split at.
         while ec <= self.max_cost {
             let mut found_snake = false;
             forward_search.next_d();
@@ -144,8 +173,7 @@ impl Myers {
                             token_idx1,
                             token_idx2,
                         } => {
-                            #[cfg(test)]
-                            tests::hit(tests::Exit::MiddleSnake);
+                            probe(Exit::MiddleSnake);
                             return Split {
                                 token_idx1,
                                 token_idx2,
@@ -170,8 +198,7 @@ impl Myers {
                             token_idx1,
                             token_idx2,
                         } => {
-                            #[cfg(test)]
-                            tests::hit(tests::Exit::MiddleSnake);
+                            probe(Exit::MiddleSnake);
                             return Split {
                                 token_idx1,
                                 token_idx2,
@@ -190,19 +217,12 @@ impl Myers {
                 continue;
             }
 
-            // If the edit cost is above the heuristic trigger and if
-            // we got a good snake, we sample current diagonals to see
-            // if some of them have reached an "interesting" path. Our
-            // measure is a function of the distance from the diagonal
-            // corner (i1 + i2) penalized with the distance from the
-            // mid-diagonal itself. If this value is above the current
-            // edit cost times a magic factor (XDL_K_HEUR) we consider
-            // it interesting.
+            // Past HEUR_MIN_COST, a step that crossed a snake longer than SNAKE_CNT
+            // may split early at the best-scoring good snake (see `found_snake`).
             if found_snake && ec > HEUR_MIN_COST {
                 if let Some((token_idx1, token_idx2)) = forward_search.found_snake(ec, file1, file2)
                 {
-                    #[cfg(test)]
-                    tests::hit(tests::Exit::GoodSnake);
+                    probe(Exit::GoodSnake);
                     return Split {
                         token_idx1,
                         token_idx2,
@@ -214,8 +234,7 @@ impl Myers {
                 if let Some((token_idx1, token_idx2)) =
                     backwards_search.found_snake(ec, file1, file2)
                 {
-                    #[cfg(test)]
-                    tests::hit(tests::Exit::GoodSnake);
+                    probe(Exit::GoodSnake);
                     return Split {
                         token_idx1,
                         token_idx2,
@@ -228,8 +247,7 @@ impl Myers {
             ec += 1;
         }
 
-        #[cfg(test)]
-        tests::hit(tests::Exit::CostCutoff);
+        probe(Exit::CostCutoff);
         let (distance_forward, token_idx1_forward) = forward_search.best_position(file1, file2);
         let (distance_backwards, token_idx1_backwards) =
             backwards_search.best_position(file1, file2);
@@ -309,14 +327,14 @@ fn strip_common<'a, 'b>(
     file1: FileSlice<'a>,
     file2: FileSlice<'b>,
 ) -> (FileSlice<'a>, FileSlice<'b>) {
-    let prefix = common_prefix(file1.tokens, file2.tokens) as usize;
-    let postfix = common_postfix(&file1.tokens[prefix..], &file2.tokens[prefix..]) as usize;
+    let prefix = common_prefix(file1.tokens, file2.tokens);
+    let postfix = common_postfix(&file1.tokens[prefix..], &file2.tokens[prefix..]);
     let (end1, end2) = (file1.tokens.len() - postfix, file2.tokens.len() - postfix);
     (file1.range(prefix..end1), file2.range(prefix..end2))
 }
 
 /// Computes the number of common tokens at the start of two sequences.
-fn common_prefix(file1: &[Token], file2: &[Token]) -> u32 {
+pub(crate) fn common_prefix(file1: &[Token], file2: &[Token]) -> usize {
     let mut off = 0;
     for (token1, token2) in file1.iter().zip(file2) {
         if token1 != token2 {
@@ -328,7 +346,7 @@ fn common_prefix(file1: &[Token], file2: &[Token]) -> u32 {
 }
 
 /// Computes the number of common tokens at the end of two sequences.
-fn common_postfix(file1: &[Token], file2: &[Token]) -> u32 {
+pub(crate) fn common_postfix(file1: &[Token], file2: &[Token]) -> usize {
     let mut off = 0;
     for (token1, token2) in file1.iter().rev().zip(file2.iter().rev()) {
         if token1 != token2 {
@@ -356,6 +374,8 @@ struct MiddleSnakeSearch<'k, const BACK: bool> {
     dmin: i32,
     /// Maximum possible k-diagonal value.
     dmax: i32,
+    /// The diagonal through the search's starting corner: its mid-diagonal.
+    kmid: i32,
 }
 
 impl<'k, const BACK: bool> MiddleSnakeSearch<'k, BACK> {
@@ -372,6 +392,7 @@ impl<'k, const BACK: bool> MiddleSnakeSearch<'k, BACK> {
             kmax: kmid,
             dmin,
             dmax,
+            kmid,
         };
         let init = if BACK { file1.len() as i32 } else { 0 };
         res.write_xpos_at_diagonal(kmid, init);
@@ -402,13 +423,10 @@ impl<'k, const BACK: bool> MiddleSnakeSearch<'k, BACK> {
         (token_idx1, token_idx2)
     }
 
-    /// We need to extend the diagonal "domain" by one. If the next
-    /// values exits the box boundaries we need to change it in the
-    /// opposite direction because (max - min) must be a power of
-    /// two.
-    ///
-    /// Also we initialize the external K value to -1 so that we can
-    /// avoid extra conditions in the check inside the core loop.
+    /// Moves to the next edit step: each end of the searched diagonals moves out
+    /// by one, or in by one where out would leave the box, so the range keeps the
+    /// parity this step reaches. The diagonal just past a widened end gets a
+    /// sentinel (`i32::MIN` forward, `i32::MAX` backward) that `run` never picks.
     fn next_d(&mut self) {
         let init_val = if BACK {
             // value should always be larger then bounds
@@ -471,7 +489,7 @@ impl<'k, const BACK: bool> MiddleSnakeSearch<'k, BACK> {
                 0
             };
 
-            if off > SNAKE_CNT {
+            if off > SNAKE_CNT as usize {
                 res = Some(SearchResult::Snake)
             }
 
@@ -559,13 +577,12 @@ impl<'k, const BACK: bool> MiddleSnakeSearch<'k, BACK> {
 
             // The distance from the search's corner, penalized with the distance
             // from its mid-diagonal (imara added the distance from diagonal 0).
-            let kmid = if BACK { self.dmin + self.dmax } else { 0 };
             let distance = if BACK {
                 (file1.len() - token_idx1 as u32) + (file2.len() - token_idx2 as u32)
             } else {
                 token_idx1 as u32 + token_idx2 as u32
             };
-            let score = i64::from(distance) - i64::from((k - kmid).unsigned_abs());
+            let score = i64::from(distance) - i64::from((k - self.kmid).unsigned_abs());
             if score > i64::from(K_HEUR * ec) && score > best_score {
                 let is_snake = if BACK {
                     file1.tokens[token_idx1 as usize..]
@@ -617,33 +634,15 @@ mod tests {
 
     use super::*;
 
-    /// How a `split` ended.
-    #[derive(Clone, Copy)]
-    pub(super) enum Exit {
-        MiddleSnake,
-        GoodSnake,
-        CostCutoff,
-    }
-
     thread_local! {
         /// `split` exits on this thread, by `Exit`.
-        static EXITS: Cell<[usize; 3]> = const { Cell::new([0; 3]) };
-    }
-
-    pub(super) fn hit(exit: Exit) {
-        EXITS.with(|exits| {
-            let mut counts = exits.get();
-            counts[exit as usize] += 1;
-            exits.set(counts);
-        });
+        pub(super) static EXITS: Cell<[usize; 3]> = const { Cell::new([0; 3]) };
     }
 
     /// The changed flags of both sides and how many splits ended each way.
     fn run(before: &[Token], after: &[Token]) -> (Vec<bool>, Vec<bool>, [usize; 3]) {
         EXITS.with(|exits| exits.set([0; 3]));
-        let mut removed = vec![false; before.len()];
-        let mut added = vec![false; after.len()];
-        diff(before, after, &mut removed, &mut added);
+        let (removed, added) = diff(before, after);
         (removed, added, EXITS.with(Cell::get))
     }
 
@@ -704,6 +703,23 @@ mod tests {
             prev = row;
         }
         a.len() + b.len() - 2 * prev[b.len()]
+    }
+
+    #[test]
+    fn bogosqrt_matches_git() {
+        let cases = [
+            (0, 1),
+            (1, 2),
+            (3, 2),
+            (4, 4),
+            (15, 4),
+            (16, 8),
+            (40, 8),
+            (150, 16),
+        ];
+        for (n, want) in cases {
+            assert_eq!(bogosqrt(n), want, "bogosqrt({n})");
+        }
     }
 
     #[test]
