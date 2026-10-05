@@ -309,7 +309,7 @@ fn git_unified(git: &Git, old: &Oid, new: &Oid) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polygloss_diff::{GitPath, Mode};
+    use polygloss_diff::{GeneratedAttr, GitPath, Mode};
 
     fn change(status: FileStatus, kind: FileKind, old: &str, new: &str) -> FileChange {
         let oid = |c: &str| Oid::parse(&c.repeat(40), ObjectFormat::Sha1).expect("oid");
@@ -325,6 +325,7 @@ mod tests {
             similarity: None,
             kind,
             generated: false,
+            generated_attr: GeneratedAttr::Unspecified,
         }
     }
 

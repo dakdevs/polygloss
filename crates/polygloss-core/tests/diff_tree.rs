@@ -11,12 +11,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use polygloss_core::git::attrs::legacy_attr;
 use polygloss_core::git::{
     BUILTIN_GENERATED, Git, Source, classify, discover, list_changes, resolve,
 };
 use polygloss_core::testing::{FixtureRepo, Sandbox, git_spawns};
 use polygloss_core::{ObjectFormat, Oid};
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode};
+use polygloss_diff::{FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode};
 
 fn os<'a>(args: &'a [&'a str]) -> Vec<&'a OsStr> {
     args.iter().map(OsStr::new).collect()
@@ -647,6 +648,56 @@ fn generated_builtin_list_and_attribute() {
 }
 
 #[test]
+fn classify_keeps_the_linguist_generated_tri_state() {
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("seed.txt", b"seed\n");
+    repo.commit("c1");
+    repo.write(
+        ".gitattributes",
+        b"gen.txt linguist-generated\nCargo.lock -linguist-generated\n\
+x.txt linguist-generated=true\ny.lock linguist-generated=false\n",
+    );
+    for p in [
+        "gen.txt",
+        "Cargo.lock",
+        "x.txt",
+        "y.lock",
+        "src/a.rs",
+        "yarn.lock",
+    ] {
+        repo.write(p, format!("{p}\n").as_bytes());
+    }
+    repo.commit("c2");
+
+    let files = classified(&repo, &tree(&repo, "HEAD~1"), &tree(&repo, "HEAD"), &[]);
+    let map = by_path(&files);
+    let got = |p: &str| {
+        let f = map[p.as_bytes()];
+        (f.generated_attr, f.generated)
+    };
+    assert_eq!(got("gen.txt"), (GeneratedAttr::Set, true));
+    assert_eq!(got("Cargo.lock"), (GeneratedAttr::Unset, false));
+    assert_eq!(got("x.txt"), (GeneratedAttr::Set, true));
+    assert_eq!(got("y.lock"), (GeneratedAttr::Unset, false));
+    // Unlisted: the bit still comes from the built-in list, as in v1.
+    assert_eq!(got("src/a.rs"), (GeneratedAttr::Unspecified, false));
+    assert_eq!(got("yarn.lock"), (GeneratedAttr::Unspecified, true));
+    assert_eq!(got(".gitattributes"), (GeneratedAttr::Unspecified, false));
+}
+
+#[test]
+fn legacy_attr_recovers_the_v1_tri_state() {
+    // design §11.15's recovery table: v1 stored "the attribute if specified, else
+    // the built-in list".
+    assert_eq!(legacy_attr("Cargo.lock", false), GeneratedAttr::Unset);
+    assert_eq!(legacy_attr("gen.txt", true), GeneratedAttr::Set);
+    assert_eq!(legacy_attr("Cargo.lock", true), GeneratedAttr::Unspecified);
+    assert_eq!(legacy_attr("src/a.rs", false), GeneratedAttr::Unspecified);
+    assert_eq!(legacy_attr("web/app.min.js", false), GeneratedAttr::Unset);
+}
+
+#[test]
 fn binary_attribute_marks_kind() {
     let _sb = Sandbox::isolate();
     let repo = FixtureRepo::init(ObjectFormat::Sha1);
@@ -740,6 +791,11 @@ fn classify_on_git_2_39_uses_builtin_list_only() {
         let map = by_path(&files);
         assert_eq!(map[b"a.dat".as_slice()].kind, FileKind::Text);
         assert!(!map[b"gen/out.ts".as_slice()].generated);
+        // The attribute is set but unreadable here: unspecified, not unknown.
+        assert_eq!(
+            map[b"gen/out.ts".as_slice()].generated_attr,
+            GeneratedAttr::Unspecified
+        );
         assert!(map[b"yarn.lock".as_slice()].generated);
         assert!(map[b"x.snap".as_slice()].generated);
     }

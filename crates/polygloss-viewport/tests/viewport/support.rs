@@ -21,7 +21,9 @@ use gpui_kit::{
     Modifiers, MouseButton, ParentElement as _, Pixels, Render, ScrollDelta, ScrollWheelEvent,
     Styled as _, Subscription, TestAppContext, VisualTestContext, Window, div, point, px, size,
 };
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid};
+use polygloss_diff::{
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid,
+};
 use polygloss_highlight::{Appearance, pierre_theme};
 use polygloss_viewport::{
     ControlAction, DiffProvider, DiffViewport, FrameStats, LayoutMode, PipelineStats, ScrollTarget,
@@ -215,6 +217,7 @@ impl MemProvider {
                     similarity: s.old_path.as_ref().map(|_| 90),
                     kind: s.kind,
                     generated: s.generated,
+                    generated_attr: GeneratedAttr::Unspecified,
                 }
             })
             .collect::<Vec<_>>();

@@ -13,7 +13,9 @@ use polygloss_app::find::{self, FindBar};
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::settings::SettingsStore;
 use polygloss_diff::options::DiffOptions;
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, ObjectFormat, Oid, Side};
+use polygloss_diff::{
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, ObjectFormat, Oid, Side,
+};
 use polygloss_viewport::{BodyRow, CursorPos, DiffProvider, FileState, RowKey};
 
 use crate::shell::{Shell, compare_req, draw, start};
@@ -918,6 +920,7 @@ fn search_file_skips_binary_and_stops_when_cancelled() {
         similarity: None,
         kind,
         generated: false,
+        generated_attr: GeneratedAttr::Unspecified,
     };
     let provider = |kind, new: &[u8]| OneFile {
         files: Arc::new(vec![change(kind)]),
@@ -999,6 +1002,7 @@ fn search_chunk_stops_when_cancelled_or_at_the_limit() {
             similarity: None,
             kind: FileKind::Text,
             generated: false,
+            generated_attr: GeneratedAttr::Unspecified,
         })
         .collect();
     let re = search::compile("needle", FindOptions::default())

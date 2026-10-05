@@ -2099,6 +2099,8 @@ scripts/cargo.sh check --workspace --all-targets
 
 Then the standard completion block.
 
+**As built (T6.1):** `file_changes_round_trip_generated_attr` is a unit test in `review/models.rs` (`store_diff` and `load_files` are crate-private); it pins the raw column values against §7.2 (`Unknown` writes `NULL`). `core/tests/review_state.rs` has no `FileChange` literal and is unchanged. SQLite's `ADD COLUMN` splices the column into `file_changes`' stored `CREATE TABLE` text before `PRIMARY KEY`, which is what the updated schema snapshot shows. `tests/e2e/mcp-multi-process-writers.test.ts` now expects `user_version` 2. `legacy_attr` matches the path text it is given, as T6.4's patterns do, so an escaped non-UTF-8 path never matches the list: its bit 1 recovers as `Set`, bit 0 as `Unspecified` (OQ-25). The viewport's and live refresh's `same_change` leave `generated_attr` out on purpose: a stored v1 row and a fresh listing of the same blobs are the same change.
+
 ### T6.2 Polygloss Light and Dark, theme tokens and the code font
 
 **Files**

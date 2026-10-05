@@ -1,4 +1,5 @@
-//! Schema migrations under a file lock; `schema-v1.sql` is migration 1 (T1.10, design §7.2).
+//! Schema migrations under a file lock; `schema-v<N>.sql` is migration N (T1.10, T6.1,
+//! design §7.2).
 //!
 //! [`migrate_locked`] holds an exclusive `std::fs::File::lock` on
 //! `polygloss.db.lock` while it reads `user_version`, backs up an existing database
@@ -15,9 +16,12 @@ use super::{BootstrapReport, StoreError, ensure_private_file};
 use crate::paths::DataPaths;
 
 /// The schema version this build migrates to.
-pub const LATEST_VERSION: u32 = 1;
+pub const LATEST_VERSION: u32 = 2;
 
-static MIGRATIONS: &[M<'static>] = &[M::up(include_str!("schema-v1.sql"))];
+static MIGRATIONS: &[M<'static>] = &[
+    M::up(include_str!("schema-v1.sql")),
+    M::up(include_str!("schema-v2.sql")),
+];
 
 /// The production migration list (index + 1 = `user_version`).
 pub fn migrations() -> Migrations<'static> {

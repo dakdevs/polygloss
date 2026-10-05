@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use polygloss_diff::hunks::diff_blobs;
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::{Expansions, GapId, Layout, Row, build_rows};
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid, Side};
+use polygloss_diff::{
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid, Side,
+};
 use polygloss_viewport::document::{
     BlockAnchor, BlockId, BodyRow, DEFAULT_EVICTION_BUDGET_BYTES, DEFAULT_WINDOW_SCREENS, Document,
     FileLayout, FileState, HeightIndex, Metrics, PlacedBlock, RowKey, ScrollAnchor, SizeHint,
@@ -43,6 +45,7 @@ fn modified(idx: u32) -> FileChange {
         similarity: None,
         kind: FileKind::Text,
         generated: false,
+        generated_attr: GeneratedAttr::Unspecified,
     }
 }
 

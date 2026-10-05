@@ -12,7 +12,9 @@
 
 use std::ffi::OsStr;
 
-use polygloss_diff::{FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid};
+use polygloss_diff::{
+    FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid,
+};
 
 use crate::git::runner::{Git, GitError};
 
@@ -104,6 +106,7 @@ pub fn parse_raw_z(bytes: &[u8], fmt: ObjectFormat) -> Result<Vec<FileChange>, P
             new_blob: rec.new_blob,
             similarity: rec.similarity,
             generated: false,
+            generated_attr: GeneratedAttr::Unspecified,
         });
     }
     Ok(out)

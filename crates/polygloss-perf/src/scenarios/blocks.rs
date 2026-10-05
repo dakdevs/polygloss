@@ -172,7 +172,7 @@ mod tests {
     use std::sync::Arc;
 
     use polygloss_diff::{
-        FileChange, FileKind, FileStatus, GitPath, Mode, ObjectFormat, Oid, Side,
+        FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid, Side,
     };
     use polygloss_viewport::{BlockAnchor, BodyRow, Document, FileLayout, Metrics};
 
@@ -192,6 +192,7 @@ mod tests {
             similarity: None,
             kind: FileKind::Text,
             generated: false,
+            generated_attr: GeneratedAttr::Unspecified,
         }
     }
 

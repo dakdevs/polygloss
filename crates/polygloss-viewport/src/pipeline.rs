@@ -1438,7 +1438,7 @@ mod tests {
     use std::collections::HashMap;
     use std::thread;
 
-    use polygloss_diff::{FileStatus, Mode, ObjectFormat};
+    use polygloss_diff::{FileStatus, GeneratedAttr, Mode, ObjectFormat};
     use polygloss_highlight::{Appearance, pierre_theme};
 
     use super::*;
@@ -1502,6 +1502,7 @@ mod tests {
                         similarity: None,
                         kind: FileKind::Text,
                         generated: false,
+                        generated_attr: GeneratedAttr::Unspecified,
                     }
                 })
                 .collect();
