@@ -6,6 +6,7 @@
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{Entity, FocusHandle, VisualTestContext};
+use polygloss_app::chrome::{self, Segment};
 use polygloss_app::composer::{self, ComposerKey};
 use polygloss_app::iterations;
 use polygloss_app::keyboard::{self, Pane};
@@ -389,6 +390,128 @@ fn focus_cycles_between_panes(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
     keys(&mut shell, "shift-tab");
     assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+}
+
+/// The window's sidebar: `(visible, segment)`.
+fn sidebar(shell: &mut Shell) -> (bool, Segment) {
+    shell.cx.update(|_, cx| {
+        let c = chrome::chrome(cx).read(cx);
+        (c.sidebar_visible(), c.segment())
+    })
+}
+
+fn set_sidebar(shell: &mut Shell, visible: bool, segment: Segment) {
+    let c = shell.cx.update(|_, cx| chrome::chrome(cx));
+    c.update(shell.cx, |c, cx| {
+        c.set_sidebar_visible(visible, cx);
+        c.set_segment(segment, cx);
+    });
+    draw(shell.cx);
+}
+
+/// The panes `Tab` visits in `tab` now.
+fn stops(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Vec<Pane> {
+    tab.read_with(shell.cx, keyboard::stops)
+}
+
+#[gpui_kit::test]
+fn pane_cycle_skips_the_tree_unless_files_shows(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    assert_eq!(sidebar(&mut shell), (true, Segment::Files));
+    assert_eq!(
+        stops(&mut shell, &tab),
+        [Pane::Tree, Pane::Viewport, Pane::Threads]
+    );
+
+    for (visible, segment) in [(true, Segment::Reviews), (false, Segment::Files)] {
+        set_sidebar(&mut shell, visible, segment);
+        assert_eq!(
+            stops(&mut shell, &tab),
+            [Pane::Viewport, Pane::Threads],
+            "visible {visible}, {segment:?}"
+        );
+        // Tab and ⇧Tab go round the viewport and the threads panel only.
+        focus_viewport(&mut shell, &tab);
+        for want in [Pane::Threads, Pane::Viewport, Pane::Threads] {
+            keys(&mut shell, "tab");
+            assert_eq!(pane_of(&mut shell, &tab), Some(want), "tab");
+        }
+        keys(&mut shell, "shift-tab");
+        assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Viewport));
+        keys(&mut shell, "shift-tab");
+        assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Threads));
+        assert_eq!(sidebar(&mut shell), (visible, segment), "left alone");
+    }
+
+    // Moving the keyboard into the tree (as `focus_pane` does for the
+    // palette's tree actions) shows Files first.
+    set_sidebar(&mut shell, true, Segment::Reviews);
+    focus_pane(&mut shell, &tab, &Pane::Tree);
+    assert_eq!(sidebar(&mut shell), (true, Segment::Files));
+    assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+    assert!(painted(shell.cx, "file-tree-pane"));
+    assert_eq!(
+        stops(&mut shell, &tab),
+        [Pane::Tree, Pane::Viewport, Pane::Threads]
+    );
+}
+
+#[gpui_kit::test]
+fn find_filter_and_finder_show_the_files_segment_first(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let hidden_states = [
+        (true, Segment::Reviews),
+        (false, Segment::Files),
+        (false, Segment::Reviews),
+    ];
+
+    // ⌘F: the find pane, in the Files segment.
+    for (visible, segment) in hidden_states {
+        set_sidebar(&mut shell, visible, segment);
+        focus_viewport(&mut shell, &tab);
+        assert!(!painted(shell.cx, "find-pane"));
+        keys(&mut shell, "cmd-f");
+        assert_eq!(sidebar(&mut shell), (true, Segment::Files), "⌘F");
+        assert!(
+            painted(shell.cx, "find-pane"),
+            "⌘F from {visible} {segment:?}"
+        );
+        assert_eq!(pane_of(&mut shell, &tab), Some(Pane::Tree));
+        keys(&mut shell, "escape");
+        assert!(!painted(shell.cx, "find-pane"));
+    }
+
+    // tree::FocusFilter (`/` in the tree, or the palette): the filter box.
+    let filter = tab.read_with(shell.cx, |t, cx| {
+        tree::file_tree(t).unwrap().read(cx).filter_focus(cx)
+    });
+    for (visible, segment) in hidden_states {
+        set_sidebar(&mut shell, visible, segment);
+        focus_viewport(&mut shell, &tab);
+        shell.cx.dispatch_action(actions::tree::FocusFilter);
+        draw(shell.cx);
+        assert_eq!(sidebar(&mut shell), (true, Segment::Files), "filter");
+        assert!(painted(shell.cx, "file-tree-pane"));
+        assert!(shell.cx.update(|window, _| filter.is_focused(window)));
+    }
+
+    // ⌘P: the finder, over a sidebar showing Files.
+    for (visible, segment) in hidden_states {
+        set_sidebar(&mut shell, visible, segment);
+        focus_viewport(&mut shell, &tab);
+        keys(&mut shell, "cmd-p");
+        assert_eq!(sidebar(&mut shell), (true, Segment::Files), "⌘P");
+        assert!(shell.cx.update(|_, cx| tree::finder::current(cx)).is_some());
+        assert!(has_dialog(&mut shell));
+        keys(&mut shell, "escape");
+        assert!(!has_dialog(&mut shell));
+    }
 }
 
 #[gpui_kit::test]

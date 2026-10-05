@@ -1,6 +1,6 @@
 //! File tree and file finder (⌘P) (design §11.5, §11.8).
 //!
-//! - [`FileTree`]: the review tab's left pane, a gpui-kit `Tree`
+//! - [`FileTree`]: the sidebar's Files segment, a gpui-kit `Tree`
 //!   (virtualized, key context `Tree`) over the diff's files with directory
 //!   chains compacted ([`model`]); rows ([`row`]) carry a Viewed checkbox,
 //!   the status letter, +/− counts, open-thread and agent badges and the
@@ -9,6 +9,9 @@
 //!   viewport to it; the viewport's top file is highlighted in the tree.
 //! - [`finder`]: ⌘P, every changed path ranked by `nucleo-matcher`; Enter
 //!   jumps to the file.
+//!
+//! The filter (`tree::FocusFilter`) and ⌘P show the sidebar's Files segment
+//! first ([`crate::chrome::show_files`]).
 //!
 //! The Viewed state is T3.7's: it pushes [`FileFlags`] with
 //! [`FileTree::set_file_flags`] and handles the checkboxes' [`FileTreeEvent`]s
@@ -70,6 +73,7 @@ pub fn init(cx: &mut App) {
     handlers::on_action(
         cx,
         |tab: &mut ReviewTab, _: &tree_actions::FocusFilter, window, cx| {
+            crate::chrome::show_files(window, cx);
             if let Some(tree) = file_tree(tab) {
                 tree.update(cx, |t, cx| t.focus_filter(window, cx));
             }
@@ -86,6 +90,7 @@ pub fn init(cx: &mut App) {
     handlers::on_action(
         cx,
         |tab: &mut ReviewTab, _: &window_actions::FileFinder, window, cx| {
+            crate::chrome::show_files(window, cx);
             finder::open(tab, window, cx);
         },
     );

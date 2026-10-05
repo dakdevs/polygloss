@@ -1,6 +1,7 @@
-//! The app shell (T3.1): the main window with its tab bar, a review tab's
-//! toolbar, banner strip and panes around the viewport, as the app draws it
-//! (gpui-kit initialized, its icons bundled).
+//! The app shell (T3.1, T6.3): the main window as the app draws it
+//! (gpui-kit initialized, the app's icons bundled): the sidebar (top row,
+//! file tree) beside a review's main column (toolbar row, banner strip,
+//! viewport and threads panel).
 
 use std::sync::Arc;
 

@@ -320,7 +320,7 @@ pub fn run(launch: Launch) -> ExitCode {
         }
     };
     tracing::info!("Polygloss {} starting", polygloss_core::VERSION);
-    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    let app = gpui_kit::application().with_assets(crate::assets::AppAssets);
     app.on_reopen(window::reopen);
     // Before `run()`: a URL that launched the app arrives right after launch.
     let url_inbox = crate::urls::register(&app);

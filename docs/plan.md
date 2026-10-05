@@ -2175,7 +2175,7 @@ impl Chrome {
 pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions; // transparent titlebar, the light position, app_owns_titlebar_drag, Opaque, tabbing_identifier None, min 720×480
 pub const THREADS_MAIN_MIN_WIDTH: f32 = 480.0; // viewport 260 + threads panel 220
 pub fn sidebar_max(window_width: f32, threads_shown: bool) -> f32; // window − MAIN_MIN_WIDTH (or THREADS_MAIN_MIN_WIDTH), within SIDEBAR_RANGE
-pub fn shell(sidebar: AnyElement, main: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement; // debug "sidebar", "main-column"
+pub fn shell(sidebar: AnyElement, main: AnyElement, threads_shown: bool, window: &mut Window, cx: &mut App) -> AnyElement; // debug "sidebar", "main-column" (`threads_shown`: As built)
 pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -> AnyElement; // debug "sidebar-top-row", "segment-files", "segment-reviews", "toggle-sidebar"
 pub fn toolbar_row(id: &'static str, left: Vec<AnyElement>, right: Vec<AnyElement>, window: &mut Window, cx: &mut App) -> AnyElement; // drag + double-click zoom; clusters stop mouse-down; while the sidebar is hidden: the traffic-light inset (none in fullscreen) and a "show-sidebar" button
 pub fn show_files(window: &mut Window, cx: &mut App); // sidebar visible, segment Files
@@ -2216,6 +2216,17 @@ bun test tests/scripts/app-icons.test.ts
 ```
 
 Then the standard completion block.
+
+**As built (T6.3):** the card's interfaces, with these differences and details.
+
+- **Deviation:** `chrome::shell` takes `threads_shown: bool`. The shell renders inside the active tab's own render, where GPUI cannot read that tab's entity (it is leased), so the page passes its threads panel state; Home passes `false`. `Chrome::install` (crate-private, called by `MainWindow::new`) sets the `chrome(cx)` global; `Chrome::shell()` exposes the split's state (tests resize the sidebar with `resize_panel(0, …)` as a drag does).
+- **Stored width:** gpui-kit's split rescales every panel by one ratio on a window resize once all panels have a size (the first measurement and every drag give them one), which would make the sidebar grow and shrink with the window. The shell resets the main column's panel each render (`keep_main_column_flexible`), so the sidebar keeps its stored width; `size_range(220..sidebar_max)` clamps what is drawn, never what is stored. A hidden sidebar renders the main column alone (no split, no stray resize handle).
+- **Top rows:** `drag_region` keeps a pressed flag per row (`use_keyed_state`): a left press on the row (not on a cluster, which stops the mouse-down) followed by a move with the button held calls `start_window_move`; a press with `click_count == 2` calls `titlebar_double_click` (the system's double-click action). The test platform's `start_window_move` is `unimplemented!()`, which two extra tests use: `top_row_buttons_never_move_the_window` (a press and drag on toolbar and sidebar buttons does not panic) and `dragging_a_top_row_moves_the_window` (`should_panic`: a drag on empty toolbar space reaches it).
+- **Window title:** `MainWindow::render` sets it to the active tab's title when it changes ("Home" on Home; extra test `window_title_follows_the_active_item`).
+- **Home:** its toolbar row holds "Reviews" and the count (moved from the list's header; `scroll_to_selected`'s child indices shift by one). The nav stub's selectors are `nav-home`, `open-review-{review_id}` and `close-review-{review_id}` (× always shown; T6.6 shows it on hover). `render_nav` returns a `RenderOnce` element so the rows read the tabs' titles after the calling tab's render returned.
+- **Screenshots:** `headless_app_with_assets(source)` puts `AppIcons` in front of `source` (so `Arc::new(gpui_kit::assets::Assets)` gives exactly `AppAssets`) and turns Reduce Motion on; `headless_app()` (viewport-only captures) gets `AppIcons` in front of no assets. Twenty baselines were re-recorded (every one that shows the window); the viewport-only ones did not move.
+- **`app-icons.test.ts`** reads gpui-kit-assets' catalog and `default-icons.txt` from the crate `cargo metadata` resolves and maps file names to variants as its build script does; it skips `IconName::ALL`.
+- **Dev app run (2026-10-05, sandboxed `HOME`/data dir, tmux `polygloss-m6-chrome`, a 1440×901 window, dark appearance):** the close button sits at ≈ (19.5, 19.5) pt and the three lights are centred on the 52 pt row's middle (y ≈ 26 pt), ending at ≈ 79 pt, inside the 80 pt inset; macOS draws no title text. Dragging empty toolbar space and empty sidebar top-row space moved the window (also from an inactive window); a press-and-drag that started on a toolbar button did not. A double-click on empty toolbar space zoomed the window to the screen and a second restored it (system default; `AppleActionOnDoubleClick` unset); a double-click on a toolbar button did not zoom. Hiding the sidebar put the "show sidebar" button right after the lights, and it brought the sidebar back at its width. Fullscreen was not entered on the live desktop (it would switch the user's Space); `hidden_sidebar_insets_the_toolbar_and_shows_the_open_button` pins the inset collapsing in fullscreen on the test platform, so a manual look in a real fullscreen window is left to T6.16.
 
 ### T6.4 File categories: the core classifier **(core-only)**
 

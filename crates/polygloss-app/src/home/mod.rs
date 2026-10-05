@@ -1,5 +1,7 @@
 //! Home: recent reviews across repos (design §11.2), the main window's first
-//! tab.
+//! tab. It renders the window's shell ([`crate::chrome::shell`]): the
+//! sidebar on its Reviews segment ([`nav`]; Files is disabled here) and the
+//! main column, a toolbar row ("Reviews", the count) over the list.
 //!
 //! [`HomeView`] lists `Core::review_summaries` in two sections, **Awaiting
 //! you** (re-review requested, or an open agent question without a human
@@ -16,6 +18,7 @@
 //! calls [`HomeView::refresh`] on store events.
 
 pub mod dialogs;
+pub mod nav;
 pub mod prune;
 pub mod row;
 
@@ -298,13 +301,13 @@ impl HomeView {
     }
 
     /// Scrolls the selected row into view. The list's children are the
-    /// header, the section titles and the rows (see `render`).
+    /// section titles and the rows (see `render`).
     fn scroll_to_selected(&self) {
         let Some(ix) = self.selected_index() else {
             return;
         };
-        // Header, "Awaiting you" title (when shown), rows, "Recent" title.
-        let mut child = 1 + ix;
+        // "Awaiting you" title (when shown), rows, "Recent" title.
+        let mut child = ix;
         if self.awaiting > 0 {
             child += 1;
         }
@@ -648,8 +651,82 @@ impl Focusable for HomeView {
 
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = v_flex()
+            .size_full()
+            .child(crate::chrome::sidebar_top_row(false, window, cx))
+            .child(div().flex_1().min_h_0().child(nav::render_nav(window, cx)))
+            .into_any_element();
         let theme = cx.theme().clone();
-        let root = v_flex()
+        let count = (self.loaded && !self.rows.is_empty()).then(|| {
+            div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(SharedString::from(match self.rows.len() {
+                    1 => "1 review".to_owned(),
+                    n => format!("{n} reviews"),
+                }))
+                .into_any_element()
+        });
+        let title = div()
+            .text_base()
+            .font_semibold()
+            .text_color(theme.foreground)
+            .child("Reviews")
+            .into_any_element();
+        let toolbar = crate::chrome::toolbar_row(
+            "home-toolbar",
+            std::iter::once(title).chain(count).collect(),
+            Vec::new(),
+            window,
+            cx,
+        );
+        let page = if self.loaded && self.rows.is_empty() {
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .text_color(theme.foreground)
+                        .child("No reviews yet"),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("Run `polygloss` in a repository, or press ⌘O to open one."),
+                )
+                .into_any_element()
+        } else {
+            v_flex()
+                .id("home-scroll")
+                .debug_selector(|| "home-list".into())
+                .size_full()
+                .items_center()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .px_8()
+                .pt_6()
+                .pb_10()
+                // One child per section title and row, so `scroll_to_item`
+                // finds rows by index.
+                .children(
+                    self.render_rows(window, cx)
+                        .into_iter()
+                        .map(|child| div().flex_none().w_full().max_w(px(1120.)).child(child)),
+                )
+                .into_any_element()
+        };
+        let main = v_flex()
+            .size_full()
+            .bg(theme.background)
+            .child(toolbar)
+            .child(div().flex_1().min_h_0().child(page))
+            .into_any_element();
+        let shell = crate::chrome::shell(sidebar, main, false, window, cx);
+        v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|h, _: &SelectNext, _, cx| h.move_selection(1, cx)))
@@ -671,64 +748,6 @@ impl Render for HomeView {
             }))
             .on_action(cx.listener(|h, _: &Refresh, _, cx| h.refresh(cx)))
             .size_full()
-            .bg(theme.background);
-        if self.loaded && self.rows.is_empty() {
-            return root
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(15.))
-                        .text_color(theme.foreground)
-                        .child("No reviews yet"),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.muted_foreground)
-                        .child("Run `polygloss` in a repository, or press ⌘O to open one."),
-                );
-        }
-        let header =
-            h_flex()
-                .pb_5()
-                .gap_2()
-                .items_baseline()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_semibold()
-                        .text_color(theme.foreground)
-                        .child("Reviews"),
-                )
-                .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    SharedString::from(match self.rows.len() {
-                        1 => "1 review".to_owned(),
-                        n => format!("{n} reviews"),
-                    }),
-                ))
-                .into_any_element();
-        let mut children = vec![header];
-        children.extend(self.render_rows(window, cx));
-        root.child(
-            v_flex()
-                .id("home-scroll")
-                .debug_selector(|| "home-list".into())
-                .size_full()
-                .items_center()
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
-                .px_8()
-                .pt_6()
-                .pb_10()
-                // One child per header, section title and row, so
-                // `scroll_to_item` finds rows by index.
-                .children(
-                    children
-                        .into_iter()
-                        .map(|child| div().flex_none().w_full().max_w(px(1120.)).child(child)),
-                ),
-        )
+            .child(shell)
     }
 }

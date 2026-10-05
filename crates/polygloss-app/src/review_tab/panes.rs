@@ -1,6 +1,6 @@
-//! The review tab's three resizable panes (design §11.1): file tree
-//! (T3.6's `tree::render_pane`) | diff viewport | threads panel
-//! (toggleable; T3.9's, an empty state until it fills it in).
+//! The review tab's panes (design §11.1): the sidebar's content (T3.6's
+//! `tree::render_pane`, find in its place, or the Reviews list) and the main
+//! column's resizable diff viewport | threads panel (toggleable; T3.9's).
 
 use gpui_kit::component::{
     ActiveTheme as _, ResizableState, StyledExt as _, h_flex, h_resizable, resizable_panel, v_flex,
@@ -11,6 +11,7 @@ use gpui_kit::{
     ParentElement as _, SharedString, Styled as _, Window, div, px,
 };
 
+use crate::chrome::{self, Segment};
 use crate::keyboard::Pane;
 use crate::review_tab::ReviewTab;
 
@@ -22,15 +23,13 @@ gpui_kit::actions!(
     ]
 );
 
-/// Initial width of the file tree pane.
-const TREE_WIDTH: f32 = 280.0;
 /// Initial width of the threads panel.
 const THREADS_WIDTH: f32 = 340.0;
 
 /// Pane state of one review tab.
 pub(crate) struct Panes {
     pub threads_visible: bool,
-    /// Pane widths (kept while the tab lives).
+    /// The viewport | threads panel widths (kept while the tab lives).
     pub state: Entity<ResizableState>,
 }
 
@@ -43,56 +42,72 @@ impl Panes {
     }
 }
 
-/// The panes of `tab`.
+/// The pane of `tab` that shows a focus ring: the one with the keyboard
+/// while the keyboard is in use, like macOS's and the web's focus-visible
+/// (a click does not light it up; a composer draws its own).
+fn ringed_pane(tab: &ReviewTab, window: &Window, cx: &Context<ReviewTab>) -> Option<Pane> {
+    window
+        .last_input_was_keyboard()
+        .then(|| crate::keyboard::focused_pane(tab, window, cx))
+        .flatten()
+}
+
+/// The sidebar of `tab`: its top row, then the window's segment: the file
+/// tree (find, T3.15, in its place while open) or the Reviews list.
+pub(crate) fn render_sidebar(
+    tab: &ReviewTab,
+    window: &mut Window,
+    cx: &mut Context<ReviewTab>,
+) -> AnyElement {
+    let top_row = chrome::sidebar_top_row(true, window, cx);
+    let segment = chrome::chrome(cx).read(cx).segment();
+    let content = match segment {
+        Segment::Reviews => crate::home::nav::render_nav(window, cx),
+        Segment::Files => {
+            // Every review tab gets a file tree (`features::attach`).
+            let tree = crate::find::render_pane(tab, window, cx)
+                .or_else(|| crate::tree::render_pane(tab, window, cx))
+                .unwrap_or_else(|| div().size_full().into_any_element());
+            let ring = (ringed_pane(tab, window, cx) == Some(Pane::Tree))
+                .then(|| focus_ring("focus-ring-tree", cx));
+            div()
+                .debug_selector(|| "file-tree-pane".into())
+                .relative()
+                .size_full()
+                .child(tree)
+                .children(ring)
+                .into_any_element()
+        }
+    };
+    v_flex()
+        .size_full()
+        .child(top_row)
+        .child(div().flex_1().min_h_0().child(content))
+        .into_any_element()
+}
+
+/// The main column's panes of `tab`: diff viewport | threads panel.
 pub(crate) fn render(
     tab: &ReviewTab,
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
-    // Every review tab gets a file tree (`features::attach`); find (⌘F,
-    // T3.15) takes its place while open.
-    let tree = crate::find::render_pane(tab, window, cx)
-        .or_else(|| crate::tree::render_pane(tab, window, cx))
-        .unwrap_or_else(|| div().size_full().bg(cx.theme().sidebar).into_any_element());
     let threads = tab.panes.threads_visible.then(|| {
         crate::threads::render_panel(tab, window, cx)
             .unwrap_or_else(|| empty_threads(cx).into_any_element())
     });
     let border = cx.theme().border;
     let focus = tab.viewport_focus().clone();
-    // The pane with the keyboard shows a focus ring (T5.6; a composer draws
-    // its own) while the keyboard is in use, like macOS's and the web's
-    // focus-visible: a click does not light it up.
-    let focused = window
-        .last_input_was_keyboard()
-        .then(|| crate::keyboard::focused_pane(tab, window, cx))
-        .flatten();
+    let focused = ringed_pane(tab, window, cx);
     let ring = |pane: Pane, selector: &'static str| {
         (focused.as_ref() == Some(&pane)).then(|| focus_ring(selector, cx))
     };
-    let (tree_ring, viewport_ring, threads_ring) = (
-        ring(Pane::Tree, "focus-ring-tree"),
+    let (viewport_ring, threads_ring) = (
         ring(Pane::Viewport, "focus-ring-viewport"),
         ring(Pane::Threads, "focus-ring-threads"),
     );
-    h_resizable("review-panes")
+    h_resizable("review-body")
         .with_state(&tab.panes.state)
-        .child(
-            resizable_panel()
-                .size(px(TREE_WIDTH))
-                .size_range(px(160.)..px(640.))
-                .flex_none()
-                .child(
-                    div()
-                        .debug_selector(|| "file-tree-pane".into())
-                        .relative()
-                        .size_full()
-                        .border_r_1()
-                        .border_color(border)
-                        .child(tree)
-                        .children(tree_ring),
-                ),
-        )
         .child(
             resizable_panel().size_range(px(320.)..px(100_000.)).child(
                 div()

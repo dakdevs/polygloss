@@ -1,6 +1,10 @@
-//! A review tab (design §11.1): toolbar, banner strip, then the file tree |
-//! diff viewport | threads panel panes. One tab per review; opening a review
-//! that is already open focuses its tab ([`open_review`]).
+//! A review tab (design §11.1, ADR-0026): the window's shell
+//! ([`crate::chrome::shell`]) with the sidebar (its top row, then the file
+//! tree, or find in its place, or the Reviews list) beside the main column
+//! (toolbar row, banner strip, then the diff viewport | threads panel). One
+//! tab per review; opening a review that is already open focuses its tab
+//! ([`open_review`]). The sidebar renders inside the tab, so the tree keeps
+//! the tab's key context.
 //!
 //! Features plug in without editing this module: every feature module's
 //! `attach` runs for each new tab (subscriptions, per-tab state kept with
@@ -185,8 +189,17 @@ impl Focusable for ReviewTab {
 
 impl Render for ReviewTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = panes::render_sidebar(self, window, cx);
         let toolbar = toolbar::render(self, window, cx);
         let panes = panes::render(self, window, cx);
+        let main = v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .child(toolbar)
+            .child(self.banners.clone())
+            .child(gpui_kit::div().flex_1().min_h_0().child(panes))
+            .into_any_element();
+        let shell = crate::chrome::shell(sidebar, main, self.panes.threads_visible, window, cx);
         crate::keymap::handlers::apply(v_flex(), cx)
             .key_context("Tab")
             .track_focus(&self.focus)
@@ -196,10 +209,7 @@ impl Render for ReviewTab {
                 }),
             )
             .size_full()
-            .bg(cx.theme().background)
-            .child(toolbar)
-            .child(self.banners.clone())
-            .child(gpui_kit::div().flex_1().min_h_0().child(panes))
+            .child(shell)
     }
 }
 

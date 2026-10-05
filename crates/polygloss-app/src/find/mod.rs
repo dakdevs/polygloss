@@ -1,7 +1,8 @@
 //! Find across all files (⌘F, design §11.14).
 //!
 //! Every review tab gets a [`FindBar`]. ⌘F (`tab::Find`) opens it with its
-//! field focused, in the left pane in place of the file tree
+//! field focused, in the sidebar's Files segment (shown first) in place of
+//! the file tree
 //! ([`render_pane`], like Xcode's Find navigator, so it never covers the
 //! diff); closing it brings the tree back as it was. Typing starts a search of every file's old and new blobs on the
 //! background executor ([`search`]): files the viewport has not loaded
@@ -74,6 +75,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-cmd-r", ToggleRegex, Some(CONTEXT)),
     ]);
     crate::keymap::handlers::on_action::<ReviewTab, Find>(cx, |tab, _, window, cx| {
+        // The bar takes the tree's place in the sidebar's Files segment.
+        crate::chrome::show_files(window, cx);
         if let Some(bar) = find_bar(tab).cloned() {
             bar.update(cx, |bar, cx| bar.open(window, cx));
         }

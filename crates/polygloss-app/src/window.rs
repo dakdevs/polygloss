@@ -1,22 +1,19 @@
-//! The one main window (design §11.1, ADR-0023): a title bar holding the tab
-//! bar, then the active tab. The app keeps running when it closes, and
-//! clicking the Dock icon reopens it ([`reopen`], `on_reopen`). Also the
-//! native menu bar skeleton (App, File, Edit, View, Review, Window, Help),
-//! which feature modules extend with [`add_menu_items`] before
-//! [`install_menus`] runs.
+//! The one main window (design §11.1, ADR-0023, ADR-0026): the active tab at
+//! full size, with no title bar and no tab row. Each page draws the whole
+//! shell (sidebar and main column, [`crate::chrome`]); open reviews are
+//! listed in the sidebar, and the `Tabs` model and its actions are as
+//! before. The window's title follows the active tab. The app keeps running
+//! when it closes, and clicking the Dock icon reopens it ([`reopen`],
+//! `on_reopen`). Also the native menu bar skeleton (App, File, Edit, View,
+//! Review, Window, Help), which feature modules extend with
+//! [`add_menu_items`] before [`install_menus`] runs.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, TitleBar, WindowExt as _, v_flex,
-};
-use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _, v_flex};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Focusable, Global,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
     InteractiveElement as _, IntoElement, Menu, MenuItem, OsAction, ParentElement as _, Render,
-    SharedString, Styled as _, SystemMenuType, WeakEntity, Window, WindowBounds, WindowOptions,
-    div, px, size,
+    SharedString, Styled as _, SystemMenuType, WeakEntity, Window, div, px, size,
 };
 
 use crate::home::HomeView;
@@ -57,6 +54,8 @@ pub struct MainWindow {
     toasts: Vec<SharedString>,
     /// The settings error generation last toasted.
     settings_errors_seen: u64,
+    /// The window's title as last set (the active tab's).
+    window_title: SharedString,
 }
 
 /// Handlers and menu items of the window and its tabs (their key bindings
@@ -209,13 +208,7 @@ pub fn open_main_window_sized(
     window_size: gpui_kit::Size<gpui_kit::Pixels>,
     cx: &mut App,
 ) -> anyhow::Result<(AnyWindowHandle, Entity<MainWindow>)> {
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(window_size, cx)),
-        window_min_size: Some(size(px(720.), px(480.))),
-        focus: true,
-        show: true,
-        ..TitleBar::window_options()
-    };
+    let options = crate::chrome::window_options(Bounds::centered(None, window_size, cx));
     let (window, view) = gpui_kit::open_window(options, cx, |window, cx| {
         let home = HomeView::new(window, cx);
         cx.new(|cx| MainWindow::new(home, window, cx))
@@ -265,12 +258,14 @@ impl MainWindow {
             this.toast_settings_error(window, cx)
         })
         .detach();
+        crate::chrome::Chrome::install(cx);
         let mut this = MainWindow {
             focus,
             tabs: Tabs::new(home),
             open_errors: Vec::new(),
             toasts: Vec::new(),
             settings_errors_seen: 0,
+            window_title: SharedString::default(),
         };
         this.toast_settings_error(window, cx);
         this
@@ -379,7 +374,8 @@ impl MainWindow {
         // as in Safari, the window closes with its last tab.
     }
 
-    fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Closes tab `ix` (the sidebar's ×), as ⌘W closes the active one.
+    pub(crate) fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.close(ix).is_some() {
             self.focus_active(window, cx);
             cx.notify();
@@ -397,42 +393,6 @@ impl MainWindow {
         self.focus_active(window, cx);
         cx.notify();
     }
-
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = self.tabs.items().iter().enumerate().map(|(ix, item)| {
-            let tab =
-                Tab::new()
-                    .label(item.title(cx))
-                    .when(matches!(item, TabItem::Home(_)), |t| {
-                        t.prefix(
-                            div()
-                                .pl_1()
-                                .child(gpui_kit::component::Icon::new(IconName::Inbox).small()),
-                        )
-                    });
-            if self.tabs.closable(ix) {
-                tab.suffix(
-                    Button::new(("close-tab", ix))
-                        .icon(IconName::Close)
-                        .xsmall()
-                        .ghost()
-                        .tooltip("Close Tab (⌘W)")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.close_tab_at(ix, window, cx)
-                        })),
-                )
-            } else {
-                tab
-            }
-        });
-        TabBar::new("tabs")
-            .selected_index(self.tabs.active())
-            .max_width(px(260.))
-            .children(tabs)
-            .on_click(
-                cx.listener(|this, ix: &usize, window, cx| this.activate_tab(*ix, window, cx)),
-            )
-    }
 }
 
 impl Focusable for MainWindow {
@@ -442,7 +402,12 @@ impl Focusable for MainWindow {
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.tabs.active_item().title(cx);
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
         let active: gpui_kit::AnyElement = match self.tabs.active_item() {
             TabItem::Home(home) => home.clone().into_any_element(),
             TabItem::Review(tab) => tab.clone().into_any_element(),
@@ -459,16 +424,6 @@ impl Render for MainWindow {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .child(
-                TitleBar::new().child(
-                    div()
-                        .debug_selector(|| "tab-bar".into())
-                        .flex_1()
-                        .h_full()
-                        .min_w_0()
-                        .child(self.render_tab_bar(cx)),
-                ),
-            )
             .child(div().flex_1().min_h_0().child(active))
     }
 }

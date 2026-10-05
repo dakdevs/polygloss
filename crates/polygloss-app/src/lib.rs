@@ -4,7 +4,9 @@
 //!
 //! The shell (T3.1): [`startup`] (arguments, logging, the store, the GPUI
 //! app), [`app_state`], [`settings`], [`window`] (the one main window and
-//! the menu bar), [`tabs`], [`review_tab`] (toolbar, banner strip, panes),
+//! the menu bar), [`chrome`] (window options, the sidebar and the top rows
+//! every page renders, T6.3), [`assets`] (the icons, T6.3), [`tabs`],
+//! [`review_tab`] (toolbar, banner strip, panes),
 //! [`provider`] ([`CoreDiffProvider`]), [`logging`], [`perf`] (test-only
 //! `--perf-scenario`), [`dump`] (the hidden `--dump-keymap`/`--dump-settings`)
 //! and [`features`], which wires every feature module in:
@@ -12,6 +14,8 @@
 //! pane contributors their render functions (plan M3 "App module map").
 
 pub mod app_state;
+pub mod assets;
+pub mod chrome;
 pub mod composer;
 pub mod cursor;
 pub mod dump;

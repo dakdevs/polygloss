@@ -45,7 +45,7 @@ Select a row with `j`/`k` or the arrows and press `⏎` to open it. The row's �
 
 ## Reviewing
 
-A review tab has a toolbar, a banner strip, and three resizable panes: the **file tree**, the **diff**, and the **threads panel** (toggle it from the palette or the View menu).
+A review fills the window: the sidebar on the left shows its **file tree** (its **Files | Reviews** switch lists Home and the open reviews instead; its other button hides the sidebar), and the main column holds a toolbar, a banner strip, the **diff** and the **threads panel** (toggle it from the palette or the View menu). Drag the sidebar's edge to resize it; it keeps its width for every review. Drag either top row to move the window and double-click it to zoom.
 
 - **Toolbar:** the iteration picker ("Iteration 3 of 3") with **Changes since last review**, the base picker and **Snapshot** (live reviews), split/unified, hide whitespace, word diff by words or characters, "N / M viewed", **Hide agent notes**, and the drafts count with **Submit review**.
 - **Layout:** split when the diff is at least 160 code columns wide (`diff.split_min_columns`), otherwise unified. `s` switches, and the choice is remembered for that diff.
@@ -124,7 +124,7 @@ Every action has a key or a command palette entry, and every key can be remapped
 
 A binding's context says where it works: **Viewport** (the diff has focus), **Tree** (the file tree has focus), **Composer** (a comment box has focus), **ThreadsPanel** (the threads panel has focus), **Tab** (anywhere in a review tab), **Window** (anywhere in the main window) or **Anywhere**.
 
-Everything works without a mouse. In a review tab, `⇥` and `⇧⇥` move the keyboard between panes: file tree, diff, threads panel (when shown), then any open comment boxes. The pane with the keyboard shows a focus ring while you use the keyboard. In a comment box and the Submit review summary, `⇥` moves on instead of indenting; `⌘]` and `⌘[` indent and outdent. In the Submit review dialog, `⌘1`, `⌘2` and `⌘3` pick **Comment**, **Approve** and **Request changes**. On Home, `⇧R` reloads the list. `Esc` closes every dialog, popover and menu and gives the keyboard back.
+Everything works without a mouse. In a review tab, `⇥` and `⇧⇥` move the keyboard between panes: file tree (while the sidebar shows it), diff, threads panel (when shown), then any open comment boxes; `⌘F`, `⌘P` and the file filter show the file tree first. The pane with the keyboard shows a focus ring while you use the keyboard. In a comment box and the Submit review summary, `⇥` moves on instead of indenting; `⌘]` and `⌘[` indent and outdent. In the Submit review dialog, `⌘1`, `⌘2` and `⌘3` pick **Comment**, **Approve** and **Request changes**. On Home, `⇧R` reloads the list. `Esc` closes every dialog, popover and menu and gives the keyboard back.
 
 ### Default key bindings
 
