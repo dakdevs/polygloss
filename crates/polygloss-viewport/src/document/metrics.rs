@@ -23,6 +23,9 @@ pub struct Metrics {
     /// Card padding below the last row of a non-empty body. 0 in the flat
     /// layout.
     pub card_pad_bottom: f32,
+    /// A category section's band (design §11.6 "Sections": 36 pt on the
+    /// canvas), in the lead of the section's first file.
+    pub band_height: f32,
     /// A gap expander row.
     pub gap_height: f32,
     /// A body that is a single message: binary, "Load diff", loading, failed.
@@ -46,6 +49,7 @@ impl Default for Metrics {
             header_height: 40.0,
             card_gap: 0.0,
             card_pad_bottom: 0.0,
+            band_height: 36.0,
             gap_height: 32.0,
             placeholder_height: 48.0,
             context_lines: 3,
@@ -75,8 +79,10 @@ impl Metrics {
     /// Estimated body height (below the header) of `change` in this layout.
     ///
     /// Special bodies are exact: binary and generated files are a placeholder
-    /// (design §6.4, §12.3), a submodule one row, a change without content
-    /// changes (mode only, pure rename) nothing. Text files use counts when
+    /// (design §6.4, §12.3; a file relabeled generated or not,
+    /// [`crate::DiffViewport::set_generated`], is estimated again), a
+    /// submodule one row, a change without content changes (mode only, pure
+    /// rename) nothing. Text files use counts when
     /// known, else blob sizes, else [`Metrics::default_body_rows`].
     pub fn estimate_body(&self, change: &FileChange, hint: Option<SizeHint>) -> f32 {
         match change.kind {

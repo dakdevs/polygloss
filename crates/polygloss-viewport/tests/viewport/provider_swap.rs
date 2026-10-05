@@ -237,3 +237,56 @@ fn scroll_to_anchor_restores_a_line_after_the_swap(cx: &mut TestAppContext) {
     };
     assert_eq!(texts(&rows)[..8], texts(&before_rows)[..8], "{rows:?}");
 }
+
+#[gpui_kit::test]
+fn set_provider_clears_sections_and_keeps_the_prelude(cx: &mut TestAppContext) {
+    use gpui_kit::{IntoElement as _, Styled as _, div, px};
+    let _sb = sandbox();
+    let (view, cx) = open(
+        cx,
+        MemProvider::new(before()),
+        card_options(LayoutMode::Unified),
+        1000.,
+        600.,
+    );
+    view.update(cx, |v, cx| {
+        v.set_prelude(
+            Some(std::rc::Rc::new(|_, _| {
+                div().w_full().h(px(72.)).into_any_element()
+            })),
+            cx,
+        );
+        v.set_sections(
+            vec![polygloss_viewport::Section {
+                id: 5,
+                label: "1 test file".into(),
+                icon: None,
+                files: vec![0],
+                open: false,
+            }],
+            cx,
+        );
+    });
+    settle(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.display_order().to_vec()),
+        [1, 2, 0]
+    );
+
+    let next = MemProvider::new(after());
+    view.update(cx, |v, cx| {
+        v.set_provider(next.clone(), &[Some(0), Some(1), None], cx)
+    });
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.display_order(), &[0, 1, 2]);
+        assert!((0..3).all(|f| !v.is_hidden(f) && v.section_of(f).is_none()));
+        assert_eq!(v.section_open(5), None);
+        // The prelude is still in the first card's lead: 72 + 12.
+        assert_eq!(v.document().header_top(0), 84.0);
+    });
+    let d = debug(&view, cx);
+    assert!(d.bands.is_empty(), "{:?}", d.bands);
+    assert_eq!(d.prelude.map(|p| (p.1, p.3)), Some((0.0, 72.0)));
+    assert_eq!((d.headers[0].file_idx, d.headers[0].y), (0, 84.0));
+}

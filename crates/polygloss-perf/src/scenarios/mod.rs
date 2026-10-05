@@ -7,6 +7,7 @@
 //! | `scroll`    | `scroll_p95_ms`      | prepaint + paint per frame over 10 s at 4,000 px/s + 20 jumps |
 //! | `highlight` | `highlight_ms`       | last scroll event → first frame with every visible row highlighted, p95 of 20 stops |
 //! | `blocks`    | `comment_repaint_ms` | `set_blocks` adding a 6-line block on a visible file → next frame, p95 of 20 |
+//! | `sections`  | `sections_scroll_p95_ms`, `section_toggle_ms` | `scroll` over a document with category sections; opening a big closed section → next frame, p95 of 20 |
 //!
 //! All but `open` first [`settle`]: wait for first paint, then for the
 //! visible rows' tokens, then for a quiet window. Random choices come from a
@@ -16,6 +17,7 @@ pub mod blocks;
 pub mod highlight;
 pub mod open;
 pub mod scroll;
+pub mod sections;
 
 use std::time::Duration;
 
@@ -59,6 +61,12 @@ pub async fn run(
         ScenarioName::Blocks => {
             settle(h, cx, clock, result).await?;
             blocks::run(h, cx, &args.knobs, result).await
+        }
+        ScenarioName::Sections => {
+            // Before the first frame, as a review tab partitions its files.
+            sections::prepare(h, cx);
+            settle(h, cx, clock, result).await?;
+            sections::run(h, cx, &args.knobs, &mut rng, result).await
         }
     }
 }

@@ -2,7 +2,7 @@
 //! T2.9; dev only, never shipped).
 //!
 //! ```text
-//! polygloss-perf --corpus <name> --layout split|unified --scenario open|scroll|highlight|blocks --json
+//! polygloss-perf --corpus <name> --layout split|unified --scenario open|scroll|highlight|blocks|sections --json
 //! ```
 //!
 //! One scenario per process: open the corpus through `polygloss-core` in a

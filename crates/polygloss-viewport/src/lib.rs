@@ -22,6 +22,10 @@
 //! - [`blocks`]: host elements (threads, composers, notes) below their
 //!   anchored line, measured near the viewport, with split spacers.
 //! - [`find`]: the host's find matches marked in the code (⌘F).
+//! - Category sections ([`Section`], [`DiffViewport::set_sections`]): the
+//!   host's sections after the other files, each behind a band on the
+//!   canvas that opens or closes it; closed sections cost nothing per
+//!   frame.
 //! - The line cursor and ranges ([`CursorPos`], `j`/`k`, `⇧↑`/`⇧↓`, `]`/`[`,
 //!   `n`/`p`, `e`/`E`, `c`), the "+" on hovered line numbers, dragging
 //!   across them for a range, and text selection with copy.
@@ -49,6 +53,7 @@ pub mod numbers;
 mod paint_rows;
 pub mod pipeline;
 pub mod provider;
+mod section_band;
 mod selection;
 pub mod special;
 pub mod style;
@@ -61,11 +66,12 @@ pub use card::CardStyle;
 pub use controls::ControlAction;
 pub use cursor::{CursorPos, Direction};
 pub use debug::{
-    ControlDebug, HeaderDebug, IconDebug, MenuDebug, PlusDebug, TitleStyle, ViewportDebug,
+    BandDebug, ControlDebug, HeaderDebug, IconDebug, MenuDebug, PlusDebug, TitleStyle,
+    ViewportDebug,
 };
 pub use document::{
     BlockAnchor, BlockId, BodyRow, Document, FileLayout, FileState, HeightIndex, Metrics,
-    PlacedBlock, RowKey, ScrollAnchor, ShownFiles, SizeHint, SlotRange,
+    PlacedBlock, RowKey, ScrollAnchor, SectionFiles, ShownFiles, SizeHint, SlotRange,
 };
 pub use file_flags::FileFlags;
 pub use find::{FindCurrent, FindHighlights, FindMatcher};
@@ -74,6 +80,7 @@ pub use materialize::{LoadError, LoadOptions, Loaded, MaterializedFile};
 pub use numbers::{group_digits, one_sided};
 pub use pipeline::{FileCounts, PipelineStats};
 pub use provider::DiffProvider;
+pub use section_band::{BandFlags, Section, SectionCounts};
 pub use style::{DiffStyle, Indicators, ViewportTheme};
 pub use view::{
     DiffViewport, FrameStats, ScrollTarget, ViewportEvent, ViewportOptions, code_font,

@@ -76,12 +76,12 @@ pub(crate) fn kind_badges(change: &FileChange, lfs: bool) -> Vec<Cow<'static, st
 }
 
 /// Header geometry in px (design §11.6, the reference's file header).
-const GAP: f32 = 6.0;
+pub(crate) const GAP: f32 = 6.0;
 /// Inside a pill, left and right.
-const PILL_PAD: f32 = 6.0;
+pub(crate) const PILL_PAD: f32 = 6.0;
 const PILL_RADIUS: f32 = 6.0;
 /// The chevron, open-in-editor, the Viewed box and ⋯.
-const ICON: f32 = 16.0;
+pub(crate) const ICON: f32 = 16.0;
 /// In a review-state pill, and the gap after it.
 const SMALL_ICON: f32 = 14.0;
 const ICON_GAP: f32 = 4.0;
@@ -91,18 +91,18 @@ const BUTTON: f32 = ICON + 8.0;
 const VIEWED_PAD: f32 = 8.0;
 const VIEWED_GAP: f32 = 6.0;
 
-const CHEVRON_DOWN: &str = "icons/chevron-down.svg";
-const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
+pub(crate) const CHEVRON_DOWN: &str = "icons/chevron-down.svg";
+pub(crate) const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
 const ELLIPSIS: &str = "icons/ellipsis.svg";
 const OPEN_IN_EDITOR: &str = "icons/square-arrow-out-up-right.svg";
 const VIEWED_BOX: &str = "icons/square.svg";
 const VIEWED_CHECKED: &str = "icons/square-check.svg";
 
 /// A pill to paint: its label, its icon and its width with padding.
-struct Pill {
-    text: Rc<ShapedText>,
+pub(crate) struct Pill {
+    pub text: Rc<ShapedText>,
     icon: Option<(&'static str, Hsla)>,
-    width: f32,
+    pub width: f32,
 }
 
 impl Painter<'_> {
@@ -405,7 +405,13 @@ impl Painter<'_> {
     }
 
     /// A pill with `text` in the UI font and `color`, and `icon` before it.
-    fn pill(&mut self, text: &str, icon: Option<&'static str>, slot: u8, color: Hsla) -> Pill {
+    pub(crate) fn pill(
+        &mut self,
+        text: &str,
+        icon: Option<&'static str>,
+        slot: u8,
+        color: Hsla,
+    ) -> Pill {
         let text = self.ui_label(text, slot, color);
         let icon_w = if icon.is_some() {
             SMALL_ICON + ICON_GAP
@@ -420,7 +426,7 @@ impl Painter<'_> {
         }
     }
 
-    fn paint_pill(&mut self, pill: &Pill, x: f32, y: f32, h: f32, ty: f32) {
+    pub(crate) fn paint_pill(&mut self, pill: &Pill, x: f32, y: f32, h: f32, ty: f32) {
         let rect = (x, y, pill.width, h);
         self.rounded(HEADERS, rect, self.theme.pill_background, None, PILL_RADIUS);
         let mut tx = x + PILL_PAD;

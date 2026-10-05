@@ -368,9 +368,10 @@ impl Queue {
 /// What the workers share with the main thread.
 struct Shared {
     provider: Arc<dyn DiffProvider>,
-    /// The files as the provider listed them (the workers read blob ids and
-    /// paths; kinds found later live in the document).
-    changes: Arc<Vec<FileChange>>,
+    /// The files as the provider listed them, or as relabeled since
+    /// ([`Pipeline::set_files`]): the workers read blob ids and paths; kinds
+    /// found later live in the document. Each job takes it once.
+    changes: Mutex<Arc<Vec<FileChange>>>,
     queue: Mutex<Queue>,
     tokens: Mutex<TokenCache>,
     /// Files whose counts are known, or that need none: the counts pass skips
@@ -457,7 +458,8 @@ impl Shared {
         if cancel.load(Ordering::Relaxed) != 0 {
             return Done::Cancelled { flight, file };
         }
-        let change = &self.changes[file as usize];
+        let changes = lock(&self.changes).clone();
+        let change = &changes[file as usize];
         match work {
             Work::Load { opts, theme } => {
                 // The layout on screen now, not when the job was queued (a
@@ -568,6 +570,7 @@ impl Shared {
     }
 
     fn run_chunk(&self, chunk: Chunk) -> Done {
+        let changes = lock(&self.changes).clone();
         match chunk {
             Chunk::Sizes(files) => {
                 let size = |oid: &Oid| {
@@ -580,7 +583,7 @@ impl Shared {
                 let sizes = files
                     .into_iter()
                     .filter_map(|f| {
-                        let change = &self.changes[f as usize];
+                        let change = &changes[f as usize];
                         if change.kind == FileKind::Submodule {
                             return None;
                         }
@@ -593,7 +596,7 @@ impl Shared {
                 let counted = files
                     .into_iter()
                     .filter(|&f| !self.counted[f as usize].load(Ordering::Relaxed))
-                    .filter_map(|f| Some((f, self.count(&self.changes[f as usize], &diff)?)))
+                    .filter_map(|f| Some((f, self.count(&changes[f as usize], &diff)?)))
                     .collect();
                 Done::Counts {
                     epoch,
@@ -693,7 +696,7 @@ impl Pipeline {
         Pipeline {
             shared: Arc::new(Shared {
                 provider,
-                changes,
+                changes: Mutex::new(changes),
                 queue: Mutex::new(Queue {
                     urgent: VecDeque::new(),
                     pass: None,
@@ -1256,6 +1259,15 @@ impl Pipeline {
         if w.counts.is_some() {
             self.shared.counted[f as usize].store(true, Ordering::Relaxed);
         }
+    }
+
+    /// The same files with new metadata (a Generated verdict,
+    /// [`crate::DiffViewport::set_generated`]), shared with the view and the
+    /// document. Nothing queued or running changes; the window is planned
+    /// again, so a file that stopped being generated loads.
+    pub fn set_files(&mut self, files: Arc<Vec<FileChange>>) {
+        *lock(&self.shared.changes) = files;
+        self.dirty = true;
     }
 
     /// File `f` lost its data (evicted): forget its tokens' state.

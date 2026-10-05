@@ -56,11 +56,13 @@ impl FileFlags {
 
 impl DiffViewport {
     /// Replaces every file's review state (one entry per file, in file
-    /// order; missing entries are all-false, extra ones ignored).
+    /// order; missing entries are all-false, extra ones ignored), and with it
+    /// the section bands' indicators.
     pub fn set_file_flags(&mut self, mut flags: Vec<FileFlags>, cx: &mut Context<Self>) {
         flags.resize(self.files.len(), FileFlags::default());
         if flags != self.flags {
             self.flags = flags;
+            self.refresh_band_flags();
             cx.notify();
         }
     }

@@ -1,10 +1,10 @@
 //! Display slots (design §11.6 "Sections", §11.15): the order files are
 //! shown in, and the files that are hidden. A file's slot is its position in
 //! display order and the height index is by slot; every public API stays
-//! keyed by `file_idx` (git order). A hidden file is only its lead (nothing
-//! until T6.17 gives a section band one): it is never laid out, painted,
-//! loaded or walked, and walks step over it by offset, so hidden files cost
-//! nothing per frame.
+//! keyed by `file_idx` (git order). A hidden file is only its lead (nothing,
+//! or a closed section's band, [`super::sections`]): it is never laid out,
+//! painted, loaded or walked, and walks step over it by offset, so hidden
+//! files cost nothing per frame.
 
 use super::Document;
 use super::anchor::{RowKey, ScrollAnchor};
@@ -136,8 +136,8 @@ impl Document {
     /// Hides `files` (or shows them again): a hidden file is only its lead
     /// and is never laid out, painted, loaded or walked. An anchor at the top
     /// of the document (or in the prelude) stays there; an anchor in a file
-    /// that is hidden now moves to the top of where that file was, `(file,
-    /// Lead, 0)`.
+    /// that is hidden now moves to its section's band, or to the top of
+    /// where that file was, `(file, Lead, 0)`.
     pub fn set_hidden(&mut self, files: &[u32], hidden: bool) {
         let top = self.offset_in_top_lead();
         let mut changed = false;
@@ -152,18 +152,12 @@ impl Document {
         if !changed {
             return;
         }
-        if top.is_none() && self.is_hidden(self.anchor.file_idx) {
-            self.anchor = ScrollAnchor {
-                file_idx: self.anchor.file_idx,
-                row: RowKey::Lead,
-                offset_px: 0.0,
-            };
-        }
+        self.follow_hidden_anchor(top);
         self.relayout_slots(top);
     }
 
-    /// The top of the document: the lead of the first shown file (of the
-    /// first file when every file is hidden).
+    /// The top of the document: the lead of the first shown file or band (of
+    /// the first file when every file is hidden and no band is left).
     pub fn top_anchor(&self) -> ScrollAnchor {
         ScrollAnchor {
             file_idx: self
@@ -176,13 +170,14 @@ impl Document {
         }
     }
 
-    /// The slot whose lead holds the prelude: the first shown one, else the
-    /// first.
+    /// The slot whose lead holds the prelude: the first one shown or holding
+    /// a band, else the first.
     pub(crate) fn top_slot(&self) -> u32 {
         self.shown.map_or(0, |(first, _)| first)
     }
 
-    /// The slot holding the gap below the last card: the last shown one.
+    /// The slot holding the gap below the last card or band: the last one
+    /// shown or holding a band.
     pub(crate) fn last_shown_slot(&self) -> Option<u32> {
         self.shown.map(|(_, last)| last)
     }
@@ -212,18 +207,22 @@ impl Document {
 
     /// The anchor's offset into the top of the document, the first shown
     /// file's lead (the prelude and the gap below it), when it is there.
-    fn offset_in_top_lead(&self) -> Option<f32> {
+    pub(crate) fn offset_in_top_lead(&self) -> Option<f32> {
         let top = self.top_anchor();
         (self.anchor.file_idx == top.file_idx && self.anchor.row == RowKey::Lead)
             .then_some(self.anchor.offset_px)
     }
 
-    /// After the order or the hidden set changed: finds the first and last
-    /// shown slots, rebuilds the height index (leads and the last card's gap
-    /// move with them) and keeps the anchor, or its place in the top lead
-    /// (`top`, from [`Document::offset_in_top_lead`]).
-    fn relayout_slots(&mut self, top: Option<f32>) {
-        let shown = |f: &u32| !self.entries[*f as usize].hidden;
+    /// After the order, the hidden set or the sections changed: finds the
+    /// first and last slots shown or holding a band, rebuilds the height
+    /// index (leads and the last gap move with them) and keeps the anchor,
+    /// or its place in the top lead (`top`, from
+    /// [`Document::offset_in_top_lead`]).
+    pub(crate) fn relayout_slots(&mut self, top: Option<f32>) {
+        let shown = |f: &u32| {
+            let entry = &self.entries[*f as usize];
+            !entry.hidden || entry.band
+        };
         let first = self.order.iter().position(shown);
         let last = self.order.iter().rposition(shown);
         self.shown = first.zip(last).map(|(a, b)| (a as u32, b as u32));

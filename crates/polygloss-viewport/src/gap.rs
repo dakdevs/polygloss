@@ -277,11 +277,12 @@ impl DiffViewport {
     /// below, so that a host can put the cursor on it (going to a thread or
     /// a find match). Lines already shown change nothing. Before the file's
     /// diff is loaded the reveal waits for it and applies when the file is
-    /// laid out.
+    /// laid out. A file in a closed section opens it first.
     pub fn reveal_line(&mut self, file_idx: u32, side: Side, line: u32, cx: &mut Context<Self>) {
         if file_idx >= self.doc.len() {
             return;
         }
+        self.open_section_of(file_idx, cx);
         match self.loaded(file_idx) {
             Some(file) => {
                 if let Some(range) = hidden_reveal(&file.diff, side, line)

@@ -103,6 +103,15 @@ describe("budgets", () => {
     });
     expect(budgets.metrics.watcher_banner_ms.budget).toEqual({ typical: 500 });
     expect(budgets.metrics.peak_rss_mb.budget).toEqual({ linux: 1536 });
+    // T6.17: scrolling with category sections, and opening one (§12.1).
+    expect(budgets.metrics.sections_scroll_p95_ms.budget).toEqual({
+      synthetic: 8.3,
+      linux: 8.3,
+    });
+    expect(budgets.metrics.section_toggle_ms.budget).toEqual({
+      synthetic: 50,
+      linux: 50,
+    });
   });
 
   test("budget check flags a miss", () => {
@@ -266,6 +275,10 @@ describe("baseline", () => {
     expect(FRAME_NOISE_MS).toBe(8.3);
     expect(FRAME_BOUND_METRICS).not.toContain("scroll_p95_ms");
     expect(FRAME_BOUND_METRICS).not.toContain("peak_rss_mb");
+    // Opening a section ends on the frame that shows it; its scroll p95 is
+    // CPU time per frame.
+    expect(FRAME_BOUND_METRICS).toContain("section_toggle_ms");
+    expect(FRAME_BOUND_METRICS).not.toContain("sections_scroll_p95_ms");
   });
 
   test("a baseline is looked up by the machine's CPU", () => {
@@ -355,6 +368,18 @@ describe("plan", () => {
     ).toBe(true);
     // The watcher→banner time runs in the app (T3.11) on the typical
     // corpus, where its budget applies.
+    // Category sections (T6.17) on the large corpora, in polygloss-perf.
+    expect(where("sections")).toEqual([
+      "synthetic/split",
+      "synthetic/unified",
+      "linux/split",
+      "linux/unified",
+    ]);
+    expect(
+      runs
+        .filter((r) => r.scenario === "sections")
+        .every((r) => r.runner === "perf" && r.enabled),
+    ).toBe(true);
     const banner = runs.filter((r) => r.scenario === "watcher-banner");
     expect(banner.map((r) => [r.corpus, r.runner, r.enabled])).toEqual([
       ["typical", "app", true],
@@ -511,6 +536,7 @@ case "$scenario" in
   scroll) metrics="\\"scroll_p95_ms\\": \${SLOW_SCROLL:-2.5}, \\"frame_interval_p95_ms\\": 8.4, \\"frame_interval_max_ms\\": 16.9" ;;
   highlight) metrics='"highlight_ms": 40' ;;
   blocks) metrics='"comment_repaint_ms": 12' ;;
+  sections) metrics="\\"sections_scroll_p95_ms\\": \${SECTIONS_SCROLL:-2.7}, \\"section_toggle_ms\\": \${SECTION_TOGGLE:-18}" ;;
 esac
 printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"repo":"%s","base":"%s","head":"%s","mode":"%s","home":"%s"}}\\n' \\
   "$scenario" "$corpus" "$layout" "$metrics" "$repo" "$base" "$head" "$mode" "$HOME"
@@ -796,6 +822,65 @@ describe("run-perf CLI", () => {
       expect(JSON.parse(readFileSync(baseline, "utf8"))).toEqual({
         entries: [],
       });
+    },
+    cliTimeout,
+  );
+
+  test(
+    "sections scenario reports scroll p95 and toggle time",
+    () => {
+      const out = join(sandbox.home, "results", "sections.json");
+      const r = runPerf([
+        "--corpus",
+        "synthetic,linux",
+        "--layouts",
+        "split,unified",
+        "--scenarios",
+        "sections",
+        "--check-budgets",
+        "--out",
+        out,
+      ]);
+      expect({ code: r.code, stderr: r.stderr }).toMatchObject({ code: 0 });
+      const results = JSON.parse(readFileSync(out, "utf8")) as Results;
+      expect(results.rows.map((x) => `${x.corpus}/${x.layout}`)).toEqual([
+        "synthetic/split",
+        "synthetic/unified",
+        "linux/split",
+        "linux/unified",
+      ]);
+      for (const x of results.rows)
+        expect(x.metrics).toMatchObject({
+          sections_scroll_p95_ms: 2.7,
+          section_toggle_ms: 18,
+        });
+      // polygloss-perf runs it by name.
+      const run = results.runs.find((x) => x.scenario === "sections")!;
+      expect(run.error).toBeNull();
+      expect(
+        results.budgets
+          ?.filter((c) => c.metric.startsWith("section"))
+          .map((c) => c.status),
+      ).toEqual(Array(8).fill("pass"));
+      expect(r.stdout).toContain("18 ✓");
+      // Over a budget (opening < 50 ms, scrolling < 8.3 ms), it fails.
+      const slow = runPerf(
+        [
+          "--corpus",
+          "synthetic",
+          "--layouts",
+          "split",
+          "--scenarios",
+          "sections",
+          "--check-budgets",
+          "--out",
+          join(sandbox.home, "results", "sections-slow.json"),
+        ],
+        { SECTION_TOGGLE: "55", SECTIONS_SCROLL: "8.4" },
+      );
+      expect(slow.code).toBe(1);
+      expect(slow.stderr).toContain("section_toggle_ms synthetic split = 55");
+      expect(slow.stderr).toContain("sections_scroll_p95_ms synthetic split");
     },
     cliTimeout,
   );

@@ -62,6 +62,8 @@ export const metricNames = [
   "comment_repaint_ms",
   "watcher_banner_ms",
   "app_first_paint_ms",
+  "sections_scroll_p95_ms",
+  "section_toggle_ms",
   "peak_rss_mb",
 ] as const;
 export type MetricName = (typeof metricNames)[number];
@@ -88,6 +90,7 @@ export const FRAME_BOUND_METRICS: readonly MetricName[] = [
   "comment_repaint_ms",
   "watcher_banner_ms",
   "app_first_paint_ms",
+  "section_toggle_ms",
 ];
 
 /**
@@ -277,6 +280,15 @@ export const scenarios: Scenario[] = [
     name: "highlight",
     runner: "perf",
     metrics: ["highlight_ms"],
+    enabled: true,
+  },
+  // T6.17: a document with category sections (a prelude, the last 20 files
+  // open, every other file behind a closed band): scrolling it, and opening
+  // the closed section.
+  {
+    name: "sections",
+    runner: "perf",
+    metrics: ["sections_scroll_p95_ms", "section_toggle_ms"],
     enabled: true,
   },
   // T3.1: first paint through the app's real startup.

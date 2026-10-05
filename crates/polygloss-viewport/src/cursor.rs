@@ -9,7 +9,9 @@
 //! A move into a file that is not laid out yet (never materialized) scrolls
 //! to it and lands once its rows exist ([`Pending`], resolved in prepaint).
 //! Moves across files walk the shown files in display order: hidden files
-//! are passed over, and the last shown file is the end.
+//! (closed sections) are passed over, and the last shown file is the end.
+//! Explicit targets ([`DiffViewport::set_cursor`],
+//! [`DiffViewport::go_to_file`]) open a closed section first.
 
 use gpui_kit::Context;
 use polygloss_diff::Side;
@@ -116,10 +118,14 @@ impl DiffViewport {
     }
 
     /// Puts the cursor at `pos` (or removes it), scrolling it into view.
-    /// Hosts use it to jump to a thread or a find match.
+    /// Hosts use it to jump to a thread or a find match. A position in a
+    /// closed section opens it first.
     pub fn set_cursor(&mut self, pos: Option<CursorPos>, cx: &mut Context<Self>) {
         self.cursor.pending = None;
         self.selection = None;
+        if let Some(p) = pos {
+            self.open_section_of(p.file_idx, cx);
+        }
         self.put_cursor(pos, cx);
         if pos.is_some() {
             self.reveal_cursor(Reveal::Jump, cx);
@@ -373,12 +379,14 @@ impl DiffViewport {
 
     /// File `file_idx`'s header to the top, the cursor on its first line
     /// (none when the file shows no code rows, e.g. collapsed). Hosts use it
-    /// to jump to a file (the next unviewed one, T3.7).
+    /// to jump to a file (the next unviewed one, T3.7). A file in a closed
+    /// section opens it first.
     pub fn go_to_file(&mut self, file_idx: u32, cx: &mut Context<Self>) {
         if file_idx >= self.doc.len() {
             return;
         }
         self.selection = None;
+        self.open_section_of(file_idx, cx);
         self.jump_to_file(file_idx, cx);
     }
 
