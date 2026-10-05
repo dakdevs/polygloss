@@ -21,8 +21,8 @@
 //!
 //! Debug selectors: `header-card`, `header-avatar`, `header-title`,
 //! `header-byline`, `header-stats`, `header-sha`, `header-commits-toggle`,
-//! `header-commit-<i>`, `header-commits-more` and `live-snapshot`; the
-//! texts as `"<name>: <text>"`.
+//! `header-commits` (the list), `header-commit-<i>`, `header-commits-more`
+//! and `live-snapshot`; the texts as `"<name>: <text>"`.
 
 use std::rc::Rc;
 
@@ -49,7 +49,7 @@ use polygloss_viewport::{RenderBlock, group_digits};
 use crate::app_state::AppState;
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::review_tab::toolbar::text;
-use crate::review_tab::{ReviewTab, compare_sides, live_branch, repo_dir, short_ref};
+use crate::review_tab::{ReviewTab, compare_sides, live_branch, short_ref};
 
 /// Commits a compare's card lists at most.
 const MAX_COMMITS: u32 = 50;
@@ -166,7 +166,13 @@ fn load(core: &Core, opened: &OpenedDiff) -> anyhow::Result<Content> {
     if opened.kind == ReviewKind::Live {
         return Ok(Content::Live);
     }
-    let git = Git::new(repo_dir(opened));
+    // A bare repo has no worktree: git runs in its git dir.
+    let repo = &opened.repo;
+    let git = Git::new(
+        repo.toplevel
+            .clone()
+            .unwrap_or_else(|| repo.git_dir.clone()),
+    );
     let head = opened
         .head_commit
         .as_ref()
@@ -290,7 +296,8 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
                 byline,
                 toggle: (*total > 0).then(|| commits_toggle(commits_open, tab.clone())),
                 trailing: None,
-                list: commits_open.then(|| commit_list(commits, *total, &look, cx)),
+                // Open with no commits (after a reload): no toggle, no list.
+                list: (commits_open && *total > 0).then(|| commit_list(commits, *total, &look, cx)),
             }
         }
         Content::Live => {
@@ -509,6 +516,7 @@ fn commit_list(commits: &[CommitDetails], total: u32, look: &Look, cx: &App) -> 
     let colors = crate::theme::viewport_theme(cx);
     let more = u64::from(total).saturating_sub(commits.len() as u64);
     v_flex()
+        .debug_selector(|| "header-commits".into())
         .py_1()
         .border_t_1()
         .border_color(colors.card_border)

@@ -234,7 +234,8 @@ impl Render for ReviewTab {
     }
 }
 
-/// The repo's directory: its worktree, else the git dir's parent.
+/// The repo's directory as shown: its worktree, else the git dir's parent
+/// (for a bare repo, no repository: git runs in `git_dir`).
 fn repo_dir(opened: &OpenedDiff) -> std::path::PathBuf {
     opened.repo.toplevel.clone().unwrap_or_else(|| {
         let common = &opened.repo.common_dir;

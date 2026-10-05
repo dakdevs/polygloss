@@ -436,3 +436,107 @@ fn late_header_card_and_show_commits_keep_scroll_top_0(cx: &mut TestAppContext) 
     assert!(shows(shell.cx, "header-commit", "step 30"));
     assert!(painted(shell.cx, "header-commits-more").is_none(), "all 30");
 }
+
+#[gpui_kit::test]
+fn a_bare_repo_commit_review_shows_the_header_card(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = authored_repo();
+    // Beside the worktree, in no repository: git run in the bare repo's
+    // parent finds none.
+    let bare = repo.path().parent().unwrap().join("bare.git");
+    repo.git(&["clone", "-q", "--bare", ".", bare.to_str().unwrap()]);
+    let mut shell = start(cx);
+    shell.open(commit_req(&bare, "HEAD")).unwrap();
+    assert!(painted(shell.cx, "header-card").is_some());
+    assert!(shows(shell.cx, "header-title", "Parse configs"));
+    assert!(shows(shell.cx, "header-sha", &short(&repo, "HEAD")));
+}
+
+#[gpui_kit::test]
+fn a_reload_off_screen_measures_the_card_again(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // Three commits, the last adding 400 lines: a diff to scroll in.
+    let repo = commits_repo(2);
+    let long: String = (0..400).map(|i| format!("line {i}\n")).collect();
+    repo.write("long.txt", long.as_bytes());
+    repo.commit("long");
+    let mut shell = start(cx);
+    let tab = shell
+        .open(compare(repo.path(), CompareMode::ThreeDot, None))
+        .unwrap();
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let prelude = |shell: &mut Shell| {
+        viewport
+            .read_with(shell.cx, |v, _| v.document().prelude_height())
+            .expect("the card is the prelude")
+    };
+    click(shell.cx, "header-commits-toggle");
+    assert!(shows(shell.cx, "header-commit", "long"));
+    let three = prelude(&mut shell);
+
+    // Scrolled past the card, a refresh brings three more commits into the
+    // open list.
+    viewport.update(shell.cx, |v, cx| v.scroll_by(600.0, cx));
+    draw(shell.cx);
+    assert!(painted(shell.cx, "header-card").is_none());
+    for i in 0..3 {
+        repo.write("a.txt", format!("more {i}\n").as_bytes());
+        repo.commit(&format!("more {i}"));
+    }
+    tab.update_in(shell.cx, polygloss_app::live::refresh_tab);
+    draw(shell.cx);
+    assert!(
+        painted(shell.cx, "header-card").is_none(),
+        "still off screen"
+    );
+    let off_screen = prelude(&mut shell);
+
+    // On screen the card is laid out every frame: its height there is the
+    // truth.
+    viewport.update(shell.cx, |v, cx| v.scroll_by(-10_000.0, cx));
+    draw(shell.cx);
+    assert!(shows(shell.cx, "header-commit", "more 2"));
+    let on_screen = prelude(&mut shell);
+    assert!(
+        on_screen > three,
+        "{on_screen} > {three}: six rows, not three"
+    );
+    assert_eq!(off_screen, on_screen, "measured again off screen");
+}
+
+#[gpui_kit::test]
+fn an_open_commit_list_goes_with_the_last_commit(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // `main` one commit past the fork; `feature` two.
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("a.txt", b"0\n");
+    let fork = repo.commit("base");
+    repo.branch("feature");
+    repo.write("b.txt", b"main\n");
+    repo.commit("main 1");
+    repo.checkout("feature");
+    for i in 1..=2 {
+        repo.write("a.txt", format!("{i}\n").as_bytes());
+        repo.commit(&format!("step {i}"));
+    }
+    let mut shell = start(cx);
+    // `main..feature`: both of `feature`'s commits.
+    let tab = shell
+        .open(compare(repo.path(), CompareMode::Direct, None))
+        .unwrap();
+    click(shell.cx, "header-commits-toggle");
+    assert!(shows(shell.cx, "header-commit", "step 2"));
+    assert!(painted(shell.cx, "header-commits").is_some());
+
+    // `feature` back at the fork, behind `main`: no commit of its own, and
+    // still a diff (`b.txt` removed).
+    repo.git(&["update-ref", "refs/heads/feature", &fork.to_string()]);
+    tab.update_in(shell.cx, polygloss_app::live::refresh_tab);
+    draw(shell.cx);
+    assert!(shows(shell.cx, "header-stats", "1 file · +0 −1"));
+    assert!(painted(shell.cx, "header-commits-toggle").is_none());
+    assert!(
+        painted(shell.cx, "header-commits").is_none(),
+        "no empty list left open"
+    );
+}
