@@ -452,3 +452,53 @@ fn toggle_whitespace_recomputes_hunks_keeps_anchors(cx: &mut TestAppContext) {
         })
     });
 }
+
+/// ⌘1 … ⌘8 share one cheat-sheet row, as design §11.9 lists them (eight
+/// rows would push the sheet past a 1280×800 window); rebinding one of them
+/// lists all eight again, each with its own keys.
+#[test]
+fn cheat_sheet_folds_the_review_numbers() {
+    use polygloss_app::keymap::{UserBinding, resolve};
+    let window = |user: &[UserBinding]| {
+        cheat_sheet::sections(&resolve(user))
+            .into_iter()
+            .find(|(h, _)| *h == "Window")
+            .expect("a Window section")
+            .1
+    };
+    let rows = window(&[]);
+    let numbered: Vec<_> = rows
+        .iter()
+        .filter(|r| r.action.starts_with("window::ActivateTab"))
+        .collect();
+    assert_eq!(numbered.len(), 2, "{numbered:?}");
+    assert_eq!(numbered[0].title, "Show review 1 to 8");
+    let keys: Vec<String> = (1..=8).map(|n| format!("cmd-{n}")).collect();
+    assert_eq!(numbered[0].keys, keys);
+    assert!(numbered[0].span);
+    assert_eq!(
+        (
+            numbered[1].action,
+            numbered[1].title,
+            numbered[1].keys.clone()
+        ),
+        (
+            "window::ActivateTab9",
+            "Show last review",
+            vec!["cmd-9".to_owned()]
+        )
+    );
+
+    let rebound = window(&[UserBinding {
+        keys: "cmd-shift-3".into(),
+        action: Some("window::ActivateTab3"),
+        context: Some("Window".into()),
+    }]);
+    let titles: Vec<&str> = rebound
+        .iter()
+        .filter(|r| r.action.starts_with("window::ActivateTab"))
+        .map(|r| r.title)
+        .collect();
+    assert_eq!(titles.len(), 9, "{titles:?}");
+    assert!(rebound.iter().all(|r| !r.span));
+}

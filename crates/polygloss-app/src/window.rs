@@ -2,10 +2,11 @@
 //! full size, with no title bar and no tab row. Each page draws the whole
 //! shell (sidebar and main column, [`crate::chrome`]); open reviews are
 //! listed in the sidebar, and the `Tabs` model and its actions are as
-//! before. The window's title follows the active tab. The app keeps running
-//! when it closes, and clicking the Dock icon reopens it ([`reopen`],
-//! `on_reopen`). Also the native menu bar skeleton (App, File, Edit, View,
-//! Review, Window, Help), which feature modules extend with
+//! before, plus ⌘0 (Home), ⌘1–⌘9 (the open reviews by number, OQ-35) and
+//! the sidebar's actions. The window's title follows the active tab. The
+//! app keeps running when it closes, and clicking the Dock icon reopens it
+//! ([`reopen`], `on_reopen`). Also the native menu bar skeleton (App, File,
+//! Edit, View, Review, Window, Help), which feature modules extend with
 //! [`add_menu_items`] before [`install_menus`] runs.
 
 use gpui_kit::component::notification::Notification;
@@ -16,9 +17,10 @@ use gpui_kit::{
     SharedString, Styled as _, SystemMenuType, WeakEntity, Window, div, px, size,
 };
 
-use crate::chrome::Chrome;
+use crate::chrome::{self, Chrome, Segment, ShowFiles, ShowReviews, ToggleSidebar};
 use crate::home::HomeView;
 use crate::keyboard::{self, Pane};
+use crate::keymap::handlers;
 use crate::review_tab::{ReviewTab, panes::ToggleThreadsPanel};
 use crate::settings::SettingsStore;
 use crate::tabs::{CloseTab, NextTab, PrevTab, TabItem, Tabs};
@@ -32,6 +34,26 @@ gpui_kit::actions!(
         Minimize,
         /// Window › Zoom.
         Zoom,
+        /// ⌘0: show Home.
+        ShowHome,
+        /// ⌘1: the first open review.
+        ActivateTab1,
+        /// ⌘2: the second open review.
+        ActivateTab2,
+        /// ⌘3: the third open review.
+        ActivateTab3,
+        /// ⌘4: the fourth open review.
+        ActivateTab4,
+        /// ⌘5: the fifth open review.
+        ActivateTab5,
+        /// ⌘6: the sixth open review.
+        ActivateTab6,
+        /// ⌘7: the seventh open review.
+        ActivateTab7,
+        /// ⌘8: the eighth open review.
+        ActivateTab8,
+        /// ⌘9: the last open review.
+        ActivateTab9,
     ]
 );
 
@@ -60,10 +82,42 @@ pub struct MainWindow {
     window_title: SharedString,
 }
 
-/// Handlers and menu items of the window and its tabs (their key bindings
-/// are in `keymap::defaults`).
+/// Handlers and menu items of the window, its tabs and its sidebar (their
+/// key bindings are in `keymap::defaults`).
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
+    handlers::on_action(cx, |m: &mut MainWindow, _: &ShowHome, window, cx| {
+        m.activate_tab(0, window, cx)
+    });
+    macro_rules! review_numbers {
+        ($($action:ident => $n:literal),* $(,)?) => {$(
+            handlers::on_action(cx, |m: &mut MainWindow, _: &$action, window, cx| {
+                m.activate_review_number($n, window, cx);
+            });
+        )*};
+    }
+    review_numbers![
+        ActivateTab1 => 1, ActivateTab2 => 2, ActivateTab3 => 3,
+        ActivateTab4 => 4, ActivateTab5 => 5, ActivateTab6 => 6,
+        ActivateTab7 => 7, ActivateTab8 => 8, ActivateTab9 => 9,
+    ];
+    // The sidebar: changed through `Chrome` only, so `MainWindow` hands a
+    // hidden tree's keyboard to the diff (`sidebar_changed`).
+    handlers::on_action(cx, |_: &mut MainWindow, _: &ToggleSidebar, _, cx| {
+        chrome::chrome(cx).update(cx, |c, cx| {
+            let visible = c.sidebar_visible();
+            c.set_sidebar_visible(!visible, cx)
+        });
+    });
+    handlers::on_action(cx, |_: &mut MainWindow, _: &ShowFiles, window, cx| {
+        chrome::show_files(window, cx)
+    });
+    handlers::on_action(cx, |_: &mut MainWindow, _: &ShowReviews, _, cx| {
+        chrome::chrome(cx).update(cx, |c, cx| {
+            c.set_sidebar_visible(true, cx);
+            c.set_segment(Segment::Reviews, cx);
+        });
+    });
     add_menu_items(
         MenuKind::App,
         vec![
@@ -80,7 +134,7 @@ pub fn init(cx: &mut App) {
     );
     add_menu_items(
         MenuKind::File,
-        vec![MenuItem::action("Close Tab", CloseTab)],
+        vec![MenuItem::action("Close Review", CloseTab)],
         cx,
     );
     add_menu_items(
@@ -102,7 +156,10 @@ pub fn init(cx: &mut App) {
     );
     add_menu_items(
         MenuKind::View,
-        vec![MenuItem::action("Toggle Threads Panel", ToggleThreadsPanel)],
+        vec![
+            MenuItem::action("Toggle Sidebar", ToggleSidebar),
+            MenuItem::action("Toggle Threads Panel", ToggleThreadsPanel),
+        ],
         cx,
     );
     add_menu_items(
@@ -111,8 +168,8 @@ pub fn init(cx: &mut App) {
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", Zoom),
             MenuItem::separator(),
-            MenuItem::action("Show Next Tab", NextTab),
-            MenuItem::action("Show Previous Tab", PrevTab),
+            MenuItem::action("Show Next Review", NextTab),
+            MenuItem::action("Show Previous Review", PrevTab),
         ],
         cx,
     );
@@ -356,13 +413,15 @@ impl MainWindow {
         }
     }
 
-    /// Adds a review tab and activates it.
+    /// Adds a review tab and activates it; the sidebar switches to its files
+    /// (a review opened for the first time, design §11.1).
     pub(crate) fn push_review(
         &mut self,
         tab: Entity<ReviewTab>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> usize {
+        chrome::chrome(cx).update(cx, |c, cx| c.set_segment(Segment::Files, cx));
         let ix = self.tabs.push_review(tab);
         self.focus_active(window, cx);
         cx.notify();
@@ -374,6 +433,25 @@ impl MainWindow {
         self.tabs.activate(ix);
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    /// Activates open review `n` (⌘1–⌘9, OQ-35): 1–8 the Nth open review,
+    /// 9 the last. `false`, changing nothing, when there is no such review.
+    pub fn activate_review_number(
+        &mut self,
+        n: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Home is tab 0, so review N is tab N.
+        let reviews = self.tabs.len() - 1;
+        let ix = match usize::from(n) {
+            9 if reviews > 0 => reviews,
+            n @ 1..=8 if n <= reviews => n,
+            _ => return false,
+        };
+        self.activate_tab(ix, window, cx);
+        true
     }
 
     /// Moves keyboard focus into the active tab.

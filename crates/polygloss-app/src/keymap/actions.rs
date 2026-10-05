@@ -180,8 +180,12 @@ pub mod tab {
 
 /// Actions of the main window (key context `Window`, or none).
 pub mod window {
+    pub use crate::chrome::{ShowFiles, ShowReviews, ToggleSidebar};
     pub use crate::tabs::{CloseTab, NextTab, PrevTab};
-    pub use crate::window::{Minimize, Quit, Zoom};
+    pub use crate::window::{
+        ActivateTab1, ActivateTab2, ActivateTab3, ActivateTab4, ActivateTab5, ActivateTab6,
+        ActivateTab7, ActivateTab8, ActivateTab9, Minimize, Quit, ShowHome, Zoom,
+    };
 
     gpui_kit::actions!(
         window,
@@ -298,9 +302,22 @@ pub const ACTIONS: &[ActionInfo] = registry![
     window::OpenFlow => "Open review",
     window::OpenSettings => "Open settings",
     window::InstallCli => "Install CLI",
-    window::CloseTab => "Close tab",
-    window::NextTab => "Next tab",
-    window::PrevTab => "Previous tab",
+    window::ToggleSidebar => "Toggle sidebar",
+    window::ShowFiles => "Show files",
+    window::ShowReviews => "Show reviews",
+    window::ShowHome => "Show Home",
+    window::ActivateTab1 => "Show review 1",
+    window::ActivateTab2 => "Show review 2",
+    window::ActivateTab3 => "Show review 3",
+    window::ActivateTab4 => "Show review 4",
+    window::ActivateTab5 => "Show review 5",
+    window::ActivateTab6 => "Show review 6",
+    window::ActivateTab7 => "Show review 7",
+    window::ActivateTab8 => "Show review 8",
+    window::ActivateTab9 => "Show last review",
+    window::CloseTab => "Close review",
+    window::NextTab => "Next review",
+    window::PrevTab => "Previous review",
     window::Minimize => "Minimize",
     window::Zoom => "Zoom",
     window::Quit => "Quit Polygloss",

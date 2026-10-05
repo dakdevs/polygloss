@@ -43,6 +43,19 @@ pub const DEFAULT_BINDINGS: &[DefaultBinding] = &[
     ("cmd-f", "tab::Find", "Tab"),
     ("cmd-shift-enter", "tab::SubmitReview", "Tab"),
     ("?", "window::CheatSheet", "Window"),
+    // M6 (§11.1, OQ-35): the sidebar, Home and the open reviews by number.
+    // `Window`, not everywhere: dialogs keep their own ⌘1–⌘3.
+    ("ctrl-cmd-s", "window::ToggleSidebar", "Window"),
+    ("cmd-0", "window::ShowHome", "Window"),
+    ("cmd-1", "window::ActivateTab1", "Window"),
+    ("cmd-2", "window::ActivateTab2", "Window"),
+    ("cmd-3", "window::ActivateTab3", "Window"),
+    ("cmd-4", "window::ActivateTab4", "Window"),
+    ("cmd-5", "window::ActivateTab5", "Window"),
+    ("cmd-6", "window::ActivateTab6", "Window"),
+    ("cmd-7", "window::ActivateTab7", "Window"),
+    ("cmd-8", "window::ActivateTab8", "Window"),
+    ("cmd-9", "window::ActivateTab9", "Window"),
     // Provisional macOS additions (§11.9). Popovers and dialogs close on
     // Esc by themselves (gpui-kit).
     ("escape", "composer::Cancel", "Composer"),

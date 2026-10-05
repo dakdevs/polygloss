@@ -783,8 +783,23 @@ fn top_rows_move_the_window_except_on_controls(cx: &mut TestAppContext) {
     sweep_top_row(shell.cx, &log, "sidebar-top-row", &segments);
 }
 
+/// Moves the pointer onto `name` and draws, so what shows on hover (a nav
+/// row's ×) is painted and clickable.
+pub fn hover(cx: &mut VisualTestContext, name: &str) {
+    let at = bounds(cx, name).center();
+    cx.simulate_mouse_move(at, None, Modifiers::none());
+    draw(cx);
+}
+
+/// Moves the pointer off every row (the window's top-left corner, in the
+/// sidebar's top row).
+pub fn unhover(cx: &mut VisualTestContext) {
+    cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::none());
+    draw(cx);
+}
+
 #[gpui_kit::test]
-fn nav_stub_lists_open_reviews_and_closes_like_cmd_w(cx: &mut TestAppContext) {
+fn nav_close_closes_like_cmd_w(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
@@ -797,40 +812,33 @@ fn nav_stub_lists_open_reviews_and_closes_like_cmd_w(cx: &mut TestAppContext) {
         .map(|t| t.read_with(shell.cx, |t, _| t.review_id.clone()))
         .collect();
     click(shell.cx, "segment-reviews");
-    assert_eq!(
-        shell
-            .cx
-            .update(|_, cx| chrome::chrome(cx).read(cx).segment()),
-        Segment::Reviews
-    );
-    assert!(painted(shell.cx, "file-tree-pane").is_none());
-    let home = bounds(shell.cx, "nav-home");
     let row = |id: &str| format!("open-review-{id}");
-    let (a, b) = (
-        bounds(shell.cx, &row(&ids[0])),
-        bounds(shell.cx, &row(&ids[1])),
-    );
-    assert!(
-        home.bottom() <= a.top() && a.bottom() <= b.top(),
-        "in tab order"
-    );
+    let close = |id: &str| format!("close-review-{id}");
 
-    // A click activates the row's review; Home's row activates Home.
-    click(shell.cx, &row(&ids[0]));
-    assert_eq!(shell.tabs(), (3, 1));
+    // At rest the × is hidden: a press where it shows on hover lands on the
+    // row, which activates its review and closes nothing.
     click(shell.cx, "nav-home");
-    assert_eq!(shell.tabs(), (3, 0));
+    hover(shell.cx, &row(&ids[0]));
+    let at = bounds(shell.cx, &close(&ids[0])).center();
+    unhover(shell.cx);
+    assert!(painted(shell.cx, &close(&ids[0])).is_none(), "hidden");
+    shell.cx.simulate_click(at, Modifiers::none());
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (3, 1), "the row activated");
+
+    // On hover, × closes its review as ⌘W does: the tab to its left
+    // becomes active.
     click(shell.cx, &row(&ids[1]));
     assert_eq!(shell.tabs(), (3, 2));
-
-    // × closes its review as ⌘W does: the tab to its left becomes active.
-    click(shell.cx, &format!("close-review-{}", ids[1]));
+    hover(shell.cx, &row(&ids[1]));
+    click(shell.cx, &close(&ids[1]));
     assert_eq!(shell.tabs(), (2, 1));
     assert_eq!(shell.active_review(), Some(first.clone()));
     assert!(painted(shell.cx, &row(&ids[1])).is_none());
     // Closing a review that is not the active one keeps the active one.
     click(shell.cx, "nav-home");
-    click(shell.cx, &format!("close-review-{}", ids[0]));
+    hover(shell.cx, &row(&ids[0]));
+    click(shell.cx, &close(&ids[0]));
     assert_eq!(shell.tabs(), (1, 0));
     assert!(painted(shell.cx, "nav-home").is_some());
 }
@@ -889,10 +897,13 @@ fn nav_clicks_act_on_their_review_after_a_close(cx: &mut TestAppContext) {
     assert_eq!(shell.active_review(), Some(b.clone()));
 
     // A again, after B; B active. ⌘W closes B, then B's × is clicked where
-    // it was (second, where A is now): A stays open.
+    // it was (second, where A is now): A stays open. (A first open shows
+    // its files: back to Reviews.)
     let a = shell.open(compare_req(repo.path())).unwrap();
+    click(shell.cx, "segment-reviews");
     click(shell.cx, &format!("open-review-{b_id}"));
     assert_eq!(shell.tabs(), (3, 1));
+    hover(shell.cx, &format!("open-review-{b_id}"));
     let b_close = bounds(shell.cx, &format!("close-review-{b_id}")).center();
     close_then_click(&mut shell, b_close);
     assert_eq!(shell.tabs(), (2, 0));
@@ -933,6 +944,330 @@ fn sidebar_state_lasts_for_the_session(cx: &mut TestAppContext) {
     assert!(painted(vcx, "sidebar").is_none());
     click(vcx, "show-sidebar");
     assert_eq!(bounds(vcx, "sidebar").size.width, px(330.));
+}
+
+/// `(sidebar visible, segment)`.
+fn sidebar_state(shell: &mut Shell) -> (bool, Segment) {
+    shell.cx.update(|_, cx| {
+        let c = chrome::chrome(cx).read(cx);
+        (c.sidebar_visible(), c.segment())
+    })
+}
+
+/// Presses `keys` and returns the active tab's index.
+fn press(shell: &mut Shell, keys: &str) -> usize {
+    shell.cx.simulate_keystrokes(keys);
+    draw(shell.cx);
+    shell.tabs().1
+}
+
+/// A repo with `n` commits, tagged `c0` … `c{n-1}`.
+fn commits_repo(n: usize) -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    for i in 0..n {
+        repo.write("notes.txt", format!("note {i}\n").as_bytes());
+        repo.commit(&format!("Note {i}"));
+        repo.git(&["tag", &format!("c{i}")]);
+    }
+    repo
+}
+
+/// Opens the commit reviews of `c0` … `c{n-1}` in `repo`, in that order.
+fn open_commits(shell: &mut Shell, repo: &Path, n: usize) -> Vec<Entity<ReviewTab>> {
+    (0..n)
+        .map(|i| {
+            shell
+                .open(commit_req(repo, &format!("refs/tags/c{i}")))
+                .unwrap()
+        })
+        .collect()
+}
+
+#[gpui_kit::test]
+fn cmd_0_shows_home(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = commits_repo(3);
+    let mut shell = start(cx);
+    let tabs = open_commits(&mut shell, repo.path(), 3);
+    assert_eq!(shell.tabs(), (4, 3));
+    assert_eq!(press(&mut shell, "cmd-0"), 0);
+    assert!(painted(shell.cx, "home-toolbar").is_some());
+    assert!(painted(shell.cx, "review-toolbar").is_none());
+    // The open reviews stay open, in order.
+    assert_eq!(shell.tabs().0, 4);
+    for (i, tab) in tabs.iter().enumerate() {
+        assert_eq!(shell.tab(i + 1).review(), Some(tab));
+    }
+    // From the tree too (any focus inside the window).
+    press(&mut shell, "cmd-2");
+    click(shell.cx, "tree-row-f:0");
+    assert_eq!(press(&mut shell, "cmd-0"), 0);
+    assert_eq!(press(&mut shell, "cmd-0"), 0, "on Home already");
+}
+
+#[gpui_kit::test]
+fn cmd_number_activates_the_nth_open_review(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = commits_repo(3);
+    let mut shell = start(cx);
+    let tabs = open_commits(&mut shell, repo.path(), 3);
+    // ⌘N is the Nth open review (Home is not counted), from Home or from
+    // another review.
+    for (keys, n) in [("cmd-0", 0), ("cmd-2", 2), ("cmd-1", 1), ("cmd-3", 3)] {
+        assert_eq!(press(&mut shell, keys), n, "{keys}");
+        if n > 0 {
+            assert_eq!(shell.active_review().as_ref(), Some(&tabs[n - 1]));
+        }
+    }
+    // The method the keys call.
+    let activated = shell.main.update_in(shell.cx, |m, window, cx| {
+        m.activate_review_number(1, window, cx)
+    });
+    assert!(activated);
+    assert_eq!(shell.tabs(), (4, 1));
+}
+
+#[gpui_kit::test]
+fn cmd_9_activates_the_last_review(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = commits_repo(10);
+    let mut shell = start(cx);
+    // With no review open, ⌘9 does nothing.
+    assert_eq!(press(&mut shell, "cmd-9"), 0);
+    assert_eq!(shell.tabs(), (1, 0));
+    // Three open: ⌘9 is the third.
+    open_commits(&mut shell, repo.path(), 3);
+    press(&mut shell, "cmd-0");
+    assert_eq!(press(&mut shell, "cmd-9"), 3);
+    // Ten open: ⌘8 is the eighth, ⌘9 the last (the tenth), not the ninth.
+    let mut tabs = Vec::new();
+    for i in 3..10 {
+        tabs.push(
+            shell
+                .open(commit_req(repo.path(), &format!("refs/tags/c{i}")))
+                .unwrap(),
+        );
+    }
+    assert_eq!(shell.tabs(), (11, 10));
+    assert_eq!(press(&mut shell, "cmd-1"), 1);
+    assert_eq!(press(&mut shell, "cmd-8"), 8);
+    assert_eq!(press(&mut shell, "cmd-9"), 10);
+    assert_eq!(shell.active_review().as_ref(), tabs.last());
+}
+
+#[gpui_kit::test]
+fn cmd_number_out_of_range_does_nothing(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = commits_repo(2);
+    let mut shell = start(cx);
+    open_commits(&mut shell, repo.path(), 2);
+    assert_eq!(press(&mut shell, "cmd-1"), 1);
+    for n in 3..=8 {
+        assert_eq!(press(&mut shell, &format!("cmd-{n}")), 1, "cmd-{n}");
+        assert_eq!(shell.tabs().0, 3);
+    }
+    for n in [0, 3, 8] {
+        let activated = shell.main.update_in(shell.cx, |m, window, cx| {
+            m.activate_review_number(n, window, cx)
+        });
+        assert!(!activated, "{n}");
+        assert_eq!(shell.tabs(), (3, 1));
+    }
+}
+
+#[gpui_kit::test]
+fn toggle_sidebar_action_hides_and_shows(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let pane = |shell: &mut Shell| {
+        shell
+            .cx
+            .update(|window, cx| polygloss_app::keyboard::focused_pane(tab.read(cx), window, cx))
+    };
+    // ⌃⌘S with the tree's keyboard: hidden, and the diff takes the keyboard.
+    click(shell.cx, "tree-row-f:0");
+    assert_eq!(pane(&mut shell), Some(polygloss_app::keyboard::Pane::Tree));
+    press(&mut shell, "ctrl-cmd-s");
+    assert_eq!(sidebar_state(&mut shell), (false, Segment::Files));
+    assert!(painted(shell.cx, "sidebar").is_none());
+    assert!(painted(shell.cx, "show-sidebar").is_some());
+    assert_eq!(
+        pane(&mut shell),
+        Some(polygloss_app::keyboard::Pane::Viewport)
+    );
+    // Again: shown, on the segment it had.
+    press(&mut shell, "ctrl-cmd-s");
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Files));
+    assert!(painted(shell.cx, "file-tree-pane").is_some());
+    // On Home too.
+    press(&mut shell, "cmd-0");
+    press(&mut shell, "ctrl-cmd-s");
+    assert!(painted(shell.cx, "sidebar").is_none());
+    assert_eq!(bounds(shell.cx, "home-toolbar").left(), px(0.));
+    press(&mut shell, "ctrl-cmd-s");
+    assert!(painted(shell.cx, "nav").is_some());
+}
+
+#[gpui_kit::test]
+fn show_files_and_show_reviews_switch_segments(cx: &mut TestAppContext) {
+    use polygloss_app::keymap::actions::window::{ShowFiles, ShowReviews};
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let pane = |shell: &mut Shell| {
+        shell
+            .cx
+            .update(|window, cx| polygloss_app::keyboard::focused_pane(tab.read(cx), window, cx))
+    };
+    click(shell.cx, "tree-row-f:0");
+    shell.cx.dispatch_action(ShowReviews);
+    draw(shell.cx);
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Reviews));
+    assert!(painted(shell.cx, "nav").is_some());
+    assert!(painted(shell.cx, "file-tree-pane").is_none());
+    assert_eq!(
+        pane(&mut shell),
+        Some(polygloss_app::keyboard::Pane::Viewport),
+        "the hidden tree's keyboard went to the diff"
+    );
+    shell.cx.dispatch_action(ShowFiles);
+    draw(shell.cx);
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Files));
+    assert!(painted(shell.cx, "file-tree-pane").is_some());
+    // Each also shows a hidden sidebar.
+    press(&mut shell, "ctrl-cmd-s");
+    shell.cx.dispatch_action(ShowReviews);
+    draw(shell.cx);
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Reviews));
+    press(&mut shell, "ctrl-cmd-s");
+    shell.cx.dispatch_action(ShowFiles);
+    draw(shell.cx);
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Files));
+}
+
+#[gpui_kit::test]
+fn first_open_switches_to_files_refocus_keeps_the_segment(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let chrome = shell.cx.update(|_, cx| chrome::chrome(cx));
+    chrome.update(shell.cx, |c, cx| c.set_segment(Segment::Reviews, cx));
+    // A first open shows its files.
+    let first = shell.open(compare_req(repo.path())).unwrap();
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Files));
+    assert!(painted(shell.cx, "file-tree-pane").is_some());
+    // Opening it again focuses it and keeps Reviews.
+    click(shell.cx, "segment-reviews");
+    press(&mut shell, "cmd-0");
+    let again = shell.open(compare_req(repo.path())).unwrap();
+    assert_eq!(again, first);
+    assert_eq!(shell.tabs(), (2, 1));
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Reviews));
+    // Another first open switches again, even with the sidebar hidden
+    // (it stays hidden).
+    press(&mut shell, "ctrl-cmd-s");
+    shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
+    assert_eq!(sidebar_state(&mut shell), (false, Segment::Files));
+}
+
+#[gpui_kit::test]
+fn files_segment_is_disabled_on_home(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    // Home: Files is drawn but takes no click; Reviews shows.
+    assert!(painted(shell.cx, "segment-files").is_some());
+    click(shell.cx, "segment-files");
+    assert!(painted(shell.cx, "nav").is_some());
+    assert!(painted(shell.cx, "file-tree-pane").is_none());
+    // Its tooltip says why.
+    hover(shell.cx, "segment-files");
+    shell
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    draw(shell.cx);
+    assert!(
+        painted(shell.cx, "tooltip: Open a review to see its files").is_some(),
+        "the disabled segment explains itself"
+    );
+    // In a review it switches to the files.
+    shell.open(compare_req(repo.path())).unwrap();
+    click(shell.cx, "segment-reviews");
+    click(shell.cx, "segment-files");
+    assert!(painted(shell.cx, "file-tree-pane").is_some());
+    hover(shell.cx, "segment-files");
+    shell
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    draw(shell.cx);
+    assert!(painted(shell.cx, "tooltip: Files").is_some());
+    assert!(painted(shell.cx, "tooltip: Open a review to see its files").is_none());
+}
+
+#[gpui_kit::test]
+fn menus_name_reviews(cx: &mut TestAppContext) {
+    use gpui_kit::OwnedMenuItem;
+    let _sb = Sandbox::isolate();
+    let shell = start(cx);
+    let menus: Vec<(String, Vec<(String, String)>)> = shell.cx.update(|_, cx| {
+        cx.get_menus()
+            .expect("a menu bar")
+            .into_iter()
+            .map(|menu| {
+                let items = menu
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        OwnedMenuItem::Action { name, action, .. } => {
+                            Some((name.to_string(), action.name().to_owned()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (menu.name.to_string(), items)
+            })
+            .collect()
+    });
+    let item = |menu: &str, action: &str| -> Option<String> {
+        menus
+            .iter()
+            .find(|(m, _)| m == menu)
+            .and_then(|(_, items)| items.iter().find(|(_, a)| a == action))
+            .map(|(name, _)| name.clone())
+    };
+    assert_eq!(
+        item("File", "window::CloseTab").as_deref(),
+        Some("Close Review")
+    );
+    assert_eq!(
+        item("Window", "window::NextTab").as_deref(),
+        Some("Show Next Review")
+    );
+    assert_eq!(
+        item("Window", "window::PrevTab").as_deref(),
+        Some("Show Previous Review")
+    );
+    assert_eq!(
+        item("View", "window::ToggleSidebar").as_deref(),
+        Some("Toggle Sidebar")
+    );
+    assert_eq!(
+        item("View", "tab::ToggleThreadsPanel").as_deref(),
+        Some("Toggle Threads Panel")
+    );
+    // No menu item names a tab any more.
+    for (menu, items) in &menus {
+        for (name, _) in items {
+            assert!(!name.contains("Tab"), "{menu} › {name}");
+        }
+    }
 }
 
 #[gpui_kit::test]

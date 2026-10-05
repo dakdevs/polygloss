@@ -478,13 +478,24 @@ impl HomeView {
         }
     }
 
-    /// The ⋯ menu and the context menu of a row.
-    fn row_menu(
-        home: WeakEntity<HomeView>,
-        review_id: String,
-        muted: bool,
+    /// The ⋯ menu and the context menu of row `row` (Home's and the
+    /// sidebar's Reviews segment's): open, mute or unmute, assign to a
+    /// session, archive, prune. Its items act on the row's review by id.
+    pub(crate) fn row_menu(
+        &self,
+        row: usize,
         menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> PopupMenu {
+        let Some(r) = self.rows.get(row) else {
+            return menu;
+        };
+        let (home, review_id, muted) = (
+            cx.entity().downgrade(),
+            r.review_id().to_owned(),
+            r.summary.muted,
+        );
         let item =
             |label: &'static str,
              f: fn(&mut HomeView, String, &mut Window, &mut Context<HomeView>)| {
@@ -506,6 +517,26 @@ impl HomeView {
             .item(item("Prune…", |h, id, w, cx| h.request_prune(&id, w, cx)))
     }
 
+    /// [`HomeView::row_menu`] of `review_id`'s row as the menu opens (`menu`
+    /// unchanged when Home or the row is gone by then).
+    pub(crate) fn menu_for(
+        home: &WeakEntity<HomeView>,
+        review_id: &str,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> PopupMenu {
+        let Some(home) = home.upgrade() else {
+            return menu;
+        };
+        home.update(cx, |h, cx| {
+            match h.rows.iter().position(|r| r.review_id() == review_id) {
+                Some(row) => h.row_menu(row, menu, window, cx),
+                None => menu,
+            }
+        })
+    }
+
     fn render_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let _ = window;
         let now = (self.clock)();
@@ -514,8 +545,7 @@ impl HomeView {
         let section = |title: &'static str, count: usize, first: bool| {
             h_flex()
                 .gap_2()
-                .when(!first, |d| d.pt_6())
-                .pb_2()
+                .when(!first, |d| d.pt_4())
                 .text_xs()
                 .font_semibold()
                 .text_color(theme.muted_foreground)
@@ -538,13 +568,7 @@ impl HomeView {
                     self.awaiting == 0,
                 ));
             }
-            let (first, last) = if in_awaiting {
-                (ix == 0, ix + 1 == self.awaiting)
-            } else {
-                (ix == self.awaiting, ix + 1 == self.rows.len())
-            };
             let id = row.review_id().to_owned();
-            let muted = row.summary.muted;
             let menu_button = {
                 let (home, id) = (home.clone(), id.clone());
                 div()
@@ -556,16 +580,17 @@ impl HomeView {
                             .ghost()
                             .small()
                             .tooltip("Actions")
-                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                                HomeView::row_menu(home.clone(), id.clone(), muted, menu)
-                            }),
+                            .dropdown_menu_with_anchor(
+                                Anchor::TopRight,
+                                move |menu, window, cx| {
+                                    HomeView::menu_for(&home, &id, menu, window, cx)
+                                },
+                            ),
                     )
                     .into_any_element()
             };
             let place = RowPlace {
                 ix,
-                first,
-                last,
                 selected: selected == Some(ix),
             };
             let (open_home, open_id) = (home.clone(), id.clone());
@@ -580,8 +605,8 @@ impl HomeView {
                             })
                             .ok();
                     })
-                    .context_menu(move |menu, _, _| {
-                        HomeView::row_menu(ctx_home.clone(), ctx_id.clone(), muted, menu)
+                    .context_menu(move |menu, window, cx| {
+                        HomeView::menu_for(&ctx_home, &ctx_id, menu, window, cx)
                     })
                     .into_any_element(),
             );
@@ -710,6 +735,7 @@ impl Render for HomeView {
                 .px_8()
                 .pt_6()
                 .pb_10()
+                .gap_2()
                 // One child per section title and row, so `scroll_to_item`
                 // finds rows by index.
                 .children(
@@ -719,9 +745,11 @@ impl Render for HomeView {
                 )
                 .into_any_element()
         };
+        // The rows are cards on the diff's canvas (design §11.2).
+        let canvas = crate::theme::viewport_theme(cx).canvas;
         let main = v_flex()
             .size_full()
-            .bg(theme.background)
+            .bg(canvas)
             .child(toolbar)
             .child(div().flex_1().min_h_0().child(page))
             .into_any_element();

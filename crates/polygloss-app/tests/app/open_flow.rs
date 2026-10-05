@@ -520,3 +520,29 @@ fn open_flow_opens_tab_or_focuses_existing(cx: &mut TestAppContext) {
     draw(shell.cx);
     assert_eq!(shell.tabs(), (3, 2));
 }
+
+/// ⌘1–⌘3 pick the flow's source while it is open; the window's ⌘1–⌘9 (the
+/// open reviews, T6.6) never reach past it.
+#[gpui_kit::test]
+fn open_flow_keeps_cmd_numbers_for_its_sources(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let other = crate::support::code_change_repo();
+    let mut shell = start(cx);
+    shell.open(crate::shell::compare_req(other.path())).unwrap();
+    shell.cx.simulate_keystrokes("cmd-0");
+    draw(shell.cx);
+    assert_eq!(shell.tabs(), (2, 0));
+    let flow = open(&mut shell);
+    let source = choose(&mut shell, &flow, repo.path());
+    for (keys, mode) in [
+        ("cmd-2", SourceMode::Commit),
+        ("cmd-3", SourceMode::Compare),
+        ("cmd-1", SourceMode::Live),
+    ] {
+        shell.cx.simulate_keystrokes(keys);
+        draw(shell.cx);
+        assert_eq!(source.read_with(shell.cx, |s, _| s.mode()), mode, "{keys}");
+        assert_eq!(shell.tabs(), (2, 0), "{keys}: Home stays");
+    }
+}
