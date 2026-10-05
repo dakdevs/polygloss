@@ -55,7 +55,7 @@ fn settings_defaults_match_design_table() {
     assert_eq!(s.diff.algorithm, DiffAlgorithm::Myers);
     assert!(!s.diff.hide_whitespace);
     assert!(s.diff.style.backgrounds);
-    assert_eq!(s.diff.style.indicators, IndicatorStyle::PlusMinus);
+    assert_eq!(s.diff.style.indicators, IndicatorStyle::Bars);
     assert!(!s.diff.style.wrap);
     assert_eq!(s.diff.large_file_changed_lines, 20_000);
     assert!(s.diff.generated_patterns.is_empty());
@@ -80,7 +80,7 @@ fn settings_defaults_match_design_table() {
             "layout": "unified",
             "word_diff": "off",
             "algorithm": "histogram",
-            "style": { "indicators": "bars", "wrap": true },
+            "style": { "indicators": "+-", "wrap": true },
             "generated_patterns": ["*.gen.ts"],
           },
           "editor": { "command": "zed {path}:{line}" },
@@ -96,7 +96,7 @@ fn settings_defaults_match_design_table() {
     assert_eq!(parsed.diff.layout, LayoutSetting::Unified);
     assert_eq!(parsed.diff.word_diff, WordDiffSetting::Off);
     assert_eq!(parsed.diff.algorithm, DiffAlgorithm::Histogram);
-    assert_eq!(parsed.diff.style.indicators, IndicatorStyle::Bars);
+    assert_eq!(parsed.diff.style.indicators, IndicatorStyle::PlusMinus);
     assert!(parsed.diff.style.wrap && parsed.diff.style.backgrounds);
     assert_eq!(parsed.diff.generated_patterns, ["*.gen.ts"]);
     assert_eq!(parsed.editor.command.as_deref(), Some("zed {path}:{line}"));
@@ -107,12 +107,13 @@ fn settings_defaults_match_design_table() {
     assert_eq!(opts.layout, LayoutMode::Unified);
     assert_eq!(opts.code_font_size, 15.0);
     assert_eq!(opts.word_diff, None);
-    assert_eq!(opts.style.indicators, Indicators::Bars);
+    assert_eq!(opts.style.indicators, Indicators::PlusMinus);
     assert!(opts.style.wrap);
     let defaults = Settings::default().viewport_options();
     assert_eq!(defaults.layout, LayoutMode::Auto);
     assert_eq!(defaults.split_min_columns, 160);
     assert_eq!(defaults.code_font, "Lilex");
+    assert_eq!(defaults.style.indicators, Indicators::Bars);
     assert!(!defaults.ligatures);
     assert_eq!(defaults.large_file_changed_lines, 20_000);
 

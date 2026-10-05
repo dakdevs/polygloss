@@ -250,3 +250,56 @@ fn find_marks_never_keep_dropped_lines_alive(cx: &mut TestAppContext) {
     let (_, freed) = cache(&view, cx);
     assert_eq!(freed, 0, "lines shaped again are matched again");
 }
+
+#[gpui_kit::test]
+fn find_rects_follow_the_new_code_x(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // With bars the code starts half a column after the numbers: 66.3 px in
+    // unified (two 4-column number columns), 35.1 px into each split half
+    // and into a one-sided file's single pane.
+    let provider = MemProvider::new(vec![one_change(), Spec::added("src/b.rs", "line b\n")]);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 800.);
+    let t = theme(&view, cx);
+    set(
+        &view,
+        cx,
+        Some(FindHighlights {
+            matcher: matcher("line 1"),
+            current: None,
+        }),
+    );
+    let d = debug(&view, cx);
+    let (y, _) = d.row_bounds[2];
+    let found = marks(cx, t.find_match);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        (found[0].0 - 66.3).abs() <= 0.5 && found[0].1 == y,
+        "{found:?}"
+    );
+
+    set_options(&view, cx, |o| o.layout = LayoutMode::Split);
+    set(
+        &view,
+        cx,
+        Some(FindHighlights {
+            matcher: matcher("line 5"),
+            current: None,
+        }),
+    );
+    let found = marks(cx, t.find_match);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!((found[0].0 - 35.1).abs() <= 0.5, "{found:?}");
+    assert!((found[1].0 - 535.1).abs() <= 0.5, "{found:?}");
+
+    set(
+        &view,
+        cx,
+        Some(FindHighlights {
+            matcher: matcher("line b"),
+            current: None,
+        }),
+    );
+    let found = marks(cx, t.find_match);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!((found[0].0 - 35.1).abs() <= 0.5, "{found:?}");
+}

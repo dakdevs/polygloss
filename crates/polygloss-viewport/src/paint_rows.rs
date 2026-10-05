@@ -1,6 +1,10 @@
 //! A frame's display list: which rows are visible and what each one paints
 //! (design §11.6, §12.4 "Rows").
 //!
+//! A one-sided file (added or deleted text) is drawn as one pane in both
+//! layouts: its unified rows, with one number column
+//! ([`crate::layout::layout_for`], [`Columns::for_file`]).
+//!
 //! Prepaint walks only the rows intersecting the viewport (O(log n) to find
 //! the first one), shapes their text through the [`TextCache`] and records
 //! quads and text in three layers (whole width, left half, right half) so
@@ -18,7 +22,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{
-    Bounds, Corners, Edges, Font, Hsla, Pixels, Point, WindowTextSystem, point, px, size,
+    Bounds, Corners, Edges, Font, Hsla, Pixels, Point, SharedString, WindowTextSystem, point, px,
+    size,
 };
 use polygloss_diff::rows::{Cell, Layout, LineKind, Row};
 use polygloss_diff::{FileChange, Side};
@@ -31,13 +36,13 @@ use crate::document::{BodyRow, Document, FileState};
 use crate::file_flags::FileFlags;
 use crate::find::FindState;
 use crate::gap::Gaps;
-use crate::layout::{Columns, Geometry, Pane, digits};
+use crate::layout::{Columns, Geometry, Pane, digits, layout_for};
 use crate::materialize::MaterializedFile;
 use crate::pipeline::Pipeline;
 use crate::selection::{PlusHit, TextSelection};
 use crate::special::{BodyLabel, Specials};
 use crate::style::{DiffStyle, ViewportTheme};
-use crate::text_cache::{ShapedText, Shaper, TextCache, TextKey};
+use crate::text_cache::{FONT_CODE, FONT_UI, NumberKind, ShapedText, Shaper, TextCache, TextKey};
 
 /// A filled rectangle with rounded corners and an optional border (cards,
 /// headers, badges, checkboxes).
@@ -103,6 +108,9 @@ pub(crate) struct Frame {
     pub cells: Vec<LineCell>,
     /// The "+" painted on the hovered line numbers.
     pub plus: Option<PlusHit>,
+    /// SVG icons (`icons/<name>.svg`) in window coordinates, painted after
+    /// the header layer's quads and before its text.
+    pub icons: Vec<(Bounds<Pixels>, SharedString, Hsla)>,
 }
 
 /// A painted code cell, viewport-relative: the gutter (numbers and
@@ -150,6 +158,7 @@ impl Frame {
         self.prelude = None;
         self.cells.clear();
         self.plus = None;
+        self.icons.clear();
         self.rows = 0;
         self.shaped = 0;
         self.loading = 0;
@@ -209,7 +218,10 @@ pub(crate) struct Painter<'a> {
     pub syntax: bool,
     pub word_diff: bool,
     pub geometry: Geometry,
+    /// The code font.
     pub font: &'a Font,
+    /// The UI font (pills, the Viewed label).
+    pub ui_font: &'a Font,
     pub layout: Layout,
     /// The viewport, in window coordinates.
     pub bounds: Bounds<Pixels>,
@@ -333,7 +345,8 @@ impl Painter<'_> {
         }
     }
 
-    pub(crate) fn columns(&self, file: Option<&MaterializedFile>) -> Columns {
+    /// The columns of file `f`'s rows ([`Columns::for_file`]).
+    pub(crate) fn columns(&self, f: u32, file: Option<&MaterializedFile>) -> Columns {
         let lines = file.map_or(0, |m| m.diff.old.len().max(m.diff.new.len()));
         let (x, width) = self.inner_x_w();
         Columns::new(
@@ -344,6 +357,12 @@ impl Painter<'_> {
             digits(lines),
             self.style.indicators,
         )
+        .for_file(&self.files[f as usize])
+    }
+
+    /// The layout file `f` is drawn in ([`layout_for`]).
+    pub(crate) fn file_layout(&self, f: u32) -> Layout {
+        layout_for(&self.files[f as usize], self.layout)
     }
 
     fn body_row(&mut self, f: u32, i: u32, row: BodyRow, y: f32, h: f32) {
@@ -361,7 +380,7 @@ impl Painter<'_> {
                 };
                 match self
                     .gaps
-                    .painted_rows(f, &file, self.layout)
+                    .painted_rows(f, &file, self.file_layout(f))
                     .get(diff_row as usize)
                 {
                     Some(Row::Unified {
@@ -388,7 +407,7 @@ impl Painter<'_> {
     /// `\ No newline at end of file` at the code column of each of `sides`
     /// (one row; in split, each marker in its own half).
     fn no_newline(&mut self, f: u32, sides: &[Side], y: f32, h: f32) {
-        let cols = self.columns(self.materialized(f).map(|m| &**m));
+        let cols = self.columns(f, self.materialized(f).map(|m| &**m));
         let text = self.label("\\ No newline at end of file", 1, self.theme.muted);
         for &side in sides {
             let pane = cols.code_pane(side);
@@ -408,8 +427,8 @@ impl Painter<'_> {
     /// A muted label row (gaps, placeholders) at the code column; returns
     /// the right edge of the label, for controls that follow it.
     pub(crate) fn label_at(&mut self, f: u32, label: &str, y: f32, h: f32) -> f32 {
-        let cols = self.columns(self.materialized(f).map(|m| &**m));
-        let pane = match self.layout {
+        let cols = self.columns(f, self.materialized(f).map(|m| &**m));
+        let pane = match cols.layout {
             Layout::Split => Pane::Half(0),
             Layout::Unified => Pane::Full,
         };
@@ -468,21 +487,18 @@ impl Painter<'_> {
         kind: LineKind,
         paired: bool,
     ) {
-        let cols = self.columns(Some(file));
+        let cols = self.columns(f, Some(file));
         let (x0, width) = cols.pane(Pane::Full);
-        if self.style.backgrounds
-            && let Some(bg) = self.kind_background(kind)
-        {
-            self.quad(FULL, x0, y, width, h, bg);
-        }
+        self.row_tint(FULL, &cols, Pane::Full, kind, y, h);
         self.cursor_tint(FULL, f, (old, new), x0, width, y, h);
-        if let Some(o) = old {
-            self.number(FULL, o + 1, cols.number_right(Pane::Full, 0), y);
+        let number_kind = number_kind(kind);
+        for (side, n) in [(Side::Old, old), (Side::New, new)] {
+            if let (Some(n), Some(column)) = (n, cols.number_column(side)) {
+                let right = cols.number_right(Pane::Full, column);
+                self.number(FULL, n + 1, number_kind, right, y);
+            }
         }
-        if let Some(n) = new {
-            self.number(FULL, n + 1, cols.number_right(Pane::Full, 1), y);
-        }
-        self.indicator(FULL, kind, cols.indicator_x(Pane::Full), y, h);
+        self.indicator(FULL, kind, &cols, Pane::Full, y, h);
         let (side, line) = match (kind, old, new) {
             (LineKind::Removed, Some(o), _) => (Side::Old, o),
             (_, _, Some(n)) => (Side::New, n),
@@ -536,7 +552,7 @@ impl Painter<'_> {
         left: Option<Cell>,
         right: Option<Cell>,
     ) {
-        let cols = self.columns(Some(file));
+        let cols = self.columns(f, Some(file));
         let mut rows = 1;
         let mut cells: [Option<(u32, char, Rc<ShapedText>)>; 2] = [None, None];
         for (k, cell) in [left, right].into_iter().enumerate() {
@@ -547,19 +563,16 @@ impl Painter<'_> {
                 self.quad(layer, x, y, w, h, self.theme.empty_cell);
                 continue;
             };
-            if self.style.backgrounds
-                && let Some(bg) = self.kind_background(cell.kind)
-            {
-                self.quad(layer, x, y, w, h, bg);
-            }
+            self.row_tint(layer, &cols, pane, cell.kind, y, h);
             let side = if k == 0 { Side::Old } else { Side::New };
             let lines = match side {
                 Side::Old => (Some(cell.line), None),
                 Side::New => (None, Some(cell.line)),
             };
             self.cursor_tint(layer, f, lines, x, w, y, h);
-            self.number(layer, cell.line + 1, cols.number_right(pane, 0), y);
-            self.indicator(layer, cell.kind, cols.indicator_x(pane), y, h);
+            let right = cols.number_right(pane, 0);
+            self.number(layer, cell.line + 1, number_kind(cell.kind), right, y);
+            self.indicator(layer, cell.kind, &cols, pane, y, h);
             let paired = cell.pair.is_some();
             let (text, r) = self.code(f, file, side, cell.line, &cols, pane, y, paired);
             self.code_cell(
@@ -653,12 +666,29 @@ impl Painter<'_> {
         });
     }
 
-    fn kind_background(&self, kind: LineKind) -> Option<Hsla> {
-        match kind {
-            LineKind::Removed => Some(self.theme.removed_background),
-            LineKind::Added => Some(self.theme.added_background),
-            LineKind::Context => None,
+    /// A changed row's tint in `pane` (with backgrounds on): the row's
+    /// background, and the stronger gutter color behind its numbers.
+    fn row_tint(
+        &mut self,
+        layer: usize,
+        cols: &Columns,
+        pane: Pane,
+        kind: LineKind,
+        y: f32,
+        h: f32,
+    ) {
+        let theme = self.theme;
+        let (background, gutter) = match kind {
+            LineKind::Removed => (theme.removed_background, theme.removed_gutter),
+            LineKind::Added => (theme.added_background, theme.added_gutter),
+            LineKind::Context => return,
+        };
+        if !self.style.backgrounds {
+            return;
         }
+        let (x, w) = cols.pane(pane);
+        self.quad(layer, x, y, w, h, background);
+        self.quad(layer, x, y, cols.gutter_right(pane) - x, h, gutter);
     }
 
     /// Counts a visible row whose file's data is still on its way (it is
@@ -773,13 +803,24 @@ impl Painter<'_> {
         (shaped, rows)
     }
 
-    /// A single-line label in one color, cached by content.
+    /// A single-line label in one color in the code font, cached by
+    /// content.
     pub(crate) fn label(&mut self, text: &str, slot: u8, color: Hsla) -> Rc<ShapedText> {
+        self.label_in(text, slot, color, FONT_CODE)
+    }
+
+    /// [`Painter::label`] in the UI font.
+    pub(crate) fn ui_label(&mut self, text: &str, slot: u8, color: Hsla) -> Rc<ShapedText> {
+        self.label_in(text, slot, color, FONT_UI)
+    }
+
+    fn label_in(&mut self, text: &str, slot: u8, color: Hsla, font: u8) -> Rc<ShapedText> {
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
         let key = TextKey::Label {
             hash: hasher.finish(),
             color: slot,
+            font,
         };
         let shaper = Shaper {
             theme: self.theme,
@@ -787,7 +828,22 @@ impl Painter<'_> {
             geometry: self.geometry,
             text_system: &self.text_system,
         };
-        self.cache.get_or_shape(key, || shaper.label(text, color))
+        let font = if font == FONT_UI {
+            self.ui_font
+        } else {
+            self.font
+        };
+        self.cache
+            .get_or_shape(key, || shaper.label_in(text, color, font))
+    }
+
+    /// Queues SVG icon `path` (`icons/<name>.svg`) in `color`, `size` px
+    /// square, at viewport-relative `(x, y)`.
+    pub(crate) fn icon(&mut self, path: &'static str, x: f32, y: f32, size: f32, color: Hsla) {
+        let bounds = self.bounds_at(x, y, size, size);
+        self.frame
+            .icons
+            .push((bounds, SharedString::new_static(path), color));
     }
 
     /// Queues a quad at viewport-relative coordinates.
@@ -804,6 +860,14 @@ impl Painter<'_> {
         self.frame.layers[layer]
             .texts
             .push((point(o.x + px(x), o.y + px(y)), text));
+    }
+}
+
+fn number_kind(kind: LineKind) -> NumberKind {
+    match kind {
+        LineKind::Context => NumberKind::Context,
+        LineKind::Added => NumberKind::Added,
+        LineKind::Removed => NumberKind::Removed,
     }
 }
 

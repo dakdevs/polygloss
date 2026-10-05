@@ -106,9 +106,9 @@ pub enum DiffAlgorithm {
 /// `diff.style.indicators`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IndicatorStyle {
-    #[default]
     #[serde(rename = "+-")]
     PlusMinus,
+    #[default]
     #[serde(rename = "bars")]
     Bars,
     #[serde(rename = "none")]
@@ -128,7 +128,7 @@ impl Default for DiffStyleSettings {
     fn default() -> DiffStyleSettings {
         DiffStyleSettings {
             backgrounds: true,
-            indicators: IndicatorStyle::PlusMinus,
+            indicators: IndicatorStyle::Bars,
             wrap: false,
         }
     }

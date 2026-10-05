@@ -43,6 +43,11 @@ pub struct ViewportDebug {
     /// paint order. Unlike `visible_rows`, which is built from row data, this
     /// is what the gutter and the panes actually drew, and where.
     pub painted_text: Vec<(f32, f32, String)>,
+    /// The color of each entry of `painted_text` (its first run's: a code
+    /// line's first token, a title's first run).
+    pub painted_text_colors: Vec<gpui_kit::Hsla>,
+    /// Every SVG icon painted, in paint order.
+    pub icons: Vec<IconDebug>,
     /// Every painted file header, top to bottom.
     pub headers: Vec<HeaderDebug>,
     /// Every clickable control painted, relative to the viewport.
@@ -67,6 +72,24 @@ pub struct PlusDebug {
     pub bounds: (f32, f32, f32, f32),
 }
 
+/// A painted SVG icon.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconDebug {
+    /// The asset path (`icons/<name>.svg`).
+    pub path: String,
+    /// `(x, y, width, height)` relative to the viewport.
+    pub bounds: (f32, f32, f32, f32),
+}
+
+/// How a run of a header title is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleStyle {
+    /// A directory, the rename arrow or the cut's `…`: muted, regular weight.
+    Dim,
+    /// A file name: the header color, bold.
+    Bold,
+}
+
 /// A painted file header.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeaderDebug {
@@ -78,6 +101,8 @@ pub struct HeaderDebug {
     pub sticky: bool,
     /// As painted (cut with `…` when it does not fit).
     pub title: String,
+    /// `title` in runs, as shaped.
+    pub title_runs: Vec<(String, TitleStyle)>,
     /// `(additions, deletions)` as shown; `None` while unknown, when both are
     /// zero, or when the header is too narrow for them.
     pub counts: Option<(u32, u32)>,

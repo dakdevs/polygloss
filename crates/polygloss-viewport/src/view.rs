@@ -33,7 +33,9 @@ use crate::file_flags::FileFlags;
 use crate::find::{FindCurrent, FindHighlights, FindState};
 use crate::gap::Gaps;
 use crate::header::HeaderMenu;
-use crate::layout::{Columns, Geometry, LayoutMode, Pane, digits, resolve_layout, wrapped_heights};
+use crate::layout::{
+    Columns, Geometry, LayoutMode, Pane, digits, layout_for, resolve_layout, wrapped_heights,
+};
 use crate::materialize::MaterializedFile;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::DebugRow;
@@ -68,6 +70,9 @@ pub struct ViewportOptions {
     /// OpenType ligatures in the code font (settings `buffer_font.ligatures`,
     /// default off): off, `->` shows as the two characters it is.
     pub ligatures: bool,
+    /// The UI font: header pills and the Viewed label (design §11.10: the
+    /// system font).
+    pub ui_font: Font,
     pub theme: Arc<ViewportTheme>,
     /// Files with more changed lines show a placeholder instead of rows
     /// (design §12.3: 20,000).
@@ -97,6 +102,7 @@ impl Default for ViewportOptions {
             code_font: SharedString::new_static("Lilex"),
             code_font_size: 13.0,
             ligatures: false,
+            ui_font: font(".AppleSystemUIFont"),
             theme: Arc::new(ViewportTheme::default()),
             large_file_changed_lines: 20_000,
             syntax: true,
@@ -171,6 +177,9 @@ pub enum ViewportEvent {
     BinaryDetected(u32),
     /// Emitted after every painted frame.
     FrameStats(FrameStats),
+    /// Line counts landed ([`DiffViewport::file_counts`]): at most once per
+    /// pipeline batch that brought new counts, never per frame.
+    CountsUpdated,
 }
 
 /// Which layout a file's rows were built for; a different key means the file
@@ -380,12 +389,14 @@ impl DiffViewport {
         let font_changed = old.code_font != self.opts.code_font
             || old.code_font_size != self.opts.code_font_size
             || old.ligatures != self.opts.ligatures;
+        // Pills and labels in the UI font are cached with it.
+        let ui_font_changed = old.ui_font != self.opts.ui_font;
         // Large files get no word ranges and no rows, so a new threshold
         // means loading again too.
         let data_changed = old.diff != self.opts.diff
             || old.word_diff != self.opts.word_diff
             || old.large_file_changed_lines != self.opts.large_file_changed_lines;
-        if theme_changed || font_changed || data_changed {
+        if theme_changed || font_changed || ui_font_changed || data_changed {
             self.text_cache.clear();
         }
         if font_changed {
@@ -628,6 +639,27 @@ impl DiffViewport {
                 .iter()
                 .map(|(x, y, t)| (*x, *y, t.text().to_owned()))
                 .collect(),
+            painted_text_colors: self.debug_text.iter().map(|(_, _, t)| t.color).collect(),
+            icons: self
+                .frame_pool
+                .as_ref()
+                .map(|frame| {
+                    let o = frame.origin;
+                    frame
+                        .icons
+                        .iter()
+                        .map(|(b, path, _)| crate::debug::IconDebug {
+                            path: path.to_string(),
+                            bounds: (
+                                (b.origin.x - o.x).as_f32(),
+                                (b.origin.y - o.y).as_f32(),
+                                b.size.width.as_f32(),
+                                b.size.height.as_f32(),
+                            ),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             headers: self.debug_headers.clone(),
             controls: self
                 .frame_pool
@@ -737,6 +769,7 @@ impl DiffViewport {
                 word_diff: self.opts.word_diff.is_some(),
                 geometry: self.geometry,
                 font: &self.code_font,
+                ui_font: &self.opts.ui_font,
                 layout: self.layout,
                 bounds,
                 inner: inner_bounds(bounds, self.opts.cards),
@@ -840,7 +873,8 @@ impl DiffViewport {
         }
     }
 
-    fn columns(&self, file: Option<&MaterializedFile>) -> Columns {
+    /// The columns of file `f`'s rows ([`Columns::for_file`]).
+    fn columns(&self, f: u32, file: Option<&MaterializedFile>) -> Columns {
         let lines = file.map_or(0, |m| m.diff.old.len().max(m.diff.new.len()));
         Columns::new(
             self.layout,
@@ -850,13 +884,20 @@ impl DiffViewport {
             digits(lines),
             self.opts.style.indicators,
         )
+        .for_file(&self.files[f as usize])
+    }
+
+    /// The layout file `f` is drawn in: unified for a one-sided file in
+    /// either layout ([`layout_for`]).
+    pub(crate) fn file_layout_mode(&self, f: u32) -> Layout {
+        layout_for(&self.files[f as usize], self.layout)
     }
 
     fn layout_key(&self, f: u32) -> LayoutKey {
         let wrap = match (self.opts.style.wrap, self.doc.state(f)) {
             (true, FileState::Materialized(file)) => {
-                let cols = self.columns(Some(file));
-                let pane = match self.layout {
+                let cols = self.columns(f, Some(file));
+                let pane = match cols.layout {
                     Layout::Split => Pane::Half(0),
                     Layout::Unified => Pane::Full,
                 };
@@ -866,7 +907,7 @@ impl DiffViewport {
         };
         let load_requested = self.special.load_requested(f);
         LayoutKey {
-            layout: self.layout,
+            layout: self.file_layout_mode(f),
             wrap,
             large_file_changed_lines: if load_requested {
                 u32::MAX
@@ -962,6 +1003,9 @@ impl DiffViewport {
     }
 
     fn take_applied(&mut self, applied: Applied, cx: &mut Context<Self>) {
+        if applied.counts {
+            cx.emit(ViewportEvent::CountsUpdated);
+        }
         for f in applied.relayout {
             // New rows (or an error): lay the file out on the next frame.
             self.layout_keys[f as usize] = None;

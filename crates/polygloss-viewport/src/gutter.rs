@@ -1,8 +1,9 @@
-//! The gutter: line numbers (one column per side in split, two in unified;
-//! design §11.6 "Line numbers"), change indicators (`+`/`-` glyphs or
-//! bars, design §11.6 "Styles") and the "+" shown on the hovered line
-//! numbers (design §11.6 "Commenting": pressing there asks for a comment,
-//! dragging selects a range, see [`crate::selection`]).
+//! The gutter: line numbers (one column per side in split, two in unified,
+//! one for a one-sided file; design §11.6 "Line numbers"), tinted on changed
+//! rows, change indicators (bars at the pane's left edge or `+`/`-` glyphs,
+//! design §11.6 "Styles") and the "+" shown on the hovered line numbers,
+//! over their column's right edge (design §11.6 "Commenting": pressing there
+//! asks for a comment, dragging selects a range, see [`crate::selection`]).
 
 use std::rc::Rc;
 
@@ -14,35 +15,49 @@ use crate::materialize::MaterializedFile;
 use crate::paint_rows::{HEADERS, LineCell, Painter};
 use crate::selection::PlusHit;
 use crate::style::Indicators;
-use crate::text_cache::{ShapedText, Shaper, TextKey};
+use crate::text_cache::{NumberKind, ShapedText, Shaper, TextKey};
 
 /// Width of an indicator bar in pixels.
 pub(crate) const BAR_WIDTH: f32 = 3.0;
 
 impl Painter<'_> {
-    /// Queues 1-based line number `n`, right-aligned half a column before
-    /// `right`.
-    pub(crate) fn number(&mut self, layer: usize, n: u32, right: f32, y: f32) {
-        let text = self.number_text(n);
+    /// Queues 1-based line number `n` of a row of `kind` (changed rows
+    /// tint it), right-aligned half a column before `right`.
+    pub(crate) fn number(&mut self, layer: usize, n: u32, kind: NumberKind, right: f32, y: f32) {
+        let text = self.number_text(n, kind);
         let x = right - 0.5 * self.geometry.advance - text.shaped.width();
         self.text(layer, x, y, text);
     }
 
-    fn number_text(&mut self, n: u32) -> Rc<ShapedText> {
+    fn number_text(&mut self, n: u32, kind: NumberKind) -> Rc<ShapedText> {
         let shaper = Shaper {
             theme: self.theme,
             font: self.font,
             geometry: self.geometry,
             text_system: &self.text_system,
         };
-        let color = self.theme.line_number;
-        self.cache
-            .get_or_shape(TextKey::Number(n), || shaper.label(&n.to_string(), color))
+        let color = match kind {
+            NumberKind::Context => self.theme.line_number,
+            NumberKind::Added => self.theme.added_line_number,
+            NumberKind::Removed => self.theme.removed_line_number,
+        };
+        self.cache.get_or_shape(TextKey::Number { n, kind }, || {
+            shaper.label(&n.to_string(), color)
+        })
     }
 
-    /// Queues the change marker for a row of `kind` in the indicator column
-    /// starting at `x`: nothing for context rows.
-    pub(crate) fn indicator(&mut self, layer: usize, kind: LineKind, x: f32, y: f32, h: f32) {
+    /// Queues the change marker of a row of `kind` in `pane`: a bar at the
+    /// pane's left edge, or a glyph in its indicator column; nothing for
+    /// context rows.
+    pub(crate) fn indicator(
+        &mut self,
+        layer: usize,
+        kind: LineKind,
+        cols: &Columns,
+        pane: Pane,
+        y: f32,
+        h: f32,
+    ) {
         let (glyph, color, slot) = match kind {
             LineKind::Context => return,
             LineKind::Removed => ("-", self.theme.removed_accent, 2),
@@ -51,10 +66,10 @@ impl Painter<'_> {
         match self.style.indicators {
             Indicators::PlusMinus => {
                 let text = self.label(glyph, slot, color);
-                let x = x + 0.5 * self.geometry.advance;
+                let x = cols.indicator_x(pane) + 0.5 * self.geometry.advance;
                 self.text(layer, x, y, text);
             }
-            Indicators::Bars => self.quad(layer, x, y, BAR_WIDTH, h, color),
+            Indicators::Bars => self.quad(layer, cols.pane(pane).0, y, BAR_WIDTH, h, color),
             Indicators::None => {}
         }
     }
@@ -75,9 +90,10 @@ impl Painter<'_> {
         self.frame.cells.push(cell);
     }
 
-    /// The "+" over the indicator column of `cell` when the pointer is on
-    /// its gutter and no header covers the row. Drawn in the header layer,
-    /// so it covers the row's numbers and marker.
+    /// The "+" centered on the right edge of `cell`'s number column (its
+    /// side's) when the pointer is on its gutter and no header covers the
+    /// row. Drawn in the header layer, so it covers the numbers and code
+    /// under it.
     fn plus_button(&mut self, cols: &Columns, pane: Pane, cell: &LineCell) {
         let Some((px, py)) = self.marks.pointer else {
             return;
@@ -106,7 +122,8 @@ impl Painter<'_> {
         }
         let row_h = self.geometry.row_height;
         let size = (row_h - 4.0).max(8.0);
-        let center = cols.indicator_x(pane) + cols.indicator_width / 2.0;
+        let column = cols.number_column(cell.side).unwrap_or(0);
+        let center = cols.number_right(pane, column);
         let (x, y) = (center - size / 2.0, cell.y + (row_h - size) / 2.0);
         self.rounded(HEADERS, (x, y, size, size), self.theme.accent, None, 4.0);
         let plus = self.label("+", SLOT_ON_ACCENT, self.theme.background);

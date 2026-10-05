@@ -35,7 +35,8 @@ pub const FONT_SIZE: f32 = 13.0;
 pub const ADVANCE: f32 = 0.6 * FONT_SIZE;
 /// Row height for `FONT_SIZE` (`round(13 × 1.5)`).
 pub const ROW_H: f32 = 20.0;
-pub const HEADER_H: f32 = 40.0;
+/// A file header: 2.25 rows (`round(2.25 × 20)`, design §11.6).
+pub const HEADER_H: f32 = 45.0;
 /// A one-label body (`Binary file`, `Large diff`, a load error): 2.4 rows.
 pub const PLACEHOLDER_H: f32 = 48.0;
 
@@ -132,6 +133,25 @@ impl Spec {
             kind: FileKind::Text,
             old_path: None,
             generated: false,
+        }
+    }
+
+    pub fn deleted(path: &str, old: &str) -> Spec {
+        Spec {
+            path: path.to_owned(),
+            old: Some(old.to_owned()),
+            new: None,
+            kind: FileKind::Text,
+            old_path: None,
+            generated: false,
+        }
+    }
+
+    /// `from` renamed to `path`, its text changed from `old` to `new`.
+    pub fn renamed(from: &str, path: &str, old: &str, new: &str) -> Spec {
+        Spec {
+            old_path: Some(from.to_owned()),
+            ..Spec::modified(path, old, new)
         }
     }
 
@@ -742,4 +762,51 @@ pub fn click_menu_item(cx: &mut VisualTestContext, label: &str) {
     });
     cx.update(|window, cx| window.within("popup-menu").click(ix, cx));
     settle(cx);
+}
+
+/// The color `text` was painted in (the first painted text equal to it).
+pub fn text_color(d: &ViewportDebug, text: &str) -> Hsla {
+    let i = d
+        .painted_text
+        .iter()
+        .position(|(_, _, t)| t == text)
+        .unwrap_or_else(|| panic!("{text:?} not painted: {:?}", d.painted_text));
+    d.painted_text_colors[i]
+}
+
+/// Where `text` was painted, `(x, y)` (the first painted text equal to it).
+pub fn text_at(d: &ViewportDebug, text: &str) -> (f32, f32) {
+    d.painted_text
+        .iter()
+        .find(|(_, _, t)| t == text)
+        .map(|(x, y, _)| (*x, *y))
+        .unwrap_or_else(|| panic!("{text:?} not painted: {:?}", d.painted_text))
+}
+
+/// Bounds of every painted icon `icons/<name>.svg`, in paint order.
+pub fn icons_named(d: &ViewportDebug, name: &str) -> Vec<(f32, f32, f32, f32)> {
+    let path = format!("icons/{name}.svg");
+    d.icons
+        .iter()
+        .filter(|i| i.path == path)
+        .map(|i| i.bounds)
+        .collect()
+}
+
+/// Whether two values are within 0.01 px.
+pub fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.01
+}
+
+/// Whether two rectangles are within 0.01 px on every edge.
+pub fn near_rect(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    near(a.0, b.0) && near(a.1, b.1) && near(a.2, b.2) && near(a.3, b.3)
+}
+
+/// Whether a painted quad's rectangle is `b` within half a point on every
+/// edge (GPUI snaps quads to device pixels).
+pub fn near_painted(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)]
+        .iter()
+        .all(|(p, q)| (p - q).abs() <= 0.5)
 }
