@@ -1,8 +1,8 @@
 # ADR-0023: One window with tabs, and the entry points
 
-- **Status:** Accepted. The log says both "single binary" and "`polygloss mcp` = separate slim binary"; the Provisional reading is a GUI plus a slim CLI binary (ADR-0012, ADR-0019, design OQ-29).
+- **Status:** Accepted. The tab row (tabs drawn in the title bar) is superseded by [ADR-0026](0026-inset-titlebar-and-sidebar-navigation.md), which lists open reviews in the sidebar; the tab model and its semantics below stand. The log says both "single binary" and "`polygloss mcp` = separate slim binary"; the Provisional reading is a GUI plus a slim CLI binary (ADR-0012, ADR-0019, design OQ-29).
 - **Date:** 2026-09-28
-- **Design:** [§11.1 Window and tabs](../design.md#111-window-and-tabs-adr-0023), [§13.4 Launch](../design.md#134-launch-and-single-instance), [§14 CLI](../design.md#14-cli)
+- **Design:** [§11.1 Window and navigation](../design.md#111-window-and-navigation-adr-0023-adr-0026), [§13.4 Launch](../design.md#134-launch-and-single-instance), [§14 CLI](../design.md#14-cli)
 
 ## Context
 

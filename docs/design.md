@@ -1,6 +1,6 @@
 # Polygloss design
 
-> Single source of truth for builders. **Status:** draft for v1, 2026-09-28.
+> Single source of truth for builders. **Status:** draft for v1, 2026-09-28; §11 rewritten for the M6 redesign and file categories, 2026-10-05.
 >
 > Decisions come from the design log and are recorded as ADRs in [`docs/adr/`](adr/README.md). Anything marked **Provisional** is a default picked where the log is silent. Each one is listed in [§26 Open questions](#26-open-questions) and can change until it is decided.
 
@@ -37,7 +37,7 @@
 
 ## 1. Overview
 
-Polygloss is a native macOS app for reviewing diffs locally, especially code written by coding agents. It works like GitHub's "Files changed" tab and looks like Pierre's diffs (diffs.com): split and unified views, word diff, a **Viewed** checkbox per file, threaded comments that can be resolved, and a batched **Submit review**. Agents take part through a local MCP server. They open diffs for the human, annotate them, wait for the verdict, then reply to threads and resolve them.
+Polygloss is a native macOS app for reviewing diffs locally, especially code written by coding agents. It works like GitHub's "Files changed" tab, with each file as a card on a light canvas (ADR-0027): split and unified views, word diff, a **Viewed** checkbox per file, threaded comments that can be resolved, and a batched **Submit review**. Agents take part through a local MCP server. They open diffs for the human, annotate them, wait for the verdict, then reply to threads and resolve them.
 
 Everything is local. Polygloss reads repositories that are already on disk and keeps its state in one SQLite file. It never fetches, never calls a forge API and has no accounts.
 
@@ -97,6 +97,8 @@ Everything is local. Polygloss reads repositories that are already on disk and k
 | **Session**              | One agent session talking to Polygloss: the Claude Code session id, or a generated id for other clients.                                                                 |
 | **Assignment**           | The one session a review belongs to: the session that opened it, reassignable. That session receives the wake-up.                                                        |
 | **Live review**          | A review whose head is the working tree. It updates when the user clicks Refresh.                                                                                        |
+| **Category**             | A named set of path patterns (Tests, Generated, …) whose files leave the main list for a collapsed section at the bottom of the diff (§11.15). Computed, never stored.   |
+| **Section**              | The viewport's group of one category's files, below the uncategorized files, with a band to show, hide or mark them viewed.                                              |
 
 ---
 
@@ -235,7 +237,7 @@ This is the **Provisional** mechanism for the log's "content-hashed in memory, w
 | Hunks                                           | gix-imara-diff 0.3, used directly (no `gix-diff`): Histogram and the indent/slider post-processing, run in git's order (old side first). Myers is git's preprocessing on whole files, then imara's Myers core ported without its own preprocessing (`myers_core.rs`, plan T1.16). Myers + indent heuristic by default, Histogram optional | Same output whatever the user's git version or config                              |
 | Word/char diff, line mapping                    | gix-imara-diff                                                                                                                                                                                                                                                                                                                            | One engine for hunks, word ranges, carry-forward and open-in-editor mapping        |
 | Binary detection                                | NUL byte in the first 8,000 bytes (git's rule), plus `binary` / `-diff` attributes read from the head tree                                                                                                                                                                                                                                | Consistent with git                                                                |
-| Generated detection                             | `linguist-generated` attribute from the head tree plus a built-in list (lockfiles, `*.min.js`, …)                                                                                                                                                                                                                                         | GitHub-like collapsing                                                             |
+| Generated detection                             | `linguist-generated` (set, unset or unspecified) from the head tree, stored; the Generated category's patterns applied at view time (§11.15)                                                                                                                                                                                              | GitHub-like collapsing; patterns follow `settings.json`                            |
 | Syntax highlighting                             | lumis 0.15 (§11.11)                                                                                                                                                                                                                                                                                                                       |                                                                                    |
 
 The earlier plan (git ≥ 2.50 `diff-pairs` patches parsed in Rust) is superseded. Git produces structure only.
@@ -264,17 +266,17 @@ The earlier plan (git ≥ 2.50 `diff-pairs` patches parsed in Rust) is supersede
 
 ### 6.4 Special files
 
-| Kind             | Detection                             | Rendering                                                             |
-| ---------------- | ------------------------------------- | --------------------------------------------------------------------- |
-| Rename           | raw status `R<score>`                 | Header `old/path → new/path` and similarity; body diffs the two blobs |
-| Mode-only change | modes differ, blobs equal             | Header badge `100644 → 100755`, no body                               |
-| Binary           | NUL heuristic or attribute            | Placeholder "Binary file · 12.0 KB → 14.2 KB"                         |
-| Symlink          | mode `120000`                         | Target text diff plus a `symlink` badge                               |
-| Submodule        | mode `160000`                         | One line: `abc1234 → def5678`                                         |
-| Generated        | `linguist-generated` or built-in list | Collapsed, with "Load diff"                                           |
-| Large            | more than ~20k changed lines          | Collapsed, with "Load diff"                                           |
-| LFS pointer      | pointer text in the blob              | Pointer shown as text, `LFS` badge (**Provisional**)                  |
-| Merge commit     | more than one parent                  | Diff against the first parent                                         |
+| Kind             | Detection                                            | Rendering                                                                      |
+| ---------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Rename           | raw status `R<score>`                                | Header `old/path → new/path` and similarity; body diffs the two blobs          |
+| Mode-only change | modes differ, blobs equal                            | Header badge `100644 → 100755`, no body                                        |
+| Binary           | NUL heuristic or attribute                           | Placeholder "Binary file · 12.0 KB → 14.2 KB"                                  |
+| Symlink          | mode `120000`                                        | Target text diff plus a `symlink` badge                                        |
+| Submodule        | mode `160000`                                        | One line: `abc1234 → def5678`                                                  |
+| Generated        | `linguist-generated`, or Generated patterns (§11.15) | Collapsed, with "Load diff"; in the Generated section when that category is on |
+| Large            | more than ~20k changed lines                         | Collapsed, with "Load diff"                                                    |
+| LFS pointer      | pointer text in the blob                             | Pointer shown as text, `LFS` badge (**Provisional**)                           |
+| Merge commit     | more than one parent                                 | Diff against the first parent                                                  |
 
 ---
 
@@ -520,7 +522,14 @@ CREATE TABLE view_state (                        -- per diff_id (§11.12)
 );
 ```
 
-`view_state.state_json` (v1): `{ "v": 1, "scroll_anchor": { "path", "side", "line" }, "collapsed": [path], "expanded": { path: [[start, end]] }, "layout": "split" | "unified" | null, "tree_expanded": [dir], "composer": { key: text } }`.
+`view_state.state_json` (v1): `{ "v": 1, "scroll_anchor": { "path", "side", "line" }, "collapsed": [path], "expanded": { path: [[start, end]] }, "layout": "split" | "unified" | null, "tree_expanded": [dir], "composer": { key: text }, "threads_panel": bool, "open_sections": [category] }`. The last two are optional additions (M6; absent = default), so the version stays 1.
+
+Migration 2 (M6, ADR-0028) adds the `linguist-generated` tri-state that the `generated` bit folds away. `generated` is still written as in v1 (attribute set, or the v1 built-in list), so older readers see the same bit. Rows written before migration 2 read as unknown: they count as generated when their `generated` bit is set or the Generated patterns match (§11.15).
+
+```sql
+ALTER TABLE file_changes ADD COLUMN generated_attr INTEGER
+  CHECK (generated_attr IN (0, 1, 2));           -- 0 unspecified, 1 set, 2 unset; NULL = row from before migration 2
+```
 
 ### 7.3 Events
 
@@ -635,16 +644,16 @@ position(thread T, diff D):
 
 (ADR-0022)
 
-| Rule                 | Detail                                                                                                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Key                  | `(path, old_blob, new_blob)`. Added files use an all-zero `old_blob`; deleted files use an all-zero `new_blob`. Scope is global, not per review (**Provisional**, OQ-8). |
-| Toggle               | Header checkbox, tree checkbox, or `v`. Marking viewed collapses the file and jumps to the next unviewed file.                                                           |
-| Carry-over           | A file stays viewed across iterations and reviews exactly while its key is unchanged. It unchecks itself when the file changes.                                          |
-| Changed since viewed | A `viewed_files` row exists for `(review_id, path)` with a different blob pair. Shows a "Changed since viewed" badge, like GitHub's dismissed state.                     |
-| Pinning              | Never needed. Unpinned live states already have blob OIDs (§5).                                                                                                          |
-| Progress             | "N / M viewed" in the toolbar. The tree shows folder aggregates as tri-state checkboxes and offers "Mark folder viewed" (**Provisional**).                               |
-| Agents               | Read-only: `list_reviews` returns viewed counts. Agents cannot set Viewed.                                                                                               |
-| Known limit          | A base-only move (rebase) changes `old_blob`, so the file becomes unviewed. Carrying Viewed over by patch-id is a post-v1 idea (OQ-8).                                   |
+| Rule                 | Detail                                                                                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Key                  | `(path, old_blob, new_blob)`. Added files use an all-zero `old_blob`; deleted files use an all-zero `new_blob`. Scope is global, not per review (**Provisional**, OQ-8).       |
+| Toggle               | The file header's Viewed pill, the tree row's icon slot, `v`, or a category section's Mark all viewed. Marking viewed collapses the file and jumps to the next unviewed file.  |
+| Carry-over           | A file stays viewed across iterations and reviews exactly while its key is unchanged. It unchecks itself when the file changes.                                                |
+| Changed since viewed | A `viewed_files` row exists for `(review_id, path)` with a different blob pair. Shows a "Changed since viewed" badge, like GitHub's dismissed state.                           |
+| Pinning              | Never needed. Unpinned live states already have blob OIDs (§5).                                                                                                                |
+| Progress             | `N/M` in the toolbar, over every file, categorized ones included. The tree shows folder aggregates as a tri-state icon slot and offers "Mark folder viewed" (**Provisional**). |
+| Agents               | Read-only: `list_reviews` returns viewed counts. Agents cannot set Viewed.                                                                                                     |
+| Known limit          | A base-only move (rebase) changes `old_blob`, so the file becomes unviewed. Carrying Viewed over by patch-id is a post-v1 idea (OQ-8).                                         |
 
 ---
 
@@ -667,17 +676,33 @@ position(thread T, diff D):
 
 ## 11. UI
 
-### 11.1 Window and tabs (ADR-0023)
+### 11.1 Window and navigation (ADR-0023, ADR-0026)
 
-- Single instance, **one main window with tabs** (gpui-kit). One tab per review; opening a review that is already open focuses its tab. Home is the first tab (**Provisional**).
-- The app keeps running after the last window closes, as macOS apps do. Clicking the Dock icon reopens the window.
-- Tab layout: toolbar, banner strip, then three resizable panes: file tree | diff viewport | threads panel (toggleable).
+- Single instance, **one main window**. One tab per review (the tab model; Home is its first item and cannot close); opening a review that is already open focuses it. There is no tab row: open reviews are listed in the sidebar (§11.2).
+- The app keeps running after the last window closes, as macOS apps do. Clicking the Dock icon reopens the window on Home.
+- Chrome: transparent titlebar, traffic lights at (19, 19) pt inside the sidebar's 52 pt top row, no native window tabs, an opaque window and sidebar (**Provisional**, OQ-50). Every page (Home, a review) renders the same shell:
 
-### 11.2 Home and recents
+```text
+┌ sidebar 280 pt (220–480, hideable)  ┬ main column (min 320 pt) ────────────────────────────────────────┐
+│ ● ● ●           [Files|Reviews] [◧] │ repo · pills …          find · threads · N/M · ⫼≡ · ⚙ · Submit   │ 52 pt rows; both drag
+│ Files: filter, accordion of trees,  ├──────────────────────────────────────────────────────────────────┤
+│        footer "Total: +X −Y"        │ banner strip, 32 pt, reserved                                    │
+│ Reviews: Home, Open, Awaiting, …    │ viewport: header card, file cards           │ threads panel      │
+└─────────────────────────────────────┴─────────────────────────────────────────────┴────────────────────┘
+```
+
+- **Top rows:** the sidebar's top row (traffic lights, then right-aligned the `[Files | Reviews]` segmented control and the sidebar toggle) and the toolbar row (§11.4) are one height. Both move the window when dragged and zoom on double-click (the system's setting); a press on a button or pill never moves it.
+- **Sidebar:** one width for the window, kept when switching reviews. ⌃⌘S or its toggle hides it; the toolbar row then takes the traffic-light inset and a "show sidebar" button. In fullscreen the inset goes. **Files** shows the review's files (§11.5) and is disabled on Home; **Reviews** shows the reviews list (§11.2). Opening a review for the first time switches to Files; focusing one already open keeps the segment. Sidebar state lasts for the session (**Provisional**, OQ-37).
+- **Threads panel:** right of the viewport and under the toolbar, 340 pt (220–720), **hidden by default**. The toolbar's threads button, View › Toggle Threads Panel and the palette toggle it. Its visibility is remembered per diff in view state and kept across Refresh and iteration switches in the tab (**Provisional**, OQ-38). Comment on review, a panel-only thread, an agent-replies "Show", a URL or `focus` on a thread open it.
+- **Keys:** ⌘W closes the active review (on Home with none open, the window). ⌘{ / ⌘} and ⌃⇧Tab / ⌃Tab cycle through Home and the open reviews. ⌘1–⌘8 select the Nth open review, ⌘9 the last (**Provisional**, OQ-35). `⇥` pane cycling skips the tree while the sidebar is hidden or shows Reviews; ⌘F, `/`, ⌘P and cycling into the tree show Files first.
+- **Menus:** File › Close Review (⌘W); Window › Show Next Review / Show Previous Review; View › Toggle Sidebar, Toggle Threads Panel. Action names are unchanged.
+
+### 11.2 Home and the Reviews list
 
 - Recent reviews across all repos, sorted by activity, in two sections: **Awaiting you** (re-review requested, or open agent questions) and **Recent**.
-- Each row: repo, title (label, branch or commit subject), kind badge, status or last verdict, viewed N/M, open threads, agent badge, relative time.
-- Row actions: open, archive, prune, mute, and "Assign to session…" to reassign the review to another agent session (**Provisional**, OQ-32).
+- **Home page** (the main column while no review is active): a toolbar row with "Reviews", the count and **Open…** (⌘O), then the rows as cards on the canvas. Each row: repo, title (label, branch or commit subject), kind icon, status or last verdict, viewed N/M, open threads, agent badge, relative time. Keys: `j`/`k`, `⏎`, `e` archive, ⌘⌫ prune, `m` mute, `a` assign, `R` refresh.
+- Row actions: open, archive, prune, mute, and "Assign to session…" to reassign the review to another agent session (**Provisional**, OQ-32), from the row's ⋯ menu or context menu.
+- **Reviews segment** (sidebar): a Home row (inbox icon, awaiting count); **Open**, one row per open review (kind icon, `repo · summary`, live dot, × on hover, the active one highlighted); while a review is active, also Awaiting you and Recent as compact rows with the same ⋯ and context menus. On Home it lists only Home and Open (**Provisional**, OQ-36). A click opens or focuses the row's review; × closes it like ⌘W. The list is for the mouse; the keyboard uses the Home page and the keys in §11.1.
 - When `storage.prune_reviews_after_days` is set, stale reviews are pruned at launch and every 24 h. Orphaned reviews, reviews with drafts and reviews awaiting you are never auto-pruned (**Provisional**, OQ-34). The rules are checked again inside each review's delete transaction, so a review reopened, drafted on or asked about after the candidates were chosen (for example by the `polygloss open` that launched the app) is kept.
 
 ### 11.3 Open flow (⌘O)
@@ -688,36 +713,76 @@ position(thread T, diff D):
 
 ### 11.4 Toolbar
 
-Iteration picker ("Iteration 3 of 3") with a **Changes since last review** toggle · base picker (live) · Snapshot (live) · split/unified · hide whitespace · word/char · "N / M viewed" · Hide agent notes · drafts count + **Submit review**.
+The main column's 52 pt top row; it is also the window's drag region.
+
+**Left:** the repo name (bold) over its parent directory (dim; `~` for the home directory), then pills by kind:
+
+| Kind    | Pills                                                                                                          |
+| ------- | -------------------------------------------------------------------------------------------------------------- |
+| Commit  | Commit icon + short SHA (orange, monospace)                                                                    |
+| Compare | Base ref pill, a subtle `…` (three-dot) or `..` (direct), head ref pill (branch icons); a label is the tooltip |
+| Live    | Branch pill, then "Live · <base>", which opens the base picker                                                 |
+
+Then the **iteration pill** ("Iteration 2 of 3", "Changes since last review") when the review has more than one state to show; its menu holds "Changes since last review" and the iterations, and `i` opens it.
+
+**Right:** Find (⌘F) · threads button (message icon + open threads, selected while the panel shows) · viewed progress `N/M` (tooltip "N of M files viewed") · split | unified segmented icon toggle (`s`) · display options menu · **Submit review** with the drafts count (⌘⇧⏎), in the accent color (**Provisional**, OQ-41).
+
+**Display options menu:** Automatic layout · Hide whitespace (`w`) · Wrap lines · Word diff, Character diff, No inline highlights · Hide agent notes / Show agent notes (n) (only when there are notes).
+
+Where the previous controls went:
+
+| Control                                      | Now                                                                 |
+| -------------------------------------------- | ------------------------------------------------------------------- |
+| Kind badge (COMPARE, COMMIT, LIVE)           | The pills; the repo block's tooltip; kind icons in the Reviews list |
+| Title `repo · base..head`                    | Repo block and pills; still the Reviews row label and window title  |
+| "Base: … ▾" (live)                           | The Live pill                                                       |
+| Snapshot (live)                              | The live header card (§11.6)                                        |
+| Unified / Split buttons                      | The segmented icon toggle                                           |
+| View options (⚙)                             | The display options menu, which gains Wrap lines and agent notes    |
+| Viewed bar "N / M viewed"                    | `N/M` with a tooltip                                                |
+| Hide agent notes button                      | The display options menu                                            |
+| Threads panel toggle                         | The threads button                                                  |
+| Context line "base (…) → head (…) · N files" | The header card                                                     |
+| Comment on review                            | Unchanged: threads panel header, palette, Review menu               |
+
+When the row narrows: the parent path hides, ref pills truncate, Submit's label becomes "Submit", then Find moves into the display options menu. The threads button, the layout toggle and Submit never hide.
 
 "Changes since last review" is the pinned diff (head of the iteration at the last submission → current head). Its semantics are **Provisional** (OQ-9): comments allowed on the new side only, and a rebased base shows up as noise until range-diff (post-v1).
 
-### 11.5 File tree
+### 11.5 Sidebar and file tree
 
-- gpui-kit `Tree` (virtualized). Chains of single-child directories are compacted (`src/app/ui`).
-- Each row: Viewed checkbox (wrapped so its mouse-down does not toggle the folder), status letter and color, +/− counts, open-thread badge, agent badge, "changed since viewed" dot.
-- Filters: unviewed, has comments, status (A/M/D/R), extension. A fuzzy filter box uses `nucleo-matcher`.
-- Selecting a row scrolls the viewport. Scrolling the viewport highlights the current file in the tree.
+- **Files segment:** a rounded filter field ("Filter files"; `/` focuses it; fuzzy, `nucleo-matcher`; its filter menu offers unviewed, has comments, status A/M/D/R and extension), then an accordion: **Changes** (every uncategorized file), then one panel per non-empty enabled category (§11.15) in category order. One panel is open at a time and scrolls on its own; each header shows its icon, title and file count.
+- **Footer:** "Total: +X −Y" over the Changes panel's files ("…" until all are counted), then category chips ("6 tests · 2 generated"). The tooltip gives the totals excluding, including, and of categorized files only.
+- **Tree:** a gpui-kit `Tree` per panel (virtualized). Chains of single-child directories are compacted (`src/app/ui`); children keep diff order. A row (28 pt): chevron, outline folder or file icon, name (UI font; dimmed when viewed, struck through when deleted), then right-aligned the changed-since-viewed dot, open-thread pill, agent icon, `+a −d` (monospace, green and red, once counted) and the status letter (A green, M amber, D red, R violet, T amber).
+- **Viewed:** the icon slot is the toggle: a circle on hover, a check-circle in the accent color once viewed. Folders show a tri-state (circle, half, check) and toggle all their files. One click toggles; `v` toggles the selected file or folder; pressing the slot never expands or collapses a folder (**Provisional**, OQ-43).
+- Selecting a row scrolls the viewport to it, opening its section. The open panel follows the viewport: a jump or a scroll into another section opens that section's panel and highlights the row; a panel the user opens stays open until the next such crossing (**Provisional**, OQ-44).
+- ⌘F replaces the accordion with the find pane while it is open (§11.14).
 
 ### 11.6 Diff viewport (ADR-0003)
 
-| Aspect        | Behavior                                                                                                                                                                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Layout        | Split when the viewport is at least ~160 monospace columns wide, otherwise unified. A manual choice (`s`) is remembered per diff in `view_state`.                                                                                    |
-| Line numbers  | Split: one column per side. Unified: **two** columns, old and new.                                                                                                                                                                   |
-| Word diff     | On every modified line pair, paired GitHub-style. Word granularity by default, char as an option.                                                                                                                                    |
-| Context       | 3 lines. Gap expanders "↑20 / ↓20 / Expand all". `e` expands the nearest gap by 20 lines; `E` expands the whole file.                                                                                                                |
-| Cursor        | A line cursor (`j`/`k`, arrows) moves across rows and files. It is the target for `c`, `o` and `e`. `shift+↑/↓` extends a range.                                                                                                     |
-| Commenting    | A "+" appears when hovering a line number. Dragging across line numbers selects a range. `c` comments on the cursor line or selection.                                                                                               |
-| Threads       | Below the anchored line (the last line of a range). In split, a thread sits in its side's column with a same-height spacer on the other side. In unified it spans the full width. Outdated threads also appear in the threads panel. |
-| Sticky header | Path; `old → new` for renames; +/− counts; badges for mode, binary, symlink, submodule, generated and LFS; Viewed checkbox; collapse chevron; ⋯ menu (Open in editor, Comment on file, Copy path, Expand all, Load diff).            |
-| Special files | See §6.4.                                                                                                                                                                                                                            |
-| Selection     | Text selection within one side. Copy yields source text without gutters or markers (**Provisional**).                                                                                                                                |
-| Styles        | Pierre diff-style settings: backgrounds, `+/-` indicators or bars, word-diff on/off, wrap on/off (default off, **Provisional**). With wrap on, a split row is as tall as its taller side.                                            |
+The look follows ADR-0027: the canvas uses the theme's `background`; each file is a card (radius 8 pt, 1 px border, 16 pt from the sides, 12 pt apart, 8 pt of padding below its last row), and rows fill the card's inner width.
+
+| Aspect        | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Layout        | Split when a card's inner width holds at least ~160 monospace columns, otherwise unified. A manual choice (`s`) is remembered per diff in `view_state`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Line numbers  | Split: one column per side. Unified: **two** columns, old and new. Changed rows tint their numbers and the number gutter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Word diff     | On every modified line pair, paired GitHub-style. Word granularity by default, char as an option. Highlights are a step stronger than the row tint.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Context       | 3 lines. Gap rows "⋯ N unchanged lines ↑20 / ↓20 / Expand all" in the canvas color inside the card. `e` expands the nearest gap by 20 lines; `E` expands the whole file.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Cursor        | A line cursor (`j`/`k`, arrows) moves across rows and files. It is the target for `c`, `o` and `e`. `shift+↑/↓` extends a range.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Commenting    | A "+" appears over the right edge of the line-number column when hovering a line number. Dragging across line numbers selects a range. `c` comments on the cursor line or selection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Threads       | Below the anchored line (the last line of a range). In split, a thread sits in its side's column with a same-height spacer on the other side. In unified it spans the full width. Outdated threads also appear in the threads panel.                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Header card   | Above the first file, scrolling with the diff (a host element the viewport measures like a block). Commit: avatar (the author's initial on a color picked by FNV-1a of the lowercased email from the theme's player colors; never fetched), subject (bold), "<author> committed <relative time>", short SHA (orange, monospace). Compare: the label or `base…head`, "N commits · <head author> committed <time>", and a "Show commits" expander (newest first; 50, then "and N more"). Live: "Uncommitted changes on <branch>", "vs <base>" and **Snapshot** (disabled once pinned, tooltip "Saved as iteration N"). Every kind: "N files · +X −Y" over the uncategorized files, with category chips (§11.15). |
+| File header   | Sticky inside its card: in place it has the card's rounded top corners; pinned it sits flush and square at the top edge with a bottom border. 2.25 rows tall. Collapse chevron; path in the code font with the directory dim and the file name bold (`old → new` for renames); badges for mode, binary, symlink, submodule, generated and LFS; an open-in-editor icon; a `+a −d` pill (both counts once known); a "Viewed" pill button holding a checkbox; ⋯ menu (Open in editor, Comment on file, Copy path, Expand all, Load diff).                                                                                                                                                                         |
+| Sections      | Categorized files follow the others, one section per category (§11.15). A band on the canvas ("▸ 12 test files · +300 −20 · Show · Mark all viewed") opens or closes it. A closed section's files are never laid out, painted or walked. Going to a file in a closed section (`n`/`p`, Find, a thread, a URL, `focus`) opens it.                                                                                                                                                                                                                                                                                                                                                                               |
+| Special files | See §6.4.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Selection     | Text selection within one side. Copy yields source text without gutters or markers (**Provisional**).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Styles        | Diff-style settings: backgrounds; indicators, by default `"bars"` (a 3 pt bar at the row's left edge, each half's own edge in split; no glyph), or `"+-"` glyphs, or `"none"`; word diff on/off; wrap on/off (default off, **Provisional**; also in the display options menu). With wrap on, a split row is as tall as its taller side.                                                                                                                                                                                                                                                                                                                                                                        |
+
+The viewport has no review semantics: the app hands it sections (label, icon, file indices, open or not) and the header card's render function; every API stays keyed by `file_idx` (git order), and the display order lives inside the viewport.
 
 ### 11.7 Banners
 
-Banners sit in a reserved strip under the toolbar, or float as an overlay. They never insert rows into the viewport, so content never moves.
+Banners sit in a reserved 32 pt strip under the toolbar, on the canvas color. They never insert rows into the viewport, so content never moves. Each banner is a rounded inline notice (info tint, 1 px border, a dot, its text and a button); several share the strip and truncate. Without banners the strip shows the context line only while the tab is not on the latest state ("Iteration 2 of 3 · base → head", "Changes since your last review · … · comments on new lines only"), and is otherwise empty (**Provisional**, OQ-39).
 
 | Banner                  | Trigger                            | Action                                                      |
 | ----------------------- | ---------------------------------- | ----------------------------------------------------------- |
@@ -728,8 +793,8 @@ Banners sit in a reserved strip under the toolbar, or float as an overlay. They 
 
 ### 11.8 Palette and finder
 
-- `⌘K` command palette: every action with its keybinding hint (gpui-kit `Command`).
-- `⌘P` file finder, ranked with `nucleo-matcher`.
+- `⌘K` command palette: every action with its keybinding hint (gpui-kit `Command`), including Toggle Sidebar, Show Files, Show Reviews, the category toggles and "Explain file category" (§11.15).
+- `⌘P` file finder, ranked with `nucleo-matcher`; it searches every file, categorized ones included.
 - `⌘O` open flow (§11.3). `?` opens the cheat sheet.
 
 ### 11.9 Keymap (ADR-0025)
@@ -757,31 +822,34 @@ GPUI actions, remappable through `keymap.json` (§18).
 | `⌘F`                  | Find across all files                                      | Tab            |
 | `⌘⇧⏎`                 | Submit review                                              | Tab            |
 | `?`                   | Cheat sheet                                                | Window         |
+| `⌃⌘S`                 | Toggle sidebar                                             | Window         |
+| `⌘1` … `⌘8` / `⌘9`    | Open review 1 to 8 / the last open review                  | Window         |
 
-**Provisional** additions following macOS conventions: `Esc` (cancel composer, close popover), `⌘W` (close tab), `⌘⇧[` / `⌘⇧]` (previous/next tab), `⌘,` (open `settings.json`). Vim mode is optional and comes later.
+**Provisional** additions following macOS conventions: `Esc` (cancel composer, close popover), `⌘W` (close the review), `⌘⇧[` / `⌘⇧]` (previous/next review), `⌘,` (open `settings.json`). `⌃⌘S` and `⌘1`–`⌘9` are M6 additions (§11.1; OQ-35); dialogs keep their own `⌘1`–`⌘3`. Vim mode is optional and comes later.
 
 Keyboard-only use (OQ-23, plan T5.6): every action has a key or a palette row, and these reach what only the mouse did before.
 
-| Key                | Action                                                                                       | Context       |
-| ------------------ | -------------------------------------------------------------------------------------------- | ------------- |
-| `⇥` / `⇧⇥`         | Next / previous pane: file tree → diff → threads panel (when shown) → open composers         | Tab           |
-| `i`                | Iteration menu (the toolbar picker's)                                                        | Tab           |
-| `m`                | The cursor file's ⋯ menu (Open in editor, Comment on file, Copy path, Expand all, Load diff) | Viewport      |
-| `z`                | Collapse or expand the cursor's file                                                         | Viewport      |
-| `/` / `f`          | Filter box / filter menu                                                                     | Tree          |
-| `j` `k` / `↓` `↑`  | Select the next / previous thread                                                            | ThreadsPanel  |
-| `⏎`                | Go to the selected thread (or open it in the panel)                                          | ThreadsPanel  |
-| `r` / `x` / `e`    | Reply / resolve or unresolve / edit your latest comment ("Delete my comment": palette)       | ThreadsPanel  |
-| `⌘1` / `⌘2` / `⌘3` | Verdict Comment / Approve / Request changes                                                  | Submit dialog |
-| `R`                | Reload the list                                                                              | Home          |
+| Key                | Action                                                                                            | Context       |
+| ------------------ | ------------------------------------------------------------------------------------------------- | ------------- |
+| `⇥` / `⇧⇥`         | Next / previous pane: file tree (when shown) → diff → threads panel (when shown) → open composers | Tab           |
+| `i`                | Iteration menu (the toolbar picker's)                                                             | Tab           |
+| `m`                | The cursor file's ⋯ menu (Open in editor, Comment on file, Copy path, Expand all, Load diff)      | Viewport      |
+| `z`                | Collapse or expand the cursor's file                                                              | Viewport      |
+| `/` / `f`          | Filter box / filter menu                                                                          | Tree          |
+| `j` `k` / `↓` `↑`  | Select the next / previous thread                                                                 | ThreadsPanel  |
+| `⏎`                | Go to the selected thread (or open it in the panel)                                               | ThreadsPanel  |
+| `r` / `x` / `e`    | Reply / resolve or unresolve / edit your latest comment ("Delete my comment": palette)            | ThreadsPanel  |
+| `⌘1` / `⌘2` / `⌘3` | Verdict Comment / Approve / Request changes                                                       | Submit dialog |
+| `R`                | Reload the list                                                                                   | Home          |
 
 The pane with the keyboard shows a focus ring while the keyboard is in use (focus-visible: a click does not light it). In the composer and the Submit review summary, `⇥` moves on instead of indenting (`⌘]` / `⌘[` indent). `Esc` closes every dialog, popover and menu and hands the keyboard back. The threads actions act on the panel's selected row while the panel has the keyboard; from the diff, on the thread the last `.` / `,` (or a panel jump) went to while the cursor is still there, else the one on the cursor's line, else on none. Anywhere else (the tree, a toolbar button) they act on none: the panel's selection may be off screen, and "Delete my comment" drops a draft without asking.
 
 ### 11.10 Themes and fonts (ADR-0024)
 
-- The defaults are **Pierre Light** and **Pierre Dark**, a port of the Apache-2.0 `@pierre/theme` 2.0 into Zed's theme JSON format (NOTICE kept). They follow the system appearance.
-- Any Zed theme JSON dropped into `~/.config/polygloss/themes/` can be loaded. We parse the format with our own serde model and ignore unknown keys. The mapping: Zed `style` UI colors go to gpui-kit theme tokens; Zed `syntax` capture colors go to lumis highlight captures; created/deleted/modified colors go to diff rows and word highlights.
-- Fonts: code uses bundled **Lilex** (OFL) by default; family and size are configurable. UI uses the system font.
+- The defaults are **Polygloss Light** and **Polygloss Dark** (ADR-0027): our own palette, modeled on the redesign reference ([research](research/redesign-reference.md)), with syntax colors darkened from it for contrast (**Provisional**, OQ-42). They follow the system appearance. **Pierre Light** and **Pierre Dark**, a port of the Apache-2.0 `@pierre/theme` 2.0 (NOTICE kept), stay bundled and selectable. An unknown theme name falls back to Polygloss of that appearance.
+- Any Zed theme JSON dropped into `~/.config/polygloss/themes/` can be loaded. We parse the format with our own serde model and keep unknown keys. The mapping: Zed `style` UI colors go to gpui-kit theme tokens; Zed `syntax` capture colors go to lumis highlight captures; created/deleted/modified colors go to diff rows and word highlights. Colors Zed has no key for (sidebar field, changed-line numbers and gutters, stat colors, commit SHA) use `polygloss.*` style keys, each with a fallback derived from standard keys.
+- Fonts: code uses bundled **Lilex** (OFL) by default; family and size are configurable. `"SF Mono"` and `"System Mono"` select the system monospaced font, which is also the fallback for a missing family (**Provisional**, OQ-40). UI uses the system font.
+- Icons are Lucide (gpui-kit-assets), embedded selectively.
 
 ### 11.11 Syntax highlighting
 
@@ -792,7 +860,7 @@ The pane with the keyboard shows a focus ring while the keyboard is in use (focu
 
 ### 11.12 View-state restore
 
-Per `diff_id`: scroll anchor (path, side, line; never pixels), collapsed files, expanded context ranges, split/unified choice and tree expansion. Restored on reopen and saved on change (debounced).
+Per `diff_id`: scroll anchor (path, side, line; never pixels), collapsed files, expanded context ranges, split/unified choice, tree expansion, threads panel visibility and open category sections. Restored on reopen and saved on change (debounced).
 
 ### 11.13 Open in editor (ADR-0021)
 
@@ -801,7 +869,7 @@ Per `diff_id`: scroll anchor (path, side, line; never pixels), collapsed files, 
 | New-side line, file exists on disk                   | The current on-disk file (review worktree, or the repo's main worktree) at the **line-mapped** position: imara maps the diff's new blob onto the on-disk content |
 | Old-side line, deleted file, or file missing on disk | A read-only temp copy of the blob: `~/Library/Caches/polygloss/blobs/<oid>/<basename>`, mode `0444`                                                              |
 
-- Trigger: `o`, or the header ⋯ menu.
+- Trigger: `o`, the file header's open-in-editor icon, or its ⋯ menu.
 - Editor: auto-detect Zed, Cursor, VS Code, then `$VISUAL`, then `$EDITOR` (**Provisional** order), or the `editor.command` template, for example `zed {path}:{line}` or `code -g {path}:{line}`. Spawned as an argv, never through a shell.
 - Terminal editors: **Provisional** (OQ-21).
 - MCP `focus` only scrolls Polygloss. Opening an editor is human-only.
@@ -811,6 +879,85 @@ Per `diff_id`: scroll anchor (path, side, line; never pixels), collapsed files, 
 - Searches every file, including files not loaded yet. Blobs are searched in the background (new side and old side) and results stream in.
 - A count and a result list. `⏎` / `⇧⏎` go to the next and previous match. Going to a match inside collapsed context expands it (**Provisional**). Matches in collapsed large or generated files are listed and load on demand.
 - Case-sensitive and regex toggles (**Provisional**).
+- Categorized files are searched too and listed in display order. Going to a match in a closed section opens the section and its sidebar panel.
+
+### 11.15 File categories (ADR-0028)
+
+Files that support the change (tests, generated code, docs, agent config, …) leave the main list. A category is a named set of path patterns; categories are computed from the path, the file's `linguist-generated` attribute and `settings.json`, never stored, and recomputed when the settings change.
+
+**Built-in categories** (match order; lists ported from geld at commit `5b8ce0e`, MIT, credited in `NOTICE`):
+
+| Key         | Title              | Default | Pattern groups                                                 | Icon            |
+| ----------- | ------------------ | ------- | -------------------------------------------------------------- | --------------- |
+| `tests`     | Tests              | on      | `unit`, `e2e`, `directories`, `snapshots`, `tooling`           | `flask-conical` |
+| `generated` | Generated          | on      | `lockfiles`, `generated-code`, `build-output` (off by default) | `file-cog`      |
+| `vendored`  | Vendored           | off     | `vendored`                                                     | `package`       |
+| `agents`    | Agent config       | off     | `agents`                                                       | `bot`           |
+| `docs`      | Docs               | off     | `docs`                                                         | `book-open`     |
+| `tooling`   | Tooling & CI       | off     | `ci`, `lint-format`, `build-config`                            | `wrench`        |
+| `stories`   | Stories & fixtures | off     | `stories`, `fixtures`, `i18n`                                  | `layers`        |
+
+`build-output` holds `dist/`, `build/` and `out/`, which geld keeps in `generated-code`; it is off by default because Generated is on (**Provisional**, OQ-46).
+
+**Patterns** are matched against the display path (new path, or old for deletions), case-sensitively:
+
+| Form             | Meaning                                                                        |
+| ---------------- | ------------------------------------------------------------------------------ |
+| `name`, `*.snap` | No slash: the file name at any depth                                           |
+| `tests/`         | Trailing slash: that directory at any depth and everything in it (even `a/b/`) |
+| `src/gen/*.rs`   | An inner slash: the path from the repo root                                    |
+| `/build/`        | A leading slash: anchored at the repo root (**Provisional**, OQ-45)            |
+| `*`, `?`, `**`   | Within one segment; `**` spans whole segments                                  |
+| `{a,b}`, `[ab]`  | Alternatives (may nest) and character classes                                  |
+| `!pattern`       | A rescue: the path skips this category, and matching goes on with the next one |
+| `# …`, blank     | Ignored                                                                        |
+
+**Order:** custom categories in settings order, then an explicit `linguist-generated` (set) → Generated (**Provisional**, OQ-47), then the built-ins above. For each enabled category: a matching rescue skips it; then its enabled groups; then its extra patterns. The first match wins.
+
+**Generated** has one meaning everywhere: a file is generated when its attribute is set, or when it is unspecified and the Generated patterns match (enabled groups, `categories.generated.patterns`, and `diff.generated_patterns`, minus rescues). Unset means never generated. Generated files show "Load diff" (§6.4) whether or not the category is enabled. Rows from schema v1 (attribute unknown): generated when their stored bit is set or the patterns match.
+
+**Display:**
+
+- Files of an enabled category leave the Changes panel and the main diff. They follow it as one section per category, in match order, files in git order. A section starts closed unless every file is categorized; open sections are remembered per diff (`open_sections`).
+- The section band: chevron, icon, "12 test files", `+300 −20`, Show / Hide, **Mark all viewed** (marks every file in the section).
+- The sidebar shows one accordion panel per non-empty enabled category (§11.5).
+- The header card and the tree footer count uncategorized files only and add chips ("6 tests · 2 generated"); their tooltip gives the totals excluding, including, and of categorized files only. Viewed progress `N/M` counts every file.
+- A settings change re-partitions open reviews on the background executor; the scroll anchor stays.
+- Palette: Toggle Tests, Toggle Generated, … (one per built-in, for this review tab and this session; **Provisional**, OQ-48) and **Explain file category** (the cursor's file: category, pattern and source, in a toast). Custom categories change in `settings.json` only.
+
+**Settings** (`categories` in `settings.json`, hot-reloaded):
+
+```jsonc
+"categories": {
+  "tests":     { "enabled": true, "disabled_groups": ["snapshots"], "patterns": ["spec/", "!spec/support/"] },
+  "generated": { "enabled": true, "disabled_groups": ["build-output"], "patterns": ["!Cargo.lock"] },
+  "docs":      { "enabled": true },
+  "custom": [
+    { "id": "tokens", "name": "Design tokens", "icon": "tag", "patterns": ["tokens/", "*.tokens.json"], "enabled": true }
+  ]
+}
+```
+
+- Every built-in has `enabled`, `disabled_groups` (group keys of that category) and `patterns` (extras and rescues); a key left out keeps that category's default, so `"generated": { "patterns": ["!Cargo.lock"] }` still leaves `build-output` off. `diff.generated_patterns` stays, as more Generated patterns.
+- Custom categories: `id` matches `^[a-z][a-z0-9-]{0,40}$`, unique and not a built-in key (agents see `custom:<id>`); `name` non-empty; `icon` one of `tag`, `layers`, `package`, `book-open`, `wrench`, `flask-conical`, `file-cog`, `bot`, `languages`, `folder`, `file` (anything else falls back to `tag` with a logged warning); `enabled` defaults to `true`.
+- A pattern that does not compile, a bad or duplicate custom id, an empty name, or more than 500 patterns in one category make the file invalid: the previous settings stay and a toast says why (§18). An unknown group key is logged and ignored.
+- No per-repo overrides in v1 (**Provisional**, OQ-51).
+
+**Agents:** `open_diff` returns each file's `category` and per-category stats (§15.2); the diff resource adds a Category column (§15.3). `polygloss debug categorize [--repo <path>] <path>…` explains verdicts: category, title, source (`built-in`, `extra`, `custom` or `attribute`), group, pattern, or the rescue that skipped one. With `--repo`, the attribute comes from that repo's HEAD tree. `polygloss mcp` reads the same settings leniently: an invalid section counts as the defaults. Threads, anchors and `focus` are path-based and unchanged.
+
+### 11.16 Motion (ADR-0029)
+
+Three motions, all on occasional, pointer-initiated surfaces; no exit motion:
+
+| Surface                                                               | Motion                                                                                          |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Threads panel opened by its toolbar button                            | Content: opacity 0→1 and 12 pt from the right, 180 ms, ease-out quint. The panel's width snaps. |
+| Toolbar dropdown menus (display options, iteration) opened by pointer | Opacity 0→1 and 8 pt down from the trigger, 150 ms, ease-out cubic                              |
+| A banner notice appearing                                             | Opacity 0→1 and 4 pt down, 160 ms, ease-out cubic; not replayed when its text or count changes  |
+
+- The same surface opened by keyboard, restored from view state or opened automatically shows its end state at once.
+- macOS Reduce Motion is re-read on every window activation; with it on, nothing moves.
+- Nothing else moves: not the cursor, scrolling or jumps, switching reviews, Viewed, tree or accordion expansion, sections, the commit list, sidebar or panel widths, hovers, counters or theme colors. gpui-kit's own dialog, toast, tooltip and scrollbar motion is kept (**Provisional**, OQ-49).
 
 ---
 
@@ -818,15 +965,16 @@ Per `diff_id`: scroll anchor (path, side, line; never pixels), collapsed files, 
 
 ### 12.1 Budgets (Apple Silicon, release build)
 
-| Metric                             | Target                      |
-| ---------------------------------- | --------------------------- |
-| First paint, typical agent PR      | < 300 ms                    |
-| First paint, Linux v6.10..v6.11    | < 2 s                       |
-| Scroll frame time, p95             | < 8.3 ms (120 Hz)           |
-| Visible lines highlighted          | < 100 ms after scroll stops |
-| Add or resolve a comment → repaint | < 50 ms                     |
-| Watcher event → banner             | < 500 ms (single file save) |
-| Memory on the Linux corpus         | < 1.5 GB                    |
+| Metric                             | Target                                   |
+| ---------------------------------- | ---------------------------------------- |
+| First paint, typical agent PR      | < 300 ms                                 |
+| First paint, Linux v6.10..v6.11    | < 2 s                                    |
+| Scroll frame time, p95             | < 8.3 ms (120 Hz)                        |
+| Visible lines highlighted          | < 100 ms after scroll stops              |
+| Add or resolve a comment → repaint | < 50 ms                                  |
+| Watcher event → banner             | < 500 ms (single file save)              |
+| Memory on the Linux corpus         | < 1.5 GB                                 |
+| Open or close a category section   | < 50 ms to repaint (**Provisional**, M6) |
 
 Exact metric definitions (what is timed, percentile, sample count, corpora, layouts) live in plan T2.9. A budget counts as met only when `bun benches/run-perf.ts --check-budgets` passes.
 
@@ -843,14 +991,15 @@ Scripts under `benches/corpora/` generate or fetch the corpora once, outside the
 
 ### 12.3 Policies
 
-| Case                                 | Policy                                                                    |
-| ------------------------------------ | ------------------------------------------------------------------------- |
-| Every file                           | Loaded lazily per file; only metadata (`file_changes`) is loaded up front |
-| More than ~20k changed lines         | Collapsed with "Load diff"                                                |
-| Generated or lockfile                | Collapsed with "Load diff" (`linguist-generated` plus built-in list)      |
-| Binary                               | Placeholder with sizes                                                    |
-| Images                               | Placeholder in v1; 2-up post-v1                                           |
-| Huge file (over 100k lines per side) | No syntax unless requested (**Provisional**)                              |
+| Case                                 | Policy                                                                                               |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Every file                           | Loaded lazily per file; only metadata (`file_changes`) is loaded up front                            |
+| More than ~20k changed lines         | Collapsed with "Load diff"                                                                           |
+| Generated or lockfile                | Collapsed with "Load diff" (`linguist-generated` plus the Generated patterns, §11.15)                |
+| Categorized (§11.15)                 | In a section at the bottom; a closed section's files are never laid out, painted or walked per frame |
+| Binary                               | Placeholder with sizes                                                                               |
+| Images                               | Placeholder in v1; 2-up post-v1                                                                      |
+| Huge file (over 100k lines per side) | No syntax unless requested (**Provisional**)                                                         |
 
 ### 12.4 Virtualization strategy
 
@@ -995,6 +1144,8 @@ MCP resource URIs (§15.3) use the same forms, so any of them also works as a de
 | `polygloss focus <diff_id\|review_id> [--path … --line …]`                                                      | `focus`                           |
 | `polygloss snapshot [<path>]`                                                                                   | pin the live state                |
 
+Hidden developer commands live under `polygloss debug`; `polygloss debug categorize [--repo <path>] <path>…` explains file categories (§11.15).
+
 Global flags: `--repo <path>`, `--json` (the default when stdout is not a TTY), `--no-open` (resolve and print ids without launching the app), `--agent <name>` (author name for writes; default `$POLYGLOSS_AGENT`, else `agent`), and `--session <id>`. They go before or after the subcommand. The live review's `--since` and `<path>` never combine with a subcommand; a directory named like a subcommand needs `./`.
 
 Errors exit 1, in JSON mode as `{"error": {"code", "message"}}` on stdout with the §15.1 codes. Usage errors (unknown or missing arguments) exit 2, in JSON mode with the CLI-only code `invalid_args`; `polygloss wait` exits 1 instead, because its exit 2 wakes the session.
@@ -1043,21 +1194,21 @@ Positions are relative to the review's latest iteration, or to `diff_id` when on
 
 Times (`at`, `created_at`, `edited_at`, `updated_at`) are RFC 3339 UTC strings with milliseconds, as in GitHub's API.
 
-| Tool               | Params                                                                                                                                                                         | Returns                                                                                                                                                                                                                                                                                                             | Side effects                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `open_diff`        | `repo?`, `source?: Source` (default live), `label?`, `show? = true`, `assign? = true`                                                                                          | `{review_id, review_key, iteration, diff_id, url, base:{rev?, commit?, tree}, head:{rev?, commit?, tree}, stats:{files, additions, deletions}, files: [{path, old_path?, status, additions?, deletions?}] (first 200), files_truncated, app: "opened" \| "launched" \| "skipped" \| "unavailable"}`                 | Resolves the source; pins a live state; creates or refreshes the review and iteration; assigns the review to the caller (latest opener wins, **Provisional**); asks the app to open the tab in the background.                                                                                                                                                                                                                                                       |
-| `list_reviews`     | `repo?` (omit for all repos), `status?`, `assigned? = "any" \| "me"`, `cursor?`, `limit? = 50`                                                                                 | `{reviews: [{review_id, key, label, kind, repo, status, iterations, latest_diff_id, viewed:{done, total}, open_threads, open_questions, last_submission?:{verdict, summary_md, at}, rereview?:{summary, at}, assigned_session?, updated_at}], next_cursor?}`                                                        | none                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `list_threads`     | `review_id` or `diff_id`, `status? = "open" \| "resolved" \| "all"`, `author? = "human" \| "agent" \| "any"`, `kind?`, `path?`, `since?` (event seq), `cursor?`, `limit? = 50` | `{threads: ThreadSummary[], next_cursor?, latest_seq}`                                                                                                                                                                                                                                                              | none                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `get_thread`       | `thread_id`, `cursor?`                                                                                                                                                         | `ThreadSummary` + `{anchor:{path, side, start_line, line, anchor_blob, original_snippet, current_snippet?, diff_hunk}, comments:[{comment_id, author_kind, author_name, body_md, suggestions:[{start_line, line, original, replacement}], created_at, edited_at?}], resolved_by?:{kind, name, at}, origin_diff_id}` | none. `diff_hunk` follows GitHub: the hunk header through the commented line. Bodies over 20k chars are truncated and flagged (**Provisional**); a comment's suggestions count toward those 20k and are never cut (one that does not fit is left out and the comment flagged). The result stays within the page budget: snippets and `diff_hunk` are cut at 5,000 chars (`anchor.snippets_truncated`), and comments are paged (`comments_truncated`, `next_cursor`). |
-| `reply`            | `thread_id`, `body_md`, `resolve? = false`                                                                                                                                     | `{comment_id, thread_id, status}`                                                                                                                                                                                                                                                                                   | Published immediately; `comment.created` event; app banner.                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `resolve`          | `thread_id`, `body_md?` (optional closing reply)                                                                                                                               | `{thread_id, status: "resolved", resolved_by}`                                                                                                                                                                                                                                                                      | `thread.resolved` event                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `unresolve`        | `thread_id`                                                                                                                                                                    | `{thread_id, status: "open"}`                                                                                                                                                                                                                                                                                       | `thread.unresolved` event                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `edit_comment`     | `comment_id`, `body_md`                                                                                                                                                        | `{comment_id, edited_at}`                                                                                                                                                                                                                                                                                           | Own comments only (`forbidden` otherwise, OQ-30); `comment.edited` event                                                                                                                                                                                                                                                                                                                                                                                             |
-| `delete_comment`   | `comment_id`                                                                                                                                                                   | `{comment_id, deleted: true, placeholder: bool}`                                                                                                                                                                                                                                                                    | Own comments only; a comment with replies leaves a "comment deleted" placeholder (§8.2); `comment.deleted` event                                                                                                                                                                                                                                                                                                                                                     |
-| `create_comment`   | `review_id` or `diff_id`, `kind: "note" \| "question"`, `body_md`, `anchor?: Anchor` (omit for review-level)                                                                   | `{thread_id, diff_id, iteration}`                                                                                                                                                                                                                                                                                   | Pins a live state. Validates the path and lines (`invalid_anchor`). Enforces the per-iteration cap (`cap_exceeded`). Never a draft.                                                                                                                                                                                                                                                                                                                                  |
-| `wait_for_review`  | `review_id`, `since?` (event seq; default: now), `timeout_s? = 1500` (max 1500, **Provisional**)                                                                               | `{outcome: "submitted", submission:{submission_id, verdict, summary_md, iteration, at}, threads: ThreadSummary[] /* new or updated since */, next_since}` or `{outcome: "timeout" \| "archived", next_since}`                                                                                                       | Blocks. Returns at once if a submission already exists after `since`. Sends a progress notification every 60 s when the call has a `progressToken`. `approve` means done.                                                                                                                                                                                                                                                                                            |
-| `request_rereview` | `review_id`, `summary_md`                                                                                                                                                      | `{review_id, status: "rereview_requested", iteration, diff_id}`                                                                                                                                                                                                                                                     | Live: pins the worktree as a new iteration. Sets status and summary; macOS notification (§17), launching the app hidden if needed.                                                                                                                                                                                                                                                                                                                                   |
-| `focus`            | `diff_id` or `review_id`, `path?`, `side?`, `line?`, `thread_id?`                                                                                                              | `{status: "focused" \| "launched" \| "unavailable"}`                                                                                                                                                                                                                                                                | Scrolls Polygloss, opening the tab if needed. Never opens an external editor. The location must exist in the diff positions refer to: a path not in it, or a side the file lacks (the old side of an added file), is `not_found`; a line past the end of that side is `conflict`; a `diff_id` other than the one the review's tab shows is `conflict`.                                                                                                               |
+| Tool               | Params                                                                                                                                                                         | Returns                                                                                                                                                                                                                                                                                                                                                                            | Side effects                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `open_diff`        | `repo?`, `source?: Source` (default live), `label?`, `show? = true`, `assign? = true`                                                                                          | `{review_id, review_key, iteration, diff_id, url, base:{rev?, commit?, tree}, head:{rev?, commit?, tree}, stats:{files, additions, deletions, categories?:{<category>: {files, additions, deletions}}}, files: [{path, old_path?, status, additions?, deletions?, category?}] (first 200, git order), files_truncated, app: "opened" \| "launched" \| "skipped" \| "unavailable"}` | Resolves the source; pins a live state; creates or refreshes the review and iteration; assigns the review to the caller (latest opener wins, **Provisional**); asks the app to open the tab in the background.                                                                                                                                                                                                                                                       |
+| `list_reviews`     | `repo?` (omit for all repos), `status?`, `assigned? = "any" \| "me"`, `cursor?`, `limit? = 50`                                                                                 | `{reviews: [{review_id, key, label, kind, repo, status, iterations, latest_diff_id, viewed:{done, total}, open_threads, open_questions, last_submission?:{verdict, summary_md, at}, rereview?:{summary, at}, assigned_session?, updated_at}], next_cursor?}`                                                                                                                       | none                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `list_threads`     | `review_id` or `diff_id`, `status? = "open" \| "resolved" \| "all"`, `author? = "human" \| "agent" \| "any"`, `kind?`, `path?`, `since?` (event seq), `cursor?`, `limit? = 50` | `{threads: ThreadSummary[], next_cursor?, latest_seq}`                                                                                                                                                                                                                                                                                                                             | none                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `get_thread`       | `thread_id`, `cursor?`                                                                                                                                                         | `ThreadSummary` + `{anchor:{path, side, start_line, line, anchor_blob, original_snippet, current_snippet?, diff_hunk}, comments:[{comment_id, author_kind, author_name, body_md, suggestions:[{start_line, line, original, replacement}], created_at, edited_at?}], resolved_by?:{kind, name, at}, origin_diff_id}`                                                                | none. `diff_hunk` follows GitHub: the hunk header through the commented line. Bodies over 20k chars are truncated and flagged (**Provisional**); a comment's suggestions count toward those 20k and are never cut (one that does not fit is left out and the comment flagged). The result stays within the page budget: snippets and `diff_hunk` are cut at 5,000 chars (`anchor.snippets_truncated`), and comments are paged (`comments_truncated`, `next_cursor`). |
+| `reply`            | `thread_id`, `body_md`, `resolve? = false`                                                                                                                                     | `{comment_id, thread_id, status}`                                                                                                                                                                                                                                                                                                                                                  | Published immediately; `comment.created` event; app banner.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `resolve`          | `thread_id`, `body_md?` (optional closing reply)                                                                                                                               | `{thread_id, status: "resolved", resolved_by}`                                                                                                                                                                                                                                                                                                                                     | `thread.resolved` event                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `unresolve`        | `thread_id`                                                                                                                                                                    | `{thread_id, status: "open"}`                                                                                                                                                                                                                                                                                                                                                      | `thread.unresolved` event                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `edit_comment`     | `comment_id`, `body_md`                                                                                                                                                        | `{comment_id, edited_at}`                                                                                                                                                                                                                                                                                                                                                          | Own comments only (`forbidden` otherwise, OQ-30); `comment.edited` event                                                                                                                                                                                                                                                                                                                                                                                             |
+| `delete_comment`   | `comment_id`                                                                                                                                                                   | `{comment_id, deleted: true, placeholder: bool}`                                                                                                                                                                                                                                                                                                                                   | Own comments only; a comment with replies leaves a "comment deleted" placeholder (§8.2); `comment.deleted` event                                                                                                                                                                                                                                                                                                                                                     |
+| `create_comment`   | `review_id` or `diff_id`, `kind: "note" \| "question"`, `body_md`, `anchor?: Anchor` (omit for review-level)                                                                   | `{thread_id, diff_id, iteration}`                                                                                                                                                                                                                                                                                                                                                  | Pins a live state. Validates the path and lines (`invalid_anchor`). Enforces the per-iteration cap (`cap_exceeded`). Never a draft.                                                                                                                                                                                                                                                                                                                                  |
+| `wait_for_review`  | `review_id`, `since?` (event seq; default: now), `timeout_s? = 1500` (max 1500, **Provisional**)                                                                               | `{outcome: "submitted", submission:{submission_id, verdict, summary_md, iteration, at}, threads: ThreadSummary[] /* new or updated since */, next_since}` or `{outcome: "timeout" \| "archived", next_since}`                                                                                                                                                                      | Blocks. Returns at once if a submission already exists after `since`. Sends a progress notification every 60 s when the call has a `progressToken`. `approve` means done.                                                                                                                                                                                                                                                                                            |
+| `request_rereview` | `review_id`, `summary_md`                                                                                                                                                      | `{review_id, status: "rereview_requested", iteration, diff_id}`                                                                                                                                                                                                                                                                                                                    | Live: pins the worktree as a new iteration. Sets status and summary; macOS notification (§17), launching the app hidden if needed.                                                                                                                                                                                                                                                                                                                                   |
+| `focus`            | `diff_id` or `review_id`, `path?`, `side?`, `line?`, `thread_id?`                                                                                                              | `{status: "focused" \| "launched" \| "unavailable"}`                                                                                                                                                                                                                                                                                                                               | Scrolls Polygloss, opening the tab if needed. Never opens an external editor. The location must exist in the diff positions refer to: a path not in it, or a side the file lacks (the old side of an added file), is `not_found`; a line past the end of that side is `conflict`; a `diff_id` other than the one the review's tab shows is `conflict`.                                                                                                               |
 
 `wait_for_review` notes: Claude Code moves a main-conversation tool call to the background after 2 minutes and delivers the result as a task notification. The stdio idle window is 30 minutes. The default timeout stays under that even without heartbeats. A summary over 20k characters is cut and flagged `summary_truncated`; `threads` stay within the page budget and set `threads_truncated` when some were left out (page through them with `list_threads(since=…)`). A review already archived when the call starts returns `archived` at once. A `since` above the latest event seq is clamped to it, so later events are never skipped.
 
@@ -1070,7 +1221,7 @@ Offered as resource templates and @-mentionable in Claude Code (**Provisional** 
 | `polygloss://review/{review_id}`         | Status, iterations, last verdict and summary, counts          |
 | `polygloss://review/{review_id}/threads` | Digest of open threads: anchor, last comment, suggestion flag |
 | `polygloss://thread/{thread_id}`         | Full thread                                                   |
-| `polygloss://diff/{diff_id}`             | File list with statuses and counts                            |
+| `polygloss://diff/{diff_id}`             | File list with statuses, counts and categories                |
 
 `resources/list` returns reviews assigned to the caller plus the 20 most recent. There are no prompts in v1; the plugin's skill covers the workflow (**Provisional**).
 
@@ -1206,25 +1357,29 @@ The `timeout` value is **Provisional** (OQ-12). Claude Code's hooks reference (c
 
 `settings.json` keys. Names and defaults are **Provisional** (OQ-19):
 
-| Key                                                | Default                                                |
-| -------------------------------------------------- | ------------------------------------------------------ |
-| `theme.mode` / `theme.light` / `theme.dark`        | `"system"` / `"Pierre Light"` / `"Pierre Dark"`        |
-| `buffer_font.family` / `.size`                     | `"Lilex"` / `13`                                       |
-| `buffer_font.ligatures`                            | `false` (code shows as typed: `->` is never `→`)       |
-| `diff.layout`                                      | `"auto"` (`auto`, `split`, `unified`)                  |
-| `diff.split_min_columns`                           | `160`                                                  |
-| `diff.word_diff`                                   | `"word"` (`word`, `char`, `off`)                       |
-| `diff.algorithm`                                   | `"myers"` (`myers`, `histogram`)                       |
-| `diff.hide_whitespace`                             | `false`                                                |
-| `diff.style.backgrounds` / `.indicators` / `.wrap` | `true` / `"+-"` (`"+-"`, `"bars"`, `"none"`) / `false` |
-| `diff.large_file_changed_lines`                    | `20000`                                                |
-| `diff.generated_patterns`                          | `[]` (extends the built-in list)                       |
-| `diff.renames` / `diff.rename_threshold`           | `true` / `50`                                          |
-| `editor.command`                                   | `null` (auto-detect), e.g. `"zed {path}:{line}"`       |
-| `agent_notes.hidden`                               | `false`                                                |
-| `notifications.enabled`                            | `true`                                                 |
-| `storage.prune_reviews_after_days`                 | `null` (off)                                           |
-| `updates.automatic_checks`                         | set by Sparkle's first-launch prompt                   |
+| Key                                                | Default                                                                                                  |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `theme.mode` / `theme.light` / `theme.dark`        | `"system"` / `"Polygloss Light"` / `"Polygloss Dark"`                                                    |
+| `buffer_font.family` / `.size`                     | `"Lilex"` / `13`                                                                                         |
+| `buffer_font.ligatures`                            | `false` (code shows as typed: `->` is never `→`)                                                         |
+| `diff.layout`                                      | `"auto"` (`auto`, `split`, `unified`)                                                                    |
+| `diff.split_min_columns`                           | `160`                                                                                                    |
+| `diff.word_diff`                                   | `"word"` (`word`, `char`, `off`)                                                                         |
+| `diff.algorithm`                                   | `"myers"` (`myers`, `histogram`)                                                                         |
+| `diff.hide_whitespace`                             | `false`                                                                                                  |
+| `diff.style.backgrounds` / `.indicators` / `.wrap` | `true` / `"bars"` (`"bars"`, `"+-"`, `"none"`) / `false`                                                 |
+| `diff.large_file_changed_lines`                    | `20000`                                                                                                  |
+| `diff.generated_patterns`                          | `[]` (more Generated patterns, §11.15)                                                                   |
+| `diff.renames` / `diff.rename_threshold`           | `true` / `50`                                                                                            |
+| `categories.<key>.enabled`                         | `true` for `tests`, `generated`; `false` for `vendored`, `agents`, `docs`, `tooling`, `stories` (§11.15) |
+| `categories.<key>.disabled_groups`                 | `["build-output"]` for `generated`, else `[]`                                                            |
+| `categories.<key>.patterns`                        | `[]` (extras; `!` rescues)                                                                               |
+| `categories.custom`                                | `[]` (`{id, name, icon, patterns, enabled}`)                                                             |
+| `editor.command`                                   | `null` (auto-detect), e.g. `"zed {path}:{line}"`                                                         |
+| `agent_notes.hidden`                               | `false`                                                                                                  |
+| `notifications.enabled`                            | `true`                                                                                                   |
+| `storage.prune_reviews_after_days`                 | `null` (off)                                                                                             |
+| `updates.automatic_checks`                         | set by Sparkle's first-launch prompt                                                                     |
 
 `keymap.json` uses a Zed-like shape (our own parser): `[{ "context": "Viewport", "bindings": { "j": "viewport::CursorDown", "shift-v": null } }]`. `null` unbinds a key.
 
@@ -1277,20 +1432,20 @@ Test rules: temp git repos come from fixture scripts (kebab-case names). Every p
 
 (ADR-0019)
 
-| Item            | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bundle          | `Polygloss.app`, bundle id **`dev.dak.polygloss`**, `CFBundleURLTypes` for `polygloss`, hardened runtime.                                                                                                                                                                                                                                                                                                                                                |
-| Bundler         | cargo-packager 0.11.8 lays out the `.app`; `scripts/package-release.sh` stamps the version, signs (ad-hoc without credentials), notarizes via `scripts/sign-and-notarize.sh` and makes the DMG with `hdiutil`.                                                                                                                                                                                                                                           |
-| Signing         | Developer ID Application, team **5U7E4UQ5M3** (the same team as the "shows" app, `dev.dak.shows`). Both executables are signed. Notarize with `notarytool`, then staple.                                                                                                                                                                                                                                                                                 |
-| Release blocker | The keychain has only an _Apple Distribution_ cert for 5U7E4UQ5M3. The Developer ID certs present belong to team FCSF68W94H and must not be used. Create a Developer ID Application cert for 5U7E4UQ5M3 and a `notarytool` credential before the first release.                                                                                                                                                                                          |
-| Channels        | Public GitHub Releases (DMG). Personal Homebrew tap cask: `binary "#{appdir}/Polygloss.app/Contents/MacOS/polygloss-cli", target: "polygloss"`, `auto_updates true`.                                                                                                                                                                                                                                                                                     |
-| Updates         | Sparkle 2 through hand-written objc2 FFI. Appcast on Releases or Pages, signed with an EdDSA key held in CI secrets. Sparkle relaunches the app itself after an update; GPUI `App::restart` is kept only for our own "relaunch to apply" actions.                                                                                                                                                                                                        |
-| CLI install     | Homebrew puts it on PATH. For DMG installs, an in-app **Install CLI** command symlinks `/usr/local/bin/polygloss`, with an admin prompt as fallback; written from scratch because Zed's is GPL.                                                                                                                                                                                                                                                          |
-| Plugin          | The Claude Code plugin marketplace lives in this repo (§16).                                                                                                                                                                                                                                                                                                                                                                                             |
-| Mac App Store   | Ruled out: the sandbox breaks git subprocesses, sockets and the CLI install.                                                                                                                                                                                                                                                                                                                                                                             |
-| Licenses        | `LICENSE-MIT`, `LICENSE-APACHE` and a `NOTICE` (Pierre theme port, Apache-2.0; Lilex, OFL), bundled in `Contents/Resources` with `third-party-notices.md` (every linked crate's license, authors and license files, the lumis grammars and queries, the MPL-2.0 source notice; generated from `cargo metadata`, plan T5.7). CI runs `cargo-deny` to reject GPL, AGPL and FSL dependencies and checks the notices are current. System git is not bundled. |
-| Build toolchain | `rust-toolchain.toml` pinned to **1.98.1** (gpui-pre 0.3.7 needs rustc ≥ 1.95; 1.98.1 verified). Put `~/.cargo/bin` first on PATH, because Homebrew's rustc otherwise shadows rustup's. No Metal toolchain is needed: gpui-kit hard-enables `runtime_shaders`, so shaders compile at runtime in every build (library-choices, Verification).                                                                                                             |
-| CI              | GitHub Actions on macOS arm64: lint, unit, E2E, parity, notarized release, tap bump.                                                                                                                                                                                                                                                                                                                                                                     |
+| Item            | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Bundle          | `Polygloss.app`, bundle id **`dev.dak.polygloss`**, `CFBundleURLTypes` for `polygloss`, hardened runtime.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Bundler         | cargo-packager 0.11.8 lays out the `.app`; `scripts/package-release.sh` stamps the version, signs (ad-hoc without credentials), notarizes via `scripts/sign-and-notarize.sh` and makes the DMG with `hdiutil`.                                                                                                                                                                                                                                                                                                           |
+| Signing         | Developer ID Application, team **5U7E4UQ5M3** (the same team as the "shows" app, `dev.dak.shows`). Both executables are signed. Notarize with `notarytool`, then staple.                                                                                                                                                                                                                                                                                                                                                 |
+| Release blocker | The keychain has only an _Apple Distribution_ cert for 5U7E4UQ5M3. The Developer ID certs present belong to team FCSF68W94H and must not be used. Create a Developer ID Application cert for 5U7E4UQ5M3 and a `notarytool` credential before the first release.                                                                                                                                                                                                                                                          |
+| Channels        | Public GitHub Releases (DMG). Personal Homebrew tap cask: `binary "#{appdir}/Polygloss.app/Contents/MacOS/polygloss-cli", target: "polygloss"`, `auto_updates true`.                                                                                                                                                                                                                                                                                                                                                     |
+| Updates         | Sparkle 2 through hand-written objc2 FFI. Appcast on Releases or Pages, signed with an EdDSA key held in CI secrets. Sparkle relaunches the app itself after an update; GPUI `App::restart` is kept only for our own "relaunch to apply" actions.                                                                                                                                                                                                                                                                        |
+| CLI install     | Homebrew puts it on PATH. For DMG installs, an in-app **Install CLI** command symlinks `/usr/local/bin/polygloss`, with an admin prompt as fallback; written from scratch because Zed's is GPL.                                                                                                                                                                                                                                                                                                                          |
+| Plugin          | The Claude Code plugin marketplace lives in this repo (§16).                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Mac App Store   | Ruled out: the sandbox breaks git subprocesses, sockets and the CLI install.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Licenses        | `LICENSE-MIT`, `LICENSE-APACHE` and a `NOTICE` (Pierre theme port, Apache-2.0; Lilex, OFL; the Myers core port, Apache-2.0; geld's category patterns, MIT), bundled in `Contents/Resources` with `third-party-notices.md` (every linked crate's license, authors and license files, the lumis grammars and queries, the MPL-2.0 source notice; generated from `cargo metadata`, plan T5.7). CI runs `cargo-deny` to reject GPL, AGPL and FSL dependencies and checks the notices are current. System git is not bundled. |
+| Build toolchain | `rust-toolchain.toml` pinned to **1.98.1** (gpui-pre 0.3.7 needs rustc ≥ 1.95; 1.98.1 verified). Put `~/.cargo/bin` first on PATH, because Homebrew's rustc otherwise shadows rustup's. No Metal toolchain is needed: gpui-kit hard-enables `runtime_shaders`, so shaders compile at runtime in every build (library-choices, Verification).                                                                                                                                                                             |
+| CI              | GitHub Actions on macOS arm64: lint, unit, E2E, parity, notarized release, tap bump.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ---
 
@@ -1348,7 +1503,7 @@ tests/                          # bun suites: support/, cli/, mcp/, plugin/, scr
 scripts/                        # cargo.sh, check-deps.sh, make-fixture-repo.ts, git-parity.ts, package-release.sh, …
 benches/                        # corpora generators, budgets.json, baseline.json, run-perf.ts
 fixtures/
-assets/                         # Lilex, Pierre themes, icons
+assets/                         # Lilex, Polygloss and Pierre themes, icons
 packaging/                      # Info.plist, entitlements, icon, Homebrew cask template
 plugins/polygloss/              # Claude Code plugin
 .claude-plugin/marketplace.json
@@ -1417,3 +1572,20 @@ Each row has a **Provisional** default that builders use until the user decides.
 | OQ-32 | How is a review reassigned ("reassignable" in the log)?                                                                | Humans: Home row or tab menu "Assign to session…", listing sessions seen in the last 7 days. Agents: `open_diff` on the review with `assign = true` (latest opener wins).                                                   |
 | OQ-33 | How is `claude/channel` push opted into?                                                                               | `polygloss mcp --channel` (or `POLYGLOSS_MCP_CHANNEL=1`). Off by default and not enabled by the plugin. Sends one notification per submission on reviews assigned to the session.                                           |
 | OQ-34 | Which reviews does the "prune old reviews" setting delete?                                                             | Reviews whose `updated_at` is older than `storage.prune_reviews_after_days`, excluding orphaned reviews, reviews with drafts and reviews awaiting you. Runs at launch and every 24 h.                                       |
+| OQ-35 | ⌘-number shortcuts once the tab row is gone (M6)                                                                       | ⌘1–⌘8 select the Nth open review and ⌘9 the last; Home has no number (the Reviews list's Home row and ⌃Tab reach it).                                                                                                       |
+| OQ-36 | The Reviews segment while Home is showing the same lists as cards                                                      | On Home it lists only Home and Open; with a review active it adds Awaiting you and Recent.                                                                                                                                  |
+| OQ-37 | Do sidebar width, visibility and segment persist across launches?                                                      | No: they last for the session.                                                                                                                                                                                              |
+| OQ-38 | Threads panel visibility: per diff (view state), per review, or app-wide?                                              | Hidden by default; saved per diff in view state and carried across Refresh and iteration switches in the open tab.                                                                                                          |
+| OQ-39 | What the reserved banner strip shows without banners, once the header card holds base → head                           | The iteration or "Changes since last review" context line when not on the latest state; otherwise nothing.                                                                                                                  |
+| OQ-40 | Code font: the reference uses SF Mono, reachable only through the private `.AppleSystemUIFontMonospaced`               | Keep Lilex as the default; `"SF Mono"` and `"System Mono"` select the system monospaced font, which also replaces Menlo as the missing-font fallback.                                                                       |
+| OQ-41 | Submit review's color in a monochrome chrome (the reference shows no primary button)                                   | The accent blue (`text.accent`), as before.                                                                                                                                                                                 |
+| OQ-42 | Sampled syntax colors below 4.5:1                                                                                      | Darken strings, types and comments keeping their hue (research/redesign-reference.md).                                                                                                                                      |
+| OQ-43 | Tree row height and the Viewed affordance                                                                              | 28 pt rows; the icon slot toggles Viewed (circle on hover, check-circle when viewed, tri-state for folders).                                                                                                                |
+| OQ-44 | Does the sidebar accordion follow the viewport into category sections?                                                 | Yes, on jumps and when scrolling crosses into another section; a panel the user opens stays until the next crossing.                                                                                                        |
+| OQ-45 | A leading `/` in category patterns: anchored (gitignore) or any depth (geld)?                                          | Anchored at the repo root.                                                                                                                                                                                                  |
+| OQ-46 | `dist/`, `build/`, `out/` with Generated on by default                                                                 | A separate `build-output` group, off by default (`categories.generated.disabled_groups` = `["build-output"]`).                                                                                                              |
+| OQ-47 | A file with `linguist-generated` set that also matches Tests patterns                                                  | The attribute wins after custom categories: the file goes to Generated.                                                                                                                                                     |
+| OQ-48 | Scope of palette category toggles; custom categories in the palette; a public path tester                              | Per review tab, for the session; custom categories only in `settings.json`; the path tester stays `polygloss debug categorize`.                                                                                             |
+| OQ-49 | gpui-kit motion that breaks the M6 motion rules: dialogs (250 ms, also ⌘K, ⌘P, ⌘O) and toasts (400 ms in)              | Kept as library defaults in M6; owning those overlays is a follow-up if the user wants them instant.                                                                                                                        |
+| OQ-50 | Translucent (vibrant) sidebar as in the reference                                                                      | Opaque `panel.background`; translucency deferred (ADR-0026).                                                                                                                                                                |
+| OQ-51 | Per-repo category settings (geld's `[owner/repo]` headers, or a committed file)                                        | None in v1; `settings.json` only.                                                                                                                                                                                           |

@@ -34,12 +34,14 @@ If a task seems to need a decision the spec does not make, use the provisional d
 9. [M3 Review UX](#m3-review-ux)
 10. [M4 Agent integration](#m4-agent-integration)
 11. [M5 Packaging and polish](#m5-packaging-and-polish)
-12. [Manual gate: agent wake-up in real Claude Code](#manual-gate-agent-wake-up-in-real-claude-code)
-13. [Risks and spikes](#risks-and-spikes)
-14. [Definition of done (v1)](#definition-of-done-v1)
-15. [Open questions](#open-questions)
-16. [Spec coverage map](#spec-coverage-map)
-17. [Decision log coverage](#decision-log-coverage)
+12. [M6 Redesign and file categories](#m6-redesign-and-file-categories)
+13. [Manual gate: agent wake-up in real Claude Code](#manual-gate-agent-wake-up-in-real-claude-code)
+14. [Risks and spikes](#risks-and-spikes)
+15. [Definition of done (v1)](#definition-of-done-v1)
+16. [Definition of done (M6)](#definition-of-done-m6)
+17. [Open questions](#open-questions)
+18. [Spec coverage map](#spec-coverage-map)
+19. [Decision log coverage](#decision-log-coverage)
 
 ---
 
@@ -157,7 +159,7 @@ tests/                   # bun suites: support/, cli/, mcp/, plugin/, scripts/, 
 scripts/                 # cargo.sh, check-deps.sh, make-fixture-repo.ts, git-parity.ts, test-e2e.sh, …
 benches/                 # corpora/ generators, budgets.json, run-perf.ts, results/ (gitignored)
 fixtures/                # small committed fixture inputs (kebab-case)
-assets/                  # fonts/lilex/, themes/pierre-{light,dark}.json, icons/
+assets/                  # fonts/lilex/, themes/{polygloss,pierre}-{light,dark}.json, icons/
 plugins/polygloss/       # Claude Code plugin (design §16.1)
 .claude-plugin/marketplace.json
 packaging/               # Info.plist, entitlements.plist, icon.icns, homebrew/, sparkle/
@@ -167,17 +169,17 @@ docs/                    # design.md, adr/, research/, plan.md, testing/
 
 ### Ownership
 
-| Crate                 | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Must not contain                                          |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `polygloss-diff`      | Shared plain types (`Oid`, `ObjectFormat`, `Side`, `FileStatus`, `FileKind`, `FileChange`); hunk computation with context grouping; whitespace mode; word/char ranges and line pairing; `LineMap` (blob→blob line mapping); split/unified **row model** incl. gap/expander rows.                                                                                                                                                                                                                                                                               | git, SQLite, filesystem, GPUI, lumis                      |
-| `polygloss-core`      | Git runner and version check; repo discovery; source resolution (§3); `diff-tree` parser; attribute/binary/generated detection; gix blob reads incl. scratch store; snapshots and pinning (§5); `diff_id` and review keys (§4); store, schema, migrations, events, `data_version` feed (§7); review domain: reviews, iterations, threads, comments, drafts, submissions, Viewed, view_state, sessions, assignments, waiters; carry-forward (§8.6); suggestion parsing via `markdown`; data/cache paths; socket protocol types, client and server loop (§13.3). | GPUI, tokio, rmcp, lumis                                  |
-| `polygloss-highlight` | Language guess; lumis highlighting with budget + cancellation into compact spans; token cache keyed by `(blob, language, theme)`; Zed theme JSON serde model; Pierre Light/Dark; scope→style longest-prefix mapping.                                                                                                                                                                                                                                                                                                                                           | GPUI, git, SQLite                                         |
-| `polygloss-viewport`  | Document model (file entries, states, height prefix sums, logical scroll anchor, materialization window, LRU); `DiffViewport` GPUI view/element: painting, shaping cache, sticky headers, gap expanders, collapse, line cursor/selection, gutter "+", variable-height block slots with split spacers; `DiffProvider` trait.                                                                                                                                                                                                                                    | SQLite, git, review semantics (threads are opaque blocks) |
-| `polygloss-platform`  | `launch_app(url, activate)` (`open -g -b dev.dak.polygloss`, dev override); Dock badge (objc2, feature `appkit`); Sparkle loader (feature `appkit`); editor detection and argv templates; Install CLI symlink; bundle detection.                                                                                                                                                                                                                                                                                                                               | GPUI, tokio                                               |
-| `polygloss-app`       | Everything user-facing in the GUI: window, tabs, Home, open flow, file tree, threads UI, composer, submit dialog, banners, live watcher, palette, keymap, settings, themes→gpui-kit tokens, find, notifications (GPUI APIs), socket server wiring, URL handling, logging.                                                                                                                                                                                                                                                                                      | tokio, rmcp                                               |
-| `polygloss-mcp`       | `api` module: transport-agnostic functions with serde request/response types shared by MCP and the JSON CLI; `server` module: rmcp tool router, instructions, resources, pagination cursors, error-code mapping.                                                                                                                                                                                                                                                                                                                                               | GPUI, lumis                                               |
-| `polygloss-cli`       | clap entry points (§14), lazy app launch, human output vs `--json`, `mcp` and `wait` subcommands, tokio `current_thread` runtime.                                                                                                                                                                                                                                                                                                                                                                                                                              | GPUI, lumis                                               |
-| `polygloss-perf`      | Headed perf scenarios over corpora, JSON results.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Shipping code (nothing depends on it)                     |
+| Crate                 | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Must not contain                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- |
+| `polygloss-diff`      | Shared plain types (`Oid`, `ObjectFormat`, `Side`, `FileStatus`, `FileKind`, `FileChange`); hunk computation with context grouping; whitespace mode; word/char ranges and line pairing; `LineMap` (blob→blob line mapping); split/unified **row model** incl. gap/expander rows.                                                                                                                                                                                                                                                                                                                       | git, SQLite, filesystem, GPUI, lumis                      |
+| `polygloss-core`      | Git runner and version check; repo discovery; source resolution (§3); `diff-tree` parser; attribute/binary/generated detection; gix blob reads incl. scratch store; snapshots and pinning (§5); `diff_id` and review keys (§4); store, schema, migrations, events, `data_version` feed (§7); review domain: reviews, iterations, threads, comments, drafts, submissions, Viewed, view_state, sessions, assignments, waiters; carry-forward (§8.6); file categories (`categories`, §11.15); suggestion parsing via `markdown`; data/cache paths; socket protocol types, client and server loop (§13.3). | GPUI, tokio, rmcp, lumis                                  |
+| `polygloss-highlight` | Language guess; lumis highlighting with budget + cancellation into compact spans; token cache keyed by `(blob, language, theme)`; Zed theme JSON serde model; Pierre Light/Dark; scope→style longest-prefix mapping.                                                                                                                                                                                                                                                                                                                                                                                   | GPUI, git, SQLite                                         |
+| `polygloss-viewport`  | Document model (file entries, states, height prefix sums, logical scroll anchor, materialization window, LRU); `DiffViewport` GPUI view/element: painting, shaping cache, sticky headers, gap expanders, collapse, line cursor/selection, gutter "+", variable-height block slots with split spacers; `DiffProvider` trait.                                                                                                                                                                                                                                                                            | SQLite, git, review semantics (threads are opaque blocks) |
+| `polygloss-platform`  | `launch_app(url, activate)` (`open -g -b dev.dak.polygloss`, dev override); Dock badge (objc2, feature `appkit`); Sparkle loader (feature `appkit`); editor detection and argv templates; Install CLI symlink; bundle detection.                                                                                                                                                                                                                                                                                                                                                                       | GPUI, tokio                                               |
+| `polygloss-app`       | Everything user-facing in the GUI: window chrome and sidebar, tabs, Home, open flow, file tree, threads UI, composer, submit dialog, banners, live watcher, palette, keymap, settings, themes→gpui-kit tokens, find, notifications (GPUI APIs), socket server wiring, URL handling, logging.                                                                                                                                                                                                                                                                                                           | tokio, rmcp                                               |
+| `polygloss-mcp`       | `api` module: transport-agnostic functions with serde request/response types shared by MCP and the JSON CLI; `server` module: rmcp tool router, instructions, resources, pagination cursors, error-code mapping.                                                                                                                                                                                                                                                                                                                                                                                       | GPUI, lumis                                               |
+| `polygloss-cli`       | clap entry points (§14), lazy app launch, human output vs `--json`, `mcp` and `wait` subcommands, tokio `current_thread` runtime.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | GPUI, lumis                                               |
+| `polygloss-perf`      | Headed perf scenarios over corpora, JSON results.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Shipping code (nothing depends on it)                     |
 
 ### Dependency direction
 
@@ -207,14 +209,15 @@ Arrows point from dependency to dependent. `polygloss-diff` is the leaf. `polygl
 
 ## Milestones at a glance
 
-| Milestone               | Delivers                                                                                                                 | Tasks      | Exit gate (summary)                                                        |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------------------------- |
-| M0 Scaffold             | Workspace, toolchain, profiles, bun scripts, prettier, CI, README                                                        | T0.1–T0.3  | All scripts green on empty crates; dependency audit passes                 |
-| M1 Core                 | Git layer, sources, ids, snapshots, hunks, word diff, line mapping, rows, store, domain                                  | T1.1–T1.16 | Unit + integration + git-parity suites pass; store concurrency tests pass  |
-| M2 Viewport gate        | GPUI window rendering real diffs; virtualization, highlighting, sticky headers, gaps; perf harness                       | T2.1–T2.10 | **All §12.1 budgets met on all four corpora**, or fallbacks approved       |
-| M3 Review UX            | Tabs, Home, open flow, tree, Viewed, threads, drafts, submit, live, palette, keymap, themes, find, editor, notifications | T3.1–T3.17 | GPUI E2E + screenshot suites pass; keyboard-only review flow passes        |
-| M4 Agent integration    | Socket IPC, single instance, URL scheme, CLI, MCP tools, wait, plugin, JSON CLI, opt-in `claude/channel`                 | T4.1–T4.13 | bun MCP/CLI/E2E suites pass; manual wake gate W1–W3 recorded               |
-| M5 Packaging and polish | cargo-packager, signing/notarization scripts, Sparkle stub, cask, docs, a11y pass, audits                                | T5.1–T5.8  | Full E2E on the bundled app; audits; manual wake gate W1–W8; DoD checklist |
+| Milestone                       | Delivers                                                                                                                                           | Tasks      | Exit gate (summary)                                                                    |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------- |
+| M0 Scaffold                     | Workspace, toolchain, profiles, bun scripts, prettier, CI, README                                                                                  | T0.1–T0.3  | All scripts green on empty crates; dependency audit passes                             |
+| M1 Core                         | Git layer, sources, ids, snapshots, hunks, word diff, line mapping, rows, store, domain                                                            | T1.1–T1.16 | Unit + integration + git-parity suites pass; store concurrency tests pass              |
+| M2 Viewport gate                | GPUI window rendering real diffs; virtualization, highlighting, sticky headers, gaps; perf harness                                                 | T2.1–T2.10 | **All §12.1 budgets met on all four corpora**, or fallbacks approved                   |
+| M3 Review UX                    | Tabs, Home, open flow, tree, Viewed, threads, drafts, submit, live, palette, keymap, themes, find, editor, notifications                           | T3.1–T3.17 | GPUI E2E + screenshot suites pass; keyboard-only review flow passes                    |
+| M4 Agent integration            | Socket IPC, single instance, URL scheme, CLI, MCP tools, wait, plugin, JSON CLI, opt-in `claude/channel`                                           | T4.1–T4.13 | bun MCP/CLI/E2E suites pass; manual wake gate W1–W3 recorded                           |
+| M5 Packaging and polish         | cargo-packager, signing/notarization scripts, Sparkle stub, cask, docs, a11y pass, audits                                                          | T5.1–T5.8  | Full E2E on the bundled app; audits; manual wake gate W1–W8; DoD checklist             |
+| M6 Redesign and file categories | Inset titlebar and sidebar navigation, Polygloss themes, file cards and bars, toolbar and header card, configurable file categories, three motions | T6.1–T6.16 | Full suites; every baseline re-recorded and reviewed; budgets incl. sections; DoD (M6) |
 
 ---
 
@@ -1999,6 +2002,829 @@ bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --c
 
 ---
 
+## M6 Redesign and file categories
+
+**Goal:** the redesign the user asked for on 2026-10-05: the window, chrome and diff look of the reference ([research](research/redesign-reference.md)), geld-style file categories that are configurable, and a few product-speed motions ([ADR-0026](adr/0026-inset-titlebar-and-sidebar-navigation.md)–[ADR-0029](adr/0029-product-motion.md), design §11). Nothing about identity, the store's contents, the agent loop or the offline rules changes.
+
+**Decisions:** the orchestrator's D1–D13 (2026-10-05) are binding; design §11 and the four ADRs record them. Defaults the decisions left open are design OQ-35–OQ-51 (**Provisional**). Two deviations from the decisions' wording: there were no ⌘-number tab shortcuts and no restore of open tabs across launches before M6; T6.6 adds ⌘1–⌘9 (OQ-35) and M6 adds no cross-launch restore.
+
+**Out of scope, found while designing:** `diff.renames` and `diff.rename_threshold` are documented (design §18) but not wired (`crates/polygloss-core/src/git/diff_tree.rs:38`). Not M6; reported to the user.
+
+**App module map additions:** `crates/polygloss-app/src/` → `chrome.rs` (T6.3: window options, the shell, top rows, sidebar state), `assets.rs` (T6.3: `AppAssets`, the Lucide icons M6 uses), `motion.rs` (T6.8: durations, easings, `enter_from`, Reduce Motion follow), `home/nav.rs` (T6.3 stub, T6.6), `review_tab/header.rs` (T6.13), `categories/mod.rs` (T6.14), `tree/{footer.rs, panels.rs}` (T6.11, T6.15). Viewport: `card.rs` (T6.5), `document/sections.rs` and `section_band.rs` (T6.10). Core: `categories/` (T6.4), `store/schema-v2.sql` (T6.1).
+
+**Rules for every M6 task** (on top of [How to execute this plan](#how-to-execute-this-plan)):
+
+| Rule          | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Baselines     | A task re-records every PNG its change moves (`UPDATE_BASELINE=1 scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'`, then the same without it), opens each changed PNG and describes it in its report. A merge conflict on a PNG is resolved by re-recording that baseline on the merged tree. The gate re-records them all and reviews them against the reference anatomy.                                  |
+| Perf          | Tasks marked **perf** run `bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets` on a quiet machine (`uptime` load average below 4) and report the `--compare-baseline` deltas. No task writes `benches/baseline.json`; the gate does, once.                                                                                                                                                                     |
+| Motion        | Only the three motions of design §11.16, each with Reduce Motion handled and a test. Never use gpui-component `TabBar::segmented`, `Accordion`, `Collapsible`, `Sidebar` or `Checkbox` in new chrome (they bring motion).                                                                                                                                                                                                                |
+| Icons         | Only `AppAssets` icons (T6.3's list); an icon used anywhere else draws nothing. `tests/scripts/app-icons.test.ts` (T6.3) enforces it.                                                                                                                                                                                                                                                                                                    |
+| Shared files  | `features.rs`: T6.8, then T6.14. `keymap/defaults.rs`: T6.6 only (other new actions are palette-only). Workspace `Cargo.toml`: T6.4 only. `docs/user-guide.md`: each task edits only the rows and sections its change touches (the docs tests check the settings and keymap tables). Test module lists (`tests/app/main.rs`, `crates/polygloss-app/tests/e2e/main.rs`, `tests/viewport/main.rs`): append only; a merge keeps both lines. |
+| Selectors     | Keep every debug selector existing tests use unless the card renames it; `tab-bar` is removed by T6.3.                                                                                                                                                                                                                                                                                                                                   |
+| Agent surface | Any MCP or CLI change updates [`docs/agents.md`](agents.md) and has a bun test.                                                                                                                                                                                                                                                                                                                                                          |
+
+**Waves:** W1 = T6.1 ∥ T6.2 ∥ T6.3. W2 = T6.4 ∥ T6.5 ∥ T6.6. W3 = T6.7 ∥ T6.8 ∥ T6.9. W4 = T6.10 ∥ T6.11 ∥ T6.12. W5 = T6.13 ∥ T6.14. W6 = T6.15. W7 = T6.16.
+
+| Wave | Task  | Owns (beyond its tests)                                                                                                               |
+| ---- | ----- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| W1   | T6.1  | `polygloss-diff` `FileChange`; core `git/attrs.rs`, `store/`, `review/models.rs`; `FileChange` literals                               |
+| W1   | T6.2  | `assets/themes/polygloss-*`; highlight `theme.rs`; app `theme/`, settings theme defaults; viewport `ViewportTheme`, code font         |
+| W1   | T6.3  | app `window.rs`, `chrome.rs`, `assets.rs`, `startup.rs`, `review_tab/{mod,panes,toolbar}.rs`, `home/{mod,nav}.rs`, `keyboard/`        |
+| W2   | T6.4  | core `categories/`, `settings.rs`; workspace `Cargo.toml`; `NOTICE`; third-party notices                                              |
+| W2   | T6.5  | viewport document, paint, element, view, blocks, cursor; app `view_state/`, `live/refresh.rs`, perf geometry sites                    |
+| W2   | T6.6  | app `home/`, `keymap/`, `window.rs` menus, `chrome.rs` actions                                                                        |
+| W3   | T6.7  | viewport header, rows, gutter, gap, text cache, `DiffStyle`; app settings indicator default                                           |
+| W3   | T6.8  | app `review_tab/toolbar.rs`, `features.rs`, `motion.rs`, palette, the features' toolbar items                                         |
+| W3   | T6.9  | `polygloss-mcp` `api/`, `polygloss-cli` commands and `debug`; `docs/agents.md`                                                        |
+| W4   | T6.10 | viewport document order, sections, pipeline, cursor, band; perf `sections` scenario, budgets                                          |
+| W4   | T6.11 | app `tree/{mod,row,filters,footer}.rs`                                                                                                |
+| W4   | T6.12 | app `review_tab/{mod,panes}.rs`, `threads/panel.rs`, `view_state/`; core `ViewState`                                                  |
+| W5   | T6.13 | app `review_tab/{header,banners,mod}.rs`, `live/mod.rs`, `iterations/mod.rs`; core `git/listing.rs`                                   |
+| W5   | T6.14 | app `categories/`, settings, `features.rs`, `provider.rs`, `view_state/`, `keymap/actions.rs`, `ipc/debug_state.rs`; core `ViewState` |
+| W6   | T6.15 | app `tree/`, `review_tab/header.rs`, `find/mod.rs`, `threads/placement.rs`                                                            |
+| W7   | T6.16 | any file, for visual fixes; every baseline; `docs/user-guide.md`                                                                      |
+
+Files touched by tasks of different waves (for example `features.rs`, core `ViewState`, `tests/app/shell.rs`) are edited in wave order; no two tasks of one wave share a file.
+
+### T6.1 Store v2: the `linguist-generated` tri-state **(core-only)**
+
+**Files**
+
+- Modify: `crates/polygloss-diff/src/{types.rs, lib.rs}`; `crates/polygloss-core/src/{git/attrs.rs, store/migrations.rs, review/models.rs}`
+- Create: `crates/polygloss-core/src/store/schema-v2.sql`
+- Modify (the new field in `FileChange` literals only): `crates/polygloss-core/src/git/diff_tree.rs`, `crates/polygloss-viewport/src/pipeline.rs`, `crates/polygloss-perf/src/scenarios/blocks.rs`, `crates/polygloss-cli/src/debug.rs`, `crates/polygloss-core/tests/review_state.rs`, `crates/polygloss-viewport/tests/viewport/{support.rs, document.rs, blocks.rs}`, `crates/polygloss-app/tests/app/{find.rs, tree.rs}`
+- Test: `crates/polygloss-core/tests/{diff_tree.rs, store.rs}`
+
+**Interfaces**
+
+```rust
+// polygloss_diff (re-exported at the crate root)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratedAttr { #[default] Unknown /* stored before v2 */, Unspecified, Set, Unset }
+pub struct FileChange { /* … */ pub generated: bool, #[serde(default)] pub generated_attr: GeneratedAttr }
+// polygloss_core::store
+pub const LATEST_VERSION: u32 = 2; // migration 2 = schema-v2.sql:
+// ALTER TABLE file_changes ADD COLUMN generated_attr INTEGER CHECK (generated_attr IN (0, 1, 2));
+```
+
+- `attrs::classify` sets `generated_attr` from `check-attr` (`set` → `Set`, `unset` → `Unset`, else `Unspecified`; git without `--source` support → `Unspecified`) and keeps computing `generated` exactly as before (attribute, else `BUILTIN_GENERATED`), so older readers see the same bit.
+- `models` writes 0/1/2 and reads `NULL` as `Unknown`. The SQL block under design §7.2's "Migration 2" paragraph is the contract: `schema-v2.sql` is that block verbatim, as `schema-v1.sql` is §7.2's (keep `schema_v1_sql_is_design_7_2_verbatim` green).
+- Consumed by T6.4 (`Categorizer`), T6.9 and T6.14.
+
+**Steps**
+
+- [ ] Write the failing tests below; run them and see them fail.
+- [ ] Add `GeneratedAttr` and the field; set `generated_attr: GeneratedAttr::Unspecified` in every literal listed above.
+- [ ] Add `schema-v2.sql` as migration 2; update the store tests that assert version 1.
+- [ ] Fill the field in `attrs::classify`; write and read it in `models`.
+
+**Tests:** core `classify_keeps_the_linguist_generated_tri_state` (a head tree whose `.gitattributes` says `gen.txt linguist-generated` and `Cargo.lock -linguist-generated`: `Set`; `Unset` with `generated == false`; an unlisted file `Unspecified`), `store_migrates_v1_to_v2_with_a_backup` (a database built from `schema-v1.sql` with one `file_changes` row: migrates, `polygloss.db.bak-v1` exists, the row reads `Unknown`), `file_changes_round_trip_generated_attr`, `file_change_json_without_generated_attr_reads_unknown`, `schema_v2_sql_is_design_migration_2_verbatim`, `store_schema_matches_design` (snapshot updated for the column); existing `store_concurrent_first_open_migrates_once` passes at v2.
+
+**Acceptance:** an existing v1 store is backed up and migrated once; new diffs store the tri-state; nothing visible changes.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-diff -p polygloss-core
+scripts/cargo.sh check --workspace --all-targets
+```
+
+Then the standard completion block.
+
+### T6.2 Polygloss Light and Dark, theme tokens and the code font
+
+**Files**
+
+- Create: `assets/themes/polygloss-light.json`, `assets/themes/polygloss-dark.json`
+- Modify: `crates/polygloss-highlight/src/theme.rs`; `crates/polygloss-app/src/theme/{mod.rs, registry.rs, zed_to_kit.rs, viewport_theme.rs}`; `crates/polygloss-app/src/settings/model.rs` (the two theme defaults only); `crates/polygloss-viewport/src/style.rs` (`ViewportTheme` only), `src/kit.rs`, `src/view.rs` (the code-font fallback only); `docs/user-guide.md` (`theme.light`, `theme.dark` rows; "Themes and fonts")
+- Test: `crates/polygloss-highlight/tests/highlight/theme.rs`, `crates/polygloss-viewport/tests/viewport/{main.rs, theme.rs}` (new module), `crates/polygloss-app/tests/app/{theme.rs, settings.rs}`, `crates/polygloss-app/tests/e2e/theme.rs`
+
+**Interfaces**
+
+```rust
+// polygloss_highlight::theme
+pub const POLYGLOSS_LIGHT_JSON: &str; pub const POLYGLOSS_DARK_JSON: &str;
+pub fn default_theme(appearance: Appearance) -> &'static ZedTheme; // Polygloss; `pierre_theme` stays
+// polygloss_viewport::ViewportTheme gains, each derived from standard keys when the polygloss.* key is absent:
+pub canvas: Hsla, pub card_background: Hsla, pub card_border: Hsla, pub pill_background: Hsla,
+pub added_line_number: Hsla, pub removed_line_number: Hsla, pub added_gutter: Hsla, pub removed_gutter: Hsla,
+pub stat_added: Hsla, pub stat_removed: Hsla, pub commit_sha: Hsla,
+// and `gap_background` becomes `canvas`.
+// polygloss_viewport::kit
+pub const SYSTEM_MONO_ALIASES: &[&str] = &["SF Mono", "System Mono"]; // resolve to SYSTEM_MONO_FONT
+```
+
+- Palette: [research: Polygloss palette](research/redesign-reference.md#polygloss-palette). Each file holds one theme in Zed format with Pierre's key set (keys the research does not list follow from the listed ones the way Pierre's do), the syntax map, 8 players, prettier-formatted.
+- `zed_to_kit::MAPPING` adds `tab_bar.segmented.background ← [polygloss.sidebar.field.background, element.background]` (in `REQUIRED_KIT_TOKENS`); `kit_theme_config` sets `radius` 6 and `radius_lg` 10 for every theme.
+- `theme.light` / `theme.dark` default to `"Polygloss Light"` / `"Polygloss Dark"`; an unknown name falls back to `default_theme` of that appearance. The registry lists all four built-ins.
+- A missing code font falls back to the system monospaced family (was Menlo). Lilex stays the default.
+- `polygloss-perf` keeps `pierre_theme(Light)` so perf numbers stay comparable.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Author both theme files from the research tables; add the constants and `default_theme`.
+- [ ] Viewport theme fields with fallbacks; kit mapping and radii; settings defaults; font alias and fallback.
+- [ ] Add the two theme screenshots; re-record every baseline that uses the default theme.
+
+**Tests:** highlight `polygloss_themes_parse_with_pierres_key_set`, `default_theme_is_polygloss_per_appearance`; viewport `viewport_theme_reads_polygloss_keys`, `viewport_theme_derives_polygloss_keys_for_pierre_and_a_minimal_theme`, `sf_mono_alias_resolves_to_the_system_mono_family`, `missing_code_font_falls_back_to_system_mono`; app `polygloss_light_maps_every_required_kit_token`, `polygloss_dark_maps_every_required_kit_token`, `unknown_theme_name_falls_back_to_polygloss`, `builtin_themes_meet_contrast` (WCAG relative luminance computed in the test: `text` on `background`, cards and sidebar ≥ 4.5:1; every syntax color on `editor.background` ≥ 3.5:1), `settings_defaults_match_design_table` (updated); screenshots `e2e_theme_polygloss_light_split`, `e2e_theme_polygloss_dark_unified` (new baselines), `e2e_theme_pierre_*` unchanged apart from chrome moved by other tasks.
+
+**Acceptance:** fresh settings show Polygloss following the system appearance; Pierre Light/Dark still load by name; a Zed theme without `polygloss.*` keys renders with derived colors.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-highlight -p polygloss-viewport
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/theme::/) | test(/settings::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/theme/)'
+```
+
+Then the standard completion block.
+
+### T6.3 Window chrome: inset titlebar and the sidebar shell
+
+**Files**
+
+- Create: `crates/polygloss-app/src/{chrome.rs, assets.rs, home/nav.rs}`, `tests/scripts/app-icons.test.ts`
+- Modify: `crates/polygloss-app/src/{lib.rs, window.rs, startup.rs}`, `src/review_tab/{mod.rs, panes.rs, toolbar.rs}` (structure only: today's toolbar items move into the new row unchanged), `src/home/mod.rs` (render inside the shell), `src/keyboard/mod.rs`, `src/find/mod.rs`, `src/tree/{mod.rs, finder.rs}` (show Files first), `crates/polygloss-app/tests/support/screenshot.rs`
+- Test: `crates/polygloss-app/tests/app/{shell.rs, a11y_keyboard.rs}`, `crates/polygloss-app/tests/e2e/{shell.rs, keyboard_only_review.rs}`; baselines: every one that shows the window
+
+**Interfaces**
+
+```rust
+// chrome.rs
+pub const TOP_ROW_HEIGHT: f32 = 52.0;
+pub const TRAFFIC_LIGHT_POSITION: (f32, f32) = (19.0, 19.0); // tuned by eye in T6.16
+pub const TRAFFIC_LIGHT_INSET: f32 = 80.0;
+pub const SIDEBAR_WIDTH: f32 = 280.0; pub const SIDEBAR_RANGE: (f32, f32) = (220.0, 480.0); pub const MAIN_MIN_WIDTH: f32 = 320.0;
+pub enum Segment { Files, Reviews }
+pub struct Chrome { /* segment, sidebar_visible, shell: Entity<ResizableState> */ } // created by MainWindow::new
+pub fn chrome(cx: &App) -> Entity<Chrome>;
+impl Chrome {
+    pub fn segment(&self) -> Segment; pub fn set_segment(&mut self, segment: Segment, cx: &mut Context<Self>);
+    pub fn sidebar_visible(&self) -> bool; pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>);
+}
+pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions; // transparent titlebar, the light position, app_owns_titlebar_drag, Opaque, tabbing_identifier None, min 720×480
+pub fn shell(sidebar: AnyElement, main: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement; // debug "sidebar", "main-column"
+pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -> AnyElement; // debug "sidebar-top-row", "segment-files", "segment-reviews", "toggle-sidebar"
+pub fn toolbar_row(id: &'static str, left: Vec<AnyElement>, right: Vec<AnyElement>, window: &mut Window, cx: &mut App) -> AnyElement; // drag + double-click zoom; clusters stop mouse-down; while the sidebar is hidden: the traffic-light inset (none in fullscreen) and a "show-sidebar" button
+pub fn show_files(window: &mut Window, cx: &mut App); // sidebar visible, segment Files
+// assets.rs
+gpui_kit::assets::icon_assets!(pub AppIcons, [ListTree, RotateCcwClock, PanelLeft, PanelLeftOpen, GitBranch, GitCommitHorizontal,
+    GitCompare, CircleDot, MessageSquare, MessageSquareDot, Columns2, Rows2, SlidersHorizontal, SquareArrowOutUpRight, Square,
+    SquareCheck, Circle, CircleCheck, CircleDashed, Camera, FlaskConical, FileCog, Package, BookOpen, Wrench, Layers, Languages,
+    Tag, FileSymlink, Binary, HardDrive, FolderGit, Dot]);
+pub struct AppAssets; // AppIcons first, then gpui_kit::assets::Assets
+// home/nav.rs (stub; T6.6 completes it)
+pub fn render_nav(window: &mut Window, cx: &mut App) -> AnyElement; // a Home row and one row per open review: click activates, × closes
+```
+
+- `MainWindow::render` draws only the active item at full size: no `TitleBar`, no `TabBar`; key context `Window`, its actions and the `Tabs` API are unchanged. The window title follows the active item (`window.set_window_title`).
+- The review page renders `shell(sidebar, main)`: sidebar = `sidebar_top_row` + (Files: the find pane or the tree pane, as today; Reviews: `render_nav`); main = `toolbar_row("review-toolbar", …)` + banner strip + `h_resizable("review-body")` viewport | threads (still visible by default; T6.12 flips it). The outer split's state is the window's `Chrome::shell`; the inner one stays per tab. Home renders the same shell with `toolbar_row("home-toolbar", …)`, Reviews forced and Files disabled.
+- `keyboard::stops` lists the tree only while the sidebar shows Files; `tab::Find`, `tree::FocusFilter`, `window::FileFinder` and cycling into the tree call `show_files` first.
+- `support::screenshot::headless_app_with_assets` composes `AppAssets` and sets reduced motion for every capture.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] `chrome.rs` and the window options; drop the title bar and tab bar from `MainWindow`.
+- [ ] Rebuild the review page and Home inside the shell; the nav stub; stops and `show_files`.
+- [ ] `assets.rs`, registration in `startup.rs` and the screenshot harness; `app-icons.test.ts`.
+- [ ] Re-record the baselines. Then run the dev app once (`tmux` session `polygloss-m6-chrome`, `scripts/cargo.sh build -p polygloss-app` then `target/debug/Polygloss` with a sandboxed `HOME`) and record the traffic lights' position, drag, double-click zoom, fullscreen and the hidden sidebar in the As-built note.
+
+**Tests:** app `window_options_inset_the_traffic_lights`, `top_rows_share_the_top_edge_and_height` (`sidebar-top-row` and `review-toolbar` at y 0, both 52 pt), `sidebar_spans_the_window_height`, `banner_strip_sits_between_the_toolbar_and_the_viewport`, `no_tab_bar_is_painted`, `segment_control_sits_right_of_the_traffic_light_inset`, `hidden_sidebar_insets_the_toolbar_and_shows_the_open_button`, `sidebar_width_is_shared_by_every_review`, `pane_cycle_skips_the_tree_unless_files_shows`, `find_filter_and_finder_show_the_files_segment_first`, `nav_stub_lists_open_reviews_and_closes_like_cmd_w`, `home_renders_in_the_shell_with_files_disabled`, `every_app_icon_loads_from_app_assets`; kept unchanged: `home_is_first_tab`, `close_tab_cmd_w`, `next_prev_tab_shortcuts`, `opening_same_review_twice_focuses_existing_tab`, `banner_strip_never_changes_viewport_anchor`, `toolbar_and_banner_buttons_reach_the_tab_without_focus`; bun `every IconName the app uses is registered` (`app-icons.test.ts`: each `IconName::X` in `crates/polygloss-app/src` is in `AppIcons` or gpui-kit-assets' `default-icons.txt`); E2E `e2e_shell_review_tab` (re-recorded), `keyboard_only_review` passes.
+
+**Acceptance:** no tab row; the traffic lights sit in the sidebar's top row; either top row drags the window and zooms on double-click, buttons never do; every tab behavior and test of ADR-0023 holds.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/shell::/) | test(/a11y_keyboard::/) | test(/keymap::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+bun test tests/scripts/app-icons.test.ts
+```
+
+Then the standard completion block.
+
+### T6.4 File categories: the core classifier **(core-only)**
+
+**Files**
+
+- Create: `crates/polygloss-core/src/categories/{mod.rs, catalog.rs, matcher.rs, config.rs}`, test `crates/polygloss-core/tests/categories.rs`
+- Modify: `crates/polygloss-core/{Cargo.toml, src/lib.rs, src/settings.rs}`, `Cargo.toml` (`globset` in `[workspace.dependencies]`, the version in `Cargo.lock`, 0.4.20), `Cargo.lock`, `NOTICE` (a "geld pattern catalog" section with the MIT text), `scripts/third-party-notices.ts` and `packaging/third-party-notices.md` (regenerated), `docs/research/library-choices.md` (a `globset` row)
+- Test: `tests/scripts/third-party-notices.test.ts` (the new section)
+
+**Interfaces**
+
+```rust
+// polygloss_core::categories
+pub enum BuiltinCategory { Tests, Generated, Vendored, Agents, Docs, Tooling, Stories } // match order
+pub enum CategoryId { Builtin(BuiltinCategory), Custom(String) } // Display and serde: "tests", "custom:tokens"
+pub struct PatternGroup { pub key: &'static str, pub title: &'static str, pub patterns: &'static [&'static str] }
+pub struct BuiltinDef { pub id: BuiltinCategory, pub key: &'static str, pub title: &'static str, pub noun: &'static str,
+    pub noun_plural: &'static str, pub chip: &'static str /* "tests" */, pub icon: &'static str, pub default_enabled: bool,
+    pub default_disabled_groups: &'static [&'static str], pub groups: &'static [PatternGroup] }
+pub static BUILTINS: [BuiltinDef; 7];
+pub struct CategorySettings { pub enabled: bool, pub disabled_groups: Vec<String>, pub patterns: Vec<String> } // keys left out take the category's defaults
+pub struct CustomCategory { pub id: String, pub name: String, #[serde(default)] pub icon: String, #[serde(default)] pub patterns: Vec<String>, #[serde(default = "enabled")] pub enabled: bool }
+#[serde(default)] pub struct CategoriesConfig { pub tests: CategorySettings, pub generated: CategorySettings, pub vendored: CategorySettings,
+    pub agents: CategorySettings, pub docs: CategorySettings, pub tooling: CategorySettings, pub stories: CategorySettings, pub custom: Vec<CustomCategory> }
+// Default: design §11.15 (tests and generated on; generated.disabled_groups = ["build-output"])
+pub struct CategoryInfo { pub id: CategoryId, pub title: String, pub noun: String, pub noun_plural: String, pub chip: String, pub icon: String }
+pub enum Source { BuiltIn { group: &'static str }, Extra, Custom, Attribute }
+pub struct Verdict { pub category: CategoryId, pub pattern: String, pub source: Source }
+pub enum Explain { Matched(Verdict), Uncategorized { rescued_by: Vec<(CategoryId, String)> } }
+pub enum CategoriesError { Pattern { category: String, pattern: String, message: String }, BadCustomId(String),
+    DuplicateId(String), EmptyName(String), TooManyPatterns(String) }
+pub struct Categorizer { /* Send + Sync; one GlobSet per enabled category for groups, extras and rescues */ }
+impl Categorizer {
+    pub fn new(cfg: &CategoriesConfig, legacy_generated: &[String]) -> Result<Categorizer, CategoriesError>;
+    pub fn enabled(&self) -> &[CategoryInfo]; // match order
+    pub fn categorize(&self, path: &str, attr: GeneratedAttr, stored_generated: bool) -> Option<CategoryId>;
+    pub fn is_generated(&self, path: &str, attr: GeneratedAttr, stored_generated: bool) -> bool;
+    pub fn explain(&self, path: &str, attr: GeneratedAttr, stored_generated: bool) -> Explain;
+    pub fn categorize_files(&self, files: &[FileChange]) -> Vec<Option<CategoryId>>; // by display_path, index = position
+}
+pub fn unknown_groups(cfg: &CategoriesConfig) -> Vec<String>; // logged by callers, never errors
+// polygloss_core::settings
+pub fn categories_config(paths: &DataPaths) -> LenientCategories;
+pub fn categories_config_in(text: &str) -> LenientCategories;
+pub struct LenientCategories { pub config: CategoriesConfig, pub legacy_generated: Vec<String>, pub warning: Option<String> } // invalid → defaults + warning
+```
+
+- Semantics: design §11.15 exactly (pattern forms, order, rescues, Generated, validation, the 500-pattern cap). A category object with keys left out keeps that category's defaults for them (deserialize optional fields and merge them over the `BuiltinDef` defaults; a plain `#[serde(default)]` would reset `generated.disabled_groups` to `[]`). Normalize each pattern, then compile with `globset::GlobBuilder` (`literal_separator(true)`, `backslash_escape(true)`): no slash → `**/p`; a trailing slash → `**/p` and `**/p/**` (`p` and `p/**` with a leading slash); an inner slash → as written; a leading `/` dropped after anchoring.
+- Catalog: port geld at `5b8ce0e470fcd2b2538da6c700d7d96197f57de3` (`gh api repos/brandonmcconnell/geld/contents/packages/core/src/categories.ts?ref=<sha> --jq .content | base64 -d`, and `test-patterns.ts`, `LICENSE`) as `&'static` data with a header comment naming the commit and license. Only change: `dist/`, `build/`, `out/` move into a new Generated group `build-output`. Leave out geld's change-kind categories (trivial, large).
+
+**Steps**
+
+- [ ] Write the failing tests below (hand-written expected verdicts, not ones computed by the matcher).
+- [ ] `config.rs` (serde, defaults, validation), `catalog.rs` (the port), `matcher.rs`, `mod.rs`.
+- [ ] The lenient reader; `NOTICE` and the notices script; `globset` in the workspace; library-choices row.
+
+**Tests:** `no_slash_matches_the_name_at_any_depth`, `trailing_slash_matches_the_directory_at_any_depth`, `inner_and_leading_slash_anchor_at_the_root`, `single_star_stays_in_a_segment_double_star_spans`, `braces_nest_and_classes_match`, `rescue_skips_only_its_category` (`tests/fixtures/x.json` with `!tests/fixtures/` in tests and stories on → Stories), `custom_categories_match_before_builtins`, `linguist_generated_set_wins_after_custom`, `unset_attribute_is_never_generated`, `unknown_attribute_uses_the_stored_bit_or_patterns`, `disabled_categories_and_groups_are_skipped`, `build_output_is_off_by_default`, `legacy_generated_patterns_extend_generated`, `is_generated_ignores_the_enabled_flag`, `explain_names_group_pattern_and_rescue`, `invalid_patterns_and_custom_ids_are_errors`, `partial_category_objects_keep_their_defaults`, `defaults_match_design_11_15` (table-driven from the design table), `catalog_classifies_geld_examples` (paths from geld's README table), `escaped_non_utf8_paths_never_panic`, `categories_config_in_falls_back_to_defaults_with_a_warning`, `categorizing_13k_paths_with_every_category_on_takes_under_250ms` (debug build); bun `third-party notices credit the geld catalog`.
+
+**Acceptance:** pure (no git, IO or GPUI); `scripts/check-deps.sh` and `cargo deny` pass; `NOTICE` credits geld.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-core -E 'binary(categories)'
+scripts/check-deps.sh
+scripts/cargo.sh deny check licenses bans sources
+bun test tests/scripts/third-party-notices.test.ts
+```
+
+Then the standard completion block.
+
+### T6.5 Viewport: file cards and the header-card slot (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-viewport/src/card.rs`, test `crates/polygloss-viewport/tests/viewport/cards.rs`
+- Modify: `crates/polygloss-viewport/src/{lib.rs, document/mod.rs, document/file_state.rs, document/metrics.rs, paint_rows.rs, element.rs, view.rs, blocks.rs, cursor.rs, header.rs (geometry only), debug.rs}`; `crates/polygloss-app/src/{view_state/mod.rs, live/refresh.rs, perf/comment_roundtrip.rs}`; `crates/polygloss-perf/src/scenarios/blocks.rs`
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, document.rs, headers_gaps.rs, blocks.rs, cursor.rs}`, `crates/polygloss-app/tests/app/{view_state.rs, live.rs}`; baselines: `e2e-viewport-*.png` and every review page
+
+**Interfaces**
+
+```rust
+pub struct CardStyle { pub margin_x: f32 /* 16 */, pub gap: f32 /* 12 */, pub radius: f32 /* 8 */, pub pad_bottom: f32 /* 8 */, pub border: f32 /* 1 */ }
+// ViewportOptions.cards: Option<CardStyle>; default Some(CardStyle::default()); None = the flat v1 layout
+impl Document {
+    pub fn lead(&self, file_idx: u32) -> f32;       // canvas above the card (gap; + the prelude for the first file)
+    pub fn header_top(&self, file_idx: u32) -> f32; // file_top + lead
+    pub fn body_top(&self, file_idx: u32) -> f32;   // header_top + header height
+    pub fn top_line(&self) -> Option<(u32, Side, u32)>; // the first line below the (pinned) header; was app view_state's top_line and live refresh's
+}
+impl DiffViewport { pub fn set_prelude(&mut self, render: Option<RenderBlock>, cx: &mut Context<Self>); } // debug "prelude"
+```
+
+- Heights: expanded `lead + header + body + pad_bottom` (pad only with a non-empty body); collapsed `lead + header`; plus `gap` below the last card. `key_offset(Header) = lead`; a point in the lead is `(Header, negative offset)`, which `rebase` already accepts.
+- Every `file_top + header_height` site uses the helpers: `paint_rows.rs`, `cursor.rs` (top row, reveal), `blocks.rs` (measure), `header.rs`, `document/mod.rs` (`scroll_to_anchor`, pending), app `view_state` and `live/refresh`, `perf/comment_roundtrip.rs`, polygloss-perf `scenarios/blocks.rs`.
+- Horizontal: `inner` = bounds inset by `margin_x + border`; `fit_width`, wrap, block columns and selection use `inner.width`; the hitbox and content mask stay on the outer bounds.
+- Paint: a cards layer before the row layers (the canvas, then one rounded quad per visible card in `card_background` with a `card_border` border, clamped to the viewport ± radius + 2). `RoundedQuad.radius` becomes `Corners<Pixels>`. Sticky header on cards: `y = min(0, card_bottom − pad − header)`; in place it takes the card's top corners; pinned it is square, flush at 0, spans the card and has a bottom border.
+- The prelude is a host element measured like a block at the card width and placed in the first file's lead; it scrolls with the diff.
+
+**Steps**
+
+- [ ] Write the failing tests below with non-zero `gap` and `pad_bottom` (with zero they pass while the sites are wrong).
+- [ ] Document lead/pad and helpers; migrate every geometry site; app and perf sites.
+- [ ] Inset rect; cards layer; per-corner quads; sticky header on cards; prelude.
+- [ ] Re-record baselines; run perf.
+
+**Tests:** viewport `lead_and_pad_shape_file_heights` (expected heights computed by hand), `anchor_in_the_gap_above_a_card_survives_height_changes`, `scroll_to_file_puts_the_header_at_the_top_edge`, `cursor_reveal_and_top_row_use_header_top`, `blocks_measure_at_the_card_inner_width`, `split_threshold_uses_the_inner_width`, `sticky_header_pins_square_and_flush`, `header_in_place_has_rounded_top_corners`, `card_quads_are_clamped_to_the_viewport`, `prelude_scrolls_with_the_first_card_and_is_measured`, `flat_layout_without_cards_paints_as_before` (`cards: None` against the pre-M6 debug output); app `view_state_top_line_round_trips_with_cards`, `live_refresh_keeps_the_line_below_the_header`; E2E `e2e_viewport_split_pierre_light`, `e2e_viewport_unified_pierre_dark` and the review pages re-recorded; perf `--check-budgets`.
+
+**Acceptance:** every file is a card on the canvas; the sticky header behaves as before inside it; scroll anchoring, blocks, the cursor, view state and live refresh keep their positions; all budgets hold.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/view_state::/) | test(/live::/) | test(/perf::/))'
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets
+```
+
+Then the standard completion block.
+
+### T6.6 Navigation: review keys, the Reviews list and Home
+
+**Files**
+
+- Modify: `crates/polygloss-app/src/home/{mod.rs, row.rs, nav.rs}`, `src/keymap/{actions.rs, defaults.rs}`, `src/window.rs` (menus, `ActivateTab*`), `src/chrome.rs` (`ToggleSidebar`, `ShowFiles`, `ShowReviews`); `docs/user-guide.md` (key tables, "Home")
+- Test: `crates/polygloss-app/tests/app/{home.rs, keymap.rs, shell.rs, submit.rs}`, `crates/polygloss-app/tests/e2e/{home.rs, main.rs}`; baselines `e2e-home-populated.png` (re-recorded), `e2e-sidebar-reviews.png` (new)
+
+**Interfaces**
+
+```rust
+// actions (namespace window), registered in keymap/actions.rs with titles and cheat-sheet rows
+ToggleSidebar   // "ctrl-cmd-s", context "Window"
+ShowFiles, ShowReviews // palette only
+ActivateTab1 … ActivateTab9 // "cmd-1" … "cmd-9", context "Window": 1–8 = the Nth open review, 9 = the last; out of range does nothing
+impl MainWindow { pub fn activate_review_number(&mut self, n: u8, window: &mut Window, cx: &mut Context<Self>) -> bool; }
+// home::nav
+pub fn render_nav(window: &mut Window, cx: &mut App) -> AnyElement;
+// debug "nav-home", "open-review-{review_id}", "close-review-{review_id}", "nav-row-{review_id}"
+impl HomeView { pub(crate) fn row_menu(&self, row: usize, menu: PopupMenu, window: &mut Window, cx: &mut Context<Self>) -> PopupMenu; }
+```
+
+- Behavior: design §11.1 (keys, menus: "Close Review", "Show Next Review", "Show Previous Review", "Toggle Sidebar") and §11.2 (Home page cards; the Reviews segment, OQ-36). The nav reads `HomeView`'s data through a render function, never a second `HomeView` element. Opening a review for the first time sets Files; focusing an open one keeps the segment; Files is disabled on Home with the tooltip "Open a review to see its files".
+- Home rows are cards on the canvas in the viewport theme's colors (`theme::viewport_theme(cx)`: `canvas`, `card_background`, `card_border`; radius 8); the row content and keys are unchanged.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Actions, bindings, menus and handlers; `activate_review_number`.
+- [ ] `render_nav` complete; `row_menu` shared; Home page restyle.
+- [ ] Update `DESIGN_11_9` in `tests/app/keymap.rs` (design §11.9) and the user guide's key tables; re-record baselines.
+
+**Tests:** `cmd_number_activates_the_nth_open_review`, `cmd_9_activates_the_last_review`, `cmd_number_out_of_range_does_nothing`, `submit_dialog_keeps_cmd_1_for_its_verdict` (the dialog's verdict changes, the active review does not), `toggle_sidebar_action_hides_and_shows`, `show_files_and_show_reviews_switch_segments`, `reviews_segment_lists_home_open_awaiting_and_recent`, `reviews_segment_on_home_lists_only_home_and_open`, `nav_row_click_opens_or_focuses`, `nav_close_closes_like_cmd_w`, `nav_row_menu_archives_mutes_and_assigns`, `first_open_switches_to_files_refocus_keeps_the_segment`, `files_segment_is_disabled_on_home`, `menus_name_reviews`, `default_bindings_match_design_11_9` (updated), the existing Home tests; E2E `e2e_home_populated`, `e2e_sidebar_reviews`; bun `user guide keymap table matches --dump-keymap` (docs test).
+
+**Acceptance:** a mouse user switches, opens and closes reviews from the sidebar; a keyboard user has ⌘1–⌘9, ⌃Tab and ⌘W; Home looks like the canvas and cards.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/home::/) | test(/keymap::/) | test(/shell::/) | test(/submit::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & (test(/home/) | test(/sidebar/))'
+bun test tests/scripts/docs.test.ts
+```
+
+Then the standard completion block.
+
+### T6.7 Viewport: file header and diff rows (**perf**)
+
+**Files**
+
+- Modify: `crates/polygloss-viewport/src/{header.rs, text_cache.rs, controls.rs, paint_rows.rs, element.rs, gutter.rs, gap.rs, layout.rs, style.rs (DiffStyle and options), view.rs (events, UI font), pipeline.rs (`CountsUpdated` only), find.rs (cache keys), debug.rs}`; `crates/polygloss-app/src/settings/model.rs` (`diff.style.indicators` default); `docs/user-guide.md` (that row)
+- Test: `crates/polygloss-viewport/tests/viewport/{headers_gaps.rs, viewport_render.rs, pipeline.rs, find.rs}`, `crates/polygloss-app/tests/app/settings.rs`; baselines: every review page and viewport screenshot
+
+**Interfaces**
+
+```rust
+pub enum Indicators { #[default] Bars, PlusMinus, None } // DiffStyle default; settings "diff.style.indicators" default "bars"
+// ViewportOptions.ui_font: Font (".AppleSystemUIFont"); Painter holds it; TextKey::Label gains a font slot;
+// TextKey::Title { file_idx, width } is a multi-run title (directory muted, name bold, "old → new" for renames);
+// TextKey::Number { n, kind: NumberKind::{Context, Added, Removed} }.
+// Frame.icons: Vec<(Bounds<Pixels>, SharedString /* svg path */, Hsla)>, painted with Window::paint_svg after the header quads.
+pub enum ViewportEvent { /* … */ CountsUpdated } // at most once per pipeline batch that landed counts
+```
+
+- Header (2.25 rows): chevron (SVG), the title runs, badges, an open-in-editor icon emitting the existing `ViewportEvent::OpenInEditor` (same target as the ⋯ item), a `+a −d` pill (both counts once known; `stat_added`/`stat_removed`), the Viewed pill (rounded border, checkbox, "Viewed" in the UI font; same `ViewedToggled`), ⋯.
+- Rows: with Bars a 3 pt bar at the pane's left edge (each half's own edge in split) over the full row height, an indicator column of 0.5 advance and no glyph; changed rows tint numbers and a gutter strip (`added_gutter`, …); word highlights unchanged in geometry; the "+" comment button over the number column's right edge; gap rows in `canvas`. `PlusMinus` and `None` still work.
+- Shaped text stays cached: no new shaping per scroll frame.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Text cache keys and the UI font; title runs; SVG icons; header controls and pills.
+- [ ] Rows: bars, tints, gutter, comment button, gaps; `Indicators::Bars` default (crate and settings).
+- [ ] `CountsUpdated`; re-record baselines; run perf.
+
+**Tests:** `bars_sit_at_each_panes_left_edge`, `bars_draw_no_indicator_glyph`, `changed_rows_tint_numbers_and_gutter`, `plus_minus_and_none_still_render`, `comment_button_sits_over_the_number_column`, `header_title_dims_the_directory_and_bolds_the_name`, `rename_title_shows_old_arrow_new`, `header_pill_shows_both_counts_once_known`, `open_in_editor_icon_emits_open_in_editor`, `viewed_pill_toggles_viewed`, `counts_updated_is_emitted_once_per_batch`, `gap_rows_use_the_canvas_color`, `find_rects_follow_the_new_code_x`; app `settings_defaults_match_design_table` (bars); perf `--check-budgets`.
+
+**Acceptance:** file headers and rows match design §11.6; every budget holds; `"+-"` users keep their look by setting it.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & test(/settings::/)'
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets
+```
+
+Then the standard completion block.
+
+### T6.8 Toolbar row, display options and the motion module
+
+**Files**
+
+- Create: `crates/polygloss-app/src/motion.rs`, test `crates/polygloss-app/tests/app/motion.rs`
+- Modify: `crates/polygloss-app/src/{lib.rs, features.rs, startup.rs}`, `src/review_tab/toolbar.rs`, `src/palette/{mod.rs, view_toggles.rs}`, `src/iterations/picker.rs`, `src/live/mod.rs` (toolbar items only), `src/viewed/mod.rs` (progress only), `src/threads/mod.rs` (toolbar button and the agent-notes menu item), `src/submit/mod.rs` (the button), `src/keymap/actions.rs` (`viewport::ToggleWrap`); `docs/user-guide.md` ("Actions without a default key")
+- Test: `crates/polygloss-app/tests/app/{shell.rs, palette.rs, viewed.rs, iterations.rs, live.rs, threads.rs, main.rs}`; baselines: every review page, `e2e-iterations-changes-since-menu.png`
+
+**Interfaces**
+
+```rust
+// toolbar slots; features.rs stays the only wiring point
+pub fn toolbar_left(tab: &ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) -> Vec<AnyElement>;  // repo block, kind pills, live::toolbar_left, iterations::toolbar_left
+pub fn toolbar_right(tab: &ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) -> Vec<AnyElement>; // find, threads::toolbar_button, viewed::progress, palette::layout_toggle, palette::display_menu, submit::button
+pub fn display_menu_items(tab: &ReviewTab, menu: PopupMenu, window: &mut Window, cx: &mut Context<ReviewTab>) -> PopupMenu; // view toggles + Wrap lines, then threads' agent-notes item
+// motion.rs
+pub const ENTER_PANEL: Duration;  // 180 ms
+pub const ENTER_POPUP: Duration;  // 150 ms
+pub const ENTER_NOTICE: Duration; // 160 ms
+pub fn pointer_initiated(window: &Window) -> bool; // !window.last_input_was_keyboard()
+pub fn enter_from(id: impl Into<ElementId>, epoch: u64, from: Point<Pixels>, duration: Duration,
+                  easing: fn(f32) -> f32, element: impl IntoElement) -> AnyElement; // opacity + offset; final at once under reduce motion
+pub fn follow_system_reduce_motion(window: &mut Window, cx: &mut App); // re-reads it on every activation of the main window
+// palette::view_toggles
+pub struct ViewOverrides { /* … */ pub wrap: Option<bool> } // viewport::ToggleWrap; per tab, for the session
+// threads
+pub fn open_counts(tab: &ReviewTab, cx: &App) -> (u32 /* open */, u32 /* notes */);
+```
+
+- Content and order: design §11.4, including the control map and the narrow collapse order. Selectors kept: `review-toolbar`, `layout-toggle`, `view-options`, `viewed-progress`, `toggle-threads-panel`, `submit-review`, `submit-review-count`, `iteration-picker`, `live-snapshot` (Snapshot stays in the toolbar until T6.13). New: `repo-block`, `commit-pill`, `ref-pill-base`, `ref-pill-head`, `live-pill`, `toolbar-find`.
+- Motion: the display options and iteration menus, opened by pointer, enter from their trigger (design §11.16); `i` opens the KeyMenu instantly. Capture frames at 0, 50 and 100 ms with reduced motion off; if gpui-component `PopupMenu`'s shadow shows through as a dark slab, keep these menus instant and add the finding to ADR-0029's Consequences.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] `motion.rs` and the activation hook.
+- [ ] Slot functions and the features' items; pills, threads button, compact progress, segmented toggle, display menu with Wrap and agent notes; narrow collapse.
+- [ ] Re-record baselines; record the frame check.
+
+**Tests:** `commit_toolbar_shows_the_sha_pill`, `compare_toolbar_shows_both_ref_pills_and_the_mode`, `live_toolbar_shows_branch_and_live_pill_opening_the_base_picker`, `repo_parent_path_abbreviates_home`, `iteration_pill_shows_only_with_more_than_one_state`, `i_opens_the_iteration_menu_at_the_pill`, `threads_button_counts_open_threads_and_toggles_the_panel`, `viewed_progress_is_compact_with_a_tooltip`, `layout_toggle_is_segmented_and_follows_auto`, `display_menu_has_wrap_and_agent_notes`, `toggle_wrap_reaches_the_viewport_options`, `narrow_toolbar_collapses_in_order` (720 pt window), `toolbar_and_banner_buttons_reach_the_tab_without_focus` (kept); motion `pointer_opened_menu_enters_from_its_trigger` (after 75 ms the menu is between 0 and 8 pt above its end position, independent bounds), `keyboard_opened_menu_is_final_at_once`, `reduce_motion_shows_menus_final_at_once`.
+
+**Acceptance:** every control that was in the toolbar or under it has its home from design §11.4; the toolbar fits at 720 pt; one motion, pointer-only.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/shell::/) | test(/palette::/) | test(/viewed::/) | test(/iterations::/) | test(/live::/) | test(/threads::/) | test(/motion::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+```
+
+Then the standard completion block.
+
+### T6.9 Agents: categories in MCP and CLI output, and the path tester
+
+**Files**
+
+- Modify: `crates/polygloss-mcp/src/api/{open_diff.rs, resources.rs}`, `crates/polygloss-cli/src/{commands/mod.rs, debug.rs}`; create `crates/polygloss-cli/src/debug_categorize.rs`; `docs/agents.md`
+- Test: `crates/polygloss-mcp/tests/{read_tools.rs, write_tools.rs}`, `tests/mcp/{write-tools.test.ts, read-tools.test.ts}`, `tests/cli/open-commands.test.ts`, `tests/cli/categorize.test.ts` (new)
+
+**Interfaces**
+
+```text
+open_diff        files[i].category?: "tests" | "custom:<id>"          (absent when uncategorized; git order unchanged)
+                 stats.categories?: { "<category>": { files, additions, deletions } }   (absent when nothing is categorized)
+diff resource    | Status | Path | + | - | Category |
+JSON CLI         show / compare / open / live reports gain "categories": { "tests": 6, … }; human output "42 files (6 tests · 2 generated)"
+polygloss debug categorize [--repo <path>] [--json] <path>…
+                 [{ path, category: string | null, title?, source?: "built-in" | "extra" | "custom" | "attribute",
+                    group?, pattern?, rescued_by?: [{ category, pattern }] }]
+                 exit 0; an invalid categories section: exit 1, {"error": {"code": "conflict", "message": "settings.json: …"}}
+```
+
+- The MCP server and CLI read `polygloss_core::settings::categories_config(paths)` per call (lenient; one stderr warning per process on an invalid section) and classify with `Categorizer` using each file's `generated_attr` and `generated`. With `--repo`, `debug categorize` reads `linguist-generated` from that repo's HEAD tree (one `check-attr`).
+- `docs/agents.md`: the `open_diff` row, the diff resource row, and a short "File categories" paragraph (what the field means, where it is configured).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] `open_diff` and the resource; the CLI reports; `debug categorize`.
+- [ ] `docs/agents.md`.
+
+**Tests:** Rust `open_diff_files_carry_their_category`, `open_diff_stats_break_down_categories`, `diff_resource_has_a_category_column`, `invalid_settings_use_the_default_categories`; bun `open_diff returns categories per file and in stats` (fixture repo with `src/a.ts`, `src/a.test.ts`, `Cargo.lock`, `docs/x.md`; sandboxed `settings.json` turns docs on), `diff resource lists categories`, `json show reports category counts`, `debug categorize explains built-in, extra, custom, attribute and rescued verdicts`, `debug categorize reports an invalid categories section`; `agents doc names every MCP tool from listTools` (unchanged, still passes).
+
+**Acceptance:** agents see each file's category; nothing else in any result shape changes; the docs match.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-mcp -p polygloss-cli
+bun test tests/mcp tests/cli tests/scripts/docs.test.ts
+scripts/check-deps.sh
+```
+
+Then the standard completion block.
+
+### T6.10 Viewport: display order and category sections (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-viewport/src/{document/sections.rs, section_band.rs}`, `crates/polygloss-perf/src/scenarios/sections.rs`, test `crates/polygloss-viewport/tests/viewport/sections.rs`
+- Modify: `crates/polygloss-viewport/src/{lib.rs, document/mod.rs, document/window.rs, document/height_index.rs, pipeline.rs, cursor.rs, view.rs, paint_rows.rs, controls.rs, blocks.rs, debug.rs}`, `crates/polygloss-perf/src/{main.rs, args.rs, scenarios/mod.rs}`, `benches/{run-perf.ts, budgets.json}`
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, document.rs, cursor.rs, pipeline.rs}`, `tests/scripts/run-perf.test.ts`
+
+**Interfaces**
+
+```rust
+pub struct Section { pub id: u32, pub label: SharedString /* "12 test files" */, pub icon: Option<SharedString> /* svg path */,
+                     pub files: Vec<u32>, pub open: bool }
+impl DiffViewport {
+    pub fn set_sections(&mut self, sections: Vec<Section>, cx: &mut Context<Self>); // unlisted files first, in git order; each file at most once
+    pub fn set_section_open(&mut self, id: u32, open: bool, cx: &mut Context<Self>);
+    pub fn section_open(&self, id: u32) -> Option<bool>;
+    pub fn section_of(&self, file_idx: u32) -> Option<u32>;
+    pub fn display_rank(&self, file_idx: u32) -> u32;
+    pub fn display_order(&self) -> &[u32];
+    pub fn section_counts(&self, id: u32) -> SectionCounts; // { files, counted, additions, deletions }, cached, updated when counts land
+}
+pub enum ViewportEvent { /* … */ SectionToggled { id: u32, open: bool }, SectionMarkViewed(u32) }
+```
+
+- `Document` keeps `order` (slot → file) and `slot` (file → slot); the height index is by slot; identity order without sections, so existing tests hold. Every public API stays keyed by `file_idx`. The prelude (T6.5) sits in the lead of the first display slot.
+- A section's band (36 pt on the canvas: chevron, icon, label, `+X −Y`, Show / Hide, Mark all viewed) is part of the lead of its first slot. A closed section's files are hidden: height 0, except the band. Hidden files are skipped by layout, paint, blocks, the sticky header, the cursor and pipeline focus; the background counts pass still covers them.
+- Every per-frame walk steps by offset through the height index (`find` skips zero heights), never over a slot range, so a closed section costs O(log n). `overlapping()` clamps its bottom to `total − 0.5`.
+- `scroll_to`, `go_to_file`, `set_cursor`, `reveal_line`, `n`/`p` and `]`/`[` that reach a hidden file open its section first and emit `SectionToggled`. Closing the section that holds the anchor moves the anchor to its band.
+- Perf scenario `sections` (runner `perf`, corpora synthetic and linux): the last 20 files in an open section and every other file with an odd `file_idx` in one closed section; metrics `sections_scroll_p95_ms` (the scroll scenario's definition over the whole document; budget 8.3) and `section_toggle_ms` (open the big section → the next painted frame; budget 50, design §12.1).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Order and sections in `Document`; offset-stepping walks; the clamp.
+- [ ] Pipeline, cursor, blocks and paint skip hidden files; auto-open; bands and their controls; counts cache.
+- [ ] The perf scenario, `run-perf.ts` row and budgets; run perf.
+
+**Tests:** `display_order_puts_sections_after_the_other_files`, `identity_order_without_sections`, `closed_section_files_are_hidden_except_the_band`, `visible_walk_skips_a_closed_section` (a visit counter stays at the visible files + 2 with 10,000 hidden), `overlapping_clamps_at_the_document_end`, `pipeline_never_loads_hidden_files_but_counts_them`, `next_and_prev_file_skip_closed_sections`, `scroll_to_a_hidden_file_opens_its_section_and_emits`, `closing_the_anchors_section_moves_the_anchor_to_the_band`, `band_controls_toggle_and_mark_viewed`, `section_counts_update_when_counts_land`, `blocks_in_hidden_files_are_not_measured`, `events_stay_keyed_by_file_idx_after_reordering`, `set_sections_keeps_the_anchor`; TS `sections scenario reports scroll p95 and toggle time` (`run-perf.test.ts`); perf `--scenarios scroll,sections --corpus synthetic,linux --check-budgets`.
+
+**Acceptance:** sections behave as design §11.6 and §11.15 say; a 10,000-file closed section adds no per-frame cost; all budgets hold.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport
+bun test tests/scripts/run-perf.test.ts
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets
+```
+
+Then the standard completion block.
+
+### T6.11 File tree restyle and totals (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-app/src/tree/footer.rs`
+- Modify: `crates/polygloss-app/src/tree/{mod.rs, row.rs, filters.rs}`
+- Test: `crates/polygloss-app/tests/app/tree.rs`, `crates/polygloss-app/tests/e2e/tree.rs`; baseline `e2e-tree-badges.png`
+
+**Interfaces**
+
+```rust
+pub const ROW_HEIGHT: f32 = 28.0;
+pub fn footer(files: &[u32], viewport: &Entity<DiffViewport>, cx: &App) -> AnyElement; // "Total: +X −Y"; "…" until every file is counted
+```
+
+- Row and Viewed slot: design §11.5 (icons from `AppAssets`; `stat_added`/`stat_removed`; status colors from `version_control.*`). The slot is a custom element (no gpui-component `Checkbox`) inside the existing mouse-down stop; `v` is unchanged.
+- The "FILES n" header goes; the rounded filter field (`polygloss.sidebar.field.background` through the kit's segmented token or its own fill) holds the filter menu at its right edge.
+- The tree subscribes to `ViewportEvent::CountsUpdated` (not to every frame) for row counts and the footer.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Row layout and the Viewed slot; filter field; footer.
+- [ ] Re-record the baseline; check `tree_builds_13k_files_under_200ms`.
+
+**Tests:** `tree_rows_show_icons_then_right_aligned_stats_and_status`, `icon_slot_toggles_viewed_and_never_folds_the_folder`, `folder_slot_is_tristate`, `footer_totals_follow_counts_updated` (expected totals from `git diff --numstat` of the fixture, run by the test), `footer_shows_an_ellipsis_until_counted`, `tree_does_not_rerender_on_scroll_frames`, `tree_checkbox_click_does_not_toggle_folder` (renamed `…slot…`), `tree_builds_13k_files_under_200ms` (kept); E2E `e2e_tree_badges`.
+
+**Acceptance:** the tree looks like design §11.5; Viewed stays one click and one key; scrolling does not re-render the tree.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & test(/tree::/)'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/tree/)'
+```
+
+Then the standard completion block.
+
+### T6.12 Threads panel: hidden by default, remembered, restyled
+
+**Files**
+
+- Modify: `crates/polygloss-app/src/review_tab/{mod.rs, panes.rs}`, `src/threads/panel.rs`, `src/view_state/mod.rs`, `crates/polygloss-core/src/review/view_state.rs`
+- Test: `crates/polygloss-app/tests/app/{shell.rs, feed.rs, composer.rs, a11y_keyboard.rs, threads.rs, view_state.rs, motion.rs}`, `crates/polygloss-core/tests/review_state.rs`, `crates/polygloss-app/tests/e2e/{threads.rs, theme.rs, keyboard_only_review.rs}`; baselines `e2e-threads-*.png` and every review page whose panel disappears
+
+**Interfaces**
+
+```rust
+// core ViewState
+#[serde(default, skip_serializing_if = "Option::is_none")] pub threads_panel: Option<bool>,
+impl ReviewTab { pub fn set_threads_panel_visible(&mut self, visible: bool, cx: &mut Context<Self>); } // toggle_threads_panel kept
+```
+
+- Hidden by default; restored from view state; carried across Refresh, iteration and "Changes since last review" swaps in the tab; a toggle calls `view_state::changed` (also for an otherwise untouched state). Every auto-open path (composer, feed, URLs, IPC) still opens it.
+- Restyle: the panel on the canvas, header "Threads · n open · k notes" with Comment on review, rows as rounded cards; row content unchanged.
+- Motion: the panel's content enters per design §11.16 when the toolbar's threads button opened it (`motion::enter_from`, epoch per open); keyboard, restore and auto-open show it at once; closing is instant.
+- Tests that assumed a visible panel call `set_threads_panel_visible(true)`.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Default, persistence and carry-over; restyle; motion.
+- [ ] Update the tests that assumed a visible panel; re-record baselines.
+
+**Tests:** `threads_panel_is_hidden_by_default`, `threads_panel_visibility_round_trips_through_view_state`, `threads_panel_survives_refresh_and_iteration_switches`, `comment_on_review_opens_the_panel`, `agent_replies_show_opens_the_panel`, `pointer_open_slides_the_panel_content_in` (after 90 ms the content is between 0 and 12 pt right of its end), `keyboard_toggle_and_restore_show_the_panel_at_once`, `reduce_motion_shows_the_panel_at_once`, `pane_cycle_includes_the_panel_only_when_shown` (kept); core `view_state_threads_panel_is_optional_and_round_trips`; E2E `e2e_threads_*` re-recorded.
+
+**Acceptance:** a new review shows no threads panel; the choice sticks per diff and within the tab; every path that opened it still does.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-core -E 'binary(review_state)'
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app)'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+```
+
+Then the standard completion block.
+
+### T6.13 Header card and banner notices (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-app/src/review_tab/header.rs`, tests `crates/polygloss-app/tests/app/header_card.rs`, `crates/polygloss-app/tests/e2e/header_card.rs`
+- Modify: `crates/polygloss-app/src/review_tab/{mod.rs, banners.rs}`, `src/live/mod.rs` (Snapshot moves into the card), `src/iterations/mod.rs` (where the context line shows), `crates/polygloss-core/src/git/listing.rs`
+- Test: `crates/polygloss-core/tests/listing.rs`, `crates/polygloss-app/tests/app/{shell.rs, iterations.rs, live.rs, feed.rs, main.rs}`, `crates/polygloss-app/tests/e2e/main.rs`; baselines `e2e-header-card-commit.png`, `e2e-header-card-compare.png` (new), `e2e-live-banner.png`, `e2e-feed-banners.png`, `e2e-iterations-*.png`
+
+**Interfaces**
+
+```rust
+// polygloss_core::git::listing
+pub struct CommitDetails { pub oid: Oid, pub subject: String, pub author_name: String, pub author_email: String, pub committed_at: i64 }
+pub fn commit_details(git: &Git, rev: &Oid) -> Result<CommitDetails, GitError>; // log -1 --no-walk -z --format=%H%x00%s%x00%an%x00%ae%x00%ct
+pub fn range_commits(git: &Git, base: &Oid, head: &Oid, limit: u32) -> Result<(Vec<CommitDetails>, u32 /* total */), GitError>; // base..head, newest first
+// review_tab::header
+pub fn avatar_color(email: &str, players: &[Hsla], appearance: Appearance) -> Hsla; // FNV-1a 32-bit of the lowercased email, mod 8; fixed hues when fewer than 8 players
+pub fn initial(name: &str) -> String; // first alphanumeric character, uppercased
+pub struct HeaderCard; // a ReviewTab extension: loads on the background executor at attach and after Refresh, then DiffViewport::set_prelude
+```
+
+- Content: design §11.6 "Header card" per kind (debug `header-card`, `header-avatar`, `header-sha`, `header-commits-toggle`, `live-snapshot`). Times are relative to the app clock (the seam Home's screenshots pin). The stats line counts all files here; T6.15 narrows it.
+- Banners: design §11.7 notices in the 32 pt strip; the context line only off the latest state (OQ-39); `BannerStrip::{set, clear, context, set_context}` keep their signatures. Motion: a notice enters per design §11.16 with id `("banner", kind, generation)`; the generation grows only when its kind appears.
+- Offline: git reads only, on the background executor.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Core listing functions; the card, avatar and expander; Snapshot moved.
+- [ ] Banner notices and the strip's context rule; notice motion.
+- [ ] Re-record baselines; run perf (`watcher-banner`, `app-open`).
+
+**Tests:** core `commit_details_reads_author_email_and_time`, `range_commits_lists_base_to_head_newest_first_with_a_total`; app `commit_header_shows_avatar_subject_author_and_sha`, `avatar_color_is_fnv1a_of_the_lowercased_email` (the expected index from an FNV-1a value written as a literal in the test), `compare_header_counts_and_lists_commits`, `live_header_shows_branch_base_and_snapshot`, `snapshot_left_the_toolbar`, `relative_time_uses_the_app_clock`, `header_card_scrolls_with_the_diff`, `banner_strip_is_empty_on_the_latest_state`, `banner_strip_shows_the_iteration_context_off_latest`, `banner_notice_enters_once_per_appearance` (a text update does not replay it), `banner_strip_never_changes_viewport_anchor` (kept); E2E `e2e_header_card_commit`, `e2e_header_card_compare`; perf `--scenarios watcher-banner,app-open --corpus typical,linux --check-budgets`.
+
+**Acceptance:** the canvas starts with the header card of design §11.6; banners are notices that never move content; budgets hold.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-core -E 'binary(listing)'
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/header_card::/) | test(/shell::/) | test(/iterations::/) | test(/live::/) | test(/feed::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --scenarios watcher-banner,app-open --corpus typical,linux --check-budgets
+```
+
+Then the standard completion block.
+
+### T6.14 File categories in the app
+
+**Files**
+
+- Create: `crates/polygloss-app/src/categories/mod.rs`, tests `crates/polygloss-app/tests/app/categories.rs`, `crates/polygloss-app/tests/e2e/categories.rs`
+- Modify: `crates/polygloss-app/src/{lib.rs, features.rs, provider.rs}`, `src/settings/model.rs` (`categories`, validation), `src/view_state/mod.rs`, `src/keymap/actions.rs`, `src/ipc/debug_state.rs` (`sections` per tab), `crates/polygloss-core/src/review/view_state.rs`, `tests/e2e/mcp-app.test.ts`; `docs/user-guide.md` (the `categories.*` rows, a "File categories" section)
+- Test: `crates/polygloss-app/tests/app/{settings.rs, view_state.rs, ipc.rs, main.rs}`, `crates/polygloss-app/tests/e2e/main.rs`; baseline `e2e-categories-sections.png` (new)
+
+**Interfaces**
+
+```rust
+pub struct Partition { pub categorizer: Arc<Categorizer>, pub category: Vec<Option<CategoryId>> /* by file_idx */,
+                       pub main: Vec<u32>, pub sections: Vec<SectionInfo> }
+pub struct SectionInfo { pub id: CategoryId, pub info: CategoryInfo, pub viewport_id: u32, pub files: Vec<u32> }
+pub fn partition(tab: &ReviewTab) -> Option<Arc<Partition>>;
+pub fn categories(tab: &ReviewTab) -> Option<Entity<Categories>>; // the tab extension; emits CategoriesEvent::Repartitioned
+// settings
+pub struct Settings { /* … */ pub categories: CategoriesConfig } // check_ranges: Categorizer::new must succeed; unknown groups logged
+// actions (namespace categories; palette only): ToggleTests, ToggleGenerated, ToggleVendored, ToggleAgents, ToggleDocs,
+// ToggleTooling, ToggleStories, ExplainFile
+// core ViewState
+#[serde(default, skip_serializing_if = "Option::is_none")] pub open_sections: Option<Vec<String>>,
+```
+
+- At attach, after a settings change and after a palette toggle: build the `Categorizer` (settings + `diff.generated_patterns` + this tab's overrides) and the partition on the background executor, then `viewport.set_sections` (label "12 test files" from the nouns, icon from `AppAssets`, open per view state or the default rule) with the anchor kept.
+- The provider's `generated` flags come from `Categorizer::is_generated`; when a re-partition changes any, swap them in with `set_provider` and an identity carry.
+- `SectionToggled` saves `open_sections`; `SectionMarkViewed` calls `viewed::set_viewed(tab, files, true)`; `ExplainFile` toasts the cursor's file's verdict.
+- `debug_state` gains `"sections": [{ "category", "files", "open" }]` per tab.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Settings key, validation and the docs rows (the docs test enforces them).
+- [ ] The extension, partition, wiring to the viewport and the provider; view state; actions; `debug_state`.
+- [ ] The E2E screenshot and the bun E2E case.
+
+**Tests:** `tests_and_generated_files_go_to_closed_sections_by_default`, `every_file_categorized_opens_the_sections`, `sections_follow_settings_hot_reload_and_keep_the_anchor`, `invalid_categories_keep_the_previous_settings_and_toast`, `palette_toggle_changes_only_this_tab`, `open_sections_round_trip_through_view_state`, `mark_all_viewed_marks_every_file_of_the_section`, `generated_flags_follow_is_generated`, `explain_file_toasts_the_verdict`, `debug_state_lists_sections`, `settings_defaults_match_design_table` (categories); bun `user guide lists every settings key` (docs test), E2E `an MCP-opened review shows its tests in a closed section` (`mcp-app.test.ts`, through `debug_state`); screenshot `e2e_categories_sections`.
+
+**Acceptance:** with default settings, test and generated files sit in closed sections at the bottom; settings and palette changes apply live; Viewed and Find still cover every file.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/categories::/) | test(/settings::/) | test(/view_state::/) | test(/ipc::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/categories/)'
+bun test tests/scripts/docs.test.ts
+bun run test:e2e
+```
+
+Then the standard completion block.
+
+### T6.15 Files accordion, totals and chips (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-app/src/tree/panels.rs`
+- Modify: `crates/polygloss-app/src/tree/{mod.rs, footer.rs, row.rs}`, `src/review_tab/header.rs` (stats over uncategorized files, chips), `src/find/mod.rs` (display order, panel follow), `src/threads/placement.rs` (`DiffOrder` by display rank), `src/categories/mod.rs` (chip text and the breakdown)
+- Test: `crates/polygloss-app/tests/app/{tree.rs, find.rs, threads.rs, header_card.rs, categories.rs}`, `crates/polygloss-app/tests/e2e/tree.rs`; baselines `e2e-tree-accordion.png` (new), `e2e-tree-badges.png`, `e2e-find-bar-results.png`
+
+**Interfaces**
+
+```rust
+pub struct FilesPanel { /* one PanelTree { model, TreeState, … } per panel; the open one */ } // the Files segment's body; FileTree's API kept per panel
+pub struct Chip { pub category: CategoryId, pub text: SharedString /* "6 tests" */ }
+pub fn chips(partition: &Partition) -> Vec<Chip>;
+pub struct Breakdown { pub excluding: Totals, pub including: Totals, pub categorized: Totals } // Totals { files, additions, deletions, counted }
+pub fn breakdown(partition: &Partition, viewport: &DiffViewport) -> Breakdown;
+```
+
+- Accordion, footer, chips and the follow rule: design §11.5 (OQ-44). Panels are plain `v_flex` (no gpui-component `Accordion`); each open panel is a virtualized tree that scrolls on its own; panel switches are instant.
+- Find lists matches in display order; tree comparisons (`target > idx`) and threads' `DiffOrder` use `display_rank`. View state's `tree_expanded` covers every panel.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] `FilesPanel` from the partition; follow rule; footer and header chips with the tooltip.
+- [ ] Display-order consumers; re-record baselines; check the tree build time.
+
+**Tests:** `accordion_has_changes_then_a_panel_per_nonempty_category`, `one_panel_open_at_a_time_each_scrolls`, `selecting_a_category_file_opens_its_section`, `panel_follows_jumps_and_section_crossings`, `a_user_opened_panel_stays_until_the_next_crossing`, `footer_and_header_exclude_categorized_files` (expected from `git diff --numstat` of the fixture), `chips_and_breakdown_tooltip`, `find_lists_matches_in_display_order_and_opens_sections`, `threads_panel_orders_by_display_rank`, `tree_n_p_walk_the_open_panel`, `tree_builds_13k_files_under_200ms` (every panel); E2E `e2e_tree_accordion`, `e2e_find_bar_results`.
+
+**Acceptance:** the sidebar's Files segment is the accordion of design §11.5; totals exclude categorized files everywhere; nothing walks files out of display order.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/tree::/) | test(/find::/) | test(/threads::/) | test(/header_card::/) | test(/categories::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+```
+
+Then the standard completion block.
+
+### T6.16 Visual parity pass and docs
+
+**Files**
+
+- Modify: any file under `crates/polygloss-app/src/`, `crates/polygloss-viewport/src/` or `assets/themes/polygloss-*.json` for spacing, size and color fixes found here; every PNG in `crates/polygloss-app/tests/baselines/`; `docs/user-guide.md` (window and sidebar, Home and the Reviews list, the toolbar, file categories), `README.md` (any UI description)
+
+**Interfaces:** none new. Reads the checklist below and design §11.
+
+**Steps**
+
+- [ ] Re-record every baseline and open each, light and dark. Compare against [research: anatomy and measurements](research/redesign-reference.md#anatomy) and fill this checklist in the report: top rows 52 pt and aligned; sidebar 280 pt, opaque, field and segmented fills; tree rows 28 pt, icons, right-aligned stats and status letters; toolbar repo block and pills; header card; card radius, border, gap and margins; file header 2.25 rows with dim directory and bold name; bars at the left edge, tinted numbers and gutter, no glyphs; gap rows on the canvas; syntax colors per the palette; section bands; threads panel cards; banner notices; Home cards; dark mode with the same structure.
+- [ ] Fix small deviations (spacing, sizes, colors); list larger ones as open questions instead of redesigning.
+- [ ] Manual, in the dev app (`tmux` session `polygloss-m6-preview`, sandboxed `HOME`): traffic lights centered in the 52 pt row (tune `TRAFFIC_LIGHT_POSITION`), drag and double-click zoom on both rows, fullscreen, hidden sidebar, Reduce Motion switched in System Settings while the app runs (motion stops after the next activation), light and dark. Record each result.
+- [ ] Update the user guide and README prose.
+
+**Tests:** every E2E screenshot (re-recorded and reviewed); the full suites.
+
+**Acceptance:** the checklist passes or each exception is recorded as an open question; the manual checks are recorded; the completion block passes.
+
+**Verify:** the standard completion block.
+
+### M6 exit gate
+
+```bash
+bun install --frozen-lockfile
+bun run format:check && bun run lint
+bun run test:unit && bun test && bun run test:e2e
+scripts/check-deps.sh
+scripts/cargo.sh deny check licenses bans sources advisories
+UPDATE_BASELINE=1 scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)' && bun run test:e2e
+uptime   # load average below 4 (other projects' simulators skew perf)
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --compare-baseline
+```
+
+- [ ] Every §12.1 budget passes on all four corpora in both layouts, including `sections_scroll_p95_ms` and `section_toggle_ms`. A `--compare-baseline` regression is accepted only when the metric still meets its budget and both scroll metrics stay under 2.1 ms (a quarter of 8.3 ms); record the before and after numbers and the cause here, then commit `--write-baseline`.
+- [ ] Every baseline re-recorded and reviewed, light and dark, against the T6.16 checklist (a human-equivalent comparison with the reference); differences listed.
+- [ ] Manual checks of T6.16 recorded (traffic lights, drag, zoom, fullscreen, Reduce Motion live).
+- [ ] [Definition of done (M6)](#definition-of-done-m6) ticked.
+- [ ] Design OQ-35–OQ-51 presented to the user with their provisional defaults.
+
+---
+
 ## Manual gate: agent wake-up in real Claude Code
 
 The build cannot automate this: it needs a real, idle Claude Code session and a human pressing Submit. The design makes it a **release gate** (§16.4, ADR-0013). T4.12 copies this section into `docs/testing/agent-wake-gate.md`; the **user** runs it and records results. W1–W3 gate M4; W1–W8 gate M5.
@@ -2066,6 +2892,11 @@ Results table columns: case, date, Claude Code version, macOS version, result (p
 | S12 | GitHub macOS VMs may render or time GPUI differently                                                                     | T0.3, T2.9               | Screenshot tolerance; budgets gated on the developer's Apple Silicon machine; CI perf compares against a CI baseline (OQ-P9)                                                                                                                                                                           |
 | S13 | Git floor 2.39 is not what CI runs                                                                                       | T1.2                     | `POLYGLOSS_GIT_BIN` lets the core suite run against Xcode CLT git (`/Library/Developer/CommandLineTools/usr/bin/git`) where installed                                                                                                                                                                  |
 | S14 | Hunk parity below 99.9% on some seeded repos: imara Myers pre-prunes lines of git's reduced input that git keeps (T1.16) | T1.16 follow-up          | **Resolved.** `myers_core.rs` (imara's Myers core without its preprocessing, on the lines `git_myers.rs` keeps, with three heuristic fixes) plus git's slider order (T1.16 "S14 fix"). Was: seeds 2 and 4 at 99.76%, Linux 98.503% (174 of 11,626). Now: seeds 1–5 100%, Linux 100% (11,626 of 11,626) |
+| S15 | Viewport geometry: about 12 sites add `header_height` to `file_top`; with a zero card gap they pass tests while wrong    | T6.5                     | Helpers in `Document` (`header_top`, `body_top`, `top_line`); every new test uses a non-zero gap and padding                                                                                                                                                                                           |
+| S16 | Cards, SVG icons and a second font raise frame cost; `--compare-baseline` fails at 10% of a ~0.7 ms scroll p95           | T6.5, T6.7, M6 gate      | Every budget must hold and scroll p95 stay under a quarter of its budget; the M6 gate re-baselines once with the numbers recorded                                                                                                                                                                      |
+| S17 | Thousands of zero-height hidden files pulled into every frame or the materialization window                              | T6.10                    | Walk visible files by offset through the height index; clamp `overlapping()`; perf scenario `sections`                                                                                                                                                                                                 |
+| S18 | Traffic lights, window drag and a live Reduce Motion change are invisible to headless tests                              | T6.3, T6.16              | Bounds tests for the rows; recorded manual checks in the dev app                                                                                                                                                                                                                                       |
+| S19 | gpui-component `PopupMenu` paints its own shadow, which shows through a fading menu                                      | T6.8                     | Frame check; drop the menu motion if the shadow shows (ADR-0029)                                                                                                                                                                                                                                       |
 
 ---
 
@@ -2112,7 +2943,27 @@ Each line needs evidence: a passing test, a command's output, or a recorded manu
 
 ---
 
+## Definition of done (M6)
+
+Each line needs evidence, as for v1. This list is kept apart from the v1 list, which [`docs/release-readiness.md`](release-readiness.md) tracks.
+
+- [ ] Window: traffic lights inside the sidebar's 52 pt top row, no tab row, an opaque window; both top rows drag and zoom; the tab model, ⌘W, ⌃Tab and reopen-focuses unchanged; ⌘1–⌘9 (ADR-0026).
+- [ ] Sidebar: the Files segment (filter, accordion of trees, totals and chips) and the Reviews segment (Home, Open, Awaiting you, Recent); hideable; one width per window.
+- [ ] Toolbar: every control from before M6 has its design §11.4 home; the row fits at 720 pt.
+- [ ] Polygloss Light/Dark are the defaults and Pierre stays selectable; the built-in themes pass the contrast test; Lilex stays the default with the SF Mono alias (ADR-0027).
+- [ ] Viewport: file cards with sticky headers inside them, the header card, bar indicators by default, tinted line numbers, gap rows on the canvas.
+- [ ] The threads panel is hidden by default and remembered; banners are notices in the reserved strip.
+- [ ] File categories: the core classifier with geld's catalog credited in `NOTICE`, defaults, `settings.json` configuration with hot reload and validation, sections at the bottom of the diff, the accordion, totals and chips, Find and threads across sections, palette toggles, the MCP and CLI `category` fields and `polygloss debug categorize`, the store v2 tri-state (ADR-0028).
+- [ ] Motion: the three motions of design §11.16, Reduce Motion followed live, nothing else M6 added moves (ADR-0029).
+- [ ] Every §12.1 budget holds, including the section metrics; the perf baseline is rewritten only with the numbers recorded in the M6 gate.
+- [ ] Every screenshot baseline re-recorded and reviewed against the reference; the manual window checks recorded.
+- [ ] Docs: design §11, ADR-0026–ADR-0029, the user guide and `docs/agents.md` match the build; the docs tests pass.
+
+---
+
 ## Open questions
+
+M6's provisional defaults are design §26 OQ-35–OQ-51; builders use them until the user decides.
 
 ### Orchestrator decisions after M2 (provisional — pending user confirmation)
 
@@ -2152,36 +3003,38 @@ Design §26 OQ-1…OQ-34 stay in force with their provisional defaults. These ar
 
 ## Spec coverage map
 
-| Design section                               | Tasks                                                           |
-| -------------------------------------------- | --------------------------------------------------------------- |
-| §3 Sources                                   | T1.2, T1.12, T3.5, T4.3                                         |
-| §4 Identity                                  | T1.1, T1.12                                                     |
-| §5 Snapshots                                 | T1.5, T3.11                                                     |
-| §6 Git and diff engine                       | T1.2–T1.4, T1.6–T1.8, T1.16                                     |
-| §7 Data model                                | T1.10, T1.11, T1.12–T1.14, T3.4 (auto-prune)                    |
-| §8 Comments                                  | T1.13, T1.15, T3.9, T3.10, T4.6 (agent edit/delete)             |
-| §9 Viewed                                    | T1.14, T3.7                                                     |
-| §10 Live mode                                | T3.11                                                           |
-| §11.1–11.5 Window, Home, open, toolbar, tree | T3.1, T3.4 (incl. reassign), T3.5, T3.6, T3.7, T3.12            |
-| §11.6 Viewport                               | T1.9, T2.3–T2.7, T3.8, T3.9                                     |
-| §11.7 Banners                                | T3.1, T3.11, T3.13                                              |
-| §11.8–11.9 Palette, keymap                   | T3.2 (declares), T3.6–T3.11, T3.16 (handlers), T5.6             |
-| §11.10–11.11 Themes, highlighting            | T2.2, T2.6, T3.3                                                |
-| §11.12 View state                            | T1.14, T3.14                                                    |
-| §11.13 Open in editor                        | T3.16                                                           |
-| §11.14 Find                                  | T3.15                                                           |
-| §12 Performance                              | T2.1, T2.3, T2.6, T2.9, T2.10, T3.10, T3.11, M3 gate            |
-| §13 Processes and IPC                        | T4.1, T4.2                                                      |
-| §14 CLI                                      | T4.3, T4.8, T4.9                                                |
-| §15 MCP                                      | T4.4–T4.7, T4.13                                                |
-| §16 Plugin and wake-up                       | T4.7, T4.8, T4.10, T4.12, T4.13, manual gate                    |
-| §17 Notifications and badge                  | T3.17, T4.6                                                     |
-| §18 Settings and keymap files                | T3.1, T3.2, T3.3                                                |
-| §19 Security and privacy                     | T0.1, T1.2, T3.9, T4.1, T5.7                                    |
-| §20 Testing                                  | T0.2, T0.3, every task                                          |
-| §21 Packaging                                | T5.1–T5.4, T5.7                                                 |
-| §22 Platform scope                           | T0.1, T3.16, T3.17                                              |
-| §24 Layout                                   | T0.1, [Workspace layout](#workspace-layout-and-crate-ownership) |
+| Design section                               | Tasks                                                                                   |
+| -------------------------------------------- | --------------------------------------------------------------------------------------- |
+| §3 Sources                                   | T1.2, T1.12, T3.5, T4.3                                                                 |
+| §4 Identity                                  | T1.1, T1.12                                                                             |
+| §5 Snapshots                                 | T1.5, T3.11                                                                             |
+| §6 Git and diff engine                       | T1.2–T1.4, T1.6–T1.8, T1.16, T6.1, T6.4                                                 |
+| §7 Data model                                | T1.10, T1.11, T1.12–T1.14, T3.4 (auto-prune), T6.1, T6.12, T6.14                        |
+| §8 Comments                                  | T1.13, T1.15, T3.9, T3.10, T4.6 (agent edit/delete)                                     |
+| §9 Viewed                                    | T1.14, T3.7, T6.11, T6.14                                                               |
+| §10 Live mode                                | T3.11                                                                                   |
+| §11.1–11.5 Window, Home, open, toolbar, tree | T3.1, T3.4 (incl. reassign), T3.5, T3.6, T3.7, T3.12, T6.3, T6.6, T6.8, T6.11, T6.15    |
+| §11.6 Viewport                               | T1.9, T2.3–T2.7, T3.8, T3.9, T6.5, T6.7, T6.10, T6.13                                   |
+| §11.7 Banners                                | T3.1, T3.11, T3.13, T6.13                                                               |
+| §11.8–11.9 Palette, keymap                   | T3.2 (declares), T3.6–T3.11, T3.16 (handlers), T5.6, T6.6, T6.8, T6.14                  |
+| §11.10–11.11 Themes, highlighting            | T2.2, T2.6, T3.3, T6.2                                                                  |
+| §11.12 View state                            | T1.14, T3.14, T6.12, T6.14                                                              |
+| §11.13 Open in editor                        | T3.16, T6.7                                                                             |
+| §11.14 Find                                  | T3.15, T6.15                                                                            |
+| §11.15 File categories                       | T6.1, T6.4, T6.9, T6.10, T6.14, T6.15                                                   |
+| §11.16 Motion                                | T6.8, T6.12, T6.13                                                                      |
+| §12 Performance                              | T2.1, T2.3, T2.6, T2.9, T2.10, T3.10, T3.11, M3 gate, T6.5, T6.7, T6.10, T6.13, M6 gate |
+| §13 Processes and IPC                        | T4.1, T4.2                                                                              |
+| §14 CLI                                      | T4.3, T4.8, T4.9, T6.9                                                                  |
+| §15 MCP                                      | T4.4–T4.7, T4.13, T6.9                                                                  |
+| §16 Plugin and wake-up                       | T4.7, T4.8, T4.10, T4.12, T4.13, manual gate                                            |
+| §17 Notifications and badge                  | T3.17, T4.6                                                                             |
+| §18 Settings and keymap files                | T3.1, T3.2, T3.3, T6.2, T6.7, T6.14                                                     |
+| §19 Security and privacy                     | T0.1, T1.2, T3.9, T4.1, T5.7                                                            |
+| §20 Testing                                  | T0.2, T0.3, every task                                                                  |
+| §21 Packaging                                | T5.1–T5.4, T5.7, T6.4 (`NOTICE`)                                                        |
+| §22 Platform scope                           | T0.1, T3.16, T3.17                                                                      |
+| §24 Layout                                   | T0.1, [Workspace layout](#workspace-layout-and-crate-ownership)                         |
 
 ## Decision log coverage
 
@@ -2226,3 +3079,4 @@ Every bullet of the decision log, mapped to the tasks that implement it. Superse
 | Theme, fonts, diff-style settings                                                                                                                                              | T2.2, T2.4, T3.3                                                                        |
 | Diff id over tree OIDs                                                                                                                                                         | T1.1                                                                                    |
 | Known risks: asyncRewake timeout, re-arm, session drift                                                                                                                        | T1.14, T4.8, T4.12, manual gate                                                         |
+| Redesign after v1 (2026-10-05): the reference layout, geld-style configurable categories, motion per the design-engineering skills (orchestrator decisions D1–D13)             | T6.1–T6.16, M6 gate                                                                     |

@@ -1,6 +1,6 @@
 # ADR-0024: Themes, fonts and syntax highlighting
 
-- **Status:** Accepted. Supersedes the Zed-spike plan to drop lumis.
+- **Status:** Accepted. Supersedes the Zed-spike plan to drop lumis. The default themes are superseded by [ADR-0027](0027-polygloss-themes-and-card-layout.md) (Polygloss Light/Dark; Pierre stays bundled and selectable).
 - **Date:** 2026-09-28
 - **Design:** [§11.10 Themes and fonts](../design.md#1110-themes-and-fonts-adr-0024), [§11.11 Syntax highlighting](../design.md#1111-syntax-highlighting)
 
