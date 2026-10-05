@@ -209,15 +209,15 @@ Arrows point from dependency to dependent. `polygloss-diff` is the leaf. `polygl
 
 ## Milestones at a glance
 
-| Milestone                       | Delivers                                                                                                                                           | Tasks      | Exit gate (summary)                                                                    |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------- |
-| M0 Scaffold                     | Workspace, toolchain, profiles, bun scripts, prettier, CI, README                                                                                  | T0.1–T0.3  | All scripts green on empty crates; dependency audit passes                             |
-| M1 Core                         | Git layer, sources, ids, snapshots, hunks, word diff, line mapping, rows, store, domain                                                            | T1.1–T1.16 | Unit + integration + git-parity suites pass; store concurrency tests pass              |
-| M2 Viewport gate                | GPUI window rendering real diffs; virtualization, highlighting, sticky headers, gaps; perf harness                                                 | T2.1–T2.10 | **All §12.1 budgets met on all four corpora**, or fallbacks approved                   |
-| M3 Review UX                    | Tabs, Home, open flow, tree, Viewed, threads, drafts, submit, live, palette, keymap, themes, find, editor, notifications                           | T3.1–T3.17 | GPUI E2E + screenshot suites pass; keyboard-only review flow passes                    |
-| M4 Agent integration            | Socket IPC, single instance, URL scheme, CLI, MCP tools, wait, plugin, JSON CLI, opt-in `claude/channel`                                           | T4.1–T4.13 | bun MCP/CLI/E2E suites pass; manual wake gate W1–W3 recorded                           |
-| M5 Packaging and polish         | cargo-packager, signing/notarization scripts, Sparkle stub, cask, docs, a11y pass, audits                                                          | T5.1–T5.8  | Full E2E on the bundled app; audits; manual wake gate W1–W8; DoD checklist             |
-| M6 Redesign and file categories | Inset titlebar and sidebar navigation, Polygloss themes, file cards and bars, toolbar and header card, configurable file categories, three motions | T6.1–T6.16 | Full suites; every baseline re-recorded and reviewed; budgets incl. sections; DoD (M6) |
+| Milestone                       | Delivers                                                                                                                                         | Tasks      | Exit gate (summary)                                                                    |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------------------------------------- |
+| M0 Scaffold                     | Workspace, toolchain, profiles, bun scripts, prettier, CI, README                                                                                | T0.1–T0.3  | All scripts green on empty crates; dependency audit passes                             |
+| M1 Core                         | Git layer, sources, ids, snapshots, hunks, word diff, line mapping, rows, store, domain                                                          | T1.1–T1.16 | Unit + integration + git-parity suites pass; store concurrency tests pass              |
+| M2 Viewport gate                | GPUI window rendering real diffs; virtualization, highlighting, sticky headers, gaps; perf harness                                               | T2.1–T2.10 | **All §12.1 budgets met on all four corpora**, or fallbacks approved                   |
+| M3 Review UX                    | Tabs, Home, open flow, tree, Viewed, threads, drafts, submit, live, palette, keymap, themes, find, editor, notifications                         | T3.1–T3.17 | GPUI E2E + screenshot suites pass; keyboard-only review flow passes                    |
+| M4 Agent integration            | Socket IPC, single instance, URL scheme, CLI, MCP tools, wait, plugin, JSON CLI, opt-in `claude/channel`                                         | T4.1–T4.13 | bun MCP/CLI/E2E suites pass; manual wake gate W1–W3 recorded                           |
+| M5 Packaging and polish         | cargo-packager, signing/notarization scripts, Sparkle stub, cask, docs, a11y pass, audits                                                        | T5.1–T5.8  | Full E2E on the bundled app; audits; manual wake gate W1–W8; DoD checklist             |
+| M6 Redesign and file categories | Inset titlebar and sidebar navigation, Polygloss themes, file cards and bars, toolbar and header card, configurable file categories, two motions | T6.1–T6.17 | Full suites; every baseline re-recorded and reviewed; budgets incl. sections; DoD (M6) |
 
 ---
 
@@ -2006,44 +2006,47 @@ bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --c
 
 **Goal:** the redesign the user asked for on 2026-10-05: the window, chrome and diff look of the reference ([research](research/redesign-reference.md)), geld-style file categories that are configurable, and a few product-speed motions ([ADR-0026](adr/0026-inset-titlebar-and-sidebar-navigation.md)–[ADR-0029](adr/0029-product-motion.md), design §11). Nothing about identity, the store's contents, the agent loop or the offline rules changes.
 
-**Decisions:** the orchestrator's D1–D13 (2026-10-05) are binding; design §11 and the four ADRs record them. Defaults the decisions left open are design OQ-35–OQ-51 (**Provisional**). Two deviations from the decisions' wording: there were no ⌘-number tab shortcuts and no restore of open tabs across launches before M6; T6.6 adds ⌘1–⌘9 (OQ-35) and M6 adds no cross-launch restore.
+**Decisions:** the orchestrator's D1–D13 (2026-10-05) are binding; design §11 and the four ADRs record them. Defaults the decisions left open are design OQ-35–OQ-53 (**Provisional**). Three deviations from the decisions' wording: there were no ⌘-number tab shortcuts and no restore of open tabs across launches before M6; T6.6 adds ⌘1–⌘9 (OQ-35) and M6 adds no cross-launch restore. D12 allows up to seven motions; two passed the gate (ADR-0029), the toolbar menus' motion among the rejected.
 
 **Out of scope, found while designing:** `diff.renames` and `diff.rename_threshold` are documented (design §18) but not wired (`crates/polygloss-core/src/git/diff_tree.rs:38`). Not M6; reported to the user.
 
-**App module map additions:** `crates/polygloss-app/src/` → `chrome.rs` (T6.3: window options, the shell, top rows, sidebar state), `assets.rs` (T6.3: `AppAssets`, the Lucide icons M6 uses), `motion.rs` (T6.8: durations, easings, `enter_from`, Reduce Motion follow), `home/nav.rs` (T6.3 stub, T6.6), `review_tab/header.rs` (T6.13), `categories/mod.rs` (T6.14), `tree/{footer.rs, panels.rs}` (T6.11, T6.15). Viewport: `card.rs` (T6.5), `document/sections.rs` and `section_band.rs` (T6.10). Core: `categories/` (T6.4), `store/schema-v2.sql` (T6.1).
+**App module map additions:** `crates/polygloss-app/src/` → `chrome.rs` (T6.3: window options, the shell, top rows, sidebar state), `assets.rs` (T6.3: `AppAssets`, the Lucide icons M6 uses), `motion.rs` (T6.8: durations, easings, `enter_from` on the executor clock, Reduce Motion follow), `home/nav.rs` (T6.3 stub, T6.6), `review_tab/header.rs` (T6.13), `categories/mod.rs` (T6.14), `tree/{footer.rs, panels.rs}` (T6.11, T6.15). Viewport: `card.rs` (T6.5), `document/slots.rs` (T6.10), `document/sections.rs` and `section_band.rs` (T6.17). Core: `categories/` (T6.4), `store/schema-v2.sql` (T6.1).
 
 **Rules for every M6 task** (on top of [How to execute this plan](#how-to-execute-this-plan)):
 
-| Rule          | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Baselines     | A task re-records every PNG its change moves (`UPDATE_BASELINE=1 scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'`, then the same without it), opens each changed PNG and describes it in its report. A merge conflict on a PNG is resolved by re-recording that baseline on the merged tree. The gate re-records them all and reviews them against the reference anatomy.                                  |
-| Perf          | Tasks marked **perf** run `bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets` on a quiet machine (`uptime` load average below 4) and report the `--compare-baseline` deltas. No task writes `benches/baseline.json`; the gate does, once.                                                                                                                                                                     |
-| Motion        | Only the three motions of design §11.16, each with Reduce Motion handled and a test. Never use gpui-component `TabBar::segmented`, `Accordion`, `Collapsible`, `Sidebar` or `Checkbox` in new chrome (they bring motion).                                                                                                                                                                                                                |
-| Icons         | Only `AppAssets` icons (T6.3's list); an icon used anywhere else draws nothing. `tests/scripts/app-icons.test.ts` (T6.3) enforces it.                                                                                                                                                                                                                                                                                                    |
-| Shared files  | `features.rs`: T6.8, then T6.14. `keymap/defaults.rs`: T6.6 only (other new actions are palette-only). Workspace `Cargo.toml`: T6.4 only. `docs/user-guide.md`: each task edits only the rows and sections its change touches (the docs tests check the settings and keymap tables). Test module lists (`tests/app/main.rs`, `crates/polygloss-app/tests/e2e/main.rs`, `tests/viewport/main.rs`): append only; a merge keeps both lines. |
-| Selectors     | Keep every debug selector existing tests use unless the card renames it; `tab-bar` is removed by T6.3.                                                                                                                                                                                                                                                                                                                                   |
-| Agent surface | Any MCP or CLI change updates [`docs/agents.md`](agents.md) and has a bun test.                                                                                                                                                                                                                                                                                                                                                          |
+| Rule          | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Baselines     | A task re-records every PNG its change moves (`UPDATE_BASELINE=1 scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'`, then the same without it), opens each changed PNG and describes it in its report. A merge conflict on a PNG is resolved by re-recording that baseline on the merged tree. After every merge of a wave, the merger runs the E2E binary on the merged tree and re-records and reviews each baseline that now fails (a sibling's change moves pixels without a git conflict). The gate re-records them all and reviews them against the reference anatomy. |
+| Dark          | New chrome gets a dark baseline next to its light one where the card lists it; the gate reviews both.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Perf          | Tasks marked **perf** run `bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets` on a quiet machine (`uptime` load average below 4) and report the `--compare-baseline` deltas and both scroll p95s. `--compare-baseline` flags a frame-bound metric only when it is 10% **and** 8.3 ms worse, so it cannot catch a 0.7 → 2 ms scroll regression; the scroll p95s must stay ≤ 2.1 ms (a quarter of the budget), read from the results. No task writes `benches/baseline.json`; the gate does, once.                                                                              |
+| Timing tests  | A test asserting wall-clock time (`…_under_Nms`) asserts only when `sysctl -n vm.loadavg` reports a one-minute load below 4; otherwise it prints the time and passes.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Motion        | Only the two motions of design §11.16, built on `motion::enter_from` (gpui-base's executor clock, never `with_animation`), each with Reduce Motion handled. Tests step the clock with `advance_clock`: the first frame shows the full travel with opacity below 1, a frame after half the duration lies strictly between, a frame after the whole duration is settled; keyboard-opened and Reduce Motion cases are settled on the first frame. Never use gpui-component `TabBar::segmented`, `Accordion`, `Collapsible`, `Sidebar` or `Checkbox` in new chrome (they bring motion).                      |
+| Icons         | Only `AppAssets` icons (T6.3's list); an icon used anywhere else draws nothing, silently. `tests/scripts/app-icons.test.ts` (T6.3, extended by T6.14) checks every `IconName::X` in app src, every `"icons/<name>.svg"` literal in app and viewport src, and every category icon (the core catalog and the custom-icon allow-list).                                                                                                                                                                                                                                                                      |
+| Shared files  | `features.rs`: T6.8, then T6.14. `keymap/defaults.rs`: T6.6 only (other new actions are palette-only). `viewed/mod.rs`: T6.8 (progress only), then T6.15. `assets.rs`: T6.3; later tasks add an icon only where their card says so. Workspace `Cargo.toml`: T6.4 only. `docs/user-guide.md`: each task edits only the rows and sections its change touches (the docs tests check the settings and keymap tables). Test module lists (`tests/app/main.rs`, `crates/polygloss-app/tests/e2e/main.rs`, `tests/viewport/main.rs`): append only; a merge keeps both lines.                                    |
+| Selectors     | Keep every debug selector existing tests use unless the card renames it; `tab-bar` is removed by T6.3; the Live pill keeps `live-base`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Agent surface | Any MCP or CLI change updates [`docs/agents.md`](agents.md) and has a bun test.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-**Waves:** W1 = T6.1 ∥ T6.2 ∥ T6.3. W2 = T6.4 ∥ T6.5 ∥ T6.6. W3 = T6.7 ∥ T6.8 ∥ T6.9. W4 = T6.10 ∥ T6.11 ∥ T6.12. W5 = T6.13 ∥ T6.14. W6 = T6.15. W7 = T6.16.
+**Waves:** W1 = T6.1 ∥ T6.2 ∥ T6.3. W2 = T6.4 ∥ T6.5 ∥ T6.6. W3 = T6.7 ∥ T6.8 ∥ T6.9. W4 = T6.10 ∥ T6.11 ∥ T6.12. W5 = T6.17 ∥ T6.13. W6 = T6.14. W7 = T6.15. W8 = T6.16. (T6.17 was split out of T6.10 in review; its number is out of order.)
 
-| Wave | Task  | Owns (beyond its tests)                                                                                                               |
-| ---- | ----- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| W1   | T6.1  | `polygloss-diff` `FileChange`; core `git/attrs.rs`, `store/`, `review/models.rs`; `FileChange` literals                               |
-| W1   | T6.2  | `assets/themes/polygloss-*`; highlight `theme.rs`; app `theme/`, settings theme defaults; viewport `ViewportTheme`, code font         |
-| W1   | T6.3  | app `window.rs`, `chrome.rs`, `assets.rs`, `startup.rs`, `review_tab/{mod,panes,toolbar}.rs`, `home/{mod,nav}.rs`, `keyboard/`        |
-| W2   | T6.4  | core `categories/`, `settings.rs`; workspace `Cargo.toml`; `NOTICE`; third-party notices                                              |
-| W2   | T6.5  | viewport document, paint, element, view, blocks, cursor; app `view_state/`, `live/refresh.rs`, perf geometry sites                    |
-| W2   | T6.6  | app `home/`, `keymap/`, `window.rs` menus, `chrome.rs` actions                                                                        |
-| W3   | T6.7  | viewport header, rows, gutter, gap, text cache, `DiffStyle`; app settings indicator default                                           |
-| W3   | T6.8  | app `review_tab/toolbar.rs`, `features.rs`, `motion.rs`, palette, the features' toolbar items                                         |
-| W3   | T6.9  | `polygloss-mcp` `api/`, `polygloss-cli` commands and `debug`; `docs/agents.md`                                                        |
-| W4   | T6.10 | viewport document order, sections, pipeline, cursor, band; perf `sections` scenario, budgets                                          |
-| W4   | T6.11 | app `tree/{mod,row,filters,footer}.rs`                                                                                                |
-| W4   | T6.12 | app `review_tab/{mod,panes}.rs`, `threads/panel.rs`, `view_state/`; core `ViewState`                                                  |
-| W5   | T6.13 | app `review_tab/{header,banners,mod}.rs`, `live/mod.rs`, `iterations/mod.rs`; core `git/listing.rs`                                   |
-| W5   | T6.14 | app `categories/`, settings, `features.rs`, `provider.rs`, `view_state/`, `keymap/actions.rs`, `ipc/debug_state.rs`; core `ViewState` |
-| W6   | T6.15 | app `tree/`, `review_tab/header.rs`, `find/mod.rs`, `threads/placement.rs`                                                            |
-| W7   | T6.16 | any file, for visual fixes; every baseline; `docs/user-guide.md`                                                                      |
+| Wave | Task  | Owns (beyond its tests)                                                                                                                                                   |
+| ---- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W1   | T6.1  | `polygloss-diff` `FileChange`; core `git/attrs.rs`, `store/`, `review/models.rs`; `FileChange` literals                                                                   |
+| W1   | T6.2  | `assets/themes/polygloss-*`; highlight `theme.rs`; app `theme/`, settings theme defaults; viewport `ViewportTheme`, `gap.rs` (the `canvas` rename), code font             |
+| W1   | T6.3  | app `window.rs`, `chrome.rs`, `assets.rs`, `startup.rs`, `review_tab/{mod,panes,toolbar}.rs`, `home/{mod,nav}.rs`, `keyboard/`, `tree/{mod,finder}.rs` (show Files first) |
+| W2   | T6.4  | core `categories/`, `settings.rs`; workspace `Cargo.toml`; `NOTICE`; third-party notices                                                                                  |
+| W2   | T6.5  | viewport document, paint, element, view, blocks, cursor; app `view_state/`, `live/refresh.rs`, `tree/mod.rs` (two geometry sites), perf geometry sites                    |
+| W2   | T6.6  | app `home/`, `keymap/`, `window.rs` menus, `chrome.rs` actions                                                                                                            |
+| W3   | T6.7  | viewport header, file flags, rows, gutter, gap, text cache, `DiffStyle`; app settings indicator default                                                                   |
+| W3   | T6.8  | app `review_tab/toolbar.rs`, `features.rs`, `motion.rs`, palette, the features' toolbar items                                                                             |
+| W3   | T6.9  | `polygloss-mcp` `api/`, `polygloss-cli` commands and `debug`; `docs/agents.md`                                                                                            |
+| W4   | T6.10 | viewport document order and slots, hidden files, pipeline, cursor, blocks, paint                                                                                          |
+| W4   | T6.11 | app `tree/{mod,row,filters,footer}.rs`                                                                                                                                    |
+| W4   | T6.12 | app `review_tab/{mod,panes}.rs`, `threads/panel.rs`, `view_state/`; core `ViewState`                                                                                      |
+| W5   | T6.17 | viewport sections, band, `cursor.rs` and `gap.rs` (explicit targets), view, controls, paint; perf `sections` scenario, budgets                                            |
+| W5   | T6.13 | app `review_tab/{header,banners,mod}.rs`, `live/mod.rs`, `iterations/mod.rs`; core `git/listing.rs`                                                                       |
+| W6   | T6.14 | app `categories/`, settings, `features.rs`, `provider.rs`, `view_state/`, `keymap/actions.rs`, `ipc/debug_state.rs`; core `ViewState`; `app-icons.test.ts`                |
+| W7   | T6.15 | app `tree/`, `review_tab/header.rs`, `find/mod.rs`, `threads/{placement,mod}.rs`, `viewed/mod.rs`                                                                         |
+| W8   | T6.16 | any file, for visual fixes; every baseline; `docs/user-guide.md`                                                                                                          |
 
 Files touched by tasks of different waves (for example `features.rs`, core `ViewState`, `tests/app/shell.rs`) are edited in wave order; no two tasks of one wave share a file.
 
@@ -2098,7 +2101,7 @@ Then the standard completion block.
 **Files**
 
 - Create: `assets/themes/polygloss-light.json`, `assets/themes/polygloss-dark.json`
-- Modify: `crates/polygloss-highlight/src/theme.rs`; `crates/polygloss-app/src/theme/{mod.rs, registry.rs, zed_to_kit.rs, viewport_theme.rs}`; `crates/polygloss-app/src/settings/model.rs` (the two theme defaults only); `crates/polygloss-viewport/src/style.rs` (`ViewportTheme` only), `src/kit.rs`, `src/view.rs` (the code-font fallback only); `docs/user-guide.md` (`theme.light`, `theme.dark` rows; "Themes and fonts")
+- Modify: `crates/polygloss-highlight/src/theme.rs`; `crates/polygloss-app/src/theme/{mod.rs, registry.rs, zed_to_kit.rs, viewport_theme.rs}`; `crates/polygloss-app/src/settings/model.rs` (the two theme defaults only); `crates/polygloss-viewport/src/style.rs` (`ViewportTheme` only), `src/gap.rs` (its one `gap_background` read becomes `canvas`), `src/kit.rs`, `src/view.rs` (the code-font fallback only); `docs/user-guide.md` (`theme.light`, `theme.dark` rows; "Themes and fonts")
 - Test: `crates/polygloss-highlight/tests/highlight/theme.rs`, `crates/polygloss-viewport/tests/viewport/{main.rs, theme.rs}` (new module), `crates/polygloss-app/tests/app/{theme.rs, settings.rs}`, `crates/polygloss-app/tests/e2e/theme.rs`
 
 **Interfaces**
@@ -2129,7 +2132,7 @@ pub const SYSTEM_MONO_ALIASES: &[&str] = &["SF Mono", "System Mono"]; // resolve
 - [ ] Viewport theme fields with fallbacks; kit mapping and radii; settings defaults; font alias and fallback.
 - [ ] Add the two theme screenshots; re-record every baseline that uses the default theme.
 
-**Tests:** highlight `polygloss_themes_parse_with_pierres_key_set`, `default_theme_is_polygloss_per_appearance`; viewport `viewport_theme_reads_polygloss_keys`, `viewport_theme_derives_polygloss_keys_for_pierre_and_a_minimal_theme`, `sf_mono_alias_resolves_to_the_system_mono_family`, `missing_code_font_falls_back_to_system_mono`; app `polygloss_light_maps_every_required_kit_token`, `polygloss_dark_maps_every_required_kit_token`, `unknown_theme_name_falls_back_to_polygloss`, `builtin_themes_meet_contrast` (WCAG relative luminance computed in the test: `text` on `background`, cards and sidebar ≥ 4.5:1; every syntax color on `editor.background` ≥ 3.5:1), `settings_defaults_match_design_table` (updated); screenshots `e2e_theme_polygloss_light_split`, `e2e_theme_polygloss_dark_unified` (new baselines), `e2e_theme_pierre_*` unchanged apart from chrome moved by other tasks.
+**Tests:** highlight `polygloss_themes_parse_with_pierres_key_set`, `default_theme_is_polygloss_per_appearance`; viewport `viewport_theme_reads_polygloss_keys`, `viewport_theme_derives_polygloss_keys_for_pierre_and_a_minimal_theme`, `sf_mono_alias_resolves_to_the_system_mono_family`, `missing_code_font_falls_back_to_system_mono`; app `polygloss_light_maps_every_required_kit_token`, `polygloss_dark_maps_every_required_kit_token`, `unknown_theme_name_falls_back_to_polygloss`, `polygloss_themes_meet_contrast` (Polygloss Light and Dark only: Pierre is a published port this card does not change and has syntax colors near 2.1:1; WCAG relative luminance computed in the test: `text` on `background`, cards and sidebar ≥ 4.5:1; every syntax color on `editor.background` ≥ 3.5:1), `settings_defaults_match_design_table` (updated); screenshots `e2e_theme_polygloss_light_split`, `e2e_theme_polygloss_dark_unified` (new baselines), `e2e_theme_pierre_*` unchanged apart from chrome moved by other tasks.
 
 **Acceptance:** fresh settings show Polygloss following the system appearance; Pierre Light/Dark still load by name; a Zed theme without `polygloss.*` keys renders with derived colors.
 
@@ -2167,6 +2170,8 @@ impl Chrome {
     pub fn sidebar_visible(&self) -> bool; pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>);
 }
 pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions; // transparent titlebar, the light position, app_owns_titlebar_drag, Opaque, tabbing_identifier None, min 720×480
+pub const THREADS_MAIN_MIN_WIDTH: f32 = 480.0; // viewport 260 + threads panel 220
+pub fn sidebar_max(window_width: f32, threads_shown: bool) -> f32; // window − MAIN_MIN_WIDTH (or THREADS_MAIN_MIN_WIDTH), within SIDEBAR_RANGE
 pub fn shell(sidebar: AnyElement, main: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement; // debug "sidebar", "main-column"
 pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -> AnyElement; // debug "sidebar-top-row", "segment-files", "segment-reviews", "toggle-sidebar"
 pub fn toolbar_row(id: &'static str, left: Vec<AnyElement>, right: Vec<AnyElement>, window: &mut Window, cx: &mut App) -> AnyElement; // drag + double-click zoom; clusters stop mouse-down; while the sidebar is hidden: the traffic-light inset (none in fullscreen) and a "show-sidebar" button
@@ -2174,7 +2179,7 @@ pub fn show_files(window: &mut Window, cx: &mut App); // sidebar visible, segmen
 // assets.rs
 gpui_kit::assets::icon_assets!(pub AppIcons, [ListTree, RotateCcwClock, PanelLeft, PanelLeftOpen, GitBranch, GitCommitHorizontal,
     GitCompare, CircleDot, MessageSquare, MessageSquareDot, Columns2, Rows2, SlidersHorizontal, SquareArrowOutUpRight, Square,
-    SquareCheck, Circle, CircleCheck, CircleDashed, Camera, FlaskConical, FileCog, Package, BookOpen, Wrench, Layers, Languages,
+    SquareCheck, Circle, CircleCheck, CircleMinus, Camera, FlaskConical, FileCog, Package, BookOpen, Wrench, Layers, Languages,
     Tag, FileSymlink, Binary, HardDrive, FolderGit, Dot]);
 pub struct AppAssets; // AppIcons first, then gpui_kit::assets::Assets
 // home/nav.rs (stub; T6.6 completes it)
@@ -2183,6 +2188,7 @@ pub fn render_nav(window: &mut Window, cx: &mut App) -> AnyElement; // a Home ro
 
 - `MainWindow::render` draws only the active item at full size: no `TitleBar`, no `TabBar`; key context `Window`, its actions and the `Tabs` API are unchanged. The window title follows the active item (`window.set_window_title`).
 - The review page renders `shell(sidebar, main)`: sidebar = `sidebar_top_row` + (Files: the find pane or the tree pane, as today; Reviews: `render_nav`); main = `toolbar_row("review-toolbar", …)` + banner strip + `h_resizable("review-body")` viewport | threads (still visible by default; T6.12 flips it). The outer split's state is the window's `Chrome::shell`; the inner one stays per tab. Home renders the same shell with `toolbar_row("home-toolbar", …)`, Reviews forced and Files disabled.
+- The sidebar gives way first (design §11.1): the shell clamps its width to `sidebar_max` for the active tab's threads panel state, without changing the stored width.
 - `keyboard::stops` lists the tree only while the sidebar shows Files; `tab::Find`, `tree::FocusFilter`, `window::FileFinder` and cycling into the tree call `show_files` first.
 - `support::screenshot::headless_app_with_assets` composes `AppAssets` and sets reduced motion for every capture.
 
@@ -2194,7 +2200,7 @@ pub fn render_nav(window: &mut Window, cx: &mut App) -> AnyElement; // a Home ro
 - [ ] `assets.rs`, registration in `startup.rs` and the screenshot harness; `app-icons.test.ts`.
 - [ ] Re-record the baselines. Then run the dev app once (`tmux` session `polygloss-m6-chrome`, `scripts/cargo.sh build -p polygloss-app` then `target/debug/Polygloss` with a sandboxed `HOME`) and record the traffic lights' position, drag, double-click zoom, fullscreen and the hidden sidebar in the As-built note.
 
-**Tests:** app `window_options_inset_the_traffic_lights`, `top_rows_share_the_top_edge_and_height` (`sidebar-top-row` and `review-toolbar` at y 0, both 52 pt), `sidebar_spans_the_window_height`, `banner_strip_sits_between_the_toolbar_and_the_viewport`, `no_tab_bar_is_painted`, `segment_control_sits_right_of_the_traffic_light_inset`, `hidden_sidebar_insets_the_toolbar_and_shows_the_open_button`, `sidebar_width_is_shared_by_every_review`, `pane_cycle_skips_the_tree_unless_files_shows`, `find_filter_and_finder_show_the_files_segment_first`, `nav_stub_lists_open_reviews_and_closes_like_cmd_w`, `home_renders_in_the_shell_with_files_disabled`, `every_app_icon_loads_from_app_assets`; kept unchanged: `home_is_first_tab`, `close_tab_cmd_w`, `next_prev_tab_shortcuts`, `opening_same_review_twice_focuses_existing_tab`, `banner_strip_never_changes_viewport_anchor`, `toolbar_and_banner_buttons_reach_the_tab_without_focus`; bun `every IconName the app uses is registered` (`app-icons.test.ts`: each `IconName::X` in `crates/polygloss-app/src` is in `AppIcons` or gpui-kit-assets' `default-icons.txt`); E2E `e2e_shell_review_tab` (re-recorded), `keyboard_only_review` passes.
+**Tests:** app `window_options_inset_the_traffic_lights`, `top_rows_share_the_top_edge_and_height` (`sidebar-top-row` and `review-toolbar` at y 0, both 52 pt), `sidebar_spans_the_window_height`, `banner_strip_sits_between_the_toolbar_and_the_viewport`, `no_tab_bar_is_painted`, `segment_control_sits_right_of_the_traffic_light_inset`, `hidden_sidebar_insets_the_toolbar_and_shows_the_open_button`, `sidebar_width_is_shared_by_every_review`, `sidebar_gives_way_to_the_main_column_minimum` (720 pt window, sidebar set to 480: 400 pt; threads panel shown: 240 pt; widening the window restores 480), `pane_cycle_skips_the_tree_unless_files_shows`, `find_filter_and_finder_show_the_files_segment_first`, `nav_stub_lists_open_reviews_and_closes_like_cmd_w`, `home_renders_in_the_shell_with_files_disabled`, `every_app_icon_loads_from_app_assets`; kept unchanged: `home_is_first_tab`, `close_tab_cmd_w`, `next_prev_tab_shortcuts`, `opening_same_review_twice_focuses_existing_tab`, `banner_strip_never_changes_viewport_anchor`, `toolbar_and_banner_buttons_reach_the_tab_without_focus`; bun `every icon the app and viewport use is registered` (`app-icons.test.ts`: each `IconName::X` in `crates/polygloss-app/src` and each `"icons/<name>.svg"` literal in `crates/polygloss-app/src` and `crates/polygloss-viewport/src` is in `AppIcons` or gpui-kit-assets' `default-icons.txt`; a planted unregistered name in a temp copy fails it); E2E `e2e_shell_review_tab` (re-recorded), `keyboard_only_review` passes.
 
 **Acceptance:** no tab row; the traffic lights sit in the sidebar's top row; either top row drags the window and zooms on double-click, buttons never do; every tab behavior and test of ADR-0023 holds.
 
@@ -2223,16 +2229,21 @@ Then the standard completion block.
 pub enum BuiltinCategory { Tests, Generated, Vendored, Agents, Docs, Tooling, Stories } // match order
 pub enum CategoryId { Builtin(BuiltinCategory), Custom(String) } // Display and serde: "tests", "custom:tokens"
 pub struct PatternGroup { pub key: &'static str, pub title: &'static str, pub patterns: &'static [&'static str] }
-pub struct BuiltinDef { pub id: BuiltinCategory, pub key: &'static str, pub title: &'static str, pub noun: &'static str,
-    pub noun_plural: &'static str, pub chip: &'static str /* "tests" */, pub icon: &'static str, pub default_enabled: bool,
-    pub default_disabled_groups: &'static [&'static str], pub groups: &'static [PatternGroup] }
+pub struct BuiltinDef { pub id: BuiltinCategory, pub key: &'static str, pub title: &'static str, pub noun: &'static str /* "test file" */,
+    pub noun_plural: &'static str, pub chip: &'static str /* "test" */, pub chip_plural: &'static str /* "tests" */, pub icon: &'static str,
+    pub default_enabled: bool, pub default_disabled_groups: &'static [&'static str], pub groups: &'static [PatternGroup] }
 pub static BUILTINS: [BuiltinDef; 7];
 pub struct CategorySettings { pub enabled: bool, pub disabled_groups: Vec<String>, pub patterns: Vec<String> } // keys left out take the category's defaults
 pub struct CustomCategory { pub id: String, pub name: String, #[serde(default)] pub icon: String, #[serde(default)] pub patterns: Vec<String>, #[serde(default = "enabled")] pub enabled: bool }
 #[serde(default)] pub struct CategoriesConfig { pub tests: CategorySettings, pub generated: CategorySettings, pub vendored: CategorySettings,
     pub agents: CategorySettings, pub docs: CategorySettings, pub tooling: CategorySettings, pub stories: CategorySettings, pub custom: Vec<CustomCategory> }
 // Default: design §11.15 (tests and generated on; generated.disabled_groups = ["build-output"])
-pub struct CategoryInfo { pub id: CategoryId, pub title: String, pub noun: String, pub noun_plural: String, pub chip: String, pub icon: String }
+pub struct CategoryInfo { pub id: CategoryId, pub title: String, pub icon: String, /* nouns: the BuiltinDef's; none for custom */ }
+impl CategoryInfo {
+    pub fn label(&self, files: usize) -> String; // "1 test file", "12 test files"; custom "Design tokens · 1 file", "… · 12 files"
+    pub fn chip(&self, files: usize) -> String;  // "1 test", "6 tests", "2 generated"; custom "12 design tokens"
+}
+pub const CUSTOM_ICONS: &[&str]; // design §11.15's allow-list
 pub enum Source { BuiltIn { group: &'static str }, Extra, Custom, Attribute }
 pub struct Verdict { pub category: CategoryId, pub pattern: String, pub source: Source }
 pub enum Explain { Matched(Verdict), Uncategorized { rescued_by: Vec<(CategoryId, String)> } }
@@ -2246,16 +2257,21 @@ impl Categorizer {
     pub fn is_generated(&self, path: &str, attr: GeneratedAttr, stored_generated: bool) -> bool;
     pub fn explain(&self, path: &str, attr: GeneratedAttr, stored_generated: bool) -> Explain;
     pub fn categorize_files(&self, files: &[FileChange]) -> Vec<Option<CategoryId>>; // by display_path, index = position
+    pub fn warnings(&self) -> &[String]; // dropped legacy patterns, unknown custom icons; logged once by callers
 }
 pub fn unknown_groups(cfg: &CategoriesConfig) -> Vec<String>; // logged by callers, never errors
+pub fn unknown_keys(cfg: &CategoriesConfig) -> Vec<String>;   // keys in `categories` or a category object that mean nothing (`#[serde(flatten)]` maps); logged, never errors
 // polygloss_core::settings
 pub fn categories_config(paths: &DataPaths) -> LenientCategories;
 pub fn categories_config_in(text: &str) -> LenientCategories;
 pub struct LenientCategories { pub config: CategoriesConfig, pub legacy_generated: Vec<String>, pub warning: Option<String> } // invalid → defaults + warning
 ```
 
-- Semantics: design §11.15 exactly (pattern forms, order, rescues, Generated, validation, the 500-pattern cap). A category object with keys left out keeps that category's defaults for them (deserialize optional fields and merge them over the `BuiltinDef` defaults; a plain `#[serde(default)]` would reset `generated.disabled_groups` to `[]`). Normalize each pattern, then compile with `globset::GlobBuilder` (`literal_separator(true)`, `backslash_escape(true)`): no slash → `**/p`; a trailing slash → `**/p` and `**/p/**` (`p` and `p/**` with a leading slash); an inner slash → as written; a leading `/` dropped after anchoring.
-- Catalog: port geld at `5b8ce0e470fcd2b2538da6c700d7d96197f57de3` (`gh api repos/brandonmcconnell/geld/contents/packages/core/src/categories.ts?ref=<sha> --jq .content | base64 -d`, and `test-patterns.ts`, `LICENSE`) as `&'static` data with a header comment naming the commit and license. Only change: `dist/`, `build/`, `out/` move into a new Generated group `build-output`. Leave out geld's change-kind categories (trivial, large).
+- Semantics: design §11.15 exactly (pattern forms, order, the attribute table, rescues, Generated, validation, the 500-pattern cap). A category object with keys left out keeps that category's defaults for them (deserialize optional fields and merge them over the `BuiltinDef` defaults; a plain `#[serde(default)]` would reset `generated.disabled_groups` to `[]`). Expand braces first (geld's `expandBraces`; more than 64 alternatives is a `Pattern` error), then normalize each alternative and compile it with `globset::GlobBuilder` (`literal_separator(true)`, `backslash_escape(true)`): no slash → `**/p`; a trailing slash → `**/p` and `**/p/**` (`p` and `p/**` with a leading slash), so a file of that name matches too, as geld's tests pin; an inner slash → as written; a leading `/` dropped after anchoring.
+- Attribute: `Set` is checked right after the custom categories (when Generated is enabled) and ignores Generated's rescues; `Unset` skips both Generated steps; `Unknown` adds the stored bit as one more Generated match at Generated's place, under its rescues (design §11.15 table).
+- Legacy `diff.generated_patterns` (the `legacy_generated` argument) use the same syntax, `!` lines being Generated rescues; one that does not compile is dropped into `warnings()`, never an error. A custom `icon` left out is `tag` silently; an unknown one is `tag` plus one warning.
+- Catalog: port geld at `5b8ce0e470fcd2b2538da6c700d7d96197f57de3` (`gh api repos/brandonmcconnell/geld/contents/packages/core/src/categories.ts?ref=<sha> --jq .content | base64 -d`, and `test-patterns.ts`, `LICENSE`) as `&'static` data with a header comment naming the commit and license, nouns included. Only change: `dist/`, `build/`, `out/` move into a new Generated group `build-output`. Leave out geld's change-kind categories (trivial, large).
+- Oracle: geld's own `glob.test.ts` and `matcher.test.ts` at that commit (MIT, already credited), ported as path → verdict tables; the cases that do not apply are listed in the test file's header ([research: geld](research/redesign-reference.md#geld)).
 
 **Steps**
 
@@ -2263,7 +2279,7 @@ pub struct LenientCategories { pub config: CategoriesConfig, pub legacy_generate
 - [ ] `config.rs` (serde, defaults, validation), `catalog.rs` (the port), `matcher.rs`, `mod.rs`.
 - [ ] The lenient reader; `NOTICE` and the notices script; `globset` in the workspace; library-choices row.
 
-**Tests:** `no_slash_matches_the_name_at_any_depth`, `trailing_slash_matches_the_directory_at_any_depth`, `inner_and_leading_slash_anchor_at_the_root`, `single_star_stays_in_a_segment_double_star_spans`, `braces_nest_and_classes_match`, `rescue_skips_only_its_category` (`tests/fixtures/x.json` with `!tests/fixtures/` in tests and stories on → Stories), `custom_categories_match_before_builtins`, `linguist_generated_set_wins_after_custom`, `unset_attribute_is_never_generated`, `unknown_attribute_uses_the_stored_bit_or_patterns`, `disabled_categories_and_groups_are_skipped`, `build_output_is_off_by_default`, `legacy_generated_patterns_extend_generated`, `is_generated_ignores_the_enabled_flag`, `explain_names_group_pattern_and_rescue`, `invalid_patterns_and_custom_ids_are_errors`, `partial_category_objects_keep_their_defaults`, `defaults_match_design_11_15` (table-driven from the design table), `catalog_classifies_geld_examples` (paths from geld's README table), `escaped_non_utf8_paths_never_panic`, `categories_config_in_falls_back_to_defaults_with_a_warning`, `categorizing_13k_paths_with_every_category_on_takes_under_250ms` (debug build); bun `third-party notices credit the geld catalog`.
+**Tests** (expected categories and flags written by hand; the attribute tests assert `categorize()` **and** `is_generated()`): `no_slash_matches_the_name_at_any_depth`, `trailing_slash_matches_the_directory_at_any_depth_and_a_file_of_that_name` (`test/` matches `a/test/x.rs` and `bin/test`, not `a/tests/x.rs`), `inner_and_leading_slash_anchor_at_the_root`, `single_star_stays_in_a_segment_double_star_spans`, `braces_nest_and_classes_match`, `braces_expand_before_the_slash_rules` (`{generated/,*.pb.ts}` matches `a/generated/x.ts` and `b/c.pb.ts`), `more_than_64_alternatives_is_an_error`, `rescue_skips_only_its_category` (`tests/fixtures/x.json` with `!tests/fixtures/` in tests and stories on → Stories), `custom_categories_match_before_builtins`, `linguist_generated_set_wins_after_custom` (`src/a.test.ts` Set → Generated; with a custom `src/` category → that one; both generated), `set_attribute_ignores_generated_rescues` (`x.pb.go` Set with `!x.pb.go` → Generated, generated), `disabled_generated_lets_a_set_file_fall_through` (`a.test.ts` Set, Generated off → Tests, still generated), `unset_attribute_is_never_generated` (`Cargo.lock` Unset → uncategorized, not generated; `docs/Cargo.lock` Unset with docs on → Docs, not generated), `unknown_attribute_uses_the_stored_bit_or_patterns` (`a.test.ts` Unknown + bit → Tests, generated; `gen.txt` Unknown + bit → Generated; `gen.txt` Unknown + bit with `!gen.txt` → uncategorized, not generated; `Cargo.lock` Unknown without bit → Generated by pattern), `disabled_categories_and_groups_are_skipped`, `build_output_is_off_by_default`, `legacy_generated_patterns_extend_generated`, `legacy_bang_lines_are_generated_rescues`, `invalid_legacy_patterns_are_dropped_with_a_warning` (`["[abc", "*.out"]`: builds, `*.out` applies, one warning), `is_generated_ignores_the_enabled_flag`, `explain_names_group_pattern_and_rescue`, `invalid_patterns_and_custom_ids_are_errors`, `too_many_patterns_is_an_error` (501 in one category; 500 builds), `unknown_custom_icon_falls_back_to_tag` (absent → `tag`, no warning; `"sparkles"` → `tag`, one warning), `unknown_keys_are_reported` (`"test": {…}` and `"tests": {"enable": false}`), `partial_category_objects_keep_their_defaults`, `labels_and_chips_use_singular_and_plural` ("1 test file", "12 test files", "1 test", "6 tests", "2 generated", "Design tokens · 1 file", "12 design tokens"), `defaults_match_design_11_15` (table-driven from the design table), `geld_glob_and_matcher_vectors` (the ported oracle), `catalog_group_counts_match_geld_at_5b8ce0e` (per-group counts written as literals from the research page; the catalog header names the SHA), `escaped_non_utf8_paths_never_panic`, `categories_config_in_falls_back_to_defaults_with_a_warning`, `categorizing_13k_paths_with_every_category_on_takes_under_250ms` (debug build; timing-test rule); bun `third-party notices credit the geld catalog`.
 
 **Acceptance:** pure (no git, IO or GPUI); `scripts/check-deps.sh` and `cargo deny` pass; `NOTICE` credits geld.
 
@@ -2283,8 +2299,9 @@ Then the standard completion block.
 **Files**
 
 - Create: `crates/polygloss-viewport/src/card.rs`, test `crates/polygloss-viewport/tests/viewport/cards.rs`
-- Modify: `crates/polygloss-viewport/src/{lib.rs, document/mod.rs, document/file_state.rs, document/metrics.rs, paint_rows.rs, element.rs, view.rs, blocks.rs, cursor.rs, header.rs (geometry only), debug.rs}`; `crates/polygloss-app/src/{view_state/mod.rs, live/refresh.rs, perf/comment_roundtrip.rs}`; `crates/polygloss-perf/src/scenarios/blocks.rs`
-- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, document.rs, headers_gaps.rs, blocks.rs, cursor.rs}`, `crates/polygloss-app/tests/app/{view_state.rs, live.rs}`; baselines: `e2e-viewport-*.png` and every review page
+- Modify: `crates/polygloss-viewport/src/{lib.rs, document/mod.rs, document/anchor.rs, document/file_state.rs, document/metrics.rs, paint_rows.rs, element.rs, view.rs, blocks.rs, cursor.rs, header.rs (geometry only), debug.rs}`; `crates/polygloss-app/src/{view_state/mod.rs, live/refresh.rs, perf/comment_roundtrip.rs, tree/mod.rs (the two geometry sites only)}`; `crates/polygloss-perf/src/scenarios/blocks.rs`
+- Create: `crates/polygloss-viewport/tests/viewport/fixtures/flat-layout-v1.txt` (step 1)
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, document.rs, headers_gaps.rs, blocks.rs, cursor.rs}`, `crates/polygloss-app/tests/app/{view_state.rs, live.rs, tree.rs}`; baselines: `e2e-viewport-*.png` and every review page
 
 **Interfaces**
 
@@ -2298,30 +2315,34 @@ impl Document {
     pub fn top_line(&self) -> Option<(u32, Side, u32)>; // the first line below the (pinned) header; was app view_state's top_line and live refresh's
 }
 impl DiffViewport { pub fn set_prelude(&mut self, render: Option<RenderBlock>, cx: &mut Context<Self>); } // debug "prelude"
+pub enum RowKey { Lead /* new: the top of the file's lead, the canvas above its card */, Header, Line { .. }, Gap(..), Block(..), Placeholder }
+// ScrollAnchor::default() = (0, Lead, 0): the top of the document
 ```
 
-- Heights: expanded `lead + header + body + pad_bottom` (pad only with a non-empty body); collapsed `lead + header`; plus `gap` below the last card. `key_offset(Header) = lead`; a point in the lead is `(Header, negative offset)`, which `rebase` already accepts.
-- Every `file_top + header_height` site uses the helpers: `paint_rows.rs`, `cursor.rs` (top row, reveal), `blocks.rs` (measure), `header.rs`, `document/mod.rs` (`scroll_to_anchor`, pending), app `view_state` and `live/refresh`, `perf/comment_roundtrip.rs`, polygloss-perf `scenarios/blocks.rs`.
+- Heights: expanded `lead + header + body + pad_bottom` (pad only with a non-empty body); collapsed `lead + header`; plus `gap` below the last card. `lead` is `gap` for every file but the first; the first file's lead is the prelude plus `gap` when a prelude is set, else 0 (the banner strip above the viewport is the canvas there, design §11.6).
+- Anchoring: `key_offset(Lead) = 0`, `key_offset(Header) = lead`; `anchor_at` returns `(Lead, y)` for a point in the lead. The default anchor `(0, Lead, 0)` is the top of the document, so a fresh document shows the prelude, and a prelude that is set late or grows (the commit list) leaves `scroll_top` at 0 instead of pushing the card off the top. View state never stores `Lead` (`top_line` reports the first line below the pinned header, as before).
+- Every `file_top + header_height` site uses the helpers: `paint_rows.rs`, `cursor.rs` (top row, reveal), `blocks.rs` (measure), `header.rs`, `document/mod.rs` (`scroll_to_anchor`, pending), app `view_state` and `live/refresh`, app `tree/mod.rs` (`jump`'s `landed` and `on_screen` compare `header_top`, not `file_top`), `perf/comment_roundtrip.rs`, polygloss-perf `scenarios/blocks.rs`.
 - Horizontal: `inner` = bounds inset by `margin_x + border`; `fit_width`, wrap, block columns and selection use `inner.width`; the hitbox and content mask stay on the outer bounds.
 - Paint: a cards layer before the row layers (the canvas, then one rounded quad per visible card in `card_background` with a `card_border` border, clamped to the viewport ± radius + 2). `RoundedQuad.radius` becomes `Corners<Pixels>`. Sticky header on cards: `y = min(0, card_bottom − pad − header)`; in place it takes the card's top corners; pinned it is square, flush at 0, spans the card and has a bottom border.
 - The prelude is a host element measured like a block at the card width and placed in the first file's lead; it scrolls with the diff.
 
 **Steps**
 
+- [ ] Before any change, write the debug output (`debug.rs` rows and headers) of the fixture documents `flat_layout_without_cards_paints_as_before` uses to `tests/viewport/fixtures/flat-layout-v1.txt` and commit it.
 - [ ] Write the failing tests below with non-zero `gap` and `pad_bottom` (with zero they pass while the sites are wrong).
-- [ ] Document lead/pad and helpers; migrate every geometry site; app and perf sites.
+- [ ] Document lead/pad, `RowKey::Lead` and helpers; migrate every geometry site; app and perf sites.
 - [ ] Inset rect; cards layer; per-corner quads; sticky header on cards; prelude.
 - [ ] Re-record baselines; run perf.
 
-**Tests:** viewport `lead_and_pad_shape_file_heights` (expected heights computed by hand), `anchor_in_the_gap_above_a_card_survives_height_changes`, `scroll_to_file_puts_the_header_at_the_top_edge`, `cursor_reveal_and_top_row_use_header_top`, `blocks_measure_at_the_card_inner_width`, `split_threshold_uses_the_inner_width`, `sticky_header_pins_square_and_flush`, `header_in_place_has_rounded_top_corners`, `card_quads_are_clamped_to_the_viewport`, `prelude_scrolls_with_the_first_card_and_is_measured`, `flat_layout_without_cards_paints_as_before` (`cards: None` against the pre-M6 debug output); app `view_state_top_line_round_trips_with_cards`, `live_refresh_keeps_the_line_below_the_header`; E2E `e2e_viewport_split_pierre_light`, `e2e_viewport_unified_pierre_dark` and the review pages re-recorded; perf `--check-budgets`.
+**Tests:** viewport `lead_and_pad_shape_file_heights` (expected heights computed by hand), `anchor_in_the_gap_above_a_card_uses_the_lead_key_and_survives_height_changes`, `fresh_document_opens_at_the_top_of_the_lead` (scroll_top 0, the prelude's top at the viewport's top edge), `late_set_prelude_keeps_scroll_top_0`, `growing_the_prelude_keeps_scroll_top_0` (a 70 → 400 pt prelude), `growing_the_prelude_above_a_line_anchor_keeps_that_line`, `scroll_to_file_puts_the_header_at_the_top_edge`, `cursor_reveal_and_top_row_use_header_top`, `blocks_measure_at_the_card_inner_width`, `split_threshold_uses_the_inner_width`, `sticky_header_pins_square_and_flush`, `header_in_place_has_rounded_top_corners`, `card_quads_are_clamped_to_the_viewport`, `prelude_scrolls_with_the_first_card_and_is_measured`, `flat_layout_without_cards_paints_as_before` (`cards: None` against `flat-layout-v1.txt`); app `view_state_top_line_round_trips_with_cards`, `live_refresh_keeps_the_line_below_the_header`, `tree_marks_a_jump_landed_only_at_header_top`; E2E `e2e_viewport_split_pierre_light`, `e2e_viewport_unified_pierre_dark` and the review pages re-recorded; perf `--check-budgets`.
 
-**Acceptance:** every file is a card on the canvas; the sticky header behaves as before inside it; scroll anchoring, blocks, the cursor, view state and live refresh keep their positions; all budgets hold.
+**Acceptance:** every file is a card on the canvas; the sticky header behaves as before inside it; a fresh review opens at the top and stays there while the prelude changes; scroll anchoring, blocks, the cursor, view state and live refresh keep their positions; all budgets hold.
 
 **Verify**
 
 ```bash
 scripts/cargo.sh nextest run -p polygloss-viewport
-scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/view_state::/) | test(/live::/) | test(/perf::/))'
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/view_state::/) | test(/live::/) | test(/perf::/) | test(/tree::/))'
 scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
 bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets
 ```
@@ -2333,7 +2354,7 @@ Then the standard completion block.
 **Files**
 
 - Modify: `crates/polygloss-app/src/home/{mod.rs, row.rs, nav.rs}`, `src/keymap/{actions.rs, defaults.rs}`, `src/window.rs` (menus, `ActivateTab*`), `src/chrome.rs` (`ToggleSidebar`, `ShowFiles`, `ShowReviews`); `docs/user-guide.md` (key tables, "Home")
-- Test: `crates/polygloss-app/tests/app/{home.rs, keymap.rs, shell.rs, submit.rs}`, `crates/polygloss-app/tests/e2e/{home.rs, main.rs}`; baselines `e2e-home-populated.png` (re-recorded), `e2e-sidebar-reviews.png` (new)
+- Test: `crates/polygloss-app/tests/app/{home.rs, keymap.rs, shell.rs, submit.rs}`, `crates/polygloss-app/tests/e2e/{home.rs, main.rs}`; baselines `e2e-home-populated.png` (re-recorded), `e2e-sidebar-reviews.png`, `e2e-sidebar-reviews-dark.png` (new)
 
 **Interfaces**
 
@@ -2345,7 +2366,7 @@ ActivateTab1 … ActivateTab9 // "cmd-1" … "cmd-9", context "Window": 1–8 = 
 impl MainWindow { pub fn activate_review_number(&mut self, n: u8, window: &mut Window, cx: &mut Context<Self>) -> bool; }
 // home::nav
 pub fn render_nav(window: &mut Window, cx: &mut App) -> AnyElement;
-// debug "nav-home", "open-review-{review_id}", "close-review-{review_id}", "nav-row-{review_id}"
+// debug "nav-home", "nav-open" (Open… in the Open heading: window::OpenFlow), "open-review-{review_id}", "close-review-{review_id}", "nav-row-{review_id}"
 impl HomeView { pub(crate) fn row_menu(&self, row: usize, menu: PopupMenu, window: &mut Window, cx: &mut Context<Self>) -> PopupMenu; }
 ```
 
@@ -2359,7 +2380,7 @@ impl HomeView { pub(crate) fn row_menu(&self, row: usize, menu: PopupMenu, windo
 - [ ] `render_nav` complete; `row_menu` shared; Home page restyle.
 - [ ] Update `DESIGN_11_9` in `tests/app/keymap.rs` (design §11.9) and the user guide's key tables; re-record baselines.
 
-**Tests:** `cmd_number_activates_the_nth_open_review`, `cmd_9_activates_the_last_review`, `cmd_number_out_of_range_does_nothing`, `submit_dialog_keeps_cmd_1_for_its_verdict` (the dialog's verdict changes, the active review does not), `toggle_sidebar_action_hides_and_shows`, `show_files_and_show_reviews_switch_segments`, `reviews_segment_lists_home_open_awaiting_and_recent`, `reviews_segment_on_home_lists_only_home_and_open`, `nav_row_click_opens_or_focuses`, `nav_close_closes_like_cmd_w`, `nav_row_menu_archives_mutes_and_assigns`, `first_open_switches_to_files_refocus_keeps_the_segment`, `files_segment_is_disabled_on_home`, `menus_name_reviews`, `default_bindings_match_design_11_9` (updated), the existing Home tests; E2E `e2e_home_populated`, `e2e_sidebar_reviews`; bun `user guide keymap table matches --dump-keymap` (docs test).
+**Tests:** `cmd_number_activates_the_nth_open_review`, `cmd_9_activates_the_last_review`, `cmd_number_out_of_range_does_nothing`, `submit_dialog_keeps_cmd_1_for_its_verdict` (the dialog's verdict changes, the active review does not), `toggle_sidebar_action_hides_and_shows`, `show_files_and_show_reviews_switch_segments`, `reviews_segment_lists_home_open_awaiting_and_recent`, `reviews_segment_on_home_lists_only_home_and_open`, `nav_row_click_opens_or_focuses`, `nav_close_closes_like_cmd_w`, `nav_open_button_opens_the_open_flow`, `nav_row_menu_archives_mutes_and_assigns`, `first_open_switches_to_files_refocus_keeps_the_segment`, `files_segment_is_disabled_on_home`, `menus_name_reviews`, `default_bindings_match_design_11_9` (updated), the existing Home tests; E2E `e2e_home_populated`, `e2e_sidebar_reviews`, `e2e_sidebar_reviews_dark` (a review active, so Open, Awaiting you and Recent all show); bun `user guide keymap table matches --dump-keymap` (docs test).
 
 **Acceptance:** a mouse user switches, opens and closes reviews from the sidebar; a keyboard user has ⌘1–⌘9, ⌃Tab and ⌘W; Home looks like the canvas and cards.
 
@@ -2377,7 +2398,7 @@ Then the standard completion block.
 
 **Files**
 
-- Modify: `crates/polygloss-viewport/src/{header.rs, text_cache.rs, controls.rs, paint_rows.rs, element.rs, gutter.rs, gap.rs, layout.rs, style.rs (DiffStyle and options), view.rs (events, UI font), pipeline.rs (`CountsUpdated` only), find.rs (cache keys), debug.rs}`; `crates/polygloss-app/src/settings/model.rs` (`diff.style.indicators` default); `docs/user-guide.md` (that row)
+- Modify: `crates/polygloss-viewport/src/{header.rs, file_flags.rs, text_cache.rs, controls.rs, paint_rows.rs, element.rs, gutter.rs, gap.rs, layout.rs, style.rs (DiffStyle and options), view.rs (events, UI font), pipeline.rs (`CountsUpdated` only), find.rs (cache keys), debug.rs}`; `crates/polygloss-app/src/assets.rs` (only if an icon below is missing); `crates/polygloss-app/src/settings/model.rs` (`diff.style.indicators` default); `docs/user-guide.md` (that row)
 - Test: `crates/polygloss-viewport/tests/viewport/{headers_gaps.rs, viewport_render.rs, pipeline.rs, find.rs}`, `crates/polygloss-app/tests/app/settings.rs`; baselines: every review page and viewport screenshot
 
 **Interfaces**
@@ -2391,7 +2412,7 @@ pub enum Indicators { #[default] Bars, PlusMinus, None } // DiffStyle default; s
 pub enum ViewportEvent { /* … */ CountsUpdated } // at most once per pipeline batch that landed counts
 ```
 
-- Header (2.25 rows): chevron (SVG), the title runs, badges, an open-in-editor icon emitting the existing `ViewportEvent::OpenInEditor` (same target as the ⋯ item), a `+a −d` pill (both counts once known; `stat_added`/`stat_removed`), the Viewed pill (rounded border, checkbox, "Viewed" in the UI font; same `ViewedToggled`), ⋯.
+- Header (2.25 rows), design §11.6's order: chevron (SVG), the title runs, the kind pills (`kind_badges`: similarity, mode, kind, generated, LFS; muted, `pill_background`), then right-aligned the review-state pills (`FileFlags::badges`: "changed since viewed" in the accent color, `message-square` + "n open threads", `bot` + "agent"), an open-in-editor icon emitting the existing `ViewportEvent::OpenInEditor` (same target as the ⋯ item), a `+a −d` pill (both counts once known; `stat_added`/`stat_removed`), the Viewed pill (rounded border, checkbox, "Viewed" in the UI font; same `ViewedToggled`), ⋯. Narrowing drops kind pills, then review-state pills, then the `+a −d` pill (v1's order); the title keeps 12 columns.
 - Rows: with Bars a 3 pt bar at the pane's left edge (each half's own edge in split) over the full row height, an indicator column of 0.5 advance and no glyph; changed rows tint numbers and a gutter strip (`added_gutter`, …); word highlights unchanged in geometry; the "+" comment button over the number column's right edge; gap rows in `canvas`. `PlusMinus` and `None` still work.
 - Shaped text stays cached: no new shaping per scroll frame.
 
@@ -2402,7 +2423,7 @@ pub enum ViewportEvent { /* … */ CountsUpdated } // at most once per pipeline 
 - [ ] Rows: bars, tints, gutter, comment button, gaps; `Indicators::Bars` default (crate and settings).
 - [ ] `CountsUpdated`; re-record baselines; run perf.
 
-**Tests:** `bars_sit_at_each_panes_left_edge`, `bars_draw_no_indicator_glyph`, `changed_rows_tint_numbers_and_gutter`, `plus_minus_and_none_still_render`, `comment_button_sits_over_the_number_column`, `header_title_dims_the_directory_and_bolds_the_name`, `rename_title_shows_old_arrow_new`, `header_pill_shows_both_counts_once_known`, `open_in_editor_icon_emits_open_in_editor`, `viewed_pill_toggles_viewed`, `counts_updated_is_emitted_once_per_batch`, `gap_rows_use_the_canvas_color`, `find_rects_follow_the_new_code_x`; app `settings_defaults_match_design_table` (bars); perf `--check-budgets`.
+**Tests:** `bars_sit_at_each_panes_left_edge`, `bars_draw_no_indicator_glyph`, `changed_rows_tint_numbers_and_gutter`, `plus_minus_and_none_still_render`, `comment_button_sits_over_the_number_column`, `header_title_dims_the_directory_and_bolds_the_name`, `rename_title_shows_old_arrow_new`, `header_keeps_review_state_and_similarity_badges` (a rename at 92% with `changed_since_viewed`, 2 open threads and an agent thread: the debug header lists "92% similar", "changed since viewed", "2 open threads", "agent" as pills, kind left of the title's end and review state right of it, hand-written), `narrow_header_drops_kind_then_review_pills_then_counts`, `header_pill_shows_both_counts_once_known`, `open_in_editor_icon_emits_open_in_editor`, `viewed_pill_toggles_viewed`, `counts_updated_is_emitted_once_per_batch`, `gap_rows_use_the_canvas_color`, `find_rects_follow_the_new_code_x`; app `settings_defaults_match_design_table` (bars); perf `--check-budgets`.
 
 **Acceptance:** file headers and rows match design §11.6; every budget holds; `"+-"` users keep their look by setting it.
 
@@ -2432,13 +2453,14 @@ Then the standard completion block.
 pub fn toolbar_left(tab: &ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) -> Vec<AnyElement>;  // repo block, kind pills, live::toolbar_left, iterations::toolbar_left
 pub fn toolbar_right(tab: &ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) -> Vec<AnyElement>; // find, threads::toolbar_button, viewed::progress, palette::layout_toggle, palette::display_menu, submit::button
 pub fn display_menu_items(tab: &ReviewTab, menu: PopupMenu, window: &mut Window, cx: &mut Context<ReviewTab>) -> PopupMenu; // view toggles + Wrap lines, then threads' agent-notes item
-// motion.rs
+// motion.rs (no motion of its own here; T6.12 and T6.13 use it)
 pub const ENTER_PANEL: Duration;  // 180 ms
-pub const ENTER_POPUP: Duration;  // 150 ms
 pub const ENTER_NOTICE: Duration; // 160 ms
 pub fn pointer_initiated(window: &Window) -> bool; // !window.last_input_was_keyboard()
-pub fn enter_from(id: impl Into<ElementId>, epoch: u64, from: Point<Pixels>, duration: Duration,
-                  easing: fn(f32) -> f32, element: impl IntoElement) -> AnyElement; // opacity + offset; final at once under reduce motion
+pub fn enter_from(id: impl Into<ElementId>, epoch: u64, from: Point<Pixels>, duration: Duration, easing: fn(f32) -> f32,
+                  element: impl IntoElement + Styled, window: &mut Window, cx: &mut App) -> AnyElement;
+// opacity + relative offset sampled from gpui_kit::base::motion::animate_keyframes keyed (id, epoch): the executor clock,
+// never with_animation; settled at once under reduce motion
 pub fn follow_system_reduce_motion(window: &mut Window, cx: &mut App); // re-reads it on every activation of the main window
 // palette::view_toggles
 pub struct ViewOverrides { /* … */ pub wrap: Option<bool> } // viewport::ToggleWrap; per tab, for the session
@@ -2446,19 +2468,19 @@ pub struct ViewOverrides { /* … */ pub wrap: Option<bool> } // viewport::Toggl
 pub fn open_counts(tab: &ReviewTab, cx: &App) -> (u32 /* open */, u32 /* notes */);
 ```
 
-- Content and order: design §11.4, including the control map and the narrow collapse order. Selectors kept: `review-toolbar`, `layout-toggle`, `view-options`, `viewed-progress`, `toggle-threads-panel`, `submit-review`, `submit-review-count`, `iteration-picker`, `live-snapshot` (Snapshot stays in the toolbar until T6.13). New: `repo-block`, `commit-pill`, `ref-pill-base`, `ref-pill-head`, `live-pill`, `toolbar-find`.
-- Motion: the display options and iteration menus, opened by pointer, enter from their trigger (design §11.16); `i` opens the KeyMenu instantly. Capture frames at 0, 50 and 100 ms with reduced motion off; if gpui-component `PopupMenu`'s shadow shows through as a dark slab, keep these menus instant and add the finding to ADR-0029's Consequences.
+- Content and order: design §11.4, including the control map and the narrow collapse order. Selectors kept: `review-toolbar`, `layout-toggle`, `view-options`, `viewed-progress`, `toggle-threads-panel`, `submit-review`, `submit-review-count`, `iteration-picker`, `live-base` (now the Live pill), `live-snapshot` (Snapshot stays in the toolbar until T6.13). New: `repo-block`, `commit-pill`, `ref-pill-base`, `ref-pill-head`, `toolbar-find`.
+- Toolbar menus open without motion (ADR-0029 rejected it); `i` opens the iteration menu as today.
 
 **Steps**
 
 - [ ] Write the failing tests below.
-- [ ] `motion.rs` and the activation hook.
+- [ ] `motion.rs` on `animate_keyframes` and the activation hook; a probe element in the test proves the executor clock drives it.
 - [ ] Slot functions and the features' items; pills, threads button, compact progress, segmented toggle, display menu with Wrap and agent notes; narrow collapse.
-- [ ] Re-record baselines; record the frame check.
+- [ ] Re-record baselines.
 
-**Tests:** `commit_toolbar_shows_the_sha_pill`, `compare_toolbar_shows_both_ref_pills_and_the_mode`, `live_toolbar_shows_branch_and_live_pill_opening_the_base_picker`, `repo_parent_path_abbreviates_home`, `iteration_pill_shows_only_with_more_than_one_state`, `i_opens_the_iteration_menu_at_the_pill`, `threads_button_counts_open_threads_and_toggles_the_panel`, `viewed_progress_is_compact_with_a_tooltip`, `layout_toggle_is_segmented_and_follows_auto`, `display_menu_has_wrap_and_agent_notes`, `toggle_wrap_reaches_the_viewport_options`, `narrow_toolbar_collapses_in_order` (720 pt window), `toolbar_and_banner_buttons_reach_the_tab_without_focus` (kept); motion `pointer_opened_menu_enters_from_its_trigger` (after 75 ms the menu is between 0 and 8 pt above its end position, independent bounds), `keyboard_opened_menu_is_final_at_once`, `reduce_motion_shows_menus_final_at_once`.
+**Tests:** `commit_toolbar_shows_the_sha_pill`, `compare_toolbar_shows_both_ref_pills_and_the_mode`, `live_toolbar_shows_branch_and_live_pill_opening_the_base_picker`, `repo_parent_path_abbreviates_home`, `iteration_pill_shows_only_with_more_than_one_state`, `i_opens_the_iteration_menu_at_the_pill`, `threads_button_counts_open_threads_and_toggles_the_panel`, `viewed_progress_is_compact_with_a_tooltip`, `layout_toggle_is_segmented_and_follows_auto`, `display_menu_has_wrap_and_agent_notes`, `toggle_wrap_reaches_the_viewport_options`, `narrow_toolbar_collapses_in_order` (a compare review with an iteration pill in a 720 pt window: main column 440 pt with the sidebar at 280, then 320 pt with it at its 400 pt cap; the selectors visible at each width written by hand per design §11.4), `toolbar_and_banner_buttons_reach_the_tab_without_focus` (kept); motion (`TestAppContext`, `advance_clock`) `enter_from_starts_at_full_travel_and_settles_on_the_test_clock` (first frame: offset 12 pt, opacity 0; after 90 ms: offset strictly between 0 and 12, opacity strictly between 0 and 1; after 180 ms more: offset 0, opacity 1; bounds read from `debug_bounds`), `enter_from_replays_only_for_a_new_epoch`, `enter_from_is_settled_at_once_under_reduce_motion`, `pointer_initiated_follows_the_last_input`, `reduce_motion_is_reread_on_activation`.
 
-**Acceptance:** every control that was in the toolbar or under it has its home from design §11.4; the toolbar fits at 720 pt; one motion, pointer-only.
+**Acceptance:** every control that was in the toolbar or under it has its home from design §11.4; the toolbar fits at 720 pt; menus open without motion; `motion.rs` is ready and deterministic in tests.
 
 **Verify**
 
@@ -2480,7 +2502,9 @@ Then the standard completion block.
 
 ```text
 open_diff        files[i].category?: "tests" | "custom:<id>"          (absent when uncategorized; git order unchanged)
-                 stats.categories?: { "<category>": { files, additions, deletions } }   (absent when nothing is categorized)
+                 stats.categories?: { "<category>": { files, additions, deletions } }   (absent when nothing is categorized;
+                 files = every file of the category; additions/deletions over the listed ones, like stats)
+                 stats.files/additions/deletions keep counting categorized files too (unlike the app's totals)
 diff resource    | Status | Path | + | - | Category |
 JSON CLI         show / compare / open / live reports gain "categories": { "tests": 6, … }; human output "42 files (6 tests · 2 generated)"
 polygloss debug categorize [--repo <path>] [--json] <path>…
@@ -2490,7 +2514,7 @@ polygloss debug categorize [--repo <path>] [--json] <path>…
 ```
 
 - The MCP server and CLI read `polygloss_core::settings::categories_config(paths)` per call (lenient; one stderr warning per process on an invalid section) and classify with `Categorizer` using each file's `generated_attr` and `generated`. With `--repo`, `debug categorize` reads `linguist-generated` from that repo's HEAD tree (one `check-attr`).
-- `docs/agents.md`: the `open_diff` row, the diff resource row, and a short "File categories" paragraph (what the field means, where it is configured).
+- `docs/agents.md`: the `open_diff` row, the diff resource row, and a short "File categories" paragraph (what the field means, where it is configured, that `stats` include categorized files while the app's totals exclude them, and that per-category line counts cover the listed files only).
 
 **Steps**
 
@@ -2498,7 +2522,7 @@ polygloss debug categorize [--repo <path>] [--json] <path>…
 - [ ] `open_diff` and the resource; the CLI reports; `debug categorize`.
 - [ ] `docs/agents.md`.
 
-**Tests:** Rust `open_diff_files_carry_their_category`, `open_diff_stats_break_down_categories`, `diff_resource_has_a_category_column`, `invalid_settings_use_the_default_categories`; bun `open_diff returns categories per file and in stats` (fixture repo with `src/a.ts`, `src/a.test.ts`, `Cargo.lock`, `docs/x.md`; sandboxed `settings.json` turns docs on), `diff resource lists categories`, `json show reports category counts`, `debug categorize explains built-in, extra, custom, attribute and rescued verdicts`, `debug categorize reports an invalid categories section`; `agents doc names every MCP tool from listTools` (unchanged, still passes).
+**Tests:** Rust `open_diff_files_carry_their_category`, `open_diff_stats_break_down_categories` (with 201 files, one of them categorized past the first 200: its `files` counts it, its lines do not), `diff_resource_has_a_category_column`, `invalid_settings_use_the_default_categories`; bun `open_diff returns categories per file and in stats` (fixture repo with `src/a.ts`, `src/a.test.ts`, `Cargo.lock`, `docs/x.md`; sandboxed `settings.json` turns docs on), `diff resource lists categories`, `json show reports category counts`, `debug categorize explains built-in, extra, custom, attribute and rescued verdicts`, `debug categorize reports an invalid categories section`; `agents doc names every MCP tool from listTools` (unchanged, still passes).
 
 **Acceptance:** agents see each file's category; nothing else in any result shape changes; the docs match.
 
@@ -2512,53 +2536,56 @@ scripts/check-deps.sh
 
 Then the standard completion block.
 
-### T6.10 Viewport: display order and category sections (**perf**)
+### T6.10 Viewport: display order and hidden files (**perf**)
 
 **Files**
 
-- Create: `crates/polygloss-viewport/src/{document/sections.rs, section_band.rs}`, `crates/polygloss-perf/src/scenarios/sections.rs`, test `crates/polygloss-viewport/tests/viewport/sections.rs`
-- Modify: `crates/polygloss-viewport/src/{lib.rs, document/mod.rs, document/window.rs, document/height_index.rs, pipeline.rs, cursor.rs, view.rs, paint_rows.rs, controls.rs, blocks.rs, debug.rs}`, `crates/polygloss-perf/src/{main.rs, args.rs, scenarios/mod.rs}`, `benches/{run-perf.ts, budgets.json}`
-- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, document.rs, cursor.rs, pipeline.rs}`, `tests/scripts/run-perf.test.ts`
+- Create: `crates/polygloss-viewport/src/document/slots.rs`, test `crates/polygloss-viewport/tests/viewport/slots.rs`
+- Modify: `crates/polygloss-viewport/src/{lib.rs, document/mod.rs, document/window.rs, document/height_index.rs, document/anchor.rs, pipeline.rs, cursor.rs, view.rs, paint_rows.rs, blocks.rs, debug.rs}`
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, document.rs, cursor.rs, pipeline.rs, blocks.rs}`
 
 **Interfaces**
 
 ```rust
-pub struct Section { pub id: u32, pub label: SharedString /* "12 test files" */, pub icon: Option<SharedString> /* svg path */,
-                     pub files: Vec<u32>, pub open: bool }
-impl DiffViewport {
-    pub fn set_sections(&mut self, sections: Vec<Section>, cx: &mut Context<Self>); // unlisted files first, in git order; each file at most once
-    pub fn set_section_open(&mut self, id: u32, open: bool, cx: &mut Context<Self>);
-    pub fn section_open(&self, id: u32) -> Option<bool>;
-    pub fn section_of(&self, file_idx: u32) -> Option<u32>;
-    pub fn display_rank(&self, file_idx: u32) -> u32;
+// document/slots.rs: display slots. A file's slot is its position in display order; the height index is by slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotRange { pub start: u32, pub end: u32 } // deliberately not an iterator: `for f in range` no longer compiles
+impl Document {
+    pub fn visible(&self, viewport_h: f32) -> SlotRange;                    // was Range<u32> of file indices
+    pub fn materialize_range(&self, viewport_h: f32, screens: f32) -> SlotRange;
+    pub fn shown_files(&self, range: SlotRange) -> ShownFiles<'_>;         // Iterator<Item = u32 /* file_idx */> in display order;
+                                                                            // steps by offset, so hidden (zero-height) slots cost nothing
+    pub fn contains_file(&self, range: SlotRange, file_idx: u32) -> bool;
+    pub fn slot(&self, file_idx: u32) -> u32; pub fn file_at(&self, slot: u32) -> u32;
     pub fn display_order(&self) -> &[u32];
-    pub fn section_counts(&self, id: u32) -> SectionCounts; // { files, counted, additions, deletions }, cached, updated when counts land
+    pub fn set_order(&mut self, order: Vec<u32>);          // a permutation of 0..n; keeps the anchor
+    pub fn set_hidden(&mut self, files: &[u32], hidden: bool); // height = lead only (0 until T6.17 gives a band a lead)
+    pub fn is_hidden(&self, file_idx: u32) -> bool;
+    pub fn top_anchor(&self) -> ScrollAnchor;              // (first shown slot's file, Lead, 0)
 }
-pub enum ViewportEvent { /* … */ SectionToggled { id: u32, open: bool }, SectionMarkViewed(u32) }
+impl DiffViewport { pub fn display_rank(&self, file_idx: u32) -> u32; pub fn display_order(&self) -> &[u32]; pub fn is_hidden(&self, file_idx: u32) -> bool; }
 ```
 
-- `Document` keeps `order` (slot → file) and `slot` (file → slot); the height index is by slot; identity order without sections, so existing tests hold. Every public API stays keyed by `file_idx`. The prelude (T6.5) sits in the lead of the first display slot.
-- A section's band (36 pt on the canvas: chevron, icon, label, `+X −Y`, Show / Hide, Mark all viewed) is part of the lead of its first slot. A closed section's files are hidden: height 0, except the band. Hidden files are skipped by layout, paint, blocks, the sticky header, the cursor and pipeline focus; the background counts pass still covers them.
-- Every per-frame walk steps by offset through the height index (`find` skips zero heights), never over a slot range, so a closed section costs O(log n). `overlapping()` clamps its bottom to `total − 0.5`.
-- `scroll_to`, `go_to_file`, `set_cursor`, `reveal_line`, `n`/`p` and `]`/`[` that reach a hidden file open its section first and emit `SectionToggled`. Closing the section that holds the anchor moves the anchor to its band.
-- Perf scenario `sections` (runner `perf`, corpora synthetic and linux): the last 20 files in an open section and every other file with an odd `file_idx` in one closed section; metrics `sections_scroll_p95_ms` (the scroll scenario's definition over the whole document; budget 8.3) and `section_toggle_ms` (open the big section → the next painted frame; budget 50, design §12.1).
+- Identity order and no hidden files by default, so every existing test holds unchanged. Every public API stays keyed by `file_idx`; `file_top(f)` is the prefix up to `slot(f)`.
+- Consumers move to slots: `pipeline.rs` (`keep.contains(&f)` → `contains_file`, `for f in window` → `shown_files(window)`, `priority` by slot, `pass.refocus(file_at(visible.start))`), `blocks.rs` (measure loop), `paint_rows.rs` (visible loop and the pinned header's first shown file), `view.rs` (layout and keep windows). `overlapping()` clamps its bottom to `total − 0.5`.
+- Hidden files are skipped by layout, paint, blocks, the sticky header and pipeline focus; the background counts pass still covers them. Stepwise moves walk shown files in display order: `j`/`k` across files, `]`/`[`, `n`/`p` (they stop at the last shown file, as at the document's end today).
+- The top: an anchor at `top_anchor()` stays there when `set_order` or `set_hidden` changes the first shown slot. Hiding the anchor's file moves the anchor to `(that file, Lead, 0)`, the top of where it was; a cursor in it is dropped (T6.17 refines this to the section's band).
 
 **Steps**
 
 - [ ] Write the failing tests below.
-- [ ] Order and sections in `Document`; offset-stepping walks; the clamp.
-- [ ] Pipeline, cursor, blocks and paint skip hidden files; auto-open; bands and their controls; counts cache.
-- [ ] The perf scenario, `run-perf.ts` row and budgets; run perf.
+- [ ] `slots.rs`, the height index by slot, `SlotRange` and `shown_files`; migrate every consumer (the compiler lists them).
+- [ ] `set_order`, `set_hidden`, the top anchor; skipping in layout, paint, blocks, pipeline and the cursor; the `overlapping()` clamp.
+- [ ] Run perf.
 
-**Tests:** `display_order_puts_sections_after_the_other_files`, `identity_order_without_sections`, `closed_section_files_are_hidden_except_the_band`, `visible_walk_skips_a_closed_section` (a visit counter stays at the visible files + 2 with 10,000 hidden), `overlapping_clamps_at_the_document_end`, `pipeline_never_loads_hidden_files_but_counts_them`, `next_and_prev_file_skip_closed_sections`, `scroll_to_a_hidden_file_opens_its_section_and_emits`, `closing_the_anchors_section_moves_the_anchor_to_the_band`, `band_controls_toggle_and_mark_viewed`, `section_counts_update_when_counts_land`, `blocks_in_hidden_files_are_not_measured`, `events_stay_keyed_by_file_idx_after_reordering`, `set_sections_keeps_the_anchor`; TS `sections scenario reports scroll p95 and toggle time` (`run-perf.test.ts`); perf `--scenarios scroll,sections --corpus synthetic,linux --check-budgets`.
+**Tests:** `identity_order_keeps_every_v1_position`, `permuted_order_lays_files_out_in_display_order` (tops by hand), `apis_stay_keyed_by_file_idx_under_a_permutation`, `shown_files_skips_hidden_slots_by_offset` (a visit counter stays at the shown files + 2 with 10,000 hidden), `overlapping_clamps_at_the_document_end`, `pipeline_never_loads_hidden_files_but_counts_them`, `blocks_in_hidden_files_are_not_measured`, `stepwise_keys_walk_display_order_and_skip_hidden_files` (`j`/`k`, `]`/`[`, `n`/`p` over a permuted order with a hidden file between two shown ones), `set_order_keeps_the_anchor`, `top_anchor_stays_at_the_top_across_set_order_and_set_hidden`, `hiding_the_anchor_file_moves_the_anchor_and_drops_the_cursor`; perf `--check-budgets`.
 
-**Acceptance:** sections behave as design §11.6 and §11.15 say; a 10,000-file closed section adds no per-frame cost; all budgets hold.
+**Acceptance:** display order and hidden files work behind `file_idx`-keyed APIs; identity order changes nothing; 10,000 hidden files add no per-frame cost; all budgets hold.
 
 **Verify**
 
 ```bash
 scripts/cargo.sh nextest run -p polygloss-viewport
-bun test tests/scripts/run-perf.test.ts
 scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
 bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets
 ```
@@ -2580,7 +2607,7 @@ pub const ROW_HEIGHT: f32 = 28.0;
 pub fn footer(files: &[u32], viewport: &Entity<DiffViewport>, cx: &App) -> AnyElement; // "Total: +X −Y"; "…" until every file is counted
 ```
 
-- Row and Viewed slot: design §11.5 (icons from `AppAssets`; `stat_added`/`stat_removed`; status colors from `version_control.*`). The slot is a custom element (no gpui-component `Checkbox`) inside the existing mouse-down stop; `v` is unchanged.
+- Row and Viewed slot: design §11.5, including its glyph table (rest and hover per row state; folders show `folder` whether expanded or not). Icons from `AppAssets`; `stat_added`/`stat_removed`; status colors from `version_control.*`. The slot is the row's icon itself, a custom element (no gpui-component `Checkbox`) inside the existing mouse-down stop, with a hover state of its own (not the row's) and the tooltip "Mark viewed (v)" / "Mark unviewed (v)"; `v` is unchanged. Each row's debug info names its slot glyph.
 - The "FILES n" header goes; the rounded filter field (`polygloss.sidebar.field.background` through the kit's segmented token or its own fill) holds the filter menu at its right edge.
 - The tree subscribes to `ViewportEvent::CountsUpdated` (not to every frame) for row counts and the footer.
 
@@ -2590,7 +2617,7 @@ pub fn footer(files: &[u32], viewport: &Entity<DiffViewport>, cx: &App) -> AnyEl
 - [ ] Row layout and the Viewed slot; filter field; footer.
 - [ ] Re-record the baseline; check `tree_builds_13k_files_under_200ms`.
 
-**Tests:** `tree_rows_show_icons_then_right_aligned_stats_and_status`, `icon_slot_toggles_viewed_and_never_folds_the_folder`, `folder_slot_is_tristate`, `footer_totals_follow_counts_updated` (expected totals from `git diff --numstat` of the fixture, run by the test), `footer_shows_an_ellipsis_until_counted`, `tree_does_not_rerender_on_scroll_frames`, `tree_checkbox_click_does_not_toggle_folder` (renamed `…slot…`), `tree_builds_13k_files_under_200ms` (kept); E2E `e2e_tree_badges`.
+**Tests:** `tree_rows_show_icons_then_right_aligned_stats_and_status`, `unviewed_rows_at_rest_show_the_folder_and_file_icons` (expanded and collapsed folders: `folder`; files: `file`), `slot_hover_shows_circle_or_circle_minus` (hovering the row elsewhere changes nothing), `icon_slot_toggles_viewed_and_never_folds_the_folder`, `folder_slot_is_tristate` (none, some and all viewed: rest `folder`, `folder`, `circle-check`; hover `circle`, `circle-minus`, `circle-check`; hand-listed), `footer_totals_follow_counts_updated` (expected totals from `git diff --numstat` of the fixture, run by the test), `footer_shows_an_ellipsis_until_counted`, `tree_does_not_rerender_on_scroll_frames`, `tree_checkbox_click_does_not_toggle_folder` (renamed `…slot…`), `tree_builds_13k_files_under_200ms` (kept); E2E `e2e_tree_badges`.
 
 **Acceptance:** the tree looks like design §11.5; Viewed stays one click and one key; scrolling does not re-render the tree.
 
@@ -2620,7 +2647,7 @@ impl ReviewTab { pub fn set_threads_panel_visible(&mut self, visible: bool, cx: 
 
 - Hidden by default; restored from view state; carried across Refresh, iteration and "Changes since last review" swaps in the tab; a toggle calls `view_state::changed` (also for an otherwise untouched state). Every auto-open path (composer, feed, URLs, IPC) still opens it.
 - Restyle: the panel on the canvas, header "Threads · n open · k notes" with Comment on review, rows as rounded cards; row content unchanged.
-- Motion: the panel's content enters per design §11.16 when the toolbar's threads button opened it (`motion::enter_from`, epoch per open); keyboard, restore and auto-open show it at once; closing is instant.
+- Motion: the panel's content enters per design §11.16 when the toolbar's threads button opened it (`motion::enter_from` from 12 pt right, epoch per open); keyboard, restore and auto-open show it at once; closing is instant.
 - Tests that assumed a visible panel call `set_threads_panel_visible(true)`.
 
 **Steps**
@@ -2629,7 +2656,7 @@ impl ReviewTab { pub fn set_threads_panel_visible(&mut self, visible: bool, cx: 
 - [ ] Default, persistence and carry-over; restyle; motion.
 - [ ] Update the tests that assumed a visible panel; re-record baselines.
 
-**Tests:** `threads_panel_is_hidden_by_default`, `threads_panel_visibility_round_trips_through_view_state`, `threads_panel_survives_refresh_and_iteration_switches`, `comment_on_review_opens_the_panel`, `agent_replies_show_opens_the_panel`, `pointer_open_slides_the_panel_content_in` (after 90 ms the content is between 0 and 12 pt right of its end), `keyboard_toggle_and_restore_show_the_panel_at_once`, `reduce_motion_shows_the_panel_at_once`, `pane_cycle_includes_the_panel_only_when_shown` (kept); core `view_state_threads_panel_is_optional_and_round_trips`; E2E `e2e_threads_*` re-recorded.
+**Tests:** `threads_panel_is_hidden_by_default`, `threads_panel_visibility_round_trips_through_view_state`, `threads_panel_survives_refresh_and_iteration_switches`, `comment_on_review_opens_the_panel`, `agent_replies_show_opens_the_panel`, `pointer_open_slides_the_panel_content_in` (`advance_clock`: first frame 12 pt right of its end with opacity 0; after 90 ms strictly between 0 and 12 pt; after 180 ms more at its end), `keyboard_toggle_and_restore_show_the_panel_at_once` (first frame at its end), `reduce_motion_shows_the_panel_at_once`, `pane_cycle_includes_the_panel_only_when_shown` (kept); core `view_state_threads_panel_is_optional_and_round_trips`; E2E `e2e_threads_*` re-recorded.
 
 **Acceptance:** a new review shows no threads panel; the choice sticks per diff and within the tab; every path that opened it still does.
 
@@ -2643,13 +2670,68 @@ scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
 
 Then the standard completion block.
 
+### T6.17 Viewport: category sections (**perf**)
+
+Split out of T6.10 in review; it runs in W5.
+
+**Files**
+
+- Create: `crates/polygloss-viewport/src/{document/sections.rs, section_band.rs}`, `crates/polygloss-perf/src/scenarios/sections.rs`, test `crates/polygloss-viewport/tests/viewport/sections.rs`
+- Modify: `crates/polygloss-viewport/src/{lib.rs, document/mod.rs, view.rs, cursor.rs, gap.rs (`reveal_line` opens the section), paint_rows.rs, controls.rs, debug.rs}`, `crates/polygloss-perf/src/{main.rs, args.rs, scenarios/mod.rs}`, `benches/{run-perf.ts, budgets.json}`
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, cursor.rs}`, `tests/scripts/run-perf.test.ts`
+
+**Interfaces**
+
+```rust
+pub struct Section { pub id: u32, pub label: SharedString /* "12 test files" */, pub icon: Option<SharedString> /* svg path */,
+                     pub files: Vec<u32>, pub open: bool }
+pub struct BandFlags { pub open_threads: u32, pub agent: bool, pub changed_since_viewed: bool } // aggregated from FileFlags
+impl DiffViewport {
+    pub fn set_sections(&mut self, sections: Vec<Section>, cx: &mut Context<Self>); // unlisted files first, in git order; each file at most once
+    pub fn set_section_open(&mut self, id: u32, open: bool, cx: &mut Context<Self>);
+    pub fn section_open(&self, id: u32) -> Option<bool>;
+    pub fn section_of(&self, file_idx: u32) -> Option<u32>;
+    pub fn section_counts(&self, id: u32) -> SectionCounts; // { files, counted, additions, deletions }, cached, updated when counts land
+    pub fn band_flags(&self, id: u32) -> BandFlags;         // cached, updated by set_file_flags
+    pub fn set_band_all_viewed(&mut self, id: u32, all_viewed: bool, cx: &mut Context<Self>); // "Mark all viewed" ⇄ "Mark all unviewed"
+}
+pub enum ViewportEvent { /* … */ SectionToggled { id: u32, open: bool }, SectionMarkViewed(u32) }
+```
+
+- Built on T6.10: `set_sections` calls `set_order` and `set_hidden`. A section's band (36 pt on the canvas: chevron, icon, label, `+X −Y`, the `BandFlags` pills as in the file header, Show / Hide, Mark all viewed) is part of the lead of its first slot, so a closed section is its band only. The prelude stays in the first shown slot's lead.
+- Explicit targets open the section first and emit `SectionToggled`: `scroll_to`, `go_to_file`, `set_cursor`, `reveal_line`. Stepwise keys (T6.10) keep passing over closed sections.
+- Anchor policy (design §11.6): closing the anchor's section or `set_sections` hiding the anchor's file moves the anchor to that section's band (`(first file, Lead, 0)`) and drops a cursor there; a shown anchor stays; an anchor at the top stays at the top.
+- Perf scenario `sections` (runner `perf`, corpora synthetic and linux): a 72 pt prelude, the last 20 files in an open section and every other file with an odd `file_idx` in one closed section; metrics `sections_scroll_p95_ms` (the scroll scenario's definition over the whole document; budget 8.3) and `section_toggle_ms` (open the big section → the next painted frame; budget 50, design §12.1).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Sections in `Document`; bands in the lead; open, close and the anchor policy.
+- [ ] Explicit targets open; band painting, controls, flags and counts caches.
+- [ ] The perf scenario, `run-perf.ts` row and budgets; run perf.
+
+**Tests:** `display_order_puts_sections_after_the_other_files`, `closed_section_is_its_band_only`, `band_controls_toggle_and_mark_viewed`, `band_shows_open_threads_agent_and_changed_since_viewed` (flags on two files of the section: "3 open threads", the agent pill and the dot, hand-written), `band_offers_mark_all_unviewed_once_all_are_viewed`, `section_counts_update_when_counts_land`, `explicit_targets_open_the_section_and_emit` (`scroll_to`, `go_to_file`, `set_cursor`, `reveal_line`), `stepwise_keys_pass_over_a_closed_section` (`n` at the last main file stays; with the section open it enters), `set_sections_keeps_a_shown_anchor`, `set_sections_hiding_the_anchor_file_moves_it_to_the_band_and_drops_the_cursor`, `closing_the_anchors_section_moves_the_anchor_to_the_band`, `top_anchor_stays_at_the_top_across_set_sections`, `events_stay_keyed_by_file_idx_after_reordering`; TS `sections scenario reports scroll p95 and toggle time` (`run-perf.test.ts`); perf `--scenarios scroll,sections --corpus synthetic,linux --check-budgets`.
+
+**Acceptance:** sections behave as design §11.6 and §11.15 say; a 10,000-file closed section adds no per-frame cost; all budgets hold.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport
+bun test tests/scripts/run-perf.test.ts
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets
+```
+
+Then the standard completion block.
+
 ### T6.13 Header card and banner notices (**perf**)
 
 **Files**
 
 - Create: `crates/polygloss-app/src/review_tab/header.rs`, tests `crates/polygloss-app/tests/app/header_card.rs`, `crates/polygloss-app/tests/e2e/header_card.rs`
-- Modify: `crates/polygloss-app/src/review_tab/{mod.rs, banners.rs}`, `src/live/mod.rs` (Snapshot moves into the card), `src/iterations/mod.rs` (where the context line shows), `crates/polygloss-core/src/git/listing.rs`
-- Test: `crates/polygloss-core/tests/listing.rs`, `crates/polygloss-app/tests/app/{shell.rs, iterations.rs, live.rs, feed.rs, main.rs}`, `crates/polygloss-app/tests/e2e/main.rs`; baselines `e2e-header-card-commit.png`, `e2e-header-card-compare.png` (new), `e2e-live-banner.png`, `e2e-feed-banners.png`, `e2e-iterations-*.png`
+- Modify: `crates/polygloss-app/src/review_tab/{mod.rs, banners.rs}`, `src/live/mod.rs` (Snapshot moves into the card; `refresh_tab` reloads the card), `src/iterations/mod.rs` (where the context line shows; `refreshed` reloads the card), `crates/polygloss-core/src/git/listing.rs`
+- Test: `crates/polygloss-core/tests/listing.rs`, `crates/polygloss-app/tests/app/{shell.rs, iterations.rs, live.rs, feed.rs, main.rs}`, `crates/polygloss-app/tests/e2e/main.rs`; baselines `e2e-header-card-commit.png`, `e2e-header-card-compare.png`, `e2e-live-header-and-banner-dark.png` (new), `e2e-live-banner.png`, `e2e-feed-banners.png`, `e2e-iterations-*.png`
 
 **Interfaces**
 
@@ -2661,11 +2743,15 @@ pub fn range_commits(git: &Git, base: &Oid, head: &Oid, limit: u32) -> Result<(V
 // review_tab::header
 pub fn avatar_color(email: &str, players: &[Hsla], appearance: Appearance) -> Hsla; // FNV-1a 32-bit of the lowercased email, mod 8; fixed hues when fewer than 8 players
 pub fn initial(name: &str) -> String; // first alphanumeric character, uppercased
-pub struct HeaderCard; // a ReviewTab extension: loads on the background executor at attach and after Refresh, then DiffViewport::set_prelude
+pub struct HeaderCard; // a ReviewTab extension: loads on the background executor, then DiffViewport::set_prelude
+pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>); // called from review_tab/mod.rs next to
+                                                                                     // features::attach_review_tab (features.rs is T6.14's)
+pub fn reload(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>); // from live::refresh_tab and iterations::refreshed
 ```
 
-- Content: design §11.6 "Header card" per kind (debug `header-card`, `header-avatar`, `header-sha`, `header-commits-toggle`, `live-snapshot`). Times are relative to the app clock (the seam Home's screenshots pin). The stats line counts all files here; T6.15 narrows it.
-- Banners: design §11.7 notices in the 32 pt strip; the context line only off the latest state (OQ-39); `BannerStrip::{set, clear, context, set_context}` keep their signatures. Motion: a notice enters per design §11.16 with id `("banner", kind, generation)`; the generation grows only when its kind appears.
+- Content: design §11.6 "Header card" per kind (debug `header-card`, `header-avatar`, `header-sha`, `header-stats`, `header-commits-toggle`, `live-snapshot`), the stats and chips in the right cluster before the SHA or Snapshot. Times are relative to the app clock (the seam Home's screenshots pin). The stats line counts all files here; T6.15 narrows it.
+- Scrolling: the card is the prelude, so it relies on T6.5's top anchor: a fresh review opens with the card at the top, and its late load and the "Show commits" list grow downward without moving it.
+- Banners: design §11.7 notices in the 32 pt strip; the context line only off the latest state (OQ-39); `BannerStrip::{set, clear, context, set_context}` keep their signatures. Motion: a notice enters per design §11.16 (`motion::enter_from` from 4 pt up) with id `("banner", kind, generation)`; the generation grows only when its kind appears.
 - Offline: git reads only, on the background executor.
 
 **Steps**
@@ -2675,7 +2761,7 @@ pub struct HeaderCard; // a ReviewTab extension: loads on the background executo
 - [ ] Banner notices and the strip's context rule; notice motion.
 - [ ] Re-record baselines; run perf (`watcher-banner`, `app-open`).
 
-**Tests:** core `commit_details_reads_author_email_and_time`, `range_commits_lists_base_to_head_newest_first_with_a_total`; app `commit_header_shows_avatar_subject_author_and_sha`, `avatar_color_is_fnv1a_of_the_lowercased_email` (the expected index from an FNV-1a value written as a literal in the test), `compare_header_counts_and_lists_commits`, `live_header_shows_branch_base_and_snapshot`, `snapshot_left_the_toolbar`, `relative_time_uses_the_app_clock`, `header_card_scrolls_with_the_diff`, `banner_strip_is_empty_on_the_latest_state`, `banner_strip_shows_the_iteration_context_off_latest`, `banner_notice_enters_once_per_appearance` (a text update does not replay it), `banner_strip_never_changes_viewport_anchor` (kept); E2E `e2e_header_card_commit`, `e2e_header_card_compare`; perf `--scenarios watcher-banner,app-open --corpus typical,linux --check-budgets`.
+**Tests:** core `commit_details_reads_author_email_and_time`, `range_commits_lists_base_to_head_newest_first_with_a_total`; app `commit_header_shows_avatar_subject_author_and_sha`, `avatar_color_is_fnv1a_of_the_lowercased_email` (the expected index from an FNV-1a value written as a literal in the test), `compare_header_counts_and_lists_commits`, `live_header_shows_branch_base_and_snapshot`, `snapshot_left_the_toolbar`, `relative_time_uses_the_app_clock`, `header_stats_sit_before_the_sha`, `header_card_scrolls_with_the_diff`, `fresh_open_shows_the_header_card` (after the card loads, `header-card`'s top is the viewport's top edge and `scroll_top` is 0), `late_header_card_and_show_commits_keep_scroll_top_0` (the card lands after the first frame, then "Show commits" opens 30 commits: `scroll_top` stays 0 and the first commit row is below the subject), `header_card_reloads_after_refresh_and_iteration_switch`, `banner_strip_is_empty_on_the_latest_state`, `banner_strip_shows_the_iteration_context_off_latest`, `banner_notice_enters_on_the_test_clock_once_per_appearance` (`advance_clock`: first frame 4 pt up with opacity 0, settled after 160 ms; a text update does not replay it; under Reduce Motion settled at once), `banner_strip_never_changes_viewport_anchor` (kept); E2E `e2e_header_card_commit`, `e2e_header_card_compare`, `e2e_live_header_and_banner_dark` (Polygloss Dark: the live header card and a "1 file changed · Refresh (R)" notice); perf `--scenarios watcher-banner,app-open --corpus typical,linux --check-budgets`.
 
 **Acceptance:** the canvas starts with the header card of design §11.6; banners are notices that never move content; budgets hold.
 
@@ -2696,8 +2782,8 @@ Then the standard completion block.
 **Files**
 
 - Create: `crates/polygloss-app/src/categories/mod.rs`, tests `crates/polygloss-app/tests/app/categories.rs`, `crates/polygloss-app/tests/e2e/categories.rs`
-- Modify: `crates/polygloss-app/src/{lib.rs, features.rs, provider.rs}`, `src/settings/model.rs` (`categories`, validation), `src/view_state/mod.rs`, `src/keymap/actions.rs`, `src/ipc/debug_state.rs` (`sections` per tab), `crates/polygloss-core/src/review/view_state.rs`, `tests/e2e/mcp-app.test.ts`; `docs/user-guide.md` (the `categories.*` rows, a "File categories" section)
-- Test: `crates/polygloss-app/tests/app/{settings.rs, view_state.rs, ipc.rs, main.rs}`, `crates/polygloss-app/tests/e2e/main.rs`; baseline `e2e-categories-sections.png` (new)
+- Modify: `crates/polygloss-app/src/{lib.rs, features.rs, provider.rs}`, `src/settings/model.rs` (`categories`, validation), `src/view_state/mod.rs`, `src/keymap/actions.rs`, `src/ipc/debug_state.rs` (`sections` per tab), `src/threads/mod.rs` (one read accessor), `crates/polygloss-core/src/review/view_state.rs`, `tests/e2e/mcp-app.test.ts`, `tests/scripts/app-icons.test.ts` (category icons); `docs/user-guide.md` (the `categories.*` rows, `diff.generated_patterns`'s new syntax, a "File categories" section)
+- Test: `crates/polygloss-app/tests/app/{settings.rs, view_state.rs, ipc.rs, main.rs}`, `crates/polygloss-app/tests/e2e/main.rs`; baselines `e2e-categories-sections.png`, `e2e-categories-sections-dark.png` (new)
 
 **Interfaces**
 
@@ -2710,15 +2796,18 @@ pub fn categories(tab: &ReviewTab) -> Option<Entity<Categories>>; // the tab ext
 // settings
 pub struct Settings { /* … */ pub categories: CategoriesConfig } // check_ranges: Categorizer::new must succeed; unknown groups logged
 // actions (namespace categories; palette only): ToggleTests, ToggleGenerated, ToggleVendored, ToggleAgents, ToggleDocs,
-// ToggleTooling, ToggleStories, ExplainFile
+// ToggleTooling, ToggleStories, ShowNextSection, HideSection, MarkSectionViewed, ExplainFile
+// threads
+pub fn files_with_waiting_questions(tab: &ReviewTab, cx: &App) -> Vec<u32>; // agent questions waiting on you (design §8.4), by file_idx
 // core ViewState
 #[serde(default, skip_serializing_if = "Option::is_none")] pub open_sections: Option<Vec<String>>,
 ```
 
-- At attach, after a settings change and after a palette toggle: build the `Categorizer` (settings + `diff.generated_patterns` + this tab's overrides) and the partition on the background executor, then `viewport.set_sections` (label "12 test files" from the nouns, icon from `AppAssets`, open per view state or the default rule) with the anchor kept.
+- At attach, after a settings change and after a palette toggle: build the `Categorizer` (settings + `diff.generated_patterns` + this tab's overrides) and the partition on the background executor, then `viewport.set_sections` (label from `CategoryInfo::label`, icon from `AppAssets`) with T6.17's anchor policy. Open state: the saved `open_sections` when the diff has one; else open when every file is categorized or the section holds a file of `files_with_waiting_questions` at that moment; else closed (design §11.15, OQ-53). `Categorizer::warnings()`, `unknown_groups` and `unknown_keys` are logged once per settings load.
 - The provider's `generated` flags come from `Categorizer::is_generated`; when a re-partition changes any, swap them in with `set_provider` and an identity carry.
-- `SectionToggled` saves `open_sections`; `SectionMarkViewed` calls `viewed::set_viewed(tab, files, true)`; `ExplainFile` toasts the cursor's file's verdict.
-- `debug_state` gains `"sections": [{ "category", "files", "open" }]` per tab.
+- `SectionToggled` saves `open_sections`; `SectionMarkViewed` calls `viewed::set_viewed(tab, files, !all_viewed)` and updates the band's label (`set_band_all_viewed`); `ExplainFile` toasts the cursor's file's verdict.
+- Section actions (design §11.15 palette): `ShowNextSection` opens the first closed section after the cursor's (else the anchor's) file in display order and puts the cursor on its first line; `HideSection` closes the cursor's (else the anchor's) section; `MarkSectionViewed` acts like the band on the cursor's or anchor's section, else the next section below.
+- `debug_state` gains `"sections": [{ "category", "files", "open", "open_threads", "agent", "changed_since_viewed" }]` per tab.
 
 **Steps**
 
@@ -2727,7 +2816,7 @@ pub struct Settings { /* … */ pub categories: CategoriesConfig } // check_rang
 - [ ] The extension, partition, wiring to the viewport and the provider; view state; actions; `debug_state`.
 - [ ] The E2E screenshot and the bun E2E case.
 
-**Tests:** `tests_and_generated_files_go_to_closed_sections_by_default`, `every_file_categorized_opens_the_sections`, `sections_follow_settings_hot_reload_and_keep_the_anchor`, `invalid_categories_keep_the_previous_settings_and_toast`, `palette_toggle_changes_only_this_tab`, `open_sections_round_trip_through_view_state`, `mark_all_viewed_marks_every_file_of_the_section`, `generated_flags_follow_is_generated`, `explain_file_toasts_the_verdict`, `debug_state_lists_sections`, `settings_defaults_match_design_table` (categories); bun `user guide lists every settings key` (docs test), E2E `an MCP-opened review shows its tests in a closed section` (`mcp-app.test.ts`, through `debug_state`); screenshot `e2e_categories_sections`.
+**Tests:** `tests_and_generated_files_go_to_closed_sections_by_default`, `every_file_categorized_opens_the_sections`, `section_with_a_waiting_agent_question_starts_open`, `saved_open_sections_win_over_the_default_rule`, `agent_note_in_a_closed_section_shows_on_its_band` (`debug_state`: `open_threads` 1, `agent` true, the section still closed), `sections_follow_settings_hot_reload_keeping_a_shown_anchor`, `hot_reload_hiding_the_anchor_file_lands_on_its_band` (turning Docs on while reading `docs/x.md`), `invalid_categories_keep_the_previous_settings_and_toast`, `invalid_legacy_generated_patterns_are_logged_not_fatal`, `unknown_category_keys_are_logged`, `palette_toggle_changes_only_this_tab`, `open_sections_round_trip_through_view_state`, `mark_all_viewed_marks_every_file_of_the_section` (2 main and 2 test files, Tests closed: both test files viewed, both main files not; the section stays closed; cursor and anchor unchanged; the band then offers "Mark all unviewed"), `viewed_progress_counts_categorized_files` (that fixture: "0/4", then "2/4" after Mark all viewed on Tests; strings by hand), `show_next_hide_and_mark_section_actions`, `generated_flags_follow_is_generated` (hand-listed expected flags for `Cargo.lock`, `api.pb.go`, `src/a.rs`, a `-linguist-generated` lockfile), `explain_file_toasts_the_verdict`, `debug_state_lists_sections`, `settings_defaults_match_design_table` (categories); bun `user guide lists every settings key` (docs test), `every icon the app and viewport use is registered` (extended: the catalog's icons and `CUSTOM_ICONS`), E2E `an MCP-opened review shows its tests in a closed section` (`mcp-app.test.ts`, through `debug_state`); screenshots `e2e_categories_sections` and `e2e_categories_sections_dark` (main files, Tests opened from its band, Generated closed with a lockfile, a note on a test file).
 
 **Acceptance:** with default settings, test and generated files sit in closed sections at the bottom; settings and palette changes apply live; Viewed and Find still cover every file.
 
@@ -2747,21 +2836,23 @@ Then the standard completion block.
 **Files**
 
 - Create: `crates/polygloss-app/src/tree/panels.rs`
-- Modify: `crates/polygloss-app/src/tree/{mod.rs, footer.rs, row.rs}`, `src/review_tab/header.rs` (stats over uncategorized files, chips), `src/find/mod.rs` (display order, panel follow), `src/threads/placement.rs` (`DiffOrder` by display rank), `src/categories/mod.rs` (chip text and the breakdown)
-- Test: `crates/polygloss-app/tests/app/{tree.rs, find.rs, threads.rs, header_card.rs, categories.rs}`, `crates/polygloss-app/tests/e2e/tree.rs`; baselines `e2e-tree-accordion.png` (new), `e2e-tree-badges.png`, `e2e-find-bar-results.png`
+- Modify: `crates/polygloss-app/src/tree/{mod.rs, footer.rs, row.rs}`, `src/review_tab/header.rs` (stats over uncategorized files, chips), `src/find/mod.rs` (display order, panel follow), `src/threads/{placement.rs, mod.rs}` (`DiffOrder` by display rank; `.`/`,` in that order), `src/viewed/mod.rs` (the next-unviewed walk), `src/categories/mod.rs` (chips and the breakdown)
+- Test: `crates/polygloss-app/tests/app/{tree.rs, find.rs, threads.rs, header_card.rs, categories.rs, viewed.rs, ipc.rs, urls.rs}`, `crates/polygloss-app/tests/e2e/tree.rs`; baselines `e2e-tree-accordion.png`, `e2e-tree-accordion-dark.png` (new), `e2e-tree-badges.png`, `e2e-find-bar-results.png`
 
 **Interfaces**
 
 ```rust
 pub struct FilesPanel { /* one PanelTree { model, TreeState, … } per panel; the open one */ } // the Files segment's body; FileTree's API kept per panel
-pub struct Chip { pub category: CategoryId, pub text: SharedString /* "6 tests" */ }
+pub struct Chip { pub category: CategoryId, pub text: SharedString /* CategoryInfo::chip: "1 test", "6 tests" */ }
 pub fn chips(partition: &Partition) -> Vec<Chip>;
 pub struct Breakdown { pub excluding: Totals, pub including: Totals, pub categorized: Totals } // Totals { files, additions, deletions, counted }
 pub fn breakdown(partition: &Partition, viewport: &DiffViewport) -> Breakdown;
 ```
 
-- Accordion, footer, chips and the follow rule: design §11.5 (OQ-44). Panels are plain `v_flex` (no gpui-component `Accordion`); each open panel is a virtualized tree that scrolls on its own; panel switches are instant.
+- Accordion, footer, chips and the follow rule: design §11.5 (OQ-44). Panels are plain `v_flex` (no gpui-component `Accordion`); each open panel is a virtualized tree that scrolls on its own; panel switches are instant. A panel header shows its icon, title and file count, then the viewport's `band_flags` for its section. When every file is categorized the Changes panel is left out and the first category panel opens.
 - Find lists matches in display order; tree comparisons (`target > idx`) and threads' `DiffOrder` use `display_rank`. View state's `tree_expanded` covers every panel.
+- Viewed walk (design §9): `jump_to_next_unviewed` walks `display_order()` from the marked file's rank, skips hidden files and wraps over shown ones; `set_viewed` jumps from the highest display rank of its files, only when they hold the cursor's (else the anchor's) file; marking a hidden file never jumps.
+- Explicit targets reach the viewport through its explicit API (`scroll_to`, `go_to_file`, `set_cursor`), so a tree row, ⌘P, Find, `.`/`,`, the agent-replies banner, URLs and `focus` open the section; the sidebar then opens its panel (the follow rule).
 
 **Steps**
 
@@ -2769,14 +2860,14 @@ pub fn breakdown(partition: &Partition, viewport: &DiffViewport) -> Breakdown;
 - [ ] `FilesPanel` from the partition; follow rule; footer and header chips with the tooltip.
 - [ ] Display-order consumers; re-record baselines; check the tree build time.
 
-**Tests:** `accordion_has_changes_then_a_panel_per_nonempty_category`, `one_panel_open_at_a_time_each_scrolls`, `selecting_a_category_file_opens_its_section`, `panel_follows_jumps_and_section_crossings`, `a_user_opened_panel_stays_until_the_next_crossing`, `footer_and_header_exclude_categorized_files` (expected from `git diff --numstat` of the fixture), `chips_and_breakdown_tooltip`, `find_lists_matches_in_display_order_and_opens_sections`, `threads_panel_orders_by_display_rank`, `tree_n_p_walk_the_open_panel`, `tree_builds_13k_files_under_200ms` (every panel); E2E `e2e_tree_accordion`, `e2e_find_bar_results`.
+**Tests:** `accordion_has_changes_then_a_panel_per_nonempty_category`, `every_file_categorized_leaves_out_the_changes_panel`, `one_panel_open_at_a_time_each_scrolls`, `panel_header_shows_open_threads_agent_and_changed`, `selecting_a_category_file_opens_its_section`, `panel_follows_jumps_and_section_crossings`, `a_user_opened_panel_stays_until_the_next_crossing`, `footer_and_header_exclude_categorized_files` (expected from `git diff --numstat` of the fixture), `chips_and_breakdown_tooltip` (hand-written: "1 test · 2 generated" and the three tooltip lines), `find_lists_matches_in_display_order_and_opens_sections`, `threads_panel_orders_by_display_rank`, `dot_and_comma_reach_threads_in_closed_sections`, `focus_and_url_to_a_thread_in_a_closed_section_open_it_and_its_panel` (IPC `focus` and a `polygloss://` URL), `marking_viewed_jumps_in_display_order_and_skips_closed_sections` (`src/a.rs`, `src/a.test.rs`, `src/b.rs` with Tests closed: `v` on `a.rs` lands on `b.rs`; `v` on `b.rs` then stays, since `a.rs` is viewed and `a.test.rs` hidden; with `a.rs` unviewed it wraps to `a.rs`), `marking_a_hidden_file_viewed_from_its_panel_never_moves_the_view`, `mark_folder_viewed_jumps_from_its_last_file_in_display_order`, `tree_n_p_walk_the_open_panel`, `tree_builds_13k_files_under_200ms` (every panel; timing-test rule); E2E `e2e_tree_accordion`, `e2e_tree_accordion_dark` (Changes, Tests and Generated panels, Tests open, footer chips), `e2e_find_bar_results`.
 
 **Acceptance:** the sidebar's Files segment is the accordion of design §11.5; totals exclude categorized files everywhere; nothing walks files out of display order.
 
 **Verify**
 
 ```bash
-scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/tree::/) | test(/find::/) | test(/threads::/) | test(/header_card::/) | test(/categories::/))'
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/tree::/) | test(/find::/) | test(/threads::/) | test(/header_card::/) | test(/categories::/) | test(/viewed::/) | test(/ipc::/) | test(/urls::/))'
 scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
 ```
 
@@ -2792,7 +2883,7 @@ Then the standard completion block.
 
 **Steps**
 
-- [ ] Re-record every baseline and open each, light and dark. Compare against [research: anatomy and measurements](research/redesign-reference.md#anatomy) and fill this checklist in the report: top rows 52 pt and aligned; sidebar 280 pt, opaque, field and segmented fills; tree rows 28 pt, icons, right-aligned stats and status letters; toolbar repo block and pills; header card; card radius, border, gap and margins; file header 2.25 rows with dim directory and bold name; bars at the left edge, tinted numbers and gutter, no glyphs; gap rows on the canvas; syntax colors per the palette; section bands; threads panel cards; banner notices; Home cards; dark mode with the same structure.
+- [ ] Re-record every baseline and open each, light and dark. Compare against [research: anatomy and measurements](research/redesign-reference.md#anatomy) and fill this checklist in the report: top rows 52 pt and aligned; sidebar 280 pt, opaque, field and segmented fills; tree rows 28 pt, `folder`/`file` outline icons at rest, right-aligned stats and status letters; toolbar repo block and pills; canvas above the header card (the 32 pt strip and no lead; the reference has ≈ 13 pt, OQ-39); header card with its stats before the SHA; card radius, border, gap and margins; file header 2.25 rows with dim directory and bold name, kind and review-state pills, open-in-editor icon, `+a −d` pill and Viewed pill; bars at the left edge, tinted numbers and gutter, no glyphs; gap rows on the canvas; syntax colors per the palette; section bands with their indicators; accordion panel headers; threads panel cards; banner notices; Home cards; dark mode with the same structure (the five dark baselines the cards list).
 - [ ] Fix small deviations (spacing, sizes, colors); list larger ones as open questions instead of redesigning.
 - [ ] Manual, in the dev app (`tmux` session `polygloss-m6-preview`, sandboxed `HOME`): traffic lights centered in the 52 pt row (tune `TRAFFIC_LIGHT_POSITION`), drag and double-click zoom on both rows, fullscreen, hidden sidebar, Reduce Motion switched in System Settings while the app runs (motion stops after the next activation), light and dark. Record each result.
 - [ ] Update the user guide and README prose.
@@ -2817,11 +2908,13 @@ scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
 bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --compare-baseline
 ```
 
-- [ ] Every §12.1 budget passes on all four corpora in both layouts, including `sections_scroll_p95_ms` and `section_toggle_ms`. A `--compare-baseline` regression is accepted only when the metric still meets its budget and both scroll metrics stay under 2.1 ms (a quarter of 8.3 ms); record the before and after numbers and the cause here, then commit `--write-baseline`.
-- [ ] Every baseline re-recorded and reviewed, light and dark, against the T6.16 checklist (a human-equivalent comparison with the reference); differences listed.
+- [ ] Every §12.1 budget passes on all four corpora in both layouts, including `sections_scroll_p95_ms` and `section_toggle_ms`.
+- [ ] `scroll_p95_ms` and `sections_scroll_p95_ms` are ≤ 2.1 ms (a quarter of 8.3 ms) in every corpus and layout, read from the results: `--compare-baseline` flags a frame-bound metric only when it is 10% and 8.3 ms worse, so it would not catch this. Record the before and after numbers and the cause of any rise here, then commit `--write-baseline`.
+- [ ] Every baseline re-recorded and reviewed, light and dark, against the T6.16 checklist (a human-equivalent comparison with the reference); differences listed. Dark: `e2e_theme_polygloss_dark_unified`, `e2e_sidebar_reviews_dark`, `e2e_live_header_and_banner_dark`, `e2e_categories_sections_dark`, `e2e_tree_accordion_dark`.
+- [ ] For OQ-41 (Submit's color) and OQ-39 (the strip), a gate screenshot is shown to the user beside the reference (the reference stays out of the repo).
 - [ ] Manual checks of T6.16 recorded (traffic lights, drag, zoom, fullscreen, Reduce Motion live).
 - [ ] [Definition of done (M6)](#definition-of-done-m6) ticked.
-- [ ] Design OQ-35–OQ-51 presented to the user with their provisional defaults.
+- [ ] Design OQ-35–OQ-53 presented to the user with their provisional defaults.
 
 ---
 
@@ -2876,27 +2969,29 @@ Results table columns: case, date, Claude Code version, macOS version, result (p
 
 ## Risks and spikes
 
-| ID  | Risk                                                                                                                     | Where handled            | Spike or mitigation                                                                                                                                                                                                                                                                                    |
-| --- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| S1  | Cost of painting shaped text in a custom GPUI element is unmeasured                                                      | T2.4 (first half-day)    | Throwaway element with 10k lines; stop and report if p95 > 4 ms for 80 visible rows                                                                                                                                                                                                                    |
-| S2  | Viewport misses §12.1 budgets (Zed spike: 4.3 GB, 23 ms frames at 3k files split + syntax)                               | T2.10, M2 gate           | File-level windowing from day one (§12.4), perf harness, [fallback ladder](#perf-gate-fallback-ladder); visible fallbacks need approval                                                                                                                                                                |
-| S3  | Snapshot cost on large dirty worktrees; LFS/clean filters run during `add -A`                                            | T1.5                     | `snapshot_cost_large_dirty_worktree` numbers; follow-up before T3.11 if p50 > 1 s                                                                                                                                                                                                                      |
-| S4  | asyncRewake wake path: enforced timeout, no re-arm while idle, session-id drift                                          | T4.8, T4.10, manual gate | W1–W8 procedure above; `wait_for_review` fallback; waiter state in the Submit dialog                                                                                                                                                                                                                   |
-| S5  | cargo-packager may not re-sign Sparkle's nested `Updater.app` / `Autoupdate` (library-choices L6)                        | T5.2                     | `codesign --verify --deep --strict`, `spctl -a -vv`; fallback `scripts/sign-sparkle.sh` with Sparkle's documented sequence                                                                                                                                                                             |
-| S6  | gpui-kit / gpui-pre break weekly                                                                                         | all GUI tasks            | Pin `=0.7.0` for all of v1; upgrade only for a blocking bug, as its own task gated by screenshot tests                                                                                                                                                                                                 |
-| S7  | `tree-sitter` `links` conflict between lumis and gpui-kit                                                                | T0.1, T2.2               | gpui-kit `tree-sitter*` features off; `check-deps.sh` asserts a single `tree-sitter` in `cargo tree -d`                                                                                                                                                                                                |
-| S8  | Disk: 30 GB free, gpui-kit target dirs ~8 GB                                                                             | every task               | Shared `target-shared` build dir, serialized and member-cleaned across worktrees by `scripts/cargo.sh` (per-worktree `target/` for binaries only), `line-tables-only` debug info, ≤ 3 building agents, stop below 15 GB free                                                                           |
-| S9  | rmcp ships minor versions weekly                                                                                         | T4.4                     | `~3.5.0`; a minor bump is its own task gated by the bun MCP suites                                                                                                                                                                                                                                     |
-| S10 | `show_system_notification` aborts outside an app bundle                                                                  | T3.17                    | Gate on `is_bundled()`; notification tests use an injected `Notifier`                                                                                                                                                                                                                                  |
-| S11 | `polygloss mcp` cold start (spawned every Claude Code session)                                                           | T4.4                     | Measure initialize-ready; keep the CLI graph slim (`check-deps.sh`)                                                                                                                                                                                                                                    |
-| S12 | GitHub macOS VMs may render or time GPUI differently                                                                     | T0.3, T2.9               | Screenshot tolerance; budgets gated on the developer's Apple Silicon machine; CI perf compares against a CI baseline (OQ-P9)                                                                                                                                                                           |
-| S13 | Git floor 2.39 is not what CI runs                                                                                       | T1.2                     | `POLYGLOSS_GIT_BIN` lets the core suite run against Xcode CLT git (`/Library/Developer/CommandLineTools/usr/bin/git`) where installed                                                                                                                                                                  |
-| S14 | Hunk parity below 99.9% on some seeded repos: imara Myers pre-prunes lines of git's reduced input that git keeps (T1.16) | T1.16 follow-up          | **Resolved.** `myers_core.rs` (imara's Myers core without its preprocessing, on the lines `git_myers.rs` keeps, with three heuristic fixes) plus git's slider order (T1.16 "S14 fix"). Was: seeds 2 and 4 at 99.76%, Linux 98.503% (174 of 11,626). Now: seeds 1–5 100%, Linux 100% (11,626 of 11,626) |
-| S15 | Viewport geometry: about 12 sites add `header_height` to `file_top`; with a zero card gap they pass tests while wrong    | T6.5                     | Helpers in `Document` (`header_top`, `body_top`, `top_line`); every new test uses a non-zero gap and padding                                                                                                                                                                                           |
-| S16 | Cards, SVG icons and a second font raise frame cost; `--compare-baseline` fails at 10% of a ~0.7 ms scroll p95           | T6.5, T6.7, M6 gate      | Every budget must hold and scroll p95 stay under a quarter of its budget; the M6 gate re-baselines once with the numbers recorded                                                                                                                                                                      |
-| S17 | Thousands of zero-height hidden files pulled into every frame or the materialization window                              | T6.10                    | Walk visible files by offset through the height index; clamp `overlapping()`; perf scenario `sections`                                                                                                                                                                                                 |
-| S18 | Traffic lights, window drag and a live Reduce Motion change are invisible to headless tests                              | T6.3, T6.16              | Bounds tests for the rows; recorded manual checks in the dev app                                                                                                                                                                                                                                       |
-| S19 | gpui-component `PopupMenu` paints its own shadow, which shows through a fading menu                                      | T6.8                     | Frame check; drop the menu motion if the shadow shows (ADR-0029)                                                                                                                                                                                                                                       |
+| ID  | Risk                                                                                                                                                                                    | Where handled                     | Spike or mitigation                                                                                                                                                                                                                                                                                    |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| S1  | Cost of painting shaped text in a custom GPUI element is unmeasured                                                                                                                     | T2.4 (first half-day)             | Throwaway element with 10k lines; stop and report if p95 > 4 ms for 80 visible rows                                                                                                                                                                                                                    |
+| S2  | Viewport misses §12.1 budgets (Zed spike: 4.3 GB, 23 ms frames at 3k files split + syntax)                                                                                              | T2.10, M2 gate                    | File-level windowing from day one (§12.4), perf harness, [fallback ladder](#perf-gate-fallback-ladder); visible fallbacks need approval                                                                                                                                                                |
+| S3  | Snapshot cost on large dirty worktrees; LFS/clean filters run during `add -A`                                                                                                           | T1.5                              | `snapshot_cost_large_dirty_worktree` numbers; follow-up before T3.11 if p50 > 1 s                                                                                                                                                                                                                      |
+| S4  | asyncRewake wake path: enforced timeout, no re-arm while idle, session-id drift                                                                                                         | T4.8, T4.10, manual gate          | W1–W8 procedure above; `wait_for_review` fallback; waiter state in the Submit dialog                                                                                                                                                                                                                   |
+| S5  | cargo-packager may not re-sign Sparkle's nested `Updater.app` / `Autoupdate` (library-choices L6)                                                                                       | T5.2                              | `codesign --verify --deep --strict`, `spctl -a -vv`; fallback `scripts/sign-sparkle.sh` with Sparkle's documented sequence                                                                                                                                                                             |
+| S6  | gpui-kit / gpui-pre break weekly                                                                                                                                                        | all GUI tasks                     | Pin `=0.7.0` for all of v1; upgrade only for a blocking bug, as its own task gated by screenshot tests                                                                                                                                                                                                 |
+| S7  | `tree-sitter` `links` conflict between lumis and gpui-kit                                                                                                                               | T0.1, T2.2                        | gpui-kit `tree-sitter*` features off; `check-deps.sh` asserts a single `tree-sitter` in `cargo tree -d`                                                                                                                                                                                                |
+| S8  | Disk: 30 GB free, gpui-kit target dirs ~8 GB                                                                                                                                            | every task                        | Shared `target-shared` build dir, serialized and member-cleaned across worktrees by `scripts/cargo.sh` (per-worktree `target/` for binaries only), `line-tables-only` debug info, ≤ 3 building agents, stop below 15 GB free                                                                           |
+| S9  | rmcp ships minor versions weekly                                                                                                                                                        | T4.4                              | `~3.5.0`; a minor bump is its own task gated by the bun MCP suites                                                                                                                                                                                                                                     |
+| S10 | `show_system_notification` aborts outside an app bundle                                                                                                                                 | T3.17                             | Gate on `is_bundled()`; notification tests use an injected `Notifier`                                                                                                                                                                                                                                  |
+| S11 | `polygloss mcp` cold start (spawned every Claude Code session)                                                                                                                          | T4.4                              | Measure initialize-ready; keep the CLI graph slim (`check-deps.sh`)                                                                                                                                                                                                                                    |
+| S12 | GitHub macOS VMs may render or time GPUI differently                                                                                                                                    | T0.3, T2.9                        | Screenshot tolerance; budgets gated on the developer's Apple Silicon machine; CI perf compares against a CI baseline (OQ-P9)                                                                                                                                                                           |
+| S13 | Git floor 2.39 is not what CI runs                                                                                                                                                      | T1.2                              | `POLYGLOSS_GIT_BIN` lets the core suite run against Xcode CLT git (`/Library/Developer/CommandLineTools/usr/bin/git`) where installed                                                                                                                                                                  |
+| S14 | Hunk parity below 99.9% on some seeded repos: imara Myers pre-prunes lines of git's reduced input that git keeps (T1.16)                                                                | T1.16 follow-up                   | **Resolved.** `myers_core.rs` (imara's Myers core without its preprocessing, on the lines `git_myers.rs` keeps, with three heuristic fixes) plus git's slider order (T1.16 "S14 fix"). Was: seeds 2 and 4 at 99.76%, Linux 98.503% (174 of 11,626). Now: seeds 1–5 100%, Linux 100% (11,626 of 11,626) |
+| S15 | Viewport geometry: about 12 sites add `header_height` to `file_top`; with a zero card gap they pass tests while wrong                                                                   | T6.5                              | Helpers in `Document` (`header_top`, `body_top`, `top_line`); every new test uses a non-zero gap and padding                                                                                                                                                                                           |
+| S16 | Cards, SVG icons and a second font raise frame cost, and `--compare-baseline` flags a frame-bound metric only when it is 10% **and** 8.3 ms worse, so a 0.7 → 2 ms scroll p95 passes it | T6.5, T6.7, T6.10, T6.17, M6 gate | Perf tasks report both scroll p95s; the gate requires them ≤ 2.1 ms (a quarter of the budget) from the results and re-baselines once with the numbers recorded                                                                                                                                         |
+| S17 | Thousands of zero-height hidden files pulled into every frame or the materialization window                                                                                             | T6.10, T6.17                      | `SlotRange` is not an iterator; `shown_files` steps by offset through the height index; `overlapping()` clamped; perf scenario `sections` (with a prelude)                                                                                                                                             |
+| S18 | Traffic lights, window drag and a live Reduce Motion change are invisible to headless tests                                                                                             | T6.3, T6.16                       | Bounds tests for the rows; recorded manual checks in the dev app                                                                                                                                                                                                                                       |
+| S19 | gpui-component `PopupMenu` paints its own shadow, which shows through a fading menu                                                                                                     | —                                 | **Resolved at design time:** the toolbar menu motion was dropped (ADR-0029)                                                                                                                                                                                                                            |
+| S20 | Motion tests sampled on the wall clock pass with no motion or flake under load                                                                                                          | T6.8, T6.12, T6.13                | `motion::enter_from` runs on gpui-base's executor clock; tests step it with `advance_clock` (M6 Motion rule)                                                                                                                                                                                           |
+| S21 | No frame metric covers the app chrome (sidebar tree, toolbar)                                                                                                                           | T6.11, T6.15                      | `tree_does_not_rerender_on_scroll_frames`; the tree listens to `CountsUpdated`, not frames. Recorded gap: chrome cost is not measured                                                                                                                                                                  |
 
 ---
 
@@ -2951,10 +3046,10 @@ Each line needs evidence, as for v1. This list is kept apart from the v1 list, w
 - [ ] Sidebar: the Files segment (filter, accordion of trees, totals and chips) and the Reviews segment (Home, Open, Awaiting you, Recent); hideable; one width per window.
 - [ ] Toolbar: every control from before M6 has its design §11.4 home; the row fits at 720 pt.
 - [ ] Polygloss Light/Dark are the defaults and Pierre stays selectable; the built-in themes pass the contrast test; Lilex stays the default with the SF Mono alias (ADR-0027).
-- [ ] Viewport: file cards with sticky headers inside them, the header card, bar indicators by default, tinted line numbers, gap rows on the canvas.
+- [ ] Viewport: file cards with sticky headers inside them keeping every v1 badge, the header card shown at the top on open, bar indicators by default, tinted line numbers, gap rows on the canvas.
 - [ ] The threads panel is hidden by default and remembered; banners are notices in the reserved strip.
-- [ ] File categories: the core classifier with geld's catalog credited in `NOTICE`, defaults, `settings.json` configuration with hot reload and validation, sections at the bottom of the diff, the accordion, totals and chips, Find and threads across sections, palette toggles, the MCP and CLI `category` fields and `polygloss debug categorize`, the store v2 tri-state (ADR-0028).
-- [ ] Motion: the three motions of design §11.16, Reduce Motion followed live, nothing else M6 added moves (ADR-0029).
+- [ ] File categories: the core classifier with geld's catalog credited in `NOTICE`, defaults, `settings.json` configuration with hot reload and validation, sections at the bottom of the diff, the accordion, totals and chips, Find and threads across sections, palette toggles and section actions, stepwise keys passing over closed sections while explicit targets open them, agent threads visible on bands and panels, the MCP and CLI `category` fields and `polygloss debug categorize`, the store v2 tri-state (ADR-0028).
+- [ ] Motion: the two motions of design §11.16 on the executor clock, Reduce Motion followed live, nothing else M6 added moves (ADR-0029).
 - [ ] Every §12.1 budget holds, including the section metrics; the perf baseline is rewritten only with the numbers recorded in the M6 gate.
 - [ ] Every screenshot baseline re-recorded and reviewed against the reference; the manual window checks recorded.
 - [ ] Docs: design §11, ADR-0026–ADR-0029, the user guide and `docs/agents.md` match the build; the docs tests pass.
@@ -2963,7 +3058,7 @@ Each line needs evidence, as for v1. This list is kept apart from the v1 list, w
 
 ## Open questions
 
-M6's provisional defaults are design §26 OQ-35–OQ-51; builders use them until the user decides.
+M6's provisional defaults are design §26 OQ-35–OQ-53; builders use them until the user decides.
 
 ### Orchestrator decisions after M2 (provisional — pending user confirmation)
 
@@ -3003,38 +3098,38 @@ Design §26 OQ-1…OQ-34 stay in force with their provisional defaults. These ar
 
 ## Spec coverage map
 
-| Design section                               | Tasks                                                                                   |
-| -------------------------------------------- | --------------------------------------------------------------------------------------- |
-| §3 Sources                                   | T1.2, T1.12, T3.5, T4.3                                                                 |
-| §4 Identity                                  | T1.1, T1.12                                                                             |
-| §5 Snapshots                                 | T1.5, T3.11                                                                             |
-| §6 Git and diff engine                       | T1.2–T1.4, T1.6–T1.8, T1.16, T6.1, T6.4                                                 |
-| §7 Data model                                | T1.10, T1.11, T1.12–T1.14, T3.4 (auto-prune), T6.1, T6.12, T6.14                        |
-| §8 Comments                                  | T1.13, T1.15, T3.9, T3.10, T4.6 (agent edit/delete)                                     |
-| §9 Viewed                                    | T1.14, T3.7, T6.11, T6.14                                                               |
-| §10 Live mode                                | T3.11                                                                                   |
-| §11.1–11.5 Window, Home, open, toolbar, tree | T3.1, T3.4 (incl. reassign), T3.5, T3.6, T3.7, T3.12, T6.3, T6.6, T6.8, T6.11, T6.15    |
-| §11.6 Viewport                               | T1.9, T2.3–T2.7, T3.8, T3.9, T6.5, T6.7, T6.10, T6.13                                   |
-| §11.7 Banners                                | T3.1, T3.11, T3.13, T6.13                                                               |
-| §11.8–11.9 Palette, keymap                   | T3.2 (declares), T3.6–T3.11, T3.16 (handlers), T5.6, T6.6, T6.8, T6.14                  |
-| §11.10–11.11 Themes, highlighting            | T2.2, T2.6, T3.3, T6.2                                                                  |
-| §11.12 View state                            | T1.14, T3.14, T6.12, T6.14                                                              |
-| §11.13 Open in editor                        | T3.16, T6.7                                                                             |
-| §11.14 Find                                  | T3.15, T6.15                                                                            |
-| §11.15 File categories                       | T6.1, T6.4, T6.9, T6.10, T6.14, T6.15                                                   |
-| §11.16 Motion                                | T6.8, T6.12, T6.13                                                                      |
-| §12 Performance                              | T2.1, T2.3, T2.6, T2.9, T2.10, T3.10, T3.11, M3 gate, T6.5, T6.7, T6.10, T6.13, M6 gate |
-| §13 Processes and IPC                        | T4.1, T4.2                                                                              |
-| §14 CLI                                      | T4.3, T4.8, T4.9, T6.9                                                                  |
-| §15 MCP                                      | T4.4–T4.7, T4.13, T6.9                                                                  |
-| §16 Plugin and wake-up                       | T4.7, T4.8, T4.10, T4.12, T4.13, manual gate                                            |
-| §17 Notifications and badge                  | T3.17, T4.6                                                                             |
-| §18 Settings and keymap files                | T3.1, T3.2, T3.3, T6.2, T6.7, T6.14                                                     |
-| §19 Security and privacy                     | T0.1, T1.2, T3.9, T4.1, T5.7                                                            |
-| §20 Testing                                  | T0.2, T0.3, every task                                                                  |
-| §21 Packaging                                | T5.1–T5.4, T5.7, T6.4 (`NOTICE`)                                                        |
-| §22 Platform scope                           | T0.1, T3.16, T3.17                                                                      |
-| §24 Layout                                   | T0.1, [Workspace layout](#workspace-layout-and-crate-ownership)                         |
+| Design section                               | Tasks                                                                                          |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| §3 Sources                                   | T1.2, T1.12, T3.5, T4.3                                                                        |
+| §4 Identity                                  | T1.1, T1.12                                                                                    |
+| §5 Snapshots                                 | T1.5, T3.11                                                                                    |
+| §6 Git and diff engine                       | T1.2–T1.4, T1.6–T1.8, T1.16, T6.1, T6.4                                                        |
+| §7 Data model                                | T1.10, T1.11, T1.12–T1.14, T3.4 (auto-prune), T6.1, T6.12, T6.14                               |
+| §8 Comments                                  | T1.13, T1.15, T3.9, T3.10, T4.6 (agent edit/delete)                                            |
+| §9 Viewed                                    | T1.14, T3.7, T6.11, T6.14, T6.15                                                               |
+| §10 Live mode                                | T3.11                                                                                          |
+| §11.1–11.5 Window, Home, open, toolbar, tree | T3.1, T3.4 (incl. reassign), T3.5, T3.6, T3.7, T3.12, T6.3, T6.6, T6.8, T6.11, T6.15           |
+| §11.6 Viewport                               | T1.9, T2.3–T2.7, T3.8, T3.9, T6.5, T6.7, T6.10, T6.17, T6.13                                   |
+| §11.7 Banners                                | T3.1, T3.11, T3.13, T6.13                                                                      |
+| §11.8–11.9 Palette, keymap                   | T3.2 (declares), T3.6–T3.11, T3.16 (handlers), T5.6, T6.6, T6.8, T6.14                         |
+| §11.10–11.11 Themes, highlighting            | T2.2, T2.6, T3.3, T6.2                                                                         |
+| §11.12 View state                            | T1.14, T3.14, T6.12, T6.14                                                                     |
+| §11.13 Open in editor                        | T3.16, T6.7                                                                                    |
+| §11.14 Find                                  | T3.15, T6.15                                                                                   |
+| §11.15 File categories                       | T6.1, T6.4, T6.9, T6.17, T6.14, T6.15                                                          |
+| §11.16 Motion                                | T6.8 (module), T6.12, T6.13                                                                    |
+| §12 Performance                              | T2.1, T2.3, T2.6, T2.9, T2.10, T3.10, T3.11, M3 gate, T6.5, T6.7, T6.10, T6.17, T6.13, M6 gate |
+| §13 Processes and IPC                        | T4.1, T4.2                                                                                     |
+| §14 CLI                                      | T4.3, T4.8, T4.9, T6.9                                                                         |
+| §15 MCP                                      | T4.4–T4.7, T4.13, T6.9                                                                         |
+| §16 Plugin and wake-up                       | T4.7, T4.8, T4.10, T4.12, T4.13, manual gate                                                   |
+| §17 Notifications and badge                  | T3.17, T4.6                                                                                    |
+| §18 Settings and keymap files                | T3.1, T3.2, T3.3, T6.2, T6.7, T6.14                                                            |
+| §19 Security and privacy                     | T0.1, T1.2, T3.9, T4.1, T5.7                                                                   |
+| §20 Testing                                  | T0.2, T0.3, every task                                                                         |
+| §21 Packaging                                | T5.1–T5.4, T5.7, T6.4 (`NOTICE`)                                                               |
+| §22 Platform scope                           | T0.1, T3.16, T3.17                                                                             |
+| §24 Layout                                   | T0.1, [Workspace layout](#workspace-layout-and-crate-ownership)                                |
 
 ## Decision log coverage
 
@@ -3079,4 +3174,4 @@ Every bullet of the decision log, mapped to the tasks that implement it. Superse
 | Theme, fonts, diff-style settings                                                                                                                                              | T2.2, T2.4, T3.3                                                                        |
 | Diff id over tree OIDs                                                                                                                                                         | T1.1                                                                                    |
 | Known risks: asyncRewake timeout, re-arm, session drift                                                                                                                        | T1.14, T4.8, T4.12, manual gate                                                         |
-| Redesign after v1 (2026-10-05): the reference layout, geld-style configurable categories, motion per the design-engineering skills (orchestrator decisions D1–D13)             | T6.1–T6.16, M6 gate                                                                     |
+| Redesign after v1 (2026-10-05): the reference layout, geld-style configurable categories, motion per the design-engineering skills (orchestrator decisions D1–D13)             | T6.1–T6.17, M6 gate                                                                     |
