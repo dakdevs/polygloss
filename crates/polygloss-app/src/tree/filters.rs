@@ -1,13 +1,18 @@
 //! The file tree's filters (design §11.5): unviewed, has comments, status
 //! (A/M/D/R), extension, and a fuzzy filter box ranked by `nucleo-matcher`
-//! (the same matcher the ⌘P finder uses, [`Fuzzy`]).
+//! (the same matcher the ⌘P finder uses, [`Fuzzy`]); and the filter menu
+//! that toggles them.
 
 use std::collections::BTreeSet;
 
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::{Context, WeakEntity, px};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use polygloss_diff::{FileChange, FileStatus};
 use polygloss_viewport::FileFlags;
+
+use super::FileTree;
 
 /// The status filter's choices (design §11.5: A/M/D/R). A type change
 /// counts as modified.
@@ -170,4 +175,79 @@ impl Fuzzy {
         indices.dedup();
         Some(indices)
     }
+}
+
+/// A filter menu item's effect.
+type FilterToggle = Box<dyn Fn(&mut FileTree, &mut Context<FileTree>)>;
+
+/// The filter menu of `tree` (the funnel button's, and `f`'s): Unviewed,
+/// Has comments, the statuses and, with more than one, the extensions, each
+/// checked when on; "Clear filters" while any is on.
+/// `f` and `extensions` are the tree's filters and file extensions as the
+/// menu opens.
+pub(super) fn menu(
+    tree: &WeakEntity<FileTree>,
+    f: TreeFilters,
+    extensions: Vec<(String, usize)>,
+    mut menu: PopupMenu,
+) -> PopupMenu {
+    let item = |label: &str, checked: bool, act: FilterToggle| {
+        let tree = tree.clone();
+        PopupMenuItem::new(label.to_owned())
+            .checked(checked)
+            .on_click(move |_, _, cx| {
+                if let Some(tree) = tree.upgrade() {
+                    tree.update(cx, |t, cx| act(t, cx));
+                }
+            })
+    };
+    menu = menu
+        .item(item(
+            "Unviewed",
+            f.unviewed,
+            Box::new(|t, cx| t.toggle_unviewed(cx)),
+        ))
+        .item(item(
+            "Has comments",
+            f.has_comments,
+            Box::new(|t, cx| t.toggle_has_comments(cx)),
+        ))
+        .separator()
+        .label("Status");
+    for status in StatusFilter::ALL {
+        menu = menu.item(item(
+            status.label(),
+            f.statuses.contains(&status),
+            Box::new(move |t, cx| t.toggle_status(status, cx)),
+        ));
+    }
+    if extensions.len() > 1 {
+        menu = menu.separator().label("Extension");
+        for (ext, count) in &extensions {
+            let label = if ext.is_empty() {
+                format!("No extension ({count})")
+            } else {
+                format!(".{ext} ({count})")
+            };
+            let e = ext.clone();
+            menu = menu.item(item(
+                &label,
+                f.extensions.contains(ext),
+                Box::new(move |t, cx| t.toggle_extension(&e, cx)),
+            ));
+        }
+    }
+    if f.menu_active() {
+        let tree = tree.clone();
+        menu = menu
+            .separator()
+            .item(
+                PopupMenuItem::new("Clear filters").on_click(move |_, window, cx| {
+                    if let Some(tree) = tree.upgrade() {
+                        tree.update(cx, |t, cx| t.clear_filters(window, cx));
+                    }
+                }),
+            );
+    }
+    menu.max_h(px(420.)).scrollable(true)
 }

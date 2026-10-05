@@ -1,7 +1,8 @@
-//! Screenshots of T3.6 (design §11.5): the file tree with compacted
-//! folders and every row badge (Viewed checkboxes, including a partly
-//! viewed folder, status letters, +/− counts, open threads, the agent badge
-//! and the "changed since viewed" dot), next to the diff.
+//! Screenshots of T3.6 and T6.11 (design §11.5): the file tree with compacted
+//! folders, outline icons and every row badge (Viewed slots at the rows'
+//! end, including partly viewed folders, status letters, `+a −d`, open
+//! threads, the agent badge and the "changed since viewed" dot), the filter
+//! field and the footer totals, next to the diff.
 
 use std::sync::Arc;
 

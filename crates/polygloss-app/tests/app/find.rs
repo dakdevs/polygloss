@@ -146,12 +146,12 @@ fn find_searches_unloaded_files(cx: &mut TestAppContext) {
     let bar = bar(&mut shell, &tab);
     assert!(!bar.read_with(shell.cx, |b, _| b.is_open()));
 
-    assert!(shell.cx.debug_bounds("tree-count").is_some());
+    assert!(shell.cx.debug_bounds("tree-filter").is_some());
     find_text(&mut shell, "needle");
     assert!(bar.read_with(shell.cx, |b, _| b.is_open()));
     // Find takes the left pane in place of the file tree.
     assert!(shell.cx.debug_bounds("find-pane").is_some());
-    assert!(shell.cx.debug_bounds("tree-count").is_none());
+    assert!(shell.cx.debug_bounds("tree-filter").is_none());
     assert!(shell.cx.debug_bounds("find-match-2").is_some());
     // Context shows once (on the new side), in display order: the
     // context line, the added line, the removed line.
@@ -239,7 +239,7 @@ fn find_next_prev_wraps(cx: &mut TestAppContext) {
     keys(&mut shell, "escape");
     assert!(!bar.read_with(shell.cx, |b, _| b.is_open()));
     assert!(shell.cx.debug_bounds("find-pane").is_none());
-    assert!(shell.cx.debug_bounds("tree-count").is_some());
+    assert!(shell.cx.debug_bounds("tree-filter").is_some());
     let diff_focused = shell
         .cx
         .update(|window, cx| tab.read(cx).viewport_focus().is_focused(window));
