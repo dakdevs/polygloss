@@ -27,6 +27,7 @@ pub fn init(cx: &mut App) {
     crate::open_flow::init(cx);
     crate::review_tab::init(cx);
     crate::tree::init(cx);
+    crate::categories::init(cx);
     crate::viewed::init(cx);
     crate::cursor::init(cx);
     crate::markdown::init(cx);
@@ -45,12 +46,16 @@ pub fn init(cx: &mut App) {
     crate::urls::init(cx);
 }
 
-/// Sets every feature up on a new review tab, in toolbar order.
+/// Sets every feature up on a new review tab, in toolbar order. Categories
+/// partition the files after threads (whose first load may open a section)
+/// and before view state (which restores the open sections, then the
+/// anchor).
 pub fn attach_review_tab(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     crate::tree::attach(tab, window, cx);
     crate::viewed::attach(tab, window, cx);
     crate::cursor::attach(tab, window, cx);
     crate::threads::attach(tab, window, cx);
+    crate::categories::attach(tab, window, cx);
     crate::composer::attach(tab, window, cx);
     crate::submit::attach(tab, window, cx);
     crate::live::attach(tab, window, cx);
@@ -63,7 +68,8 @@ pub fn attach_review_tab(tab: &mut ReviewTab, window: &mut Window, cx: &mut Cont
 }
 
 /// The toolbar's left side (design §11.4): the repo block, the pills of the
-/// review's kind, the Live pill and Snapshot, then the iteration pill.
+/// review's kind, the Live pill, then the iteration pill (Snapshot is in the
+/// live header card since T6.13).
 pub fn toolbar_left(
     tab: &ReviewTab,
     window: &mut Window,

@@ -958,3 +958,46 @@ fn live_toolbar_shows_branch_and_live_pill_opening_the_base_picker(
         "the Live pill opens the base picker"
     );
 }
+
+#[gpui_kit::test]
+fn refresh_keeps_sections_and_their_open_state(cx: &mut gpui_kit::TestAppContext) {
+    use crate::categories::{click_band, section_id, sections};
+    use polygloss_viewport::ControlAction;
+
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    for p in ["Cargo.lock", "src/a.rs", "src/a.test.rs"] {
+        repo.write(p, b"one\n");
+    }
+    repo.commit("base");
+    for p in ["Cargo.lock", "src/a.rs", "src/a.test.rs"] {
+        repo.write(p, b"two\n");
+    }
+    let mut shell = start(cx);
+    let tab = shell
+        .open(live_req(repo.path(), Since::Head))
+        .expect("open the review");
+    let tests = section_id(&mut shell, &tab, "tests");
+    click_band(&mut shell, &tab, ControlAction::SectionToggle(tests));
+    let s = |c: &str, files: &[u32], open: bool| (c.to_owned(), files.to_vec(), open);
+    assert_eq!(
+        sections(&mut shell, &tab),
+        [s("tests", &[2], true), s("generated", &[0], false)]
+    );
+
+    // A new test file appears; `R` brings it in.
+    repo.write("tests/new.rs", b"#[test]\nfn new() {}\n");
+    refresh(&mut shell, &tab);
+    assert_eq!(
+        paths(&mut shell, &tab),
+        ["Cargo.lock", "src/a.rs", "src/a.test.rs", "tests/new.rs"]
+    );
+    assert_eq!(
+        sections(&mut shell, &tab),
+        [s("tests", &[2, 3], true), s("generated", &[0], false)]
+    );
+    let order = tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).display_order().to_vec()
+    });
+    assert_eq!(order, [1, 2, 3, 0]);
+}

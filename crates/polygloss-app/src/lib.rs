@@ -16,6 +16,7 @@
 
 pub mod app_state;
 pub mod assets;
+pub mod categories;
 pub mod chrome;
 pub mod composer;
 pub mod cursor;

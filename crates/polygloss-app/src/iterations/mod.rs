@@ -607,11 +607,12 @@ fn switch(
     let kept = refresh::Kept::read(tab.viewport.read(cx));
     let old_files = tab.opened.files.clone();
     let old_provider = tab.viewport.read(cx).provider().clone();
+    let categorizer = crate::categories::shared(cx);
     cx.spawn_in(window, async move |tab, cx: &mut AsyncWindowContext| {
         let prepared = cx
             .background_spawn(async move {
                 let switched = work()?;
-                let provider = CoreDiffProvider::open(&switched.opened)?;
+                let provider = CoreDiffProvider::open(&switched.opened, &categorizer)?;
                 let plan = refresh::plan(
                     &kept,
                     &old_files,

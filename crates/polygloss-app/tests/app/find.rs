@@ -425,15 +425,23 @@ fn find_lists_matches_in_generated_files(cx: &mut TestAppContext) {
     assert!(!shows_line(&mut shell, &tab, 0, Side::New, 81));
     assert!(!shows_line(&mut shell, &tab, 1, Side::New, 60));
 
+    // `Cargo.lock` is in the closed Generated section at the bottom (T6.14),
+    // so the first match from the top is `src/big.rs`'s.
+    let hidden =
+        |shell: &mut Shell| tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).is_hidden(0));
+    assert!(hidden(&mut shell));
+
     // Going to a match loads the file's diff.
-    keys(&mut shell, "enter");
-    draw(shell.cx);
-    assert!(shows_line(&mut shell, &tab, 0, Side::New, 81));
-    assert_eq!(cursor(&mut shell, &tab), Some(pos(0, Side::New, 81)));
     keys(&mut shell, "enter");
     draw(shell.cx);
     assert!(shows_line(&mut shell, &tab, 1, Side::New, 60));
     assert_eq!(cursor(&mut shell, &tab), Some(pos(1, Side::New, 60)));
+    // One in a closed section opens it first, then loads it.
+    keys(&mut shell, "enter");
+    draw(shell.cx);
+    assert!(!hidden(&mut shell));
+    assert!(shows_line(&mut shell, &tab, 0, Side::New, 81));
+    assert_eq!(cursor(&mut shell, &tab), Some(pos(0, Side::New, 81)));
 }
 
 /// `a.txt` with `Foo bar`, `foo baz` and `fooo` added.

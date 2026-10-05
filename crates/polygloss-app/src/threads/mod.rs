@@ -212,6 +212,24 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
     tab.insert_extension(model);
 }
 
+/// The files holding an agent question waiting on the human (design
+/// §8.4), in file order; `None` until the tab's threads have loaded.
+pub fn files_with_waiting_questions(tab: &ReviewTab, cx: &App) -> Option<Vec<u32>> {
+    let m = threads(tab)?.read(cx);
+    if !m.is_loaded() {
+        return None;
+    }
+    let mut files: Vec<u32> = m
+        .threads
+        .iter()
+        .filter(|t| t.awaiting_you())
+        .filter_map(|t| m.places.get(&t.id)?.file_idx())
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    Some(files)
+}
+
 /// The threads panel.
 pub fn render_panel(
     tab: &ReviewTab,

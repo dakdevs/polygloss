@@ -5,8 +5,10 @@
 //!   (`tree::ToggleViewed`: the selected file, or the selected folder), the
 //!   header checkbox (`ViewportEvent::ViewedToggled`) and the tree's
 //!   checkboxes (`FileTreeEvent`). Marking a file viewed collapses it and
-//!   brings the next unviewed file (wrapping) to the top with the cursor on
-//!   its first line; unmarking expands it again.
+//!   brings the next unviewed shown file in display order (wrapping, never
+//!   into a closed category section) to the top with the cursor on its
+//!   first line; unmarking expands it again. Marking files of a closed
+//!   section never moves the view (design §9).
 //! - **Folders** (provisional): a folder's checkbox is tri-state (all, some,
 //!   none of its files viewed); clicking it or `v` on it checks every file
 //!   below it, or unchecks them all when all are viewed.
@@ -286,14 +288,16 @@ fn is_viewed(tab: &ReviewTab, idx: u32) -> bool {
         .is_some_and(|s| *s == ViewedState::Viewed)
 }
 
-/// Toggles file `idx`; marking it viewed jumps to the next unviewed file.
+/// Toggles file `idx`; marking a shown file viewed jumps to the next
+/// unviewed file (marking one in a closed section never moves the view).
 pub fn toggle_file(tab: &mut ReviewTab, idx: u32, cx: &mut Context<ReviewTab>) {
     if idx as usize >= tab.opened.files.len() {
         return;
     }
     let viewed = !is_viewed(tab, idx);
+    let hidden = tab.viewport.read(cx).is_hidden(idx);
     mark(tab, &[idx], viewed, cx);
-    if viewed {
+    if viewed && !hidden {
         jump_to_next_unviewed(tab, idx, cx);
     }
 }
@@ -305,16 +309,18 @@ pub fn toggle_folder(tab: &mut ReviewTab, files: Vec<u32>, cx: &mut Context<Revi
     set_viewed(tab, &files, viewed, cx);
 }
 
-/// Marks `files` (a folder's) viewed or not ([`mark`]). Marking them
-/// viewed while the viewport shows one of them jumps past them.
+/// Marks `files` (a folder's or a section's) viewed or not ([`mark`]).
+/// Marking them viewed jumps only when they hold the cursor's file (else the
+/// anchor's) and it is shown, from the last of them in display order
+/// (design §9); marking files in a closed section never moves the view.
 pub fn set_viewed(tab: &mut ReviewTab, files: &[u32], viewed: bool, cx: &mut Context<ReviewTab>) {
     let v = tab.viewport.read(cx);
     let current = v.cursor().map_or(v.anchor().file_idx, |c| c.file_idx);
+    let jump_from = (viewed && files.contains(&current) && !v.is_hidden(current))
+        .then(|| files.iter().copied().max_by_key(|&f| v.display_rank(f)))
+        .flatten();
     mark(tab, files, viewed, cx);
-    if viewed
-        && files.contains(&current)
-        && let Some(&last) = files.iter().max()
-    {
+    if let Some(last) = jump_from {
         jump_to_next_unviewed(tab, last, cx);
     }
 }
@@ -408,17 +414,28 @@ fn toast(message: String, cx: &mut App) {
         .ok();
 }
 
-/// Brings the first unviewed file after `after` (wrapping) to the top,
+/// Brings the first unviewed shown file after `after` in display order
+/// (wrapping over shown files; never into a closed section) to the top,
 /// with the cursor on it and its row selected in the tree. Nothing when
-/// every file is viewed.
+/// every shown file is viewed.
 fn jump_to_next_unviewed(tab: &mut ReviewTab, after: u32, cx: &mut Context<ReviewTab>) {
     let Some(states) = states(tab) else {
         return;
     };
-    let n = states.len() as u32;
-    let next = (after + 1..n)
-        .chain(0..after.min(n))
-        .find(|&f| states[f as usize] != ViewedState::Viewed);
+    let v = tab.viewport.read(cx);
+    let order = v.display_order();
+    let rank = v.display_rank(after) as usize;
+    let next = order[rank.min(order.len())..]
+        .iter()
+        .skip(1)
+        .chain(&order[..rank.min(order.len())])
+        .copied()
+        .find(|&f| {
+            !v.is_hidden(f)
+                && states
+                    .get(f as usize)
+                    .is_some_and(|s| *s != ViewedState::Viewed)
+        });
     let Some(next) = next else {
         return;
     };

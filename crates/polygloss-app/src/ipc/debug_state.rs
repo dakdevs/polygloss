@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! { window_open, app_active,
-//!   tabs: [{ review_id, diff_id, title, active, anchor, cursor }],
+//!   tabs: [{ review_id, diff_id, title, active, anchor, cursor, sections }],
 //!   focused_tab: <review_id of the active tab> | null,
 //!   banners: [{ review_id, kind, text }],
 //!   badge: <Dock badge count>, events_seen: <store events the feed handed out>,
@@ -15,6 +15,9 @@
 //!
 //! `anchor` is the line at the top of the viewport and `cursor` the line
 //! cursor, both `{path, side, line}` with 1-based lines (or `null`).
+//! `sections` lists the tab's category sections in display order (T6.14):
+//! `{ category, files: [path], open, open_threads, agent,
+//! changed_since_viewed }`, the last three as the section's band shows them.
 //! `updater` is the Sparkle updater's state (`crate::updates`): `null`
 //! without one, `"idle"` when loaded in test mode.
 
@@ -88,6 +91,7 @@ pub fn snapshot(cx: &App) -> Value {
             "active": ix == active,
             "anchor": anchor,
             "cursor": cursor,
+            "sections": crate::categories::debug_sections(t, cx),
         }));
     }
     json!({

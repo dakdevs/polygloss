@@ -79,8 +79,9 @@ impl Setup {
         let sb = Sandbox::isolate();
         let repo = code_change_repo();
         let opened = open_compare(repo.path());
-        let provider: Arc<dyn DiffProvider> =
-            Arc::new(CoreDiffProvider::open(&opened).expect("open the provider"));
+        let provider: Arc<dyn DiffProvider> = Arc::new(
+            CoreDiffProvider::open(&opened, &default_categories()).expect("open the provider"),
+        );
         let opts = ViewportOptions {
             layout: LayoutMode::Split,
             theme: Arc::new(ViewportTheme::pierre(Appearance::Light)),
@@ -200,4 +201,11 @@ fn e2e_cursor_text_selection() {
     screenshot::draw(&mut s.cx, s.window);
     assert_eq!(s.debug().plus_button, None);
     assert_screenshot(&screenshot::capture(&mut s.cx, s.window));
+}
+
+/// The categorizer of the default settings (design §11.15): what a review
+/// tab builds its provider with.
+fn default_categories() -> polygloss_core::categories::Categorizer {
+    polygloss_core::categories::Categorizer::new(&Default::default(), &[])
+        .expect("the defaults compile")
 }

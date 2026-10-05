@@ -201,6 +201,7 @@ const OUR_NAMESPACES: &[&str] = &[
     "open_flow",
     "submit",
     "find",
+    "categories",
 ];
 
 #[gpui_kit::test]

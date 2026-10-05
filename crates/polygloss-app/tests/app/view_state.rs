@@ -23,6 +23,8 @@ use polygloss_viewport::{LayoutMode, ScrollAnchor, ScrollTarget};
 use crate::shell::{Shell, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
 
+mod sections;
+
 /// Lines of the fixture files.
 const LINES: u32 = 160;
 

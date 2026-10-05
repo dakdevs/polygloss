@@ -449,3 +449,167 @@ fn viewed_toggle_never_pins_live_state(cx: &mut TestAppContext) {
         "no pin"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Category sections (T6.14, design §9): Mark all viewed, progress over every
+// file, and the jump after `v` walking display order past closed sections.
+
+use crate::categories::{act, click_band, repo_with, section_id, sections, set_cursor};
+use polygloss_app::keymap::actions::categories as category_actions;
+
+/// In diff order: 0 `src/a.rs`, 1 `src/a.test.rs`, 2 `src/b.rs`, 3
+/// `tests/it.rs`: two main files and two test files, `lines` long each
+/// (short ones leave the Tests band in view).
+fn two_and_two(lines: usize) -> FixtureRepo {
+    repo_with(
+        &["src/a.rs", "src/a.test.rs", "src/b.rs", "tests/it.rs"],
+        lines,
+    )
+}
+
+fn anchor(shell: &mut Shell, tab: &Entity<ReviewTab>) -> polygloss_viewport::ScrollAnchor {
+    tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).anchor())
+}
+
+#[gpui_kit::test]
+fn mark_all_viewed_marks_every_file_of_the_section(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = two_and_two(3);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    set_cursor(&mut shell, &tab, 0, 10);
+    let (cursor, at) = (cursor_file(&mut shell, &tab), anchor(&mut shell, &tab));
+    let tests = section_id(&mut shell, &tab, "tests");
+    let band = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            t.viewport
+                .read(cx)
+                .debug()
+                .bands
+                .into_iter()
+                .next()
+                .expect("the Tests band is painted")
+                .links
+        })
+    };
+    assert_eq!(band(&mut shell), ["Show", "Mark all viewed"]);
+
+    click_band(
+        &mut shell,
+        &tab,
+        polygloss_viewport::ControlAction::SectionMarkViewed(tests),
+    );
+    assert_eq!(
+        stored(&mut shell, &tab),
+        [NotViewed, Viewed, NotViewed, Viewed]
+    );
+    // The section stays closed and the view does not move.
+    assert!(!sections(&mut shell, &tab)[0].2, "Tests stays closed");
+    assert_eq!(cursor_file(&mut shell, &tab), cursor);
+    assert_eq!(anchor(&mut shell, &tab), at);
+    assert_eq!(band(&mut shell), ["Show", "Mark all unviewed"]);
+}
+
+#[gpui_kit::test]
+fn mark_all_viewed_on_an_open_section_holding_the_cursor_jumps_from_its_last_file(
+    cx: &mut TestAppContext,
+) {
+    let _sb = Sandbox::isolate();
+    let repo = two_and_two(80);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    // `src/a.rs` viewed, so the jump has to wrap past it to `src/b.rs`.
+    header_checkbox(&mut shell, &tab, 0);
+    set_cursor(&mut shell, &tab, 1, 5);
+    assert!(sections(&mut shell, &tab)[0].2, "the cursor opened it");
+
+    act(&mut shell, &tab, category_actions::MarkSectionViewed);
+    assert_eq!(
+        stored(&mut shell, &tab),
+        [Viewed, Viewed, NotViewed, Viewed]
+    );
+    assert!(collapsed(&mut shell, &tab).contains(&1));
+    assert!(collapsed(&mut shell, &tab).contains(&3));
+    // From `tests/it.rs`, the last in display order: nothing after it, so it
+    // wraps to the first unviewed shown file.
+    assert_eq!(cursor_file(&mut shell, &tab), Some(2));
+    assert_eq!(top_file(&mut shell, &tab), 2);
+}
+
+#[gpui_kit::test]
+fn viewed_progress_counts_categorized_files(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = two_and_two(3);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    assert!(shows(shell.cx, "viewed-progress-label", "0/4"));
+    let tests = section_id(&mut shell, &tab, "tests");
+    click_band(
+        &mut shell,
+        &tab,
+        polygloss_viewport::ControlAction::SectionMarkViewed(tests),
+    );
+    assert!(shows(shell.cx, "viewed-progress-label", "2/4"));
+}
+
+#[gpui_kit::test]
+fn marking_viewed_jumps_in_display_order_and_skips_closed_sections(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // 0 `src/a.rs`, 1 `src/a.test.rs` (Tests, closed), 2 `src/b.rs`.
+    let repo = repo_with(&["src/a.rs", "src/a.test.rs", "src/b.rs"], 80);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    focus_viewport(&mut shell, &tab);
+    set_cursor(&mut shell, &tab, 0, 3);
+    keys(&mut shell, "v");
+    assert_eq!(cursor_file(&mut shell, &tab), Some(2));
+    assert_eq!(top_file(&mut shell, &tab), 2);
+
+    // `v` on `src/b.rs`: `src/a.rs` is viewed and `src/a.test.rs` hidden, so
+    // there is nowhere to go.
+    keys(&mut shell, "v");
+    assert_eq!(stored(&mut shell, &tab), [Viewed, NotViewed, Viewed]);
+    assert_eq!(top_file(&mut shell, &tab), 2);
+    assert!(!sections(&mut shell, &tab)[0].2, "Tests stays closed");
+
+    // With `src/a.rs` unviewed again, `v` on `src/b.rs` wraps to it.
+    header_checkbox(&mut shell, &tab, 0);
+    header_checkbox(&mut shell, &tab, 2);
+    focus_viewport(&mut shell, &tab);
+    set_cursor(&mut shell, &tab, 2, 3);
+    keys(&mut shell, "v");
+    assert_eq!(cursor_file(&mut shell, &tab), Some(0));
+    assert_eq!(top_file(&mut shell, &tab), 0);
+}
+
+#[gpui_kit::test]
+fn marking_a_hidden_file_viewed_never_moves_the_view(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = two_and_two(80);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    set_cursor(&mut shell, &tab, 0, 10);
+    let (cursor, at) = (cursor_file(&mut shell, &tab), anchor(&mut shell, &tab));
+
+    // The tree's row of a test file (its section closed).
+    let tree = tree_of(&mut shell, &tab);
+    tree.update(shell.cx, |_, cx| {
+        cx.emit(polygloss_app::tree::FileTreeEvent::ToggleViewed(1))
+    });
+    draw(shell.cx);
+    assert_eq!(stored(&mut shell, &tab)[1], Viewed);
+    assert_eq!(cursor_file(&mut shell, &tab), cursor);
+    assert_eq!(anchor(&mut shell, &tab), at);
+    assert!(!sections(&mut shell, &tab)[0].2, "Tests stays closed");
+
+    // Its folder: hidden files only, so no jump either.
+    tree.update(shell.cx, |_, cx| {
+        cx.emit(polygloss_app::tree::FileTreeEvent::ToggleFolderViewed {
+            dir: "tests".into(),
+            files: vec![3],
+        })
+    });
+    draw(shell.cx);
+    assert_eq!(stored(&mut shell, &tab)[3], Viewed);
+    assert_eq!(anchor(&mut shell, &tab), at);
+}

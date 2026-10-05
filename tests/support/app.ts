@@ -28,6 +28,15 @@ export type DebugTab = {
   active: boolean;
   anchor: { path: string | null; side: string; line: number } | null;
   cursor: { path: string | null; side: string; line: number } | null;
+  /** The tab's category sections (T6.14), in display order. */
+  sections: {
+    category: string;
+    files: string[];
+    open: boolean;
+    open_threads: number;
+    agent: boolean;
+    changed_since_viewed: boolean;
+  }[];
 };
 
 /** The app's state as the test-only `debug_state` op reports it. */

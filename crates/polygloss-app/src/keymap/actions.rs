@@ -181,6 +181,43 @@ pub mod tab {
     );
 }
 
+/// File categories (design §11.15, T6.14): palette only, handled by a
+/// review tab (`crate::categories`).
+pub mod categories {
+    gpui_kit::actions!(
+        categories,
+        [
+            /// Move test files to their section, or back (this tab only).
+            ToggleTests,
+            /// Move generated files to their section, or back (this tab only).
+            ToggleGenerated,
+            /// Move vendored files to their section, or back (this tab only).
+            ToggleVendored,
+            /// Move agent config files to their section, or back (this tab
+            /// only).
+            ToggleAgents,
+            /// Move documentation to its section, or back (this tab only).
+            ToggleDocs,
+            /// Move tooling and CI files to their section, or back (this tab
+            /// only).
+            ToggleTooling,
+            /// Move stories, fixtures and i18n files to their section, or
+            /// back (this tab only).
+            ToggleStories,
+            /// Open the first closed section after the cursor, with the
+            /// cursor on its first line.
+            ShowNextSection,
+            /// Close the cursor's section.
+            HideSection,
+            /// Mark every file of the cursor's section viewed (or unviewed
+            /// once all are).
+            MarkSectionViewed,
+            /// Say which category the cursor's file is in, and why.
+            ExplainFile,
+        ]
+    );
+}
+
 /// Actions of the main window (key context `Window`, or none).
 pub mod window {
     pub use crate::chrome::{ShowFiles, ShowReviews, ToggleSidebar};
@@ -300,6 +337,17 @@ pub const ACTIONS: &[ActionInfo] = registry![
     tab::FocusNextPane => "Focus next pane",
     tab::FocusPrevPane => "Focus previous pane",
     tab::ChooseIteration => "Choose iteration",
+    categories::ToggleTests => "Toggle Tests",
+    categories::ToggleGenerated => "Toggle Generated",
+    categories::ToggleVendored => "Toggle Vendored",
+    categories::ToggleAgents => "Toggle Agent config",
+    categories::ToggleDocs => "Toggle Docs",
+    categories::ToggleTooling => "Toggle Tooling & CI",
+    categories::ToggleStories => "Toggle Stories & fixtures",
+    categories::ShowNextSection => "Show next section",
+    categories::HideSection => "Hide section",
+    categories::MarkSectionViewed => "Mark section viewed",
+    categories::ExplainFile => "Explain file category",
     window::CommandPalette => "Command palette",
     window::CheatSheet => "Keyboard shortcuts",
     window::FileFinder => "Go to file",

@@ -167,6 +167,46 @@ describe.skipIf(!process.env.POLYGLOSS_E2E)(
       });
     });
 
+    test("an MCP-opened review shows its tests in a closed section", async () => {
+      await withMcp(world.env, async (call) => {
+        // A live review of `src/a.ts` and its test (design §11.15: Tests is
+        // on by default and its section starts closed).
+        repoCount += 1;
+        const repo = join(world.home, `repo-${repoCount}`);
+        mkdirSync(join(repo, "src"), { recursive: true });
+        git(world.env, repo, ["init", "-q", "-b", "main"]);
+        writeFileSync(join(repo, "src/a.ts"), "export const a = 1;\n");
+        writeFileSync(join(repo, "src/a.test.ts"), "test('a', () => {});\n");
+        git(world.env, repo, ["add", "."]);
+        git(world.env, repo, ["commit", "-q", "-m", "init"]);
+        writeFileSync(join(repo, "src/a.ts"), "export const a = 2;\n");
+        writeFileSync(
+          join(repo, "src/a.test.ts"),
+          `test('a', () => { /* repo ${repoCount} */ });\n`,
+        );
+        const opened = await call("open_diff", {
+          repo: realpathSync(repo),
+          show: true,
+        });
+        expect(opened.app).toBe("opened");
+        const state = await waitForState(world.socket, (s) =>
+          s.tabs.find((t) => t.review_id === opened.review_id),
+        );
+        expect(state.sections).toEqual([
+          {
+            category: "tests",
+            files: ["src/a.test.ts"],
+            open: false,
+            open_threads: 0,
+            agent: false,
+            changed_since_viewed: false,
+          },
+        ]);
+        // The view starts on the main file.
+        expect(state.anchor).toMatchObject({ path: "src/a.ts", line: 1 });
+      });
+    });
+
     test("focus scrolls to path and line", async () => {
       await withMcp(world.env, async (call) => {
         const opened = await openReview(call);

@@ -633,6 +633,11 @@ fn reveal_match(v: &mut DiffViewport, m: &FindMatch, cx: &mut Context<DiffViewpo
     if f >= v.document().len() {
         return;
     }
+    // A match in a closed category section opens it first (an explicit
+    // target), so its file is shown before it is asked to load.
+    if v.is_hidden(f) {
+        v.scroll_to(ScrollTarget::File(f), cx);
+    }
     if v.document().is_collapsed(f) {
         v.set_collapsed(f, false, cx);
     }

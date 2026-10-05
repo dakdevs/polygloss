@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use polygloss_core::categories::Categorizer;
 use polygloss_core::objects::{BlobReader, ObjectError};
 use polygloss_core::review::OpenedDiff;
 use polygloss_diff::{FileChange, ObjectFormat, Oid};
@@ -20,26 +21,36 @@ pub struct CoreDiffProvider {
 }
 
 impl CoreDiffProvider {
-    /// A provider over `opened`'s files that reads blobs from `blobs`. For a
-    /// live diff, `blobs` must see the snapshot's scratch store (see
+    /// A provider over `opened`'s files that reads blobs from `blobs`. Each
+    /// file's `generated` flag is `categorizer`'s verdict (design §11.15);
+    /// the list is copied only when a verdict differs from the stored bit.
+    /// For a live diff, `blobs` must see the snapshot's scratch store (see
     /// [`CoreDiffProvider::open`]).
-    pub fn new(opened: &OpenedDiff, blobs: BlobReader) -> CoreDiffProvider {
+    pub fn new(
+        opened: &OpenedDiff,
+        blobs: BlobReader,
+        categorizer: &Categorizer,
+    ) -> CoreDiffProvider {
         CoreDiffProvider {
             object_format: opened.repo.object_format,
-            files: opened.files.clone(),
+            files: crate::categories::with_verdicts(&opened.files, categorizer),
             blobs,
         }
     }
 
     /// Opens the repo's object store for `opened`, plus the scratch store of
-    /// its live snapshot, whose working-tree blobs are not in the repo.
-    pub fn open(opened: &OpenedDiff) -> Result<CoreDiffProvider, ObjectError> {
+    /// its live snapshot, whose working-tree blobs are not in the repo; the
+    /// `generated` flags as in [`CoreDiffProvider::new`].
+    pub fn open(
+        opened: &OpenedDiff,
+        categorizer: &Categorizer,
+    ) -> Result<CoreDiffProvider, ObjectError> {
         let repo_blobs = BlobReader::open(&opened.repo)?;
         let blobs = match &opened.live {
             Some(live) => repo_blobs.with_scratch(&live.scratch_objects)?,
             None => repo_blobs,
         };
-        Ok(CoreDiffProvider::new(opened, blobs))
+        Ok(CoreDiffProvider::new(opened, blobs, categorizer))
     }
 }
 

@@ -10,6 +10,7 @@ This guide covers the app. For agents (MCP tools, the JSON CLI, the Claude Code 
 - [Reviewing](#reviewing)
 - [Comments, drafts and Submit review](#comments-drafts-and-submit-review)
 - [Viewed](#viewed)
+- [File categories](#file-categories)
 - [Live mode](#live-mode)
 - [Iterations and re-reviews](#iterations-and-re-reviews)
 - [Finding things](#finding-things)
@@ -57,11 +58,11 @@ A review fills the window: the sidebar on the left shows its **file tree** (its 
 - **Context:** 3 lines around each change. The gap expanders show 20 more lines up or down, or everything; `e` expands the gap nearest the cursor by 20 lines and `⇧E` expands the whole file.
 - **Line cursor:** `j`/`k` (or the arrows) move a line cursor across rows and files; it is where `c`, `o` and `e` act. `⇧↓`/`⇧↑` extend it to a range on one side.
 - **File headers** stay pinned at the top while you scroll through a file. They show a collapse chevron, the path with the file name in bold (`old → new` for renames), pills for the kind of change (rename similarity, mode change, binary, symlink, submodule, generated, LFS), then on the right the review state (changed since viewed, open threads, agent), an open-in-editor button, the `+added −removed` counts, the **Viewed** button and a ⋯ menu (Open in editor, Comment on file, Copy path, Expand all, Load diff, and Highlight anyway for a file too large to highlight). In a narrow window the kind pills go first, then the review state, then the counts.
-- **Large and generated files** start collapsed behind **Load diff**: files with more than `diff.large_file_changed_lines` changed lines, and generated files: those marked `linguist-generated` in `.gitattributes`, or matching the built-in list (lock files, minified and source-map files, protobuf output) or `diff.generated_patterns`.
+- **Large and generated files** start collapsed behind **Load diff**: files with more than `diff.large_file_changed_lines` changed lines, and generated files: those marked `linguist-generated` in `.gitattributes`, or matching the Generated category's patterns (lock files, generated code, minified and source-map files; see [File categories](#file-categories)) or `diff.generated_patterns`, unless `.gitattributes` says `-linguist-generated`.
 - **File tree:** the circle at the end of each row marks a file viewed (it appears when you point at the row; folders show a combined state and offer "Mark folder viewed"), with status letters, +/− counts, thread and agent badges, and a dot for files changed since you viewed them. Type in the filter field to fuzzy-filter, or use its menu to show only unviewed files, files with comments, a status or an extension. The footer totals the lines added and removed. Selecting a file scrolls the diff to it, and scrolling highlights the current file.
 - **Selection and copy:** drag to select text on one side; `⌘C` copies the source text without gutters or `+`/`-` markers.
 
-Where you were (scroll position, collapsed files, expanded context, layout, tree folders) is saved per diff and restored when you open it again.
+Where you were (scroll position, collapsed files, expanded context, layout, tree folders, the category sections you opened or closed) is saved per diff and restored when you open it again.
 
 ## Comments, drafts and Submit review
 
@@ -86,6 +87,57 @@ Mark a file **Viewed** with its header checkbox, the circle at the end of its tr
 - When the file changes again, it unchecks itself and shows **Changed since viewed** (the tree marks it with a dot), like GitHub's dismissed state.
 - A rebase that moves only the base still changes the old side, so the file becomes unviewed.
 - Agents can read the Viewed counts but never set them.
+
+## File categories
+
+Files that support the change (tests, generated code and lock files, and optionally vendored code, agent config, docs, tooling and CI, stories and fixtures) leave the main list. They follow the other files at the bottom of the diff, one section per category, each behind a band such as **▸ 12 test files · +300 −20**. A category is a set of path patterns; the built-in lists come from [geld](https://github.com/brandonmcconnell/geld). Tests and Generated are on by default; the others are off until you turn them on in `settings.json`.
+
+- **Sections** start closed, so a review opens on the main files, unless every file is categorized, or (when its threads first load) one of a section's files holds an agent question waiting on you. A section you opened or closed stays that way for that diff, also across reopening, Refresh and iterations. The band shows the section's line counts, its open threads, an agent badge and a dot for files changed since you viewed them, then **Show** / **Hide** and **Mark all viewed** (**Mark all unviewed** once all are). Marking a closed section's files viewed never moves the view.
+- **Moving around:** `j`/`k`, `n`/`p`, `]`/`[` and the jump after `v` walk the shown files only and pass over closed sections. Going somewhere on purpose opens the section: a tree row, `⌘P`, Find, a thread, a link or an agent's `focus`. When a section closes under the view, or a settings change moves the file you were reading into a closed section, the view lands on that section's band.
+- **Viewed progress** (`N/M`) counts every file, categorized ones included.
+- **Command palette:** **Toggle Tests** (and the other built-in categories) turns a category on or off for this review tab until you close it, whatever `settings.json` says; **Show next section**, **Hide section**, **Mark section viewed** and **Explain file category**, which says which category the cursor's file is in and which pattern put it there.
+
+Categories are set in `settings.json` and apply as soon as you save it. Each built-in category has `enabled`, `disabled_groups` (pattern groups to leave out) and `patterns` (more patterns; a pattern starting with `!` keeps matching files out of that category). A key you leave out keeps its default. Custom categories are matched before the built-in ones, in the order you list them:
+
+```jsonc
+{
+  "categories": {
+    "tests": {
+      "disabled_groups": ["snapshots"],
+      "patterns": ["spec/", "!spec/support/"],
+    },
+    "generated": { "patterns": ["!Cargo.lock"] },
+    "docs": { "enabled": true },
+    "custom": [
+      {
+        "id": "tokens",
+        "name": "Design tokens",
+        "icon": "tag",
+        "patterns": ["tokens/", "*.tokens.json"],
+      },
+    ],
+  },
+}
+```
+
+| Category           | Key         | Groups                                                         |
+| ------------------ | ----------- | -------------------------------------------------------------- |
+| Tests              | `tests`     | `unit`, `e2e`, `directories`, `snapshots`, `tooling`           |
+| Generated          | `generated` | `lockfiles`, `generated-code`, `build-output` (off by default) |
+| Vendored           | `vendored`  | `vendored`                                                     |
+| Agent config       | `agents`    | `agents`                                                       |
+| Docs               | `docs`      | `docs`                                                         |
+| Tooling & CI       | `tooling`   | `ci`, `lint-format`, `build-config`                            |
+| Stories & fixtures | `stories`   | `stories`, `fixtures`, `i18n`                                  |
+
+Patterns match the file's path (its new path, or the old one for a deleted file), case-sensitively:
+
+- `name` or `*.snap` (no slash) matches the file name at any depth.
+- `test/` (a trailing slash) matches a directory of that name at any depth and everything in it, never a file named `test`: `bin/test` and `scripts/test` scripts stay in the main list.
+- `src/gen/*.rs` (a slash inside) matches from the repository root, and so does `/build/` (a leading slash).
+- `*` and `?` stay within a directory; `**` crosses directories. `{a,b}` lists alternatives and `[ab]` character classes; `\` escapes the next character. `#` lines are comments.
+
+`.gitattributes` decides Generated first: `linguist-generated` puts a file in Generated (after custom categories), and `-linguist-generated` keeps it out. A custom category's `id` is lowercase letters, digits and `-` (agents see it as `custom:<id>`), its `name` is required, and its `icon` is one of `tag`, `layers`, `package`, `book-open`, `wrench`, `flask-conical`, `file-cog`, `bot`, `languages`, `folder` or `file`. A pattern that does not compile, a bad or repeated custom id, an empty name or more than 500 patterns in one category make `settings.json` invalid: the previous settings stay and the window shows why. Unknown keys and group names are logged and ignored. Agents classify files with the same settings (`polygloss debug categorize <path>` explains a verdict); your palette toggles are yours alone.
 
 ## Live mode
 
@@ -228,6 +280,17 @@ These are in the command palette (and some in the toolbar or menus); bind them i
 | Changes since last review | `tab::ToggleChangesSinceLastReview` |
 | Next unread reply         | `tab::NextUnreadThread`             |
 | Toggle threads panel      | `tab::ToggleThreadsPanel`           |
+| Toggle Tests              | `categories::ToggleTests`           |
+| Toggle Generated          | `categories::ToggleGenerated`       |
+| Toggle Vendored           | `categories::ToggleVendored`        |
+| Toggle Agent config       | `categories::ToggleAgents`          |
+| Toggle Docs               | `categories::ToggleDocs`            |
+| Toggle Tooling & CI       | `categories::ToggleTooling`         |
+| Toggle Stories & fixtures | `categories::ToggleStories`         |
+| Show next section         | `categories::ShowNextSection`       |
+| Hide section              | `categories::HideSection`           |
+| Mark section viewed       | `categories::MarkSectionViewed`     |
+| Explain file category     | `categories::ExplainFile`           |
 | Install CLI               | `window::InstallCli`                |
 | Show files                | `window::ShowFiles`                 |
 | Show reviews              | `window::ShowReviews`               |
@@ -272,31 +335,53 @@ A binding replaces the default of the same keys in the same context, and `null` 
 
 ### Settings keys
 
-| Key                                | Default             | Meaning                                                                                                                                                                                                      |
-| ---------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `theme.mode`                       | `"system"`          | `"system"` follows the macOS appearance; `"light"` or `"dark"` fixes it                                                                                                                                      |
-| `theme.light`                      | `"Polygloss Light"` | The theme used in light mode, by name                                                                                                                                                                        |
-| `theme.dark`                       | `"Polygloss Dark"`  | The theme used in dark mode, by name                                                                                                                                                                         |
-| `buffer_font.family`               | `"Lilex"`           | The code font (Lilex is bundled)                                                                                                                                                                             |
-| `buffer_font.size`                 | `13`                | Code font size in points                                                                                                                                                                                     |
-| `buffer_font.ligatures`            | `false`             | OpenType ligatures in code. Off, so code shows as typed: `->` is never drawn as an arrow                                                                                                                     |
-| `diff.layout`                      | `"auto"`            | `"auto"` (split when wide enough), `"split"` or `"unified"`                                                                                                                                                  |
-| `diff.split_min_columns`           | `160`               | In auto layout, split from this many code columns                                                                                                                                                            |
-| `diff.word_diff`                   | `"word"`            | Changed-text highlights by `"word"`, by `"char"`, or `"off"`                                                                                                                                                 |
-| `diff.algorithm`                   | `"myers"`           | `"myers"` (like `git diff`) or `"histogram"`                                                                                                                                                                 |
-| `diff.hide_whitespace`             | `false`             | Hide whitespace-only changes                                                                                                                                                                                 |
-| `diff.style.backgrounds`           | `true`              | Tint added and removed lines                                                                                                                                                                                 |
-| `diff.style.indicators`            | `"bars"`            | Line markers: `"bars"` (a bar at the left edge of each changed line), `"+-"` (the v1 look) or `"none"`                                                                                                       |
-| `diff.style.wrap`                  | `false`             | Wrap long lines                                                                                                                                                                                              |
-| `diff.large_file_changed_lines`    | `20000`             | Files with more changed lines start collapsed behind **Load diff**                                                                                                                                           |
-| `diff.generated_patterns`          | `[]`                | More generated-file patterns, added to the built-in list: a pattern without `/` matches the file name, one with `/` the whole path; `*` and `?` stay within a directory, `**` crosses directories            |
-| `diff.renames`                     | `true`              | Detect renames                                                                                                                                                                                               |
-| `diff.rename_threshold`            | `50`                | Rename similarity threshold, in percent (0 to 100)                                                                                                                                                           |
-| `editor.command`                   | `null`              | The editor for [Open in editor](#open-in-editor), e.g. `"zed {path}:{line}"`; `null` detects one                                                                                                             |
-| `agent_notes.hidden`               | `false`             | Hide agent notes by default                                                                                                                                                                                  |
-| `notifications.enabled`            | `true`              | macOS notifications for re-review requests (agents' `polygloss mcp` reads it too, and never launches the app to notify when it is off)                                                                       |
-| `storage.prune_reviews_after_days` | `null`              | Prune reviews inactive for this many days; `null` never prunes                                                                                                                                               |
-| `updates.automatic_checks`         | `null`              | Automatic update checks ([Updates](#updates)): `null` leaves it to Sparkle's prompt on the second launch, `true` or `false` overrides your answer. Update checks are the only network access Polygloss makes |
+| Key                                    | Default             | Meaning                                                                                                                                                                                                         |
+| -------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `theme.mode`                           | `"system"`          | `"system"` follows the macOS appearance; `"light"` or `"dark"` fixes it                                                                                                                                         |
+| `theme.light`                          | `"Polygloss Light"` | The theme used in light mode, by name                                                                                                                                                                           |
+| `theme.dark`                           | `"Polygloss Dark"`  | The theme used in dark mode, by name                                                                                                                                                                            |
+| `buffer_font.family`                   | `"Lilex"`           | The code font (Lilex is bundled)                                                                                                                                                                                |
+| `buffer_font.size`                     | `13`                | Code font size in points                                                                                                                                                                                        |
+| `buffer_font.ligatures`                | `false`             | OpenType ligatures in code. Off, so code shows as typed: `->` is never drawn as an arrow                                                                                                                        |
+| `diff.layout`                          | `"auto"`            | `"auto"` (split when wide enough), `"split"` or `"unified"`                                                                                                                                                     |
+| `diff.split_min_columns`               | `160`               | In auto layout, split from this many code columns                                                                                                                                                               |
+| `diff.word_diff`                       | `"word"`            | Changed-text highlights by `"word"`, by `"char"`, or `"off"`                                                                                                                                                    |
+| `diff.algorithm`                       | `"myers"`           | `"myers"` (like `git diff`) or `"histogram"`                                                                                                                                                                    |
+| `diff.hide_whitespace`                 | `false`             | Hide whitespace-only changes                                                                                                                                                                                    |
+| `diff.style.backgrounds`               | `true`              | Tint added and removed lines                                                                                                                                                                                    |
+| `diff.style.indicators`                | `"bars"`            | Line markers: `"bars"` (a bar at the left edge of each changed line), `"+-"` (the v1 look) or `"none"`                                                                                                          |
+| `diff.style.wrap`                      | `false`             | Wrap long lines                                                                                                                                                                                                 |
+| `diff.large_file_changed_lines`        | `20000`             | Files with more changed lines start collapsed behind **Load diff**                                                                                                                                              |
+| `diff.generated_patterns`              | `[]`                | More Generated patterns, in the [category pattern syntax](#file-categories) (a trailing slash matches only a directory; `!` lines keep files out of Generated); one that does not compile is logged and skipped |
+| `diff.renames`                         | `true`              | Detect renames                                                                                                                                                                                                  |
+| `diff.rename_threshold`                | `50`                | Rename similarity threshold, in percent (0 to 100)                                                                                                                                                              |
+| `categories.tests.enabled`             | `true`              | Put test files in a section of their own ([File categories](#file-categories))                                                                                                                                  |
+| `categories.tests.disabled_groups`     | `[]`                | Pattern groups of the category to leave out                                                                                                                                                                     |
+| `categories.tests.patterns`            | `[]`                | More patterns for the category; `!` lines keep matching files out of it                                                                                                                                         |
+| `categories.generated.enabled`         | `true`              | Put lock files and generated code in a section of their own; generated files show **Load diff** either way                                                                                                      |
+| `categories.generated.disabled_groups` | `["build-output"]`  | Pattern groups of the category to leave out                                                                                                                                                                     |
+| `categories.generated.patterns`        | `[]`                | More patterns for the category; `!` lines keep matching files out of it                                                                                                                                         |
+| `categories.vendored.enabled`          | `false`             | Put vendored code in a section of its own                                                                                                                                                                       |
+| `categories.vendored.disabled_groups`  | `[]`                | Pattern groups of the category to leave out                                                                                                                                                                     |
+| `categories.vendored.patterns`         | `[]`                | More patterns for the category; `!` lines keep matching files out of it                                                                                                                                         |
+| `categories.agents.enabled`            | `false`             | Put agent config (`AGENTS.md`, `CLAUDE.md`, …) in a section of its own                                                                                                                                          |
+| `categories.agents.disabled_groups`    | `[]`                | Pattern groups of the category to leave out                                                                                                                                                                     |
+| `categories.agents.patterns`           | `[]`                | More patterns for the category; `!` lines keep matching files out of it                                                                                                                                         |
+| `categories.docs.enabled`              | `false`             | Put documentation in a section of its own                                                                                                                                                                       |
+| `categories.docs.disabled_groups`      | `[]`                | Pattern groups of the category to leave out                                                                                                                                                                     |
+| `categories.docs.patterns`             | `[]`                | More patterns for the category; `!` lines keep matching files out of it                                                                                                                                         |
+| `categories.tooling.enabled`           | `false`             | Put tooling and CI config in a section of its own                                                                                                                                                               |
+| `categories.tooling.disabled_groups`   | `[]`                | Pattern groups of the category to leave out                                                                                                                                                                     |
+| `categories.tooling.patterns`          | `[]`                | More patterns for the category; `!` lines keep matching files out of it                                                                                                                                         |
+| `categories.stories.enabled`           | `false`             | Put stories, fixtures and translations in a section of their own                                                                                                                                                |
+| `categories.stories.disabled_groups`   | `[]`                | Pattern groups of the category to leave out                                                                                                                                                                     |
+| `categories.stories.patterns`          | `[]`                | More patterns for the category; `!` lines keep matching files out of it                                                                                                                                         |
+| `categories.custom`                    | `[]`                | Your own categories, matched first: `{ "id", "name", "icon", "patterns", "enabled" }`                                                                                                                           |
+| `editor.command`                       | `null`              | The editor for [Open in editor](#open-in-editor), e.g. `"zed {path}:{line}"`; `null` detects one                                                                                                                |
+| `agent_notes.hidden`                   | `false`             | Hide agent notes by default                                                                                                                                                                                     |
+| `notifications.enabled`                | `true`              | macOS notifications for re-review requests (agents' `polygloss mcp` reads it too, and never launches the app to notify when it is off)                                                                          |
+| `storage.prune_reviews_after_days`     | `null`              | Prune reviews inactive for this many days; `null` never prunes                                                                                                                                                  |
+| `updates.automatic_checks`             | `null`              | Automatic update checks ([Updates](#updates)): `null` leaves it to Sparkle's prompt on the second launch, `true` or `false` overrides your answer. Update checks are the only network access Polygloss makes    |
 
 ## Themes and fonts
 

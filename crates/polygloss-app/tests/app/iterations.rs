@@ -944,3 +944,45 @@ fn banner_strip_shows_the_iteration_context_off_latest(cx: &mut gpui_kit::TestAp
     assert!(crate::shell::painted(shell.cx, "banner-context").is_none());
     assert!(crate::shell::painted(shell.cx, &format!("banner-context: {line}")).is_none());
 }
+
+#[gpui_kit::test]
+fn iteration_switch_repartitions(cx: &mut gpui_kit::TestAppContext) {
+    use crate::categories::{click_band, section_id, sections};
+    use polygloss_viewport::ControlAction;
+
+    let _sb = Sandbox::isolate();
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("src/a.rs", numbered("a", 20).as_bytes());
+    repo.write("src/b.rs", numbered("b", 20).as_bytes());
+    repo.commit("base");
+    repo.branch("feature");
+    repo.checkout("feature");
+    // Iteration 1: `src/b.rs` and its new test.
+    repo.write("src/b.rs", numbered("b", 21).as_bytes());
+    repo.write("src/b.test.rs", b"test b\n");
+    repo.commit("feature 1");
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(&repo)).expect("open the review");
+    // Iteration 2: `src/a.rs` and a test directory too.
+    repo.write("src/a.rs", numbered("a", 21).as_bytes());
+    repo.write("tests/c.rs", b"test c\n");
+    repo.commit("feature 2");
+    refresh(&mut shell, &tab);
+    assert_eq!(
+        paths(&mut shell, &tab),
+        ["src/a.rs", "src/b.rs", "src/b.test.rs", "tests/c.rs"]
+    );
+    let tests = section_id(&mut shell, &tab, "tests");
+    click_band(&mut shell, &tab, ControlAction::SectionToggle(tests));
+    let s = |c: &str, files: &[u32], open: bool| (c.to_owned(), files.to_vec(), open);
+    assert_eq!(sections(&mut shell, &tab), [s("tests", &[2, 3], true)]);
+
+    // Iteration 1's files: its test file is in Tests, still open.
+    show(&mut shell, &tab, Choice::Iteration(1));
+    assert_eq!(paths(&mut shell, &tab), ["src/b.rs", "src/b.test.rs"]);
+    assert_eq!(sections(&mut shell, &tab), [s("tests", &[1], true)]);
+    let order = tab.read_with(shell.cx, |t, cx| {
+        t.viewport.read(cx).display_order().to_vec()
+    });
+    assert_eq!(order, [0, 1]);
+}

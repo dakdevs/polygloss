@@ -360,6 +360,18 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Shows `message` as an information toast.
+    pub fn toast_info(
+        &mut self,
+        message: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toasts.push(message.clone());
+        window.push_notification(Notification::info(message), cx);
+        cx.notify();
+    }
+
     /// Shows `message` as a confirmation toast.
     pub fn toast_success(
         &mut self,

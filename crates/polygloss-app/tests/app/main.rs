@@ -5,6 +5,7 @@
 mod support;
 
 mod a11y_keyboard;
+mod categories;
 mod composer;
 mod cursor;
 mod dump;

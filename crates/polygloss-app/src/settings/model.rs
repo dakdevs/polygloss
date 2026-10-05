@@ -4,6 +4,7 @@
 //! loads. A value of the wrong type (or an unknown enum spelling) makes the
 //! whole file invalid, and the loader keeps the previous settings.
 
+use polygloss_core::categories::{CategoriesConfig, Categorizer};
 use polygloss_diff::options::{Algorithm, DiffOptions};
 use polygloss_diff::word::Granularity;
 use polygloss_viewport::{DiffStyle, Indicators, LayoutMode, ViewportOptions};
@@ -21,6 +22,8 @@ pub struct Settings {
     pub notifications: NotificationSettings,
     pub storage: StorageSettings,
     pub updates: UpdateSettings,
+    /// File categories (design §11.15).
+    pub categories: CategoriesConfig,
 }
 
 /// `theme.mode` (`"system"` follows the macOS appearance).
@@ -146,7 +149,8 @@ pub struct DiffSettings {
     pub style: DiffStyleSettings,
     /// Files with more changed lines show "Load diff" (design §12.3).
     pub large_file_changed_lines: u32,
-    /// Extends the built-in generated-file list.
+    /// More Generated patterns, in the categories' syntax (design §11.15);
+    /// `!` lines are Generated rescues.
     pub generated_patterns: Vec<String>,
     pub renames: bool,
     /// Rename similarity threshold in percent (`-M50%`).
@@ -241,6 +245,11 @@ impl Settings {
                 self.diff.rename_threshold
             ));
         }
+        // A pattern that does not compile, a bad custom category, … (design
+        // §11.15); a bad legacy `diff.generated_patterns` entry is dropped
+        // with a logged warning instead.
+        Categorizer::new(&self.categories, &self.diff.generated_patterns)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 

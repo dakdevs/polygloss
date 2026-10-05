@@ -51,6 +51,7 @@ pub fn group_title(namespace: &str) -> &'static str {
         "composer" => "Comment",
         "threads" => "Threads",
         "tab" => "Review",
+        "categories" => "File categories",
         "window" => "Window",
         _ => "Other",
     }
