@@ -11,7 +11,8 @@
 //! controls read the step with [`narrow`]. Past the last step the left
 //! side's items go from its end, the repo block last: a compare review with
 //! an iteration pill needs more than the 320 pt main column a 720 pt window
-//! may leave.
+//! may leave. A menu that hung from an item that went hangs from the left
+//! side's corner instead ([`crate::features::toolbar_left_menus`]).
 //!
 //! Pills are gpui-kit `Button`s and every other control claims its press,
 //! so a press on one never moves the window. Labels a test reads carry the
@@ -85,19 +86,27 @@ pub const PILL_TEXT_MAX: f32 = 64.0;
 /// The longest the repo name gets at the last step.
 pub const REPO_NAME_MAX: f32 = 48.0;
 
-/// The step the toolbar is drawn at (a [`ReviewTab`] extension).
-struct ToolbarNarrow(Narrow);
+/// The index of [`Narrow`]'s last step.
+const LAST: usize = Narrow::ALL.len() - 1;
+
+/// How far the toolbar has given way to be drawn (a [`ReviewTab`]
+/// extension): an index into [`Narrow::ALL`], then past its last step one
+/// more for each of the left side's items gone from its end.
+struct ToolbarNarrow(usize);
 
 /// The step the toolbar is drawn at.
 pub fn narrow(tab: &ReviewTab) -> Narrow {
-    tab.extension::<ToolbarNarrow>()
-        .map_or(Narrow::Full, |n| n.0)
+    Narrow::ALL[given_way(tab).min(LAST)]
 }
 
-fn set_narrow(tab: &mut ReviewTab, narrow: Narrow) {
+fn given_way(tab: &ReviewTab) -> usize {
+    tab.extension::<ToolbarNarrow>().map_or(0, |n| n.0)
+}
+
+fn set_given_way(tab: &mut ReviewTab, at: usize) {
     match tab.extension_mut::<ToolbarNarrow>() {
-        Some(step) => step.0 = narrow,
-        None => tab.insert_extension(ToolbarNarrow(narrow)),
+        Some(n) => n.0 = at,
+        None => tab.insert_extension(ToolbarNarrow(at)),
     }
 }
 
@@ -109,19 +118,19 @@ pub(crate) fn render(cx: &mut Context<ReviewTab>) -> AnyElement {
     .into_any_element()
 }
 
-/// The toolbar row at step `narrow`, with the first `keep` items of the
-/// left side (all of them when `None`), and how many it has in all.
+/// The toolbar row given way to `at` (see [`ToolbarNarrow`]), and how many
+/// items its left side has in all.
 fn build(
     tab: &mut ReviewTab,
-    narrow: Narrow,
-    keep: Option<usize>,
+    at: usize,
     window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> (AnyElement, usize) {
-    set_narrow(tab, narrow);
+    set_given_way(tab, at);
     let mut left = crate::features::toolbar_left(tab, window, cx);
     let all = left.len();
-    left.truncate(keep.unwrap_or(all));
+    let keep = all.saturating_sub(at.saturating_sub(LAST)).max(1);
+    left.truncate(keep);
     let right = crate::features::toolbar_right(tab, window, cx);
     // One group that never reaches the right side.
     let left = h_flex()
@@ -131,9 +140,46 @@ fn build(
         .overflow_hidden()
         .gap_2()
         .children(left)
+        .when(keep < all, |side| {
+            side.relative()
+                .children(crate::features::toolbar_left_menus(tab))
+        })
         .into_any_element();
     let row = crate::chrome::toolbar_row("review-toolbar", vec![left], right, window, cx);
     (row, all)
+}
+
+/// How far the toolbar gives way this frame, searched from `from` (how far
+/// it had), with the row built there. How far is an index into
+/// [`Narrow::ALL`], then past its last step one more for each of the left
+/// side's items gone from its end. `attempt(at)` builds the row given way
+/// to `at`: the row, whether it fits, and how many items its left side has
+/// in all. Each step only narrows the row, so the search goes back while
+/// the one before fits too, else on, until it fits or only the repo block
+/// is left. While nothing changes that is one attempt a frame when nothing
+/// gave way, else two.
+pub fn first_fit<R>(from: usize, mut attempt: impl FnMut(usize) -> (R, bool, usize)) -> (usize, R) {
+    let mut at = from;
+    let mut chosen = None;
+    while at > 0 {
+        let (row, fits, _) = attempt(at - 1);
+        if !fits {
+            break;
+        }
+        at -= 1;
+        chosen = Some(row);
+    }
+    if let Some(row) = chosen {
+        return (at, row);
+    }
+    loop {
+        let (row, fits, all) = attempt(at);
+        let end = LAST + all.saturating_sub(1);
+        if fits || at >= end {
+            return (at.min(end), row);
+        }
+        at += 1;
+    }
 }
 
 /// The toolbar's row, 52 pt tall across the main column, built at the first
@@ -190,45 +236,17 @@ impl Element for Fit {
             AvailableSpace::MaxContent,
             AvailableSpace::Definite(bounds.size.height),
         );
-        // The row at a step, built by the tab's features (the tab is not
-        // being rendered now), whether it fits, and how many items its left
-        // side has in all.
-        let attempt = |narrow: Narrow, keep: Option<usize>, window: &mut Window, cx: &mut App| {
-            let (mut row, all) = tab.update(cx, |tab, cx| build(tab, narrow, keep, window, cx));
+        // The row given way to `at`, built by the tab's features (the tab is
+        // not being rendered now), whether it fits, and how many items its
+        // left side has in all.
+        let attempt = |at: usize, window: &mut Window, cx: &mut App| {
+            let (mut row, all) = tab.update(cx, |tab, cx| build(tab, at, window, cx));
             let fits = row.layout_as_root(natural, window, cx).width <= bounds.size.width;
             (row, fits, all)
         };
-        // Each step only narrows the row, so the first that fits is found
-        // from the last frame's step: back while the step before fits too,
-        // else on. While nothing changes that is two builds a frame (more
-        // once the left side's items go).
-        let mut step = narrow(tab.read(cx)) as usize;
-        let mut chosen = None;
-        while step > 0 {
-            let (row, fits, _) = attempt(Narrow::ALL[step - 1], None, window, cx);
-            if !fits {
-                break;
-            }
-            step -= 1;
-            chosen = Some(row);
-        }
-        let mut keep = None;
-        let mut row = loop {
-            if let Some(row) = chosen.take() {
-                break row;
-            }
-            let (row, fits, all) = attempt(Narrow::ALL[step], keep, window, cx);
-            let shown = keep.unwrap_or(all);
-            if fits || shown <= 1 {
-                break row;
-            }
-            if step + 1 < Narrow::ALL.len() {
-                step += 1;
-            } else {
-                keep = Some(shown - 1);
-            }
-        };
-        tab.update(cx, |tab, _| set_narrow(tab, Narrow::ALL[step]));
+        let from = given_way(tab.read(cx));
+        let (at, mut row) = first_fit(from, |at| attempt(at, window, cx));
+        tab.update(cx, |tab, _| set_given_way(tab, at));
         row.prepaint_as_root(bounds.origin, bounds.size.map(Into::into), window, cx);
         Some(row)
     }

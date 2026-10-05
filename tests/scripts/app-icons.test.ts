@@ -1,5 +1,6 @@
 // App icons (plan M6 "Icons", T6.3): an icon no asset source registers draws
-// nothing, silently. Every `IconName::X` in the app's sources and every
+// nothing, silently. Every `IconName::X` or `Lucide::X` (the app's alias of
+// gpui-kit-assets' `IconName`) in the app's sources and every
 // `"icons/<name>.svg"` literal in the app's and the viewport's sources must
 // be one of `AppIcons` (crates/polygloss-app/src/assets.rs) or one of
 // gpui-kit-assets' `default-icons.txt` (the bundle `gpui_kit::assets::Assets`
@@ -158,10 +159,12 @@ function iconProblems(root: string): { uses: Set<string>; problems: string[] } {
   };
   for (const file of rustFiles(join(root, appSrc))) {
     const text = readFileSync(file, "utf8");
-    for (const [, name] of text.matchAll(/\bIconName::([A-Z][A-Za-z0-9]*)/g)) {
+    for (const [, alias, name] of text.matchAll(
+      /\b(IconName|Lucide)::([A-Z][A-Za-z0-9]*)/g,
+    )) {
       // `IconName::ALL`, the catalog itself.
       if (name === undefined || name === "ALL") continue;
-      check(file, `IconName::${name}`, kit.catalog.get(name));
+      check(file, `${alias}::${name}`, kit.catalog.get(name));
     }
   }
   for (const dir of [appSrc, viewportSrc]) {
@@ -183,6 +186,7 @@ test("every icon the app and viewport use is registered", () => {
   expect(uses).toContain("IconName::ListTree");
   expect(uses).toContain("IconName::RotateCcwClock");
   expect(uses).toContain("IconName::Close");
+  expect(uses).toContain("Lucide::GitBranch");
 });
 
 test("an unregistered icon fails the check", () => {
@@ -191,7 +195,7 @@ test("an unregistered icon fails the check", () => {
     cpSync(join(repoRoot, dir), join(root, dir), { recursive: true });
   writeFileSync(
     join(root, appSrc, "planted.rs"),
-    "fn f() { let _ = (IconName::Rocket, IconName::NoSuchIcon); }\n",
+    "fn f() { let _ = (IconName::Rocket, IconName::NoSuchIcon, Lucide::NoSuchLucide); }\n",
   );
   writeFileSync(
     join(root, viewportSrc, "planted.rs"),
@@ -208,6 +212,7 @@ test("an unregistered icon fails the check", () => {
       "assets.rs: AppIcons lists NotAnIcon, no gpui-kit icon",
       `${appSrc}/planted.rs: IconName::Rocket (icons/rocket.svg) is neither in AppIcons nor a gpui-kit default`,
       `${appSrc}/planted.rs: IconName::NoSuchIcon is no gpui-kit icon`,
+      `${appSrc}/planted.rs: Lucide::NoSuchLucide is no gpui-kit icon`,
       `${viewportSrc}/planted.rs: "icons/anchor.svg" (icons/anchor.svg) is neither in AppIcons nor a gpui-kit default`,
     ].sort(),
   );

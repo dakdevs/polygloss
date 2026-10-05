@@ -76,6 +76,14 @@ pub fn toolbar_left(
     items
 }
 
+/// The menus [`toolbar_left`]'s items hang outside the row (`i`'s iteration
+/// menu while it is open), for when the row is too narrow for those items:
+/// they then hang from the left side's bottom-left corner, under the repo
+/// block.
+pub fn toolbar_left_menus(tab: &ReviewTab) -> Option<AnyElement> {
+    crate::iterations::key_menu(tab)
+}
+
 /// The toolbar's right side (design §11.4): Find, the threads button,
 /// `N/M`, the split | unified toggle, the display options menu and Submit
 /// review.

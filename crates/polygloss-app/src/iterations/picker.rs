@@ -5,12 +5,12 @@
 //! starts with the **Changes since last review** toggle (checked when on;
 //! disabled, with the reason as its note, when there is no submission or
 //! nothing changed since), then lists the states newest first with what
-//! each one is and when it was pinned. `i` opens the same menu under it.
+//! each one is and when it was pinned. `i` opens the same menu under it
+//! (under the toolbar's left end once the pill gave way).
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, v_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, Context, IntoElement as _, ParentElement as _, SharedString, Styled as _,
     WeakEntity, Window, div, px,
@@ -81,15 +81,22 @@ pub fn toolbar_left(
         }
         None => menu,
     });
-    let key_menu = state(tab).and_then(|s| s.key_menu.as_ref());
     Some(
         div()
             .flex_none()
             .relative()
             .child(pill)
-            .when_some(key_menu, |el, menu| el.child(menu.element(Anchor::TopLeft)))
+            .children(key_menu(tab))
             .into_any_element(),
     )
+}
+
+/// The menu `i` opened, while it is open, hanging from the bottom-left
+/// corner of its parent (made `relative()`): the pill's, or the toolbar's
+/// left side when the pill gave way to a narrow row.
+pub fn key_menu(tab: &ReviewTab) -> Option<AnyElement> {
+    let menu = state(tab)?.key_menu.as_ref()?;
+    Some(menu.element(Anchor::TopLeft))
 }
 
 /// What the menu lists, read as it opens.

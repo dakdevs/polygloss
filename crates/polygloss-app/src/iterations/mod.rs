@@ -40,7 +40,7 @@ use polygloss_core::review::{IterationEntry, IterationInfo, LastSubmission, Open
 use polygloss_core::store::events::Actor;
 use polygloss_diff::Oid;
 
-pub use picker::toolbar_left;
+pub use picker::{key_menu, toolbar_left};
 
 use crate::app_state::AppState;
 use crate::keyboard::menu::KeyMenu;
@@ -330,7 +330,8 @@ pub fn menu_open(tab: &ReviewTab) -> bool {
 }
 
 /// `i`: the iteration picker's menu, opened from the keyboard under its
-/// button (while the picker shows).
+/// pill, or under the toolbar's left end when the pill gave way (while the
+/// picker shows; [`key_menu`]).
 pub fn open_menu(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     if !picker_visible(tab) {
         return;

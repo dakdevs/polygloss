@@ -55,8 +55,10 @@ pub struct Entrance {
 /// 0, then easing to its place at opacity 1 over `duration`, on the
 /// executor clock. The playback is keyed by `(id, epoch)` among the
 /// elements around it, so it plays once per epoch while the element is
-/// drawn on every frame; a new epoch plays it again. Under Reduce Motion
-/// the first frame is the end.
+/// drawn on every frame; a new epoch plays it again. A frame without it
+/// drops the playback, so it would play again (a review switched away and
+/// back): callers wrap their element only within its entrance. Under
+/// Reduce Motion the first frame is the end.
 #[allow(clippy::too_many_arguments)]
 pub fn enter_from(
     id: impl Into<ElementId>,

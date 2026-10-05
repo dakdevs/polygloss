@@ -5,10 +5,11 @@
 
 use std::path::Path;
 
-use gpui_kit::{TestAppContext, VisualTestContext, px};
+use gpui_kit::{Entity, TestAppContext, VisualTestContext, px};
 use polygloss_app::keymap::actions;
 use polygloss_app::keymap::actions::tab as tab_actions;
 use polygloss_app::palette::MenuEntry;
+use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::threads;
 use polygloss_core::git::{CompareMode, Source};
 use polygloss_core::review::{ThreadKind, Verdict};
@@ -216,17 +217,11 @@ fn shown_at(narrow: polygloss_app::review_tab::toolbar::Narrow) -> Vec<&'static 
     items
 }
 
-#[gpui_kit::test]
-fn narrow_toolbar_collapses_in_order(cx: &mut TestAppContext) {
-    use polygloss_app::review_tab::toolbar::{self, Narrow};
-    let _sb = Sandbox::isolate();
-    let repo = code_change_repo();
-    // SAFETY: one test per process, before the app starts any thread.
-    unsafe { std::env::set_var("HOME", repo.path().parent().expect("the fixture's root")) };
-    let mut shell = start(cx);
-    let tab = shell.open(compare_req(repo.path())).unwrap();
-    // A submission gives the review a second state to show ("Changes since
-    // last review"), so it has an iteration pill.
+/// The narrow tests' review: a compare review with an iteration pill (a
+/// submission gives it a second state to show, "Changes since last
+/// review"), the threads panel hidden.
+fn iteration_review(shell: &mut Shell, repo: &Path) -> Entity<ReviewTab> {
+    let tab = shell.open(compare_req(repo)).unwrap();
     let review = tab.read_with(shell.cx, |t, _| t.review_id.clone());
     shell
         .core
@@ -235,6 +230,27 @@ fn narrow_toolbar_collapses_in_order(cx: &mut TestAppContext) {
     tab.update(shell.cx, polygloss_app::iterations::reload);
     tab.update(shell.cx, |t, cx| t.toggle_threads_panel(cx));
     draw(shell.cx);
+    tab
+}
+
+/// A 720 pt window with the sidebar at its 400 pt cap (a wider one
+/// stored): a 320 pt main column.
+fn narrowest(shell: &mut Shell) {
+    resize_window(shell, 1440., 900.);
+    set_sidebar_width(shell, 480.);
+    resize_window(shell, 720., 900.);
+    assert_eq!(bounds(shell.cx, "review-toolbar").size.width, px(320.));
+}
+
+#[gpui_kit::test]
+fn narrow_toolbar_collapses_in_order(cx: &mut TestAppContext) {
+    use polygloss_app::review_tab::toolbar::{self, Narrow};
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    // SAFETY: one test per process, before the app starts any thread.
+    unsafe { std::env::set_var("HOME", repo.path().parent().expect("the fixture's root")) };
+    let mut shell = start(cx);
+    let tab = iteration_review(&mut shell, repo.path());
     let narrow = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| toolbar::narrow(t));
     let menu = |shell: &mut Shell| {
         tab.read_with(shell.cx, |t, cx| {
@@ -264,14 +280,11 @@ fn narrow_toolbar_collapses_in_order(cx: &mut TestAppContext) {
         ]
     );
 
-    // The sidebar at its 400 pt cap (a wider one stored) leaves 320 pt: the
-    // repo name keeps at most 48 pt and the four controls on the right never
-    // hide. That is still too wide here, so the left side's items go from
-    // its end; the repo block stays.
-    resize_window(&mut shell, 1440., 900.);
-    set_sidebar_width(&mut shell, 480.);
-    resize_window(&mut shell, 720., 900.);
-    assert_eq!(bounds(shell.cx, "review-toolbar").size.width, px(320.));
+    // The sidebar at its 400 pt cap leaves 320 pt: the repo name keeps at
+    // most 48 pt and the four controls on the right never hide. That is
+    // still too wide here, so the left side's items go from its end; the
+    // repo block stays.
+    narrowest(&mut shell);
     assert_eq!(narrow(&mut shell), Narrow::ShortRepo);
     assert_eq!(
         toolbar_items(&mut shell),
@@ -311,6 +324,127 @@ fn narrow_toolbar_collapses_in_order(cx: &mut TestAppContext) {
     resize_window(&mut shell, 1440., 900.);
     assert_eq!(narrow(&mut shell), Narrow::Full);
     assert_eq!(toolbar_items(&mut shell), shown_at(Narrow::Full));
+}
+
+#[test]
+fn toolbar_fit_is_searched_from_the_last_frame() {
+    use polygloss_app::review_tab::toolbar::{Narrow, first_fit};
+    let last = Narrow::ALL.len() - 1;
+    // A row that fits from `fit` on, its left side `all` items long: how far
+    // the search went, the row it kept (named by where it was built), and
+    // what it built on the way.
+    let search = |from: usize, fit: usize, all: usize| {
+        let mut built = Vec::new();
+        let (at, row) = first_fit(from, |at| {
+            built.push(at);
+            (at, at >= fit, all)
+        });
+        (at, row, built)
+    };
+    // Steady: one build when nothing gave way, else the one before (too
+    // wide) and its own.
+    assert_eq!(search(0, 0, 4), (0, 0, vec![0]));
+    assert_eq!(search(3, 3, 4), (3, 3, vec![2, 3]));
+    assert_eq!(
+        search(last + 2, last + 2, 4),
+        (last + 2, last + 2, vec![last + 1, last + 2])
+    );
+    // Narrowing goes on from the last frame's; widening goes back while
+    // the one before fits.
+    assert_eq!(search(2, 5, 4), (5, 5, vec![1, 2, 3, 4, 5]));
+    assert_eq!(search(5, 2, 4), (2, 2, vec![4, 3, 2, 1]));
+    // Nothing fits: every step, then the left side's items but the first.
+    assert_eq!(
+        search(0, usize::MAX, 4),
+        (last + 3, last + 3, (0..=last + 3).collect())
+    );
+    // The left side has fewer items than last frame: as far as they go (the
+    // row built past that is the same row).
+    assert_eq!(
+        search(last + 5, usize::MAX, 2),
+        (last + 1, last + 5, vec![last + 4, last + 5])
+    );
+}
+
+#[gpui_kit::test]
+fn i_opens_the_iteration_menu_when_its_pill_gave_way(cx: &mut TestAppContext) {
+    use polygloss_app::iterations;
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = iteration_review(&mut shell, repo.path());
+    let open = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| iterations::menu_open(t));
+    let hangs_from = |shell: &mut Shell, anchor: &str| {
+        let at = bounds(shell.cx, anchor);
+        let menu = bounds(shell.cx, "key-menu");
+        assert_eq!(
+            (menu.left(), menu.top()),
+            (at.left(), at.bottom()),
+            "the menu hangs from {anchor}"
+        );
+    };
+
+    // Opened while the pill shows, it hangs from the pill; when the pill
+    // gives way, from the left side's corner, under the repo name.
+    shell.cx.simulate_keystrokes("i");
+    draw(shell.cx);
+    hangs_from(&mut shell, "iteration-picker");
+    narrowest(&mut shell);
+    assert!(painted(shell.cx, "iteration-picker").is_none(), "gave way");
+    assert!(open(&mut shell));
+    hangs_from(&mut shell, "toolbar-left");
+    // It has the keyboard: Esc closes it.
+    shell.cx.simulate_keystrokes("escape");
+    draw(shell.cx);
+    assert!(!open(&mut shell), "Esc reached the menu");
+    assert!(painted(shell.cx, "key-menu").is_none());
+
+    // `i` with the pill gone opens it there too, with the keyboard.
+    shell.cx.simulate_keystrokes("i");
+    draw(shell.cx);
+    assert!(open(&mut shell));
+    hangs_from(&mut shell, "toolbar-left");
+    shell.cx.simulate_keystrokes("escape");
+    draw(shell.cx);
+    assert!(!open(&mut shell), "Esc reached the menu");
+}
+
+#[gpui_kit::test]
+fn display_menu_opens_from_its_button_and_acts_on_the_diff(cx: &mut TestAppContext) {
+    use polygloss_app::review_tab::toolbar::{self, Narrow};
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.toggle_threads_panel(cx));
+    draw(shell.cx);
+    let wrap = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).options().style.wrap)
+    };
+    let find_open = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            polygloss_app::find::find_bar(t).is_some_and(|bar| bar.read(cx).is_open())
+        })
+    };
+
+    // Wide: the view toggles; the third row is Wrap lines, and choosing it
+    // reaches the diff.
+    assert!(!wrap(&mut shell));
+    click(shell.cx, "view-options");
+    shell.cx.simulate_keystrokes("down down down enter");
+    draw(shell.cx);
+    assert!(wrap(&mut shell), "Wrap lines reached the diff");
+
+    // Narrow: `N/M` (a row that only informs) leads the menu, then Find,
+    // which opens the find bar.
+    narrowest(&mut shell);
+    assert!(tab.read_with(shell.cx, |t, _| toolbar::narrow(t)) >= Narrow::ProgressInMenu);
+    assert!(!find_open(&mut shell));
+    click(shell.cx, "view-options");
+    shell.cx.simulate_keystrokes("down down enter");
+    draw(shell.cx);
+    assert!(find_open(&mut shell), "Find reached the tab");
+    assert!(wrap(&mut shell), "nothing else changed");
 }
 
 #[gpui_kit::test]
