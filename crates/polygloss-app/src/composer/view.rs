@@ -8,13 +8,17 @@
 //! `⌘⏎` itself (its `Enter { secondary }`, which would insert a newline
 //! first), so the composer takes that action in the capture phase and saves
 //! instead.
+//!
+//! Geometry (ADR-0031 C4): a nested card (radius `MD`); its toolbar a `BAR`
+//! with `SM` tabs, the editor's text and the footer's `COMPACT_X` /
+//! `COMPACT_Y` from the frame, the tabs' labels on that column too.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InputEvent, OutdentInline, Textarea, TextareaState,
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Sizable as _, Size, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -26,6 +30,7 @@ use gpui_kit::{
 use super::draft_store::ComposerKey;
 use crate::keymap::actions::composer as actions;
 use crate::keymap::actions::tab as tab_actions;
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, stroke, text};
 
 /// Rows the text field shows at least and grows to at most.
 const MIN_ROWS: usize = 3;
@@ -158,6 +163,8 @@ impl Composer {
         cx.notify();
     }
 
+    /// Write or Preview: an `SM` button whose selection changes its colors
+    /// only (its border is always there, transparent while unselected).
     fn tab_button(
         &self,
         id: &'static str,
@@ -169,22 +176,24 @@ impl Composer {
         div()
             .id(id)
             .debug_selector(move || id.to_owned())
-            .px_2p5()
-            .h(px(24.))
+            // `PILL_X` from its outer edge to its label.
+            .px(px(pad::PILL_X - stroke::BORDER))
+            .h(px(height::SM))
             .flex()
             .items_center()
-            .rounded(px(5.))
-            .text_xs()
+            .rounded(px(radius::for_height(height::SM)))
+            .border_1()
+            .text_style(text::SMALL)
+            .font_medium()
             .cursor_pointer()
             .when(selected, |el| {
                 el.bg(theme.background)
-                    .border_1()
                     .border_color(theme.border)
                     .text_color(theme.foreground)
-                    .font_medium()
             })
             .when(!selected, |el| {
-                el.text_color(theme.muted_foreground)
+                el.border_color(gpui_kit::transparent_black())
+                    .text_color(theme.muted_foreground)
                     .hover(|s| s.text_color(theme.foreground))
             })
             .child(label)
@@ -214,7 +223,6 @@ impl Render for Composer {
             let text = self.text(cx);
             let content = if text.trim().is_empty() {
                 div()
-                    .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child("Nothing to preview")
                     .into_any_element()
@@ -231,32 +239,46 @@ impl Render for Composer {
                     let key = key.clone();
                     move || format!("composer-preview-{key}")
                 })
-                .min_h(px(64.))
-                .px_3()
-                .py_2()
-                .text_sm()
+                .min_h(px(layout::COMPOSER_MIN_H))
+                .px(px(edge::COMPACT_X))
+                .py(px(edge::COMPACT_Y))
+                .text_style(text::BODY)
                 .child(content)
                 .into_any_element()
         } else {
+            // The field insets its text by its own (medium) padding: the
+            // wrapper adds only what reaches `COMPACT_X` / `COMPACT_Y`.
+            let field = Size::Medium;
             div()
-                .px_1()
-                .py_1()
-                .child(Textarea::new(&self.input).bordered(false).w_full())
+                .px(px(edge::COMPACT_X) - field.input_px())
+                .py(px(edge::COMPACT_Y) - field.input_py())
+                .child(
+                    Textarea::new(&self.input)
+                        .with_size(field)
+                        .bordered(false)
+                        .w_full(),
+                )
                 .into_any_element()
         };
         // The focus ring shows while the keyboard is in use (focus-visible).
         let focused = window.last_input_was_keyboard() && self.contains_focus(window, cx);
         let (write, preview) = (!self.preview, self.preview);
         let tabs = h_flex()
-            .gap_1()
+            .gap(px(gap::INLINE))
             .child(self.tab_button("composer-write", "Write", write, cx))
             .child(self.tab_button("composer-preview", "Preview", preview, cx));
         let theme = cx.theme();
         let header = h_flex()
+            .debug_selector({
+                let key = key.clone();
+                move || format!("composer-toolbar-{key}")
+            })
             .w_full()
-            .h(px(34.))
-            .px_1p5()
-            .gap_2()
+            .h(px(height::BAR))
+            // The tabs' labels and the title on the editor's text column.
+            .pl(px(edge::COMPACT_X - pad::PILL_X))
+            .pr(px(edge::COMPACT_X))
+            .gap(px(gap::CONTROLS))
             .border_b_1()
             .border_color(theme.border)
             .bg(theme.secondary)
@@ -264,22 +286,20 @@ impl Render for Composer {
             .child(div().flex_1())
             .child(
                 div()
-                    .pr_1p5()
-                    .text_xs()
+                    .text_style(text::SMALL)
                     .text_color(theme.muted_foreground)
                     .child(self.key.title()),
             );
-        let hint = h_flex()
-            .gap_1()
-            .text_xs()
+        let hint = div()
+            .text_style(text::SMALL)
             .text_color(theme.muted_foreground)
             .child("Markdown · ⌘⏎ to save · Esc to cancel · ⇥ next pane");
         let error = self.error.clone();
         let footer = h_flex()
             .w_full()
-            .px_2p5()
-            .py_2()
-            .gap_2()
+            .px(px(edge::COMPACT_X))
+            .py(px(edge::COMPACT_Y))
+            .gap(px(gap::CONTROLS))
             .border_t_1()
             .border_color(theme.border)
             .child(match error {
@@ -287,7 +307,7 @@ impl Render for Composer {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_xs()
+                    .text_style(text::SMALL)
                     .text_color(theme.danger)
                     .child(err)
                     .into_any_element(),
@@ -349,7 +369,7 @@ impl Render for Composer {
             }))
             .relative()
             .w_full()
-            .rounded(px(6.))
+            .rounded(px(radius::MD))
             .border_1()
             .border_color(theme.ring.opacity(0.6))
             .bg(theme.background)
@@ -367,7 +387,8 @@ impl Render for Composer {
                         .debug_selector(move || format!("composer-focus-ring-{key}"))
                         .absolute()
                         .inset_0()
-                        .rounded(px(6.))
+                        // Inside the frame's border: concentric.
+                        .rounded(px(radius::inner(radius::MD, stroke::BORDER)))
                         .border_1()
                         .border_color(theme.ring),
                 )

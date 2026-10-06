@@ -15,11 +15,13 @@ use gpui_kit::base::{MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextVie
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
-    Window, div, px,
+    App, Div, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    Styled as _, Window, div, font, px,
 };
 use polygloss_core::review::{Position, PositionState, Subject, ThreadAnchor};
 use polygloss_diff::Side;
+
+use crate::space::{TextStyleExt as _, card, gap, height, pad, radius, text};
 
 /// Lines of context `anchor_snippet` holds above the anchored lines (core's
 /// `SNIPPET_CONTEXT`).
@@ -194,8 +196,70 @@ pub fn with_suggestions(view: TextView, ctx: Option<SuggestionContext>) -> TextV
     }
 }
 
+/// The card's number and code columns (ADR-0031 C1, C4) for code drawn in a
+/// frame of its own (a suggestion, an outdated thread's snippet), from the
+/// frame's inner edge: one number column, `card::gutter` wide with its
+/// numbers right-aligned `NUMBER_PAD_R` before its end, then the code at
+/// `card::code_x`: `CODE_PAD` after the gutter, or after a two-advance cell
+/// holding `-`/`+` markers. It does not align with the diff's columns: the
+/// frame sits inside a nested card.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Columns {
+    /// The number gutter's width, the change bar's slot included.
+    pub gutter: f32,
+    /// Where the code starts.
+    pub code_x: f32,
+    /// The code's size and its code row.
+    pub style: text::Style,
+}
+
+impl Columns {
+    /// The columns for code of `family` at `size` pt numbered up to
+    /// `last_line`, with or without `-`/`+` `markers`.
+    pub(crate) fn new(
+        family: &SharedString,
+        size: f32,
+        last_line: u32,
+        markers: bool,
+        cx: &App,
+    ) -> Columns {
+        let text_system = cx.text_system();
+        let font_id = text_system.resolve_font(&font(family.clone()));
+        // The width of `0`; an em, wider than any code glyph, without one.
+        let advance = text_system
+            .ch_advance(font_id, px(size))
+            .unwrap_or(px(size))
+            .as_f32();
+        let digits = last_line.max(1).ilog10() + 1;
+        let gutter = card::gutter(digits, advance, 1);
+        Columns {
+            gutter,
+            code_x: card::code_x(gutter, advance, markers),
+            style: (size, text::code_row(size)),
+        }
+    }
+
+    /// From the gutter's end to the code: the pad, or the markers' cell.
+    pub(crate) fn lead(&self) -> f32 {
+        self.code_x - self.gutter
+    }
+
+    /// Line `n`'s number cell, the gutter's width.
+    pub(crate) fn number(&self, n: u32, color: Hsla) -> Div {
+        div()
+            .flex_none()
+            .w(px(self.gutter))
+            .pr(px(card::NUMBER_PAD_R))
+            .flex()
+            .justify_end()
+            .text_color(color)
+            .child(n.to_string())
+    }
+}
+
 /// The mini-diff element: a "Suggested change" header, then the removed and
-/// added lines with their numbers and `-`/`+` markers in the diff colors.
+/// added lines with their numbers and `-`/`+` markers in the diff colors, in
+/// the card's columns ([`Columns`], `+-` mode).
 fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let diff = crate::theme::viewport_theme(cx);
@@ -209,25 +273,25 @@ fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> imp
         })
         .max()
         .unwrap_or(1);
-    let gutter = px(size * 0.62 * (widest.to_string().len() as f32 + 1.0) + 12.0);
+    let columns = Columns::new(&family, size, widest, true, cx);
     let (mut removed_ix, mut added_ix) = (0usize, 0usize);
     v_flex()
         .debug_selector(|| "suggestion-diff".into())
-        .my_1()
+        .my(px(gap::INLINE))
         .w_full()
-        .rounded(px(6.))
+        .rounded(px(radius::SM))
         .border_1()
         .border_color(theme.border)
         .overflow_hidden()
         .child(
+            // A bar of the button ladder, its divider included.
             h_flex()
-                .px_2()
-                .py_1()
-                .gap_1()
+                .h(px(height::SM))
+                .px(px(pad::TEXT))
                 .border_b_1()
                 .border_color(theme.border)
                 .bg(theme.muted)
-                .text_xs()
+                .text_style(text::SMALL)
                 .text_color(theme.muted_foreground)
                 .child("Suggested change"),
         )
@@ -243,6 +307,7 @@ fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> imp
                 added_ix += 1;
                 format!("suggestion-added-{}", added_ix - 1)
             };
+            let code_selector = selector.replacen("suggestion-", "suggestion-code-", 1);
             let (bg, accent) = if removed {
                 (diff.removed_background, diff.removed_accent)
             } else {
@@ -255,30 +320,23 @@ fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> imp
                 .bg(bg)
                 .font_family(family.clone())
                 .font_features(features.clone())
-                .text_size(px(size))
-                .line_height(px((size * 1.54).round()))
+                .text_style(columns.style)
+                .child(columns.number(line, diff.line_number))
                 .child(
                     div()
                         .flex_none()
-                        .w(gutter)
-                        .pr_2()
+                        .w(px(columns.lead()))
                         .flex()
-                        .justify_end()
-                        .text_color(diff.line_number)
-                        .child(line.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(size * 0.62 + 6.0))
+                        .justify_center()
                         .text_color(accent)
                         .child(if removed { "-" } else { "+" }),
                 )
                 .child(
                     div()
+                        .debug_selector(move || code_selector.clone())
                         .flex_1()
                         .min_w_0()
-                        .pr_2()
+                        .pr(px(card::CODE_PAD))
                         .text_color(diff.foreground)
                         .when(text.is_empty(), |el| el.child(" "))
                         .when(!text.is_empty(), |el| el.child(text)),

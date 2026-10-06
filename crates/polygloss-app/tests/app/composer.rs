@@ -916,3 +916,66 @@ fn restored_reply_on_another_reviews_thread_is_dropped(cx: &mut gpui_kit::TestAp
     );
     assert_eq!(kept(&mut shell).as_deref(), Some("half a reply"));
 }
+
+/// The painted bounds of `selector`.
+fn bounds_of(shell: &mut Shell, selector: String) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    shell
+        .cx
+        .debug_bounds(Box::leak(selector.clone().into_boxed_str()))
+        .unwrap_or_else(|| panic!("{selector} was not painted"))
+}
+
+/// T7.7, ADR-0031 C4 and the ladder: the composer's toolbar is a pane bar
+/// (36, its divider included), its tabs are buttons (24) that keep their
+/// width when selected, the collapsed reply box is a field (28), and the
+/// editor's text sits 12 from the composer's frame: one inset, not the
+/// frame's and the field's added together.
+#[gpui_kit::test]
+fn composer_bars_follow_the_ladder(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::px;
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    cursor_at(&mut shell, &tab, 0, Side::New, 4);
+    keys(&mut shell, "c");
+    let key = line5();
+    let frame = bounds_of(&mut shell, format!("composer-{key}"));
+    let toolbar = bounds_of(&mut shell, format!("composer-toolbar-{key}"));
+    assert_eq!(toolbar.size.height, px(36.));
+    assert_eq!(toolbar.top(), frame.top() + px(1.), "inside the frame");
+    let write = bounds_of(&mut shell, "composer-write".into());
+    assert_eq!(write.size.height, px(24.));
+    // The editor's first glyph box, from the frame's inner left edge.
+    let text = tab.read_with(shell.cx, |t, cx| {
+        let view = composer::composer(t, &key, cx).expect("the composer is open");
+        view.read(cx).input().read(cx).text_bounds()
+    });
+    let text = text.expect("the editor laid out its text");
+    assert_eq!(text.left() - (frame.left() + px(1.)), px(12.));
+    // Selecting a tab changes its colors only.
+    click(&mut shell, "composer-preview".into());
+    let selected = bounds_of(&mut shell, "composer-preview".into());
+    click(&mut shell, "composer-write".into());
+    let unselected = bounds_of(&mut shell, "composer-preview".into());
+    assert_eq!(selected.size, unselected.size);
+
+    // A thread's collapsed reply box.
+    keys(&mut shell, "escape");
+    let id = create(
+        &mut shell,
+        &tab,
+        Subject::Line {
+            path: "src/config.rs".into(),
+            side: Side::New,
+            start_line: 2,
+            line: 2,
+        },
+        ThreadKind::Comment,
+        "Hm.",
+        agent(),
+    );
+    reload(&mut shell, &tab);
+    let reply = bounds_of(&mut shell, format!("thread-reply-{id}"));
+    assert_eq!(reply.size.height, px(28.));
+}

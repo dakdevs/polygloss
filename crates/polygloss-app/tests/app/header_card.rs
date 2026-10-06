@@ -13,7 +13,7 @@ use polygloss_app::review_tab::{ReviewTab, header};
 use polygloss_core::git::{CompareMode, Since, Source};
 use polygloss_core::review::OpenRequest;
 use polygloss_core::store::events::Actor;
-use polygloss_diff::ObjectFormat;
+use polygloss_diff::{ObjectFormat, Side};
 use polygloss_highlight::Appearance;
 
 use crate::shell::{Shell, bounds, click, commit_req, compare_req, draw, painted, start};
@@ -579,4 +579,135 @@ fn footer_and_header_exclude_categorized_files(cx: &mut TestAppContext) {
     );
     let chips = bounds(shell.cx, "header-chips: 1 test · 2 generated");
     assert!(stats.right() <= chips.left());
+}
+
+/// `base` (a README), then "init" by Ada Lovelace adding `notes.txt`, 120
+/// lines: one one-sided card with 3-digit numbers.
+fn added_file_repo() -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("README.md", b"# notes\n");
+    repo.commit("base");
+    let lines: String = (1..=120).map(|i| format!("note {i}\n")).collect();
+    repo.write("notes.txt", lines.as_bytes());
+    repo.git(&["add", "-A"]);
+    repo.git(&[
+        "commit",
+        "-q",
+        "--author",
+        "Ada Lovelace <ada@example.com>",
+        "-m",
+        "init",
+    ]);
+    repo
+}
+
+/// T7.7, ADR-0031 C3: the avatar and its gap put the title's box on the
+/// code column of a one-sided card with 3-digit numbers (relational: both
+/// measured).
+#[gpui_kit::test]
+fn header_card_title_lands_on_the_code_column(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = added_file_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(commit_req(repo.path(), "HEAD")).unwrap();
+    draw(shell.cx);
+    let title = bounds(shell.cx, "header-title");
+    let code = tab.read_with(shell.cx, |t, cx| {
+        let v = t.viewport.read(cx);
+        let f = v.display_order()[0];
+        let card = v.card_bounds(f).expect("the file card is painted");
+        // `code_x` is from the card's inner left edge, inside its border.
+        card.left() + gpui_kit::px(1.) + v.code_x(f, Side::New).expect("the file")
+    });
+    let off = (title.left() - code).abs();
+    assert!(
+        off <= gpui_kit::px(0.5),
+        "the title's box at {:?}, the code column at {code:?}",
+        title.left()
+    );
+}
+
+/// T7.7, ADR-0031 C3 and R13: `CARD_Y`, a 20 pt title line, an 18 pt
+/// byline and `CARD_Y`, inside two 1 pt borders, for a commit and for a
+/// compare (whose byline holds "Show commits"); the card is the viewport's
+/// prelude, placed where the E2E reference test reads it.
+#[gpui_kit::test]
+fn header_card_is_56_tall(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = authored_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(commit_req(repo.path(), "HEAD")).unwrap();
+    draw(shell.cx);
+    let card = bounds(shell.cx, "header-card");
+    assert_eq!(card.size.height, gpui_kit::px(8. + 20. + 18. + 8. + 2.));
+    // The viewport's debug frame places the prelude at the card's bounds
+    // (viewport-relative; the first file card gives the origin).
+    let (prelude, origin) = tab.read_with(shell.cx, |t, cx| {
+        let v = t.viewport.read(cx);
+        let d = v.debug();
+        let f = v.display_order()[0];
+        let file_card = v.card_bounds(f).expect("the file card is painted");
+        let at = d
+            .cards
+            .iter()
+            .find(|c| c.file_idx == f)
+            .expect("in the frame");
+        (
+            d.prelude.expect("the prelude is placed"),
+            (
+                file_card.left().as_f32() - at.bounds.0,
+                file_card.top().as_f32() - at.bounds.1,
+            ),
+        )
+    });
+    assert_eq!(
+        (
+            prelude.0 + origin.0,
+            prelude.1 + origin.1,
+            prelude.2,
+            prelude.3
+        ),
+        (
+            card.left().as_f32(),
+            card.top().as_f32(),
+            card.size.width.as_f32(),
+            card.size.height.as_f32()
+        )
+    );
+
+    let commits = commits_repo(3);
+    shell
+        .open(compare(commits.path(), CompareMode::ThreeDot, None))
+        .unwrap();
+    assert!(painted(shell.cx, "header-commits-toggle").is_some());
+    assert_eq!(
+        bounds(shell.cx, "header-card").size.height,
+        gpui_kit::px(56.)
+    );
+}
+
+/// T7.7: the commit list's rows are list rows (28, touching) with 20 pt
+/// avatars.
+#[gpui_kit::test]
+fn commit_rows_follow_the_ladder(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = commits_repo(3);
+    let mut shell = start(cx);
+    shell
+        .open(compare(repo.path(), CompareMode::ThreeDot, None))
+        .unwrap();
+    click(shell.cx, "header-commits-toggle");
+    let rows = [0, 1, 2].map(|i| bounds(shell.cx, &format!("header-commit-{i}")));
+    for row in rows {
+        assert_eq!(row.size.height, gpui_kit::px(28.), "{row:?}");
+    }
+    assert_eq!(rows[1].top(), rows[0].bottom(), "rows touch");
+    assert_eq!(rows[2].top(), rows[1].bottom(), "rows touch");
+    let avatar = bounds(shell.cx, "header-commit-avatar-0");
+    assert_eq!(
+        (avatar.size.width, avatar.size.height),
+        (gpui_kit::px(20.), gpui_kit::px(20.))
+    );
+    // Centred on its row.
+    assert_eq!(avatar.center().y, rows[0].center().y);
 }

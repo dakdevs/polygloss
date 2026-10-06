@@ -12,6 +12,13 @@
 //! ("Threads · n open · k notes" and Comment on review), then each row as a
 //! rounded card.
 //!
+//! Geometry (ADR-0031 S1, dense): a `BAR` header with its text on the
+//! sidebars' text column (`SIDEBAR + TEXT`); cards `SIDEBAR` from both
+//! edges and `CONTROLS` apart, radius `MD`, their content `COMPACT_X` /
+//! `COMPACT_Y` in, hover and press ink over their fill; the selection rail
+//! `CURSOR_BAR` wide whatever the focus; the empty state `SECTION` below the
+//! header.
+//!
 //! Counts: the header's "n open" counts open threads that wait on someone,
 //! like the file headers' and the tree's badges (agent notes are FYI: they
 //! are counted apart, "· k notes"); review-level threads and threads this
@@ -35,10 +42,9 @@ use polygloss_diff::Side;
 use super::block::{author_name, excerpt, pill};
 use super::placement::ThreadPlace;
 use super::{DiffOrderer, ReviewThreads, activate_thread, block};
+use crate::motion::ink::PressInk as _;
 use crate::review_tab::ReviewTab;
-
-/// A row card's corner radius, the file cards' (ADR-0027).
-const CARD_RADIUS: f32 = 8.0;
+use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, stroke, text};
 
 /// The panel's rows, in order: `(thread id, open)`. Threads in the diff
 /// are in its top-to-bottom order (old and new sides interleaved as the
@@ -173,12 +179,13 @@ pub fn render(
     }
     let theme = cx.theme();
     let header = h_flex()
+        .debug_selector(|| "threads-panel-header".into())
         .flex_none()
-        .h(px(40.))
-        .pl_3()
-        .pr_2()
-        .gap_1()
-        .text_sm()
+        .h(px(height::BAR))
+        .pl(px(edge::SIDEBAR + pad::TEXT))
+        .pr(px(edge::SIDEBAR))
+        .gap(px(gap::INLINE))
+        .text_style(text::UI)
         .child(
             div()
                 .font_semibold()
@@ -204,6 +211,7 @@ pub fn render(
             Button::new("comment-on-review")
                 .debug_selector(|| "comment-on-review".into())
                 .xsmall()
+                .rounded(px(radius::XS))
                 .ghost()
                 .icon(IconName::Plus)
                 .label("Comment on review")
@@ -215,19 +223,27 @@ pub fn render(
     let body = if rows.is_empty() && composer.is_some() {
         div().flex_1().into_any_element()
     } else if rows.is_empty() {
+        // As every empty state: `SECTION` above it.
         v_flex()
             .flex_1()
             .items_center()
-            .justify_center()
-            .gap_1()
-            .text_sm()
+            .py(px(gap::SECTION))
             .text_color(theme.muted_foreground)
-            .child(if loaded {
-                "No threads yet"
-            } else {
-                "Loading threads…"
-            })
-            .child(div().text_xs().child("Press C on a line to comment."))
+            .child(
+                div()
+                    .debug_selector(|| "threads-panel-empty".into())
+                    .text_style(text::UI)
+                    .child(if loaded {
+                        "No threads yet"
+                    } else {
+                        "Loading threads…"
+                    }),
+            )
+            .child(
+                div()
+                    .text_style(text::SMALL)
+                    .child("Press C on a line to comment."),
+            )
             .into_any_element()
     } else {
         v_flex()
@@ -236,10 +252,10 @@ pub fn render(
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&scroll)
-            .px_3()
-            .pt_1()
-            .pb_3()
-            .gap_2()
+            .px(px(edge::SIDEBAR))
+            .pt(px(gap::INLINE))
+            .pb(px(gap::GROUP))
+            .gap(px(gap::CONTROLS))
             .children(list)
             .into_any_element()
     };
@@ -254,14 +270,16 @@ pub fn render(
         .into_any_element()
 }
 
-fn section_title(text: String, cx: &Context<ReviewTab>) -> impl IntoElement {
+/// "Resolved · n": with the list's `CONTROLS`, `GROUP` below the card
+/// before it.
+fn section_title(title: String, cx: &Context<ReviewTab>) -> impl IntoElement {
     let theme = cx.theme();
     div()
-        .pt_2()
-        .text_xs()
+        .pt(px(gap::GROUP - gap::CONTROLS))
+        .text_style(text::SMALL)
         .font_semibold()
         .text_color(theme.muted_foreground)
-        .child(text)
+        .child(title)
 }
 
 /// One thread's row (and, for a thread only the panel shows, its card when
@@ -295,13 +313,11 @@ fn row(
     let replies = thread.comments.len().saturating_sub(1);
     let card = expanded.then(|| block::card(model, &thread, position.as_ref(), window, cx));
     let theme = cx.theme();
-    // A rounded card, tinted on hover and when selected (the theme's
-    // colors are translucent), like Home's rows.
+    // A rounded card, tinted when selected (the theme's color is
+    // translucent), with hover and press ink over that, like Home's rows.
     let surface = crate::theme::viewport_theme(cx);
-    let (hover, selected_bg) = (
-        surface.card_background.blend(theme.list_hover),
-        surface.card_background.blend(theme.list_active),
-    );
+    let selected_bg = surface.card_background.blend(theme.list_active);
+    let inner_radius = px(radius::inner(radius::MD, stroke::BORDER));
     let (icon, color) = match (resolved, thread.kind) {
         (true, _) => (IconName::CircleCheck, theme.success),
         (false, ThreadKind::Question) => (IconName::CircleAlert, theme.info),
@@ -311,7 +327,9 @@ fn row(
         }
         (false, ThreadKind::Comment) => (IconName::User, theme.muted_foreground),
     };
-    let (sel, q_sel, o_sel, click_id, mark_sel) = (
+    let (sel, q_sel, o_sel, click_id, mark_sel, line_sel, ink_id) = (
+        id.to_owned(),
+        id.to_owned(),
         id.to_owned(),
         id.to_owned(),
         id.to_owned(),
@@ -323,30 +341,39 @@ fn row(
         .bg(surface.card_background)
         .border_1()
         .border_color(surface.card_border)
-        .rounded(px(CARD_RADIUS))
+        .rounded(px(radius::MD))
         .child(
             v_flex()
                 .id(SharedString::from(format!("threads-panel-{id}")))
                 .debug_selector(move || format!("threads-panel-{sel}"))
                 .relative()
                 .w_full()
-                .px_3()
-                .py_2()
-                .gap_1()
-                // Inside the card's 1 px border.
-                .rounded(px(CARD_RADIUS - 1.))
+                .px(px(edge::COMPACT_X))
+                .py(px(edge::COMPACT_Y))
+                .gap(px(gap::INLINE))
+                // Inside the card's 1 pt border.
+                .rounded(inner_radius)
                 .cursor_pointer()
-                .hover(move |s| s.bg(hover))
+                .when(selected, |el| el.bg(selected_bg))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("threads-panel-ink-{ink_id}")))
+                        .absolute()
+                        .inset_0()
+                        .rounded(inner_radius)
+                        .press_ink(cx),
+                )
                 .when(selected, |el| {
-                    // A bar inside the left edge, clear of the corners.
-                    el.bg(selected_bg).child(
+                    // A rail inside the left edge, clear of the corners; the
+                    // focus changes its color only.
+                    el.child(
                         div()
                             .debug_selector(move || format!("threads-panel-selected-{mark_sel}"))
                             .absolute()
-                            .left(px(3.))
-                            .top(px(6.))
-                            .bottom(px(6.))
-                            .w(px(if focused { 3. } else { 2. }))
+                            .left(px(pad::RIM))
+                            .top(px(gap::CONTROLS))
+                            .bottom(px(gap::CONTROLS))
+                            .w(px(stroke::CURSOR_BAR))
                             .rounded_full()
                             .bg(if focused {
                                 theme.ring
@@ -361,9 +388,10 @@ fn row(
                 }))
                 .child(
                     h_flex()
+                        .debug_selector(move || format!("threads-panel-line-{line_sel}"))
                         .w_full()
-                        .gap_1p5()
-                        .text_xs()
+                        .gap(px(gap::ICON_LABEL))
+                        .text_style(text::SMALL)
                         .child(Icon::new(icon).xsmall().text_color(color))
                         .child(
                             div()
@@ -402,8 +430,8 @@ fn row(
                 .child(
                     h_flex()
                         .w_full()
-                        .gap_1()
-                        .text_xs()
+                        .gap(px(gap::INLINE))
+                        .text_style(text::SMALL)
                         .child(
                             div()
                                 .flex_none()
@@ -421,14 +449,24 @@ fn row(
                         ),
                 )
                 .when(replies > 0, |el| {
-                    el.child(div().text_xs().text_color(theme.muted_foreground).child(
-                        match replies {
-                            1 => "1 reply".to_owned(),
-                            n => format!("{n} replies"),
-                        },
-                    ))
+                    el.child(
+                        div()
+                            .text_style(text::SMALL)
+                            .text_color(theme.muted_foreground)
+                            .child(match replies {
+                                1 => "1 reply".to_owned(),
+                                n => format!("{n} replies"),
+                            }),
+                    )
                 }),
         )
-        .when_some(card, |el, card| el.child(div().px_2().pb_2().child(card)))
+        .when_some(card, |el, card| {
+            el.child(
+                div()
+                    .px(px(gap::CONTROLS))
+                    .pb(px(gap::CONTROLS))
+                    .child(card),
+            )
+        })
         .into_any_element()
 }

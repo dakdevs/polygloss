@@ -10,13 +10,14 @@ use gpui_kit::component::{ActiveTheme as _, ResizableState, h_resizable, resizab
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Styled as _, Window, div, point, px,
+    ParentElement as _, Pixels, Styled as _, Window, div, point, px,
 };
 
 use crate::chrome::{self, Segment};
 use crate::keyboard::Pane;
 use crate::motion;
 use crate::review_tab::ReviewTab;
+use crate::space::{layout, stroke};
 
 gpui_kit::actions!(
     tab,
@@ -26,14 +27,6 @@ gpui_kit::actions!(
     ]
 );
 
-/// The threads panel's width until the user drags its edge.
-const THREADS_WIDTH: f32 = 340.0;
-/// The narrowest the threads panel gets (design §11.1).
-const THREADS_MIN_WIDTH: f32 = 220.0;
-/// The widest the threads panel gets (design §11.1).
-const THREADS_MAX_WIDTH: f32 = 720.0;
-/// The narrowest the diff gets beside the threads panel (design §11.1).
-const VIEWPORT_MIN_WIDTH: f32 = 260.0;
 /// How far right of its place the panel's content starts entering.
 const ENTER_FROM_RIGHT: f32 = 12.0;
 
@@ -61,8 +54,8 @@ impl Panes {
         // rescales the panel's.
         let state = cx.new(|cx| {
             let mut state = ResizableState::default();
-            state.insert_panel(Some(px(VIEWPORT_MIN_WIDTH)), None, cx);
-            state.insert_panel(Some(px(THREADS_WIDTH)), None, cx);
+            state.insert_panel(Some(px(layout::VIEWPORT_MIN_WIDTH)), None, cx);
+            state.insert_panel(Some(px(layout::THREADS_WIDTH)), None, cx);
             state
         });
         Panes {
@@ -101,6 +94,14 @@ impl Panes {
         self.entrance
             .filter(|(_, until)| now < *until)
             .map(|(epoch, _)| epoch)
+    }
+}
+
+impl ReviewTab {
+    /// The viewport | threads panel split's state (tests size the panel
+    /// through it, as dragging its edge does).
+    pub fn threads_split(&self) -> &Entity<ResizableState> {
+        &self.panes.state
     }
 }
 
@@ -149,10 +150,10 @@ pub(crate) fn render_sidebar(
 }
 
 /// The main column's panes of `tab`: diff viewport | threads panel. The
-/// panel keeps its stored width (up to [`THREADS_MAX_WIDTH`]) while the main
-/// column leaves the viewport [`VIEWPORT_MIN_WIDTH`], and gives way down to
-/// [`THREADS_MIN_WIDTH`] (design §11.1); the stored width comes back when
-/// the window widens.
+/// panel keeps its stored width (up to `THREADS_RANGE`'s end) while the
+/// main column leaves the viewport `VIEWPORT_MIN_WIDTH`, and gives way down
+/// to the range's start (design §11.1, [`layout`]); the stored width comes
+/// back when the window widens.
 pub(crate) fn render(
     tab: &ReviewTab,
     window: &mut Window,
@@ -178,7 +179,8 @@ pub(crate) fn render(
         }
     });
     let main = chrome::main_column_width(shown, window, cx);
-    let threads_max = (main - VIEWPORT_MIN_WIDTH).clamp(THREADS_MIN_WIDTH, THREADS_MAX_WIDTH);
+    let (threads_min, threads_max) = layout::THREADS_RANGE;
+    let threads_max = (main - layout::VIEWPORT_MIN_WIDTH).clamp(threads_min, threads_max);
     // The viewport keeps no width of its own (a drag of the panel's edge
     // gives it one), so resizing the window never rescales the panel's.
     tab.panes.state.update(cx, |state, cx| {
@@ -201,7 +203,7 @@ pub(crate) fn render(
         .with_state(&tab.panes.state)
         .child(
             resizable_panel()
-                .size_range(px(VIEWPORT_MIN_WIDTH)..px(100_000.))
+                .size_range(px(layout::VIEWPORT_MIN_WIDTH)..Pixels::MAX)
                 .child(
                     div()
                         .debug_selector(|| "viewport-pane".into())
@@ -218,8 +220,8 @@ pub(crate) fn render(
         )
         .child(
             resizable_panel()
-                .size(px(THREADS_WIDTH))
-                .size_range(px(THREADS_MIN_WIDTH)..px(threads_max))
+                .size(px(layout::THREADS_WIDTH))
+                .size_range(px(threads_min)..px(threads_max))
                 .flex_none()
                 .visible(threads.is_some())
                 .when_some(threads, |panel, threads| {
@@ -247,7 +249,7 @@ fn focus_ring(selector: &'static str, cx: &Context<ReviewTab>) -> AnyElement {
         .debug_selector(move || selector.into())
         .absolute()
         .inset_0()
-        .border_2()
+        .border(px(stroke::FOCUS_RING))
         .border_color(cx.theme().ring.opacity(0.7))
         .into_any_element()
 }

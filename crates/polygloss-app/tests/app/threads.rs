@@ -24,6 +24,7 @@ use polygloss_viewport::{BlockAnchor, CursorPos};
 use crate::shell::{Shell, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
+mod geometry;
 mod sections;
 
 pub fn human() -> Author {
@@ -981,14 +982,15 @@ fn threads_panel_rows_are_cards_on_the_canvas(cx: &mut gpui_kit::TestAppContext)
     reload(&mut shell, &tab);
     let pane = bounds(shell.cx, "threads-pane".into());
     let rows = ids.map(|id| bounds(shell.cx, format!("threads-panel-{id}")));
-    // Cards: inset from the panel's edges and apart from each other.
+    // Cards: inset from the panel's edges (`SIDEBAR`, T7.7; exact in
+    // `threads::geometry`) and apart from each other.
     for row in rows {
         assert!(
-            row.left() - pane.left() >= gpui_kit::px(12.),
+            row.left() - pane.left() >= gpui_kit::px(10.),
             "{row:?} in {pane:?}"
         );
         assert!(
-            pane.right() - row.right() >= gpui_kit::px(12.),
+            pane.right() - row.right() >= gpui_kit::px(10.),
             "{row:?} in {pane:?}"
         );
     }

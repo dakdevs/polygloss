@@ -8,10 +8,20 @@
 //!
 //! Rendered from [`ReviewThreads`] each time the viewport paints the block,
 //! so it always shows the current thread; the model invalidates the block
-//! when its content changes. Debug selectors (`thread-<id>`,
-//! `thread-chip-<id>`, `thread-comment-<comment>`, `thread-agent-<comment>`,
+//! when its content changes.
+//!
+//! Geometry (ADR-0031 C4): a block is a nested card, [`nested`] in its file
+//! card (`NESTED_X`, `NESTED_Y`), radius `MD`; its header row and its chip
+//! are list rows (`MD`), and its comments put their content `COMPACT_X` /
+//! `COMPACT_Y` in, the body after the `AVATAR_SM` avatar and its `CONTROLS`
+//! gap. The outdated snippet uses the card's columns ([`Columns`]).
+//!
+//! Debug selectors (`thread-<id>`, `thread-chip-<id>`, `thread-header-<id>`,
+//! `thread-comment-<comment>`, `thread-avatar-<comment>`,
+//! `thread-body-<comment>`, `thread-agent-<comment>`,
 //! `thread-draft-<comment>`, `thread-question-<id>`, `thread-outdated-<id>`,
-//! `thread-snippet-<id>`) are what the tests look for.
+//! `thread-snippet-<id>`, `thread-snippet-code-<id>-<row>`) are what the
+//! tests look for.
 
 use std::sync::Arc;
 
@@ -29,13 +39,10 @@ use polygloss_core::review::{
 };
 
 use super::ReviewThreads;
-use crate::markdown::{self, suggestion};
-
-/// Space around a block's card inside its row.
-const MARGIN_X: f32 = 10.0;
-const MARGIN_Y: f32 = 6.0;
-/// The avatar's size; comment bodies are indented past it.
-const AVATAR: f32 = 20.0;
+use crate::markdown;
+use crate::markdown::suggestion::{self, Columns};
+use crate::motion::ink::PressInk as _;
+use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, stroke, text};
 
 /// Thread `id`'s block: its card, or its chip while collapsed.
 pub fn render(
@@ -57,29 +64,34 @@ pub fn render(
     } else {
         card(model, &thread, position.as_ref(), window, cx)
     };
+    nested(inner)
+}
+
+/// A card inside a file card (a thread block, a composer) as a viewport
+/// block: `NESTED_X` from the file card's inner edges and `NESTED_Y` from
+/// the rows around it (ADR-0031 C4). Opaque to clicks (the diff under it
+/// does not see them), but the wheel still scrolls the diff.
+pub(crate) fn nested(card: impl IntoElement) -> AnyElement {
     div()
         .w_full()
-        .px(px(MARGIN_X))
-        .py(px(MARGIN_Y))
-        // Opaque to clicks (the diff under it does not see them), but the
-        // wheel still scrolls the diff.
+        .px(px(edge::NESTED_X))
+        .py(px(edge::NESTED_Y))
         .block_mouse_except_scroll()
-        .child(inner)
+        .child(card)
         .into_any_element()
 }
 
-/// A small outlined pill.
-pub(crate) fn pill(text: impl Into<SharedString>, color: Hsla) -> gpui_kit::Div {
+/// A small outlined badge: a capsule, `BADGE_X` in, `SMALL` text.
+pub(crate) fn pill(label: impl Into<SharedString>, color: Hsla) -> gpui_kit::Div {
     div()
         .flex_none()
-        .px_1p5()
+        .px(px(pad::BADGE_X))
         .rounded_full()
         .border_1()
         .border_color(color.opacity(0.55))
-        .text_xs()
-        .line_height(px(16.))
+        .text_style(text::SMALL)
         .text_color(color)
-        .child(text.into())
+        .child(label.into())
 }
 
 /// The first line of a body as plain text, for chips and the panel.
@@ -108,7 +120,7 @@ pub(crate) fn author_name(kind: AuthorKind, name: &str) -> SharedString {
     }
 }
 
-fn avatar(kind: AuthorKind, cx: &App) -> impl IntoElement {
+fn avatar(kind: AuthorKind, cx: &App) -> gpui_kit::Div {
     let theme = cx.theme();
     let (bg, fg, icon) = match kind {
         AuthorKind::Human => (theme.secondary, theme.secondary_foreground, IconName::User),
@@ -116,7 +128,7 @@ fn avatar(kind: AuthorKind, cx: &App) -> impl IntoElement {
     };
     div()
         .flex_none()
-        .size(px(AVATAR))
+        .size(px(size::AVATAR_SM))
         .rounded_full()
         .flex()
         .items_center()
@@ -144,7 +156,8 @@ fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// A resolved thread or an agent note, collapsed to one line.
+/// A resolved thread or an agent note, collapsed to one line: a list row
+/// (`MD`) with the card's radius, hover and press ink over its fill.
 fn chip(model: &Entity<ReviewThreads>, thread: &Arc<ThreadView>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let id = thread.id.clone();
@@ -160,24 +173,32 @@ fn chip(model: &Entity<ReviewThreads>, thread: &Arc<ThreadView>, cx: &App) -> im
     };
     let replies = thread.comments.len().saturating_sub(1);
     let model = model.clone();
-    let toggle_id = id.clone();
+    let (toggle_id, ink_id) = (id.clone(), id.clone());
     h_flex()
         .id(SharedString::from(format!("thread-chip-{id}")))
         .debug_selector(move || format!("thread-chip-{id}"))
+        .relative()
         .w_full()
-        .h(px(30.))
-        .px_2p5()
-        .gap_2()
-        .rounded(px(6.))
+        .h(px(height::MD))
+        .px(px(edge::COMPACT_X))
+        .gap(px(gap::CONTROLS))
+        .rounded(px(radius::MD))
         .border_1()
         .border_color(theme.border)
         .bg(theme.secondary)
-        .text_xs()
+        .text_style(text::SMALL)
         .cursor_pointer()
-        .hover(|s| s.bg(theme.secondary_hover))
         .on_click(move |_, _, cx| {
             model.update(cx, |m, cx| m.toggle_expanded(&toggle_id, cx));
         })
+        .child(
+            div()
+                .id(SharedString::from(format!("thread-chip-ink-{ink_id}")))
+                .absolute()
+                .inset_0()
+                .rounded(px(radius::inner(radius::MD, stroke::BORDER)))
+                .press_ink(cx),
+        )
         .child(Icon::new(icon).xsmall().text_color(color))
         .child(
             div()
@@ -239,7 +260,7 @@ pub(crate) fn card(
         .id(SharedString::from(format!("thread-{id}")))
         .debug_selector(move || format!("thread-{id}"))
         .w_full()
-        .rounded(px(6.))
+        .rounded(px(radius::MD))
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)
@@ -273,18 +294,18 @@ fn header(
         AuthorKind::Agent => r.name.clone().unwrap_or_else(|| "an agent".to_owned()),
     });
     let model = model.clone();
-    let (q_id, o_id) = (id.clone(), id.clone());
+    let (q_id, o_id, h_id) = (id.clone(), id.clone(), id.clone());
     Some(
         h_flex()
+            .debug_selector(move || format!("thread-header-{h_id}"))
             .w_full()
-            .min_h(px(30.))
-            .px_3()
-            .py_1()
-            .gap_1p5()
+            .h(px(height::MD))
+            .px(px(edge::COMPACT_X))
+            .gap(px(gap::ICON_LABEL))
             .border_b_1()
             .border_color(theme.border)
             .bg(theme.secondary)
-            .text_xs()
+            .text_style(text::SMALL)
             .when(resolved, |el| {
                 el.child(
                     Icon::new(IconName::CircleCheck)
@@ -323,6 +344,7 @@ fn header(
                 el.child(
                     Button::new(SharedString::from(format!("thread-hide-{id}")))
                         .xsmall()
+                        .rounded(px(radius::XS))
                         .ghost()
                         .icon(IconName::ChevronUp)
                         .tooltip("Collapse")
@@ -335,7 +357,8 @@ fn header(
 }
 
 /// An outdated thread's original lines (`anchor_snippet`: the anchored
-/// lines with 3 lines of context), the anchored ones tinted.
+/// lines with 3 lines of context), the anchored ones tinted, in the card's
+/// columns from the snippet's own edge.
 fn snippet(thread: &ThreadView, cx: &App) -> impl IntoElement + use<> {
     let theme = cx.theme();
     let diff = crate::theme::viewport_theme(cx);
@@ -350,37 +373,35 @@ fn snippet(thread: &ThreadView, cx: &App) -> impl IntoElement + use<> {
     let first = start.saturating_sub(3).max(1);
     let text = thread.anchor.anchor_snippet.clone().unwrap_or_default();
     let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
-    let digits = (first as usize + lines.len()).to_string().len() as f32;
-    let gutter = px(size * 0.62 * (digits + 1.0) + 10.0);
+    let last = first + lines.len().saturating_sub(1) as u32;
+    let columns = Columns::new(&family, size, last, false, cx);
     v_flex()
-        .debug_selector(move || format!("thread-snippet-{id}"))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("thread-snippet-{id}")
+        })
         .w_full()
-        .py_1()
+        .py(px(gap::INLINE))
         .border_b_1()
         .border_color(theme.border)
         .bg(diff.background)
         .font_family(family)
         .font_features(markdown::code_font_features(cx))
-        .text_size(px(size - 1.0))
-        .line_height(px(((size - 1.0) * 1.54).round()))
+        .text_style(columns.style)
         .children(lines.into_iter().enumerate().map(move |(i, l)| {
             let n = first + i as u32;
             let anchored = n >= start && n <= end;
             h_flex()
                 .w_full()
                 .when(anchored, |el| el.bg(diff.removed_background))
+                .child(columns.number(n, diff.line_number))
                 .child(
                     div()
-                        .flex_none()
-                        .w(gutter)
-                        .pr_2()
-                        .flex()
-                        .justify_end()
-                        .text_color(diff.line_number)
-                        .child(n.to_string()),
-                )
-                .child(
-                    div()
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("thread-snippet-code-{id}-{i}")
+                        })
+                        .ml(px(columns.lead()))
                         .flex_1()
                         .min_w_0()
                         .truncate()
@@ -435,19 +456,22 @@ fn comment(
     v_flex()
         .debug_selector(move || format!("thread-comment-{cid}"))
         .w_full()
-        .px_3()
-        .py_2()
-        .gap_1()
+        .px(px(edge::COMPACT_X))
+        .py(px(edge::COMPACT_Y))
+        .gap(px(gap::INLINE))
         .when(reply, |el| el.border_t_1().border_color(theme.border))
         .child(
             h_flex()
                 .w_full()
-                .gap_2()
+                .gap(px(gap::CONTROLS))
                 .items_center()
-                .child(avatar(c.author.kind, cx))
+                .child(avatar(c.author.kind, cx).debug_selector({
+                    let id = c.id.clone();
+                    move || format!("thread-avatar-{id}")
+                }))
                 .child(
                     div()
-                        .text_sm()
+                        .text_style(text::UI)
                         .font_semibold()
                         .text_color(theme.foreground)
                         .child(author_name(c.author.kind, &c.author.name)),
@@ -466,7 +490,7 @@ fn comment(
                 })
                 .child(
                     div()
-                        .text_xs()
+                        .text_style(text::SMALL)
                         .text_color(theme.muted_foreground)
                         .child(when),
                 )
@@ -474,8 +498,13 @@ fn comment(
         )
         .child(
             div()
-                .pl(px(AVATAR + 8.0))
-                .text_sm()
+                .debug_selector({
+                    let id = c.id.clone();
+                    move || format!("thread-body-{id}")
+                })
+                // Past the avatar and its gap, under the author's name.
+                .ml(px(size::AVATAR_SM + gap::CONTROLS))
+                .text_style(text::BODY)
                 .text_color(theme.foreground)
                 .child(body),
         )

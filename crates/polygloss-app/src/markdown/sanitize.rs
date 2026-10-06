@@ -30,12 +30,15 @@ use gpui_kit::base::{
     InlineElement, InlineRenderContext, MarkdownNode, MarkdownParseContext, MarkdownPlugin,
     markdown_ast as mdast,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Image, ImageFormat, ImageSource, IntoElement, ParentElement as _, SharedUri, Styled as _,
-    Window, div,
+    App, Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, ParentElement as _,
+    SharedUri, Styled as _, Window, div, px,
 };
 use markdown::ParseOptions;
 use mdast::Node;
+
+use crate::space::text;
 
 /// gpui-kit's markdown parse options (GFM with math, no MDX, no
 /// frontmatter), so [`prepare`] sees the nodes the text view will.
@@ -416,8 +419,13 @@ impl MarkdownPlugin for HtmlBlockAsText {
             .flex()
             .flex_col()
             .children(node.as_text().lines().map(|l| {
-                // A blank line keeps its height.
-                div().min_h(gpui_kit::rems(1.2)).child(l.to_owned())
+                // A blank line keeps a comment line's height (`text::BODY`).
+                div()
+                    .when(l.is_empty(), |d| {
+                        d.debug_selector(|| "html-blank-line".into())
+                    })
+                    .min_h(px(text::BODY.1))
+                    .child(l.to_owned())
             }))
     }
 }
