@@ -5,6 +5,7 @@ import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { builtVersion } from "../support/bins";
 import { makeSandbox } from "../support/sandbox";
 import {
   connectMcp,
@@ -41,13 +42,6 @@ function mcpSandbox(extra: Record<string, string> = {}): {
   return { env, dataDir: sandbox.dataDir, launchMarker };
 }
 
-async function crateVersion(): Promise<string> {
-  const manifest = Bun.TOML.parse(
-    await Bun.file(join(repoRoot, "Cargo.toml")).text(),
-  ) as { workspace: { package: { version: string } } };
-  return manifest.workspace.package.version;
-}
-
 async function designInstructions(): Promise<string> {
   const design = await Bun.file(join(repoRoot, "docs/design.md")).text();
   const section = design.slice(design.indexOf("### 15.4 Server instructions"));
@@ -62,7 +56,7 @@ describe("polygloss mcp handshake", () => {
     try {
       expect(mcp.client.getServerVersion()).toEqual({
         name: "polygloss",
-        version: await crateVersion(),
+        version: builtVersion(),
       });
       const instructions = mcp.client.getInstructions() ?? "";
       expect(instructions.length).toBeGreaterThan(0);
