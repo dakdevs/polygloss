@@ -1,6 +1,6 @@
 # ADR-0027: Polygloss themes and the card layout
 
-- **Status:** Accepted. Supersedes ADR-0024's default themes (Pierre Light/Dark stay bundled and selectable); the rest of ADR-0024 stands.
+- **Status:** Accepted. Supersedes ADR-0024's default themes (Pierre Light/Dark stay bundled and selectable); the rest of ADR-0024 stands. The card numbers (16 pt sides, a 2.25-row file header) are amended by [ADR-0031](0031-spacing-system.md).
 - **Date:** 2026-10-05
 - **Design:** [§11.6 Diff viewport](../design.md#116-diff-viewport-adr-0003), [§11.10 Themes and fonts](../design.md#1110-themes-and-fonts-adr-0024), [research: redesign reference](../research/redesign-reference.md)
 
