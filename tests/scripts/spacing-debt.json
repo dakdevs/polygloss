@@ -1,24 +1,11 @@
 {
-  "crates/polygloss-app/src/categories/totals.rs": 3,
-  "crates/polygloss-app/src/chrome.rs": 19,
   "crates/polygloss-app/src/composer/mod.rs": 17,
   "crates/polygloss-app/src/composer/view.rs": 25,
-  "crates/polygloss-app/src/find/view.rs": 25,
-  "crates/polygloss-app/src/home/nav.rs": 17,
   "crates/polygloss-app/src/markdown/sanitize.rs": 1,
   "crates/polygloss-app/src/markdown/suggestion.rs": 11,
-  "crates/polygloss-app/src/palette/mod.rs": 6,
-  "crates/polygloss-app/src/review_tab/banners.rs": 11,
+  "crates/polygloss-app/src/review_tab/banners.rs": 1,
   "crates/polygloss-app/src/review_tab/header.rs": 23,
   "crates/polygloss-app/src/review_tab/panes.rs": 7,
-  "crates/polygloss-app/src/review_tab/toolbar.rs": 9,
   "crates/polygloss-app/src/threads/block.rs": 30,
-  "crates/polygloss-app/src/threads/panel.rs": 30,
-  "crates/polygloss-app/src/threads/toolbar.rs": 5,
-  "crates/polygloss-app/src/tree/filters.rs": 1,
-  "crates/polygloss-app/src/tree/footer.rs": 5,
-  "crates/polygloss-app/src/tree/mod.rs": 6,
-  "crates/polygloss-app/src/tree/panels.rs": 12,
-  "crates/polygloss-app/src/tree/row.rs": 16,
-  "crates/polygloss-app/src/viewed/mod.rs": 2
+  "crates/polygloss-app/src/threads/panel.rs": 30
 }

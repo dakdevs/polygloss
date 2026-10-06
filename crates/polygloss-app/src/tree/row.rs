@@ -6,8 +6,16 @@
 //! slot's mouse-down stops at a wrapper, so it never selects the row or folds
 //! a folder; the icon is never a toggle.
 //!
+//! Columns (ADR-0031 tree rows), from the row highlight's edge (itself
+//! `edge::SIDEBAR` in): at depth n the chevron's `ICON_XS` box at
+//! `ICON_LEAD` plus n · `TREE_INDENT`, the `ICON_SM` icon `gap::INLINE`
+//! after it, the label `gap::ICON_LABEL` after that; a file keeps the
+//! chevron's slot empty. The Viewed circle's icon ends `ICON_LEAD` from the
+//! highlight's end, as leading icons start.
+//!
 //! Debug selectors, `key` being the row's item id (`f:3`, `d:src`):
-//! `tree-row-{key}`, `tree-icon-{key}: {icon}`, `tree-name-{key}`, the slot
+//! `tree-row-{key}`, `tree-chevron-{key}` (the chevron's slot),
+//! `tree-icon-{key}: {icon}`, `tree-name-{key}`, the slot
 //! `tree-check-{key}` and its glyph `tree-slot-{key}: {glyph}` (painted only
 //! while it shows), `tree-stats-{file}: +a −d`, `tree-status-{file}: {letter}`.
 
@@ -29,14 +37,10 @@ use polygloss_viewport::{DiffViewport, FileCounts, FileFlags, group_digits};
 
 use super::model::{ItemId, TreeModel};
 use super::{FileTree, FileTreeEvent};
+use crate::motion::ink::PressInk as _;
 use crate::review_tab::toolbar::tooltip;
+use crate::space::{TextStyleExt as _, gap, height, layout, pad, radius, size, text};
 
-/// Row height (pt, design §11.5).
-pub const ROW_HEIGHT: f32 = 28.0;
-/// Indentation per level (pt).
-const INDENT: f32 = 14.0;
-/// The Viewed slot's side (pt).
-const SLOT: f32 = 20.0;
 /// The hover group of a row: its empty Viewed circle shows while it is
 /// hovered.
 const ROW_GROUP: &str = "tree-row";
@@ -145,12 +149,15 @@ pub fn render(
             move || format!("tree-row-{key}")
         })
         .group(ROW_GROUP)
-        .h(px(ROW_HEIGHT))
+        .h(px(height::MD))
         .py_0()
-        .pl(px(6. + INDENT * entry.depth() as f32))
-        .pr_1()
-        .text_sm()
-        .rounded(px(6.));
+        .pl(px(pad::ICON_LEAD + size::TREE_INDENT * entry.depth() as f32))
+        // The slot is wider than its icon, which ends `ICON_LEAD` in.
+        .pr(px(
+            pad::ICON_LEAD - (layout::VIEWED_SLOT - size::ICON_SM) / 2.0
+        ))
+        .text_style(text::UI)
+        .rounded(px(radius::for_height(height::MD)));
     match ItemId::parse(&key) {
         Some(ItemId::Dir(path)) => folder_row(ctx, base, entry, &key, path, cx),
         Some(ItemId::File(idx)) => file_row(ctx, base, entry, &key, idx, cx),
@@ -185,9 +192,8 @@ fn folder_row(
     base.accessibility_label(label.clone()).child(
         h_flex()
             .w_full()
-            .gap_1p5()
-            .child(chevron(entry, cx))
-            .child(icon(key, Lucide::Folder, cx))
+            .gap(px(gap::ICON_LABEL))
+            .child(lead(key, entry, Lucide::Folder, cx))
             .child(name(key, label, check == Check::On, false, cx))
             .child(slot(key, check, cx, toggle)),
     )
@@ -223,9 +229,8 @@ fn file_row(
         .child(
             h_flex()
                 .w_full()
-                .gap_1p5()
-                .child(chevron(entry, cx))
-                .child(icon(key, Lucide::File, cx))
+                .gap(px(gap::ICON_LABEL))
+                .child(lead(key, entry, Lucide::File, cx))
                 .child(name(
                     key,
                     entry.item().label.clone(),
@@ -238,10 +243,21 @@ fn file_row(
         )
 }
 
-/// A folder's expand chevron; an empty column of the same width for files.
-fn chevron(entry: &TreeEntry, cx: &App) -> impl IntoElement {
+/// The chevron's slot, then `gap::INLINE` later the row's `icon`.
+fn lead(key: &SharedString, entry: &TreeEntry, glyph: Lucide, cx: &App) -> impl IntoElement {
+    h_flex()
+        .flex_none()
+        .gap(px(gap::INLINE))
+        .child(chevron(key, entry, cx))
+        .child(icon(key, glyph, cx))
+}
+
+/// A folder's expand chevron; an empty slot of the same width for files.
+fn chevron(key: &SharedString, entry: &TreeEntry, cx: &App) -> impl IntoElement {
+    let selector = format!("tree-chevron-{key}");
     div()
-        .w(px(14.))
+        .debug_selector(move || selector)
+        .w(px(size::ICON_XS))
         .flex_none()
         .flex()
         .items_center()
@@ -275,7 +291,11 @@ fn icon(key: &SharedString, icon: Lucide, cx: &App) -> impl IntoElement {
         .debug_selector(move || selector)
         .flex_none()
         .flex()
-        .child(Icon::new(icon).text_color(cx.theme().muted_foreground))
+        .child(
+            Icon::new(icon)
+                .with_size(px(size::ICON_SM))
+                .text_color(cx.theme().muted_foreground),
+        )
 }
 
 /// The name: dimmed when viewed, struck through when deleted.
@@ -316,14 +336,14 @@ fn badges(
     let (letter, color) = ctx.status.badge(status);
     h_flex()
         .flex_none()
-        .gap_1p5()
-        .text_xs()
+        .gap(px(gap::ICON_LABEL))
+        .text_style(text::SMALL)
         .when(flags.changed_since_viewed, |el| {
             el.child(
                 div()
                     .debug_selector(move || format!("tree-changed-{idx}"))
                     .id(SharedString::from(format!("tree-changed-{idx}")))
-                    .size(px(6.))
+                    .size(px(size::DOT))
                     .rounded_full()
                     .bg(theme.blue)
                     .tooltip(tooltip("Changed since viewed")),
@@ -335,8 +355,9 @@ fn badges(
                 div()
                     .id(SharedString::from(format!("tree-threads-{idx}")))
                     .debug_selector(move || format!("tree-threads-{idx}"))
-                    .px_1p5()
+                    .px(px(pad::BADGE_X))
                     .rounded_full()
+                    .font_features(crate::chrome::tabular_figures())
                     .bg(theme.muted)
                     .text_color(theme.foreground)
                     .child(n.to_string())
@@ -358,7 +379,7 @@ fn badges(
         .child(
             div()
                 .debug_selector(move || format!("tree-status-{idx}: {letter}"))
-                .w(px(10.))
+                .w(px(size::STATUS_COL))
                 .flex()
                 .justify_center()
                 .font_semibold()
@@ -374,7 +395,8 @@ fn stats(ctx: &RowCtx, idx: u32, c: FileCounts, cx: &App) -> impl IntoElement {
     let selector = format!("tree-stats-{idx}: {added} {removed}");
     h_flex()
         .debug_selector(move || selector)
-        .gap_1()
+        .gap(px(gap::INLINE))
+        .text_style(text::CODE_CHROME)
         .font_family(cx.theme().mono_font_family.clone())
         .font_medium()
         .child(div().text_color(ctx.stat_added).child(added))
@@ -385,7 +407,7 @@ fn stats(ctx: &RowCtx, idx: u32, c: FileCounts, cx: &App) -> impl IntoElement {
 /// `circle-minus` on a partly viewed folder, else an empty `circle` shown
 /// only while the row is hovered. The outer div stops the mouse-down, so the
 /// tree neither selects the row nor folds the folder; the inner one takes
-/// the click, highlights under the pointer and says what a click does.
+/// the click, shows press ink and says what a click does.
 fn slot(
     key: &SharedString,
     check: Check,
@@ -407,13 +429,13 @@ fn slot(
         .child(
             div()
                 .id(SharedString::from(format!("tree-check-{key}")))
-                .size(px(SLOT))
+                .size(px(layout::VIEWED_SLOT))
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded_full()
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.foreground.opacity(0.08)))
+                .press_ink(cx)
                 .tooltip(tooltip(if check == Check::On {
                     "Mark unviewed (v)"
                 } else {

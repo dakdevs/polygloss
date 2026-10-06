@@ -17,9 +17,8 @@ use gpui_kit::{
 
 use crate::motion;
 use crate::review_tab::toolbar::text;
+use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, text as type_style};
 
-/// The strip's height, reserved whether or not a banner shows.
-pub const BANNER_STRIP_HEIGHT: f32 = 32.0;
 /// How far above its place a notice starts entering.
 const ENTER_FROM_ABOVE: f32 = 4.0;
 
@@ -163,13 +162,15 @@ impl Render for BannerStrip {
             .id("banner-strip")
             .debug_selector(|| "banner-strip".into())
             .flex_none()
-            .h(px(BANNER_STRIP_HEIGHT))
+            // Reserved whether or not a banner shows (OQ-39); its content on
+            // the cards' edge.
+            .h(px(height::BANNER_STRIP))
             .w_full()
-            .px_4()
-            .gap_2()
+            .px(px(edge::CANVAS))
+            .gap(px(gap::CONTROLS))
             .overflow_hidden()
             .bg(canvas)
-            .text_sm();
+            .text_style(type_style::SMALL);
         if self.banners.is_empty() {
             let context = (!self.context.is_empty()).then(|| {
                 div()
@@ -188,14 +189,20 @@ impl Render for BannerStrip {
             let notice = h_flex()
                 .debug_selector(move || format!("banner-notice-{i}"))
                 .min_w_0()
-                .h(px(24.))
-                .pl_2()
-                .gap_2()
-                .rounded(px(6.))
+                .h(px(height::SM))
+                .pl(px(pad::TEXT))
+                .gap(px(gap::CONTROLS))
+                .rounded(px(radius::for_height(height::SM)))
                 .border_1()
                 .border_color(info.opacity(0.3))
                 .bg(info.opacity(0.1))
-                .child(div().flex_none().size(px(6.)).rounded_full().bg(info))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(size::DOT))
+                        .rounded_full()
+                        .bg(info),
+                )
                 .child(
                     div()
                         .min_w_0()
@@ -208,6 +215,7 @@ impl Render for BannerStrip {
                         .flex_none()
                         .label(button_label(b.kind))
                         .xsmall()
+                        .rounded(px(radius::XS))
                         .ghost()
                         .debug_selector(move || format!("banner-button-{i}"))
                         .on_click(move |_, window, cx| match &target {

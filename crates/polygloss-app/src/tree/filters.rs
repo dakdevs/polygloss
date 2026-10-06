@@ -14,6 +14,7 @@ use polygloss_diff::{FileChange, FileStatus};
 use polygloss_viewport::FileFlags;
 
 use super::FileTree;
+use crate::space::layout;
 
 /// The status filter's choices (design §11.5: A/M/D/R). A type change
 /// counts as modified.
@@ -253,5 +254,5 @@ pub(super) fn menu(
                 }),
             );
     }
-    menu.max_h(px(420.)).scrollable(true)
+    menu.max_h(px(layout::OVERLAY_MAX_H)).scrollable(true)
 }

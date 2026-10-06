@@ -262,11 +262,11 @@ fn narrow_toolbar_collapses_in_order(cx: &mut TestAppContext) {
     assert_eq!(narrow(&mut shell), Narrow::Full);
     assert_eq!(toolbar_items(&mut shell), shown_at(Narrow::Full));
 
-    // A 720 pt window: the main column is 440 pt beside the 280 pt sidebar.
-    // The parent path, the long labels, Find and `N/M` have given way, and
-    // the pills show their icons.
+    // A 720 pt window: the main column is 439 pt beside the 280 pt sidebar
+    // and its 1 pt divider. The parent path, the long labels, Find and `N/M`
+    // have given way, and the pills show their icons.
     resize_window(&mut shell, 720., 900.);
-    assert_eq!(bounds(shell.cx, "review-toolbar").size.width, px(440.));
+    assert_eq!(bounds(shell.cx, "review-toolbar").size.width, px(439.));
     assert_eq!(narrow(&mut shell), Narrow::IconPills);
     assert_eq!(toolbar_items(&mut shell), shown_at(Narrow::IconPills));
     // `N/M` and Find are the display options menu's first rows.
@@ -280,7 +280,8 @@ fn narrow_toolbar_collapses_in_order(cx: &mut TestAppContext) {
         ]
     );
 
-    // The sidebar at its 400 pt cap leaves 320 pt: the repo name keeps at
+    // The sidebar at its 399 pt cap (and its divider) leaves 320 pt: the
+    // repo name keeps at
     // most 48 pt and the four controls on the right never hide. That is
     // still too wide here, so the left side's items go from its end; the
     // repo block stays.
@@ -543,4 +544,40 @@ fn threads_button_marks_hidden_notes(cx: &mut gpui_kit::TestAppContext) {
     draw(shell.cx);
     assert!(!painted(shell.cx, "threads-notes-hidden").is_some());
     assert_eq!(tooltip(&mut shell), Some("Show threads panel"));
+}
+
+/// ADR-0031 (one segmented control): the sidebar's `[Files | Reviews]` and
+/// the toolbar's split | unified toggle have tracks of one height and
+/// segments of one size, each segment inset from its track (and from its
+/// neighbour) by one amount on every side, the same in both.
+#[gpui_kit::test]
+fn both_toggles_are_one_segmented_control(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    shell.open(compare_req(repo.path())).unwrap();
+    let controls = [
+        ("sidebar-segments", ["segment-files", "segment-reviews"]),
+        ("layout-toggle", ["layout-split", "layout-unified"]),
+    ];
+    let segment = bounds(shell.cx, "segment-files").size;
+    let track_height = bounds(shell.cx, "sidebar-segments").size.height;
+    let mut insets = Vec::new();
+    for (track, [first, second]) in controls {
+        let t = bounds(shell.cx, track);
+        let (a, b) = (bounds(shell.cx, first), bounds(shell.cx, second));
+        assert_eq!(t.size.height, track_height, "{track}");
+        assert_eq!((a.size, b.size), (segment, segment), "{track}");
+        let inset = a.left() - t.left();
+        for (side, value) in [
+            ("top", a.top() - t.top()),
+            ("bottom", t.bottom() - a.bottom()),
+            ("between", b.left() - a.right()),
+            ("trailing", t.right() - b.right()),
+        ] {
+            assert_eq!(value, inset, "{track} {side}");
+        }
+        insets.push(inset);
+    }
+    assert_eq!(insets[0], insets[1]);
 }

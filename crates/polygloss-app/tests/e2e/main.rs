@@ -13,6 +13,7 @@ mod support;
 
 mod card_geometry;
 mod categories;
+mod chrome_geometry;
 mod cursor;
 mod feed;
 mod filmstrip;
@@ -73,5 +74,6 @@ fn main() -> std::process::ExitCode {
         filmstrip::TESTS,
         card_geometry::TESTS,
         overlay_geometry::TESTS,
+        chrome_geometry::TESTS,
     ])
 }

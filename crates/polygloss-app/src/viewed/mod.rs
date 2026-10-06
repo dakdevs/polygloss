@@ -53,6 +53,7 @@ use crate::live::DiffRefreshed;
 use crate::palette::MenuEntry;
 use crate::review_tab::ReviewTab;
 use crate::review_tab::toolbar::{self, Narrow};
+use crate::space::{TextStyleExt as _, text};
 use crate::tree::{FileTreeEvent, file_tree};
 
 /// Registers the Viewed actions on review tabs.
@@ -460,7 +461,8 @@ fn folder_for_action(tab: &ReviewTab, cx: &App) -> Option<Vec<u32>> {
 
 /// The toolbar's compact `N/M` (design §11.4), until the toolbar is narrow
 /// enough to move it into the display options menu. Not a control: it
-/// moves the window like the row.
+/// moves the window like the row. Its neighbours' `gap::CONTROLS` separate
+/// it; tabular figures keep its width as the counts change.
 pub fn progress_item(
     tab: &ReviewTab,
     _window: &mut Window,
@@ -474,8 +476,8 @@ pub fn progress_item(
             .id("viewed-progress")
             .debug_selector(|| "viewed-progress".into())
             .flex_none()
-            .px_1()
-            .text_sm()
+            .text_style(text::UI)
+            .font_features(crate::chrome::tabular_figures())
             .text_color(cx.theme().muted_foreground)
             .child(toolbar::text("viewed-progress-label", progress_label(tab)))
             .tooltip(toolbar::tooltip(progress_tooltip(tab)))
