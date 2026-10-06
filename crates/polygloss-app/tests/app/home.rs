@@ -1022,3 +1022,49 @@ fn nav_row_menu_archives_mutes_and_assigns(cx: &mut TestAppContext) {
     assert!(has_dialog(&mut shell), "the session picker");
     assert!(painted(shell.cx, "assign-session-0").is_some());
 }
+
+/// ADR-0031 (T7.6): Home's cards sit as far apart as the review canvas's,
+/// and its kind and status badges are one shape.
+#[gpui_kit::test]
+fn home_cards_share_the_canvas_gap(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let core = Core::open_default().unwrap();
+    let (compare, head, base) = three_reviews(&core, repo.path());
+    let mut shell = start(cx);
+    sections(&mut shell);
+
+    // Two cards of one section (Recent): the space between them.
+    let upper = bounds(shell.cx, &format!("home-row-{}", head.review_id));
+    let lower = bounds(shell.cx, &format!("home-row-{}", base.review_id));
+    let home_gap = lower.top() - upper.bottom();
+    // Each row's kind badge and status badge: one 20 pt tall capsule shape.
+    for id in [&compare.review_id, &head.review_id, &base.review_id] {
+        let kind = bounds(shell.cx, &format!("home-kind-{id}"));
+        let status = bounds(shell.cx, &format!("home-status-{id}"));
+        assert_eq!(
+            kind.size.height,
+            gpui_kit::px(20.),
+            "the kind badge of {id}"
+        );
+        assert_eq!(status.size.height, gpui_kit::px(20.), "the status of {id}");
+    }
+
+    // The review canvas, measured the same way: the header card's bottom to
+    // the first file card's top (its header's top edge).
+    let tab = shell
+        .open(commit_req(repo.path(), "refs/tags/head"))
+        .unwrap();
+    let card = bounds(shell.cx, "header-card");
+    let viewport = bounds(shell.cx, "viewport-pane");
+    let first = tab.read_with(shell.cx, |t, cx| {
+        let headers = t.viewport.read(cx).debug().headers;
+        headers.first().expect("a file card is painted").y
+    });
+    let canvas_gap = viewport.top() + gpui_kit::px(first) - card.bottom();
+    assert!(
+        canvas_gap > gpui_kit::px(0.),
+        "the canvas has a gap: {canvas_gap:?}"
+    );
+    assert_eq!(home_gap, canvas_gap);
+}

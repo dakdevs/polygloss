@@ -546,3 +546,30 @@ fn open_flow_keeps_cmd_numbers_for_its_sources(cx: &mut TestAppContext) {
         assert_eq!(shell.tabs(), (2, 0), "{keys}: Home stays");
     }
 }
+
+/// ADR-0031 (T7.6): the Working tree options' radio centres on its label's
+/// first line, and its dot on the radio.
+#[gpui_kit::test]
+fn open_flow_radio_centres_on_its_label(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    let mut shell = start(cx);
+    let flow = open(&mut shell);
+    let source = choose(&mut shell, &flow, repo.path());
+    set_mode(&mut shell, &source, SourceMode::Live);
+    let centre = |shell: &mut Shell, name: &str| crate::shell::bounds(shell.cx, name).center();
+    for option in ["open-flow-since-head", "open-flow-since-merge-base"] {
+        // Select it: only the selected radio has a dot.
+        crate::shell::click(shell.cx, option);
+        let radio = centre(&mut shell, &format!("{option}-radio"));
+        let title = centre(&mut shell, &format!("{option}-title"));
+        let dot = centre(&mut shell, &format!("{option}-dot"));
+        assert_eq!(radio.y, title.y, "{option}: the radio on its label's line");
+        assert_eq!(dot, radio, "{option}: the dot in its radio");
+        // ICON_SM and DOT, by hand.
+        let size = crate::shell::bounds(shell.cx, &format!("{option}-radio")).size;
+        assert_eq!(size, gpui_kit::size(gpui_kit::px(14.), gpui_kit::px(14.)));
+        let dot = crate::shell::bounds(shell.cx, &format!("{option}-dot")).size;
+        assert_eq!(dot, gpui_kit::size(gpui_kit::px(6.), gpui_kit::px(6.)));
+    }
+}

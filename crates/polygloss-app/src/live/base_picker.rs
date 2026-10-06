@@ -28,8 +28,10 @@ use polygloss_core::store::events::{Actor, now_ms};
 
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::open_flow::ranking::Ranker;
+use crate::open_flow::repo_step::list_header;
 use crate::open_flow::source_step::sha_pill;
 use crate::review_tab::{ReviewTab, open_review};
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, size, text};
 
 /// Commits listed (newest first).
 pub const COMMITS: u32 = 500;
@@ -190,30 +192,20 @@ pub fn open(
     });
     cx.set_global(OpenPicker(Some(state.downgrade())));
     let list = state.clone();
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .w(px(560.))
-            .margin_top(px(96.))
+            .w(px(layout::PICKER_W))
+            .margin_top(px(layout::PICKER_TOP))
             .close_button(false)
             .p_0()
             .child(
-                v_flex()
-                    .debug_selector(|| "base-picker".into())
-                    .child(
-                        div()
-                            .px_3()
-                            .pt_3()
-                            .pb_1()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Compare the working tree with…"),
-                    )
-                    .child(
-                        List::new(&list)
-                            .search_placeholder("Choose a base…")
-                            .max_h(px(420.)),
-                    ),
+                // The picker's frame (ADR-0031): the dialog's whole content.
+                div().debug_selector(|| "base-picker".into()).child(
+                    List::new(&list)
+                        .search_placeholder("Choose a base…")
+                        .max_h(px(layout::OVERLAY_MAX_H))
+                        .p(px(edge::OVERLAY)),
+                ),
             )
     });
     state.update(cx, |s, cx| s.focus(window, cx));
@@ -310,15 +302,17 @@ impl ListDelegate for BasePickerDelegate {
         };
         Some(
             ListItem::new(("base-choice", ix.row))
+                .debug_selector(move || format!("base-row-{row}"))
                 .selected(self.selected == Some(ix.row))
-                .h(px(44.))
-                .px_3()
+                .h(px(height::ROW2))
+                .px(px(pad::TEXT))
+                .rounded(px(radius::for_height(height::ROW2)))
                 .child(
                     h_flex()
                         .debug_selector(move || format!("base-choice-{row}"))
                         .w_full()
-                        .gap_3()
-                        .child(div().w(px(14.)).flex_none().when(checked, |d| {
+                        .gap(px(gap::ICON_LABEL))
+                        .child(div().w(px(size::ICON_SM)).flex_none().when(checked, |d| {
                             d.child(
                                 Icon::new(IconName::Check)
                                     .xsmall()
@@ -332,7 +326,7 @@ impl ListDelegate for BasePickerDelegate {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_sm()
+                                        .text_style(text::UI)
                                         .font_medium()
                                         .text_color(theme.foreground)
                                         .child(SharedString::from(title)),
@@ -340,13 +334,28 @@ impl ListDelegate for BasePickerDelegate {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_xs()
+                                        .text_style(text::SMALL)
                                         .text_color(theme.muted_foreground)
                                         .child(SharedString::from(detail)),
                                 ),
                         )
                         .children(pill.map(|p| sha_pill(&p, cx).into_any_element())),
                 ),
+        )
+    }
+
+    fn render_section_header(
+        &mut self,
+        _section: usize,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<impl IntoElement> {
+        Some(
+            list_header(cx).child(
+                div()
+                    .debug_selector(|| "base-picker-header".into())
+                    .child("Compare the working tree with…"),
+            ),
         )
     }
 
@@ -361,11 +370,11 @@ impl ListDelegate for BasePickerDelegate {
             "No matching commits"
         };
         div()
-            .py_6()
+            .py(px(gap::SECTION))
             .w_full()
             .flex()
             .justify_center()
-            .text_sm()
+            .text_style(text::UI)
             .text_color(cx.theme().muted_foreground)
             .child(text)
     }

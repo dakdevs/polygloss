@@ -3,12 +3,13 @@
 
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, Global, IntoElement, Keystroke, ParentElement as _,
-    Render, Styled as _, WeakEntity, Window, div, px,
+    App, AppContext as _, Context, Entity, Global, InteractiveElement as _, IntoElement, Keystroke,
+    ParentElement as _, Render, Styled as _, WeakEntity, Window, div, px,
 };
 
 use crate::keymap::{KeymapStore, Resolved, actions};
 use crate::palette::key_cap::key_cap;
+use crate::space::{TextStyleExt as _, gap, height, layout, text};
 
 /// One row: an action and every key bound to it in the section's context.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,8 +112,8 @@ pub fn open(window: &mut Window, cx: &mut App) -> Entity<CheatSheet> {
     let content = sheet.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .w(px(1040.))
-            .margin_top(px(72.))
+            .w(px(layout::CHEAT_SHEET_W))
+            .margin_top(px(layout::DIALOG_TOP))
             .title("Keyboard Shortcuts")
             .child(content.clone())
     });
@@ -130,24 +131,28 @@ impl CheatSheet {
     }
 }
 
+/// A section: its heading over its rows, which touch (a leaf result list,
+/// `SM` rows; ADR-0031).
 fn section(heading: &'static str, rows: &[CheatRow], cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     v_flex()
-        .gap_1()
         .child(
             div()
-                .pb_1()
-                .text_xs()
+                .debug_selector(move || format!("cheat-heading-{heading}"))
+                .pb(px(gap::INLINE))
+                .text_style(text::SMALL)
                 .font_semibold()
                 .text_color(theme.muted_foreground)
                 .child(heading.to_uppercase()),
         )
         .children(rows.iter().map(|row| {
+            let action = row.action;
             h_flex()
-                .h(px(26.))
-                .gap_3()
+                .debug_selector(move || format!("cheat-row-{action}"))
+                .h(px(height::SM))
+                .gap(px(gap::GROUP))
                 .justify_between()
-                .text_sm()
+                .text_style(text::UI)
                 .child(div().truncate().child(row.title))
                 .child({
                     let caps = row.keys.iter().filter_map(|k| {
@@ -159,20 +164,20 @@ fn section(heading: &'static str, rows: &[CheatRow], cx: &App) -> impl IntoEleme
                         // The first and the last of the run, "…" between.
                         let caps: Vec<_> = caps.collect();
                         let ellipsis = div()
-                            .text_xs()
+                            .text_style(text::SMALL)
                             .text_color(theme.muted_foreground)
                             .child("…")
                             .into_any_element();
                         caps.first()
-                            .map(|k| key_cap(k, cx))
+                            .map(|k| key_cap(k, cx).into_any_element())
                             .into_iter()
                             .chain([ellipsis])
-                            .chain(caps.last().map(|k| key_cap(k, cx)))
+                            .chain(caps.last().map(|k| key_cap(k, cx).into_any_element()))
                             .collect()
                     } else {
-                        caps.map(|k| key_cap(&k, cx)).collect()
+                        caps.map(|k| key_cap(&k, cx).into_any_element()).collect()
                     };
-                    h_flex().flex_none().gap_1().children(caps)
+                    h_flex().flex_none().gap(px(gap::INLINE)).children(caps)
                 })
         }))
 }
@@ -194,13 +199,12 @@ impl Render for CheatSheet {
             v_flex()
                 .flex_1()
                 .min_w_0()
-                .gap_5()
+                .gap(px(gap::SECTION))
                 .children(sections.iter().map(|(h, rows)| section(h, rows, cx)))
         };
         h_flex()
             .items_start()
-            .gap_8()
-            .pb_2()
+            .gap(px(gap::SECTION))
             .child(column(&left, cx))
             .child(column(&middle, cx))
             .child(column(&right, cx))

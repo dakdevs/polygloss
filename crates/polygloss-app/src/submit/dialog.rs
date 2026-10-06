@@ -30,6 +30,7 @@ use polygloss_core::git::{LiveState, ResolvedSide};
 use polygloss_core::review::{Submission, SubmitDraft, Verdict};
 
 use crate::app_state::AppState;
+use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, text};
 
 /// The dialog's key context.
 pub const CONTEXT: &str = "SubmitDialog";
@@ -375,53 +376,67 @@ impl SubmitDialog {
         let slug = verdict_slug(v);
         let checked = self.verdict == v;
         let theme = cx.theme();
+        // A two-line row (`ROW2`): the radio centred on the title's line,
+        // `GROUP` before the label; the key cap at the right.
         h_flex()
             .id(SharedString::from(format!("submit-verdict-{slug}")))
             .debug_selector(move || format!("submit-verdict-{slug}"))
             .w_full()
-            .items_start()
-            .gap_2p5()
-            .px_2()
-            .py_1p5()
-            .rounded(px(6.))
+            .min_h(px(height::ROW2))
+            .px(px(pad::TEXT))
+            .gap(px(gap::GROUP))
+            .rounded(px(radius::for_height(height::ROW2)))
             .when(!self.submitting, |row| {
                 row.cursor_pointer()
                     .hover(|s| s.bg(theme.secondary))
                     .on_click(cx.listener(move |this, _, _, cx| this.set_verdict(v, cx)))
             })
             .child(
-                div().pt(px(1.)).child(
-                    Radio::new(SharedString::from(format!("submit-radio-{slug}")))
-                        .checked(checked)
-                        .disabled(self.submitting)
-                        .on_click(
-                            cx.listener(move |this, _: &bool, _, cx| this.set_verdict(v, cx)),
-                        ),
-                ),
-            )
-            .child(
-                v_flex()
-                    .gap_0p5()
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_start()
+                    .gap(px(gap::GROUP))
                     .child(
                         div()
-                            .text_sm()
-                            .font_medium()
-                            .text_color(if v == Verdict::RequestChanges && checked {
-                                theme.danger
-                            } else {
-                                theme.foreground
-                            })
-                            .child(label),
+                            .debug_selector(move || format!("submit-verdict-radio-{slug}"))
+                            .flex_none()
+                            .h(px(text::UI.1))
+                            .flex()
+                            .items_center()
+                            .child(
+                                Radio::new(SharedString::from(format!("submit-radio-{slug}")))
+                                    .checked(checked)
+                                    .disabled(self.submitting)
+                                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                                        this.set_verdict(v, cx)
+                                    })),
+                            ),
                     )
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(detail),
+                        v_flex()
+                            .debug_selector(move || format!("submit-verdict-label-{slug}"))
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_style(text::UI)
+                                    .font_medium()
+                                    .text_color(if v == Verdict::RequestChanges && checked {
+                                        theme.danger
+                                    } else {
+                                        theme.foreground
+                                    })
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .text_style(text::SMALL)
+                                    .text_color(theme.muted_foreground)
+                                    .child(detail),
+                            ),
                     ),
             )
             // Its key (T5.6).
-            .child(div().flex_1())
             .children(
                 gpui_kit::Keystroke::parse(verdict_key(v))
                     .ok()
@@ -445,14 +460,15 @@ impl Render for SubmitDialog {
         let listening = matches!(self.waiter, WaiterState::Listening { .. });
         let waiter = h_flex()
             .debug_selector(|| "submit-waiter".into())
-            .gap_1p5()
+            .gap(px(gap::ICON_LABEL))
             .min_w_0()
-            .text_xs()
+            .text_style(text::SMALL)
             .text_color(theme.muted_foreground)
             .child(
                 div()
+                    .debug_selector(|| "submit-waiter-dot".into())
                     .flex_none()
-                    .size(px(7.))
+                    .size(px(size::DOT))
                     .rounded_full()
                     .bg(if listening {
                         theme.success
@@ -497,15 +513,14 @@ impl Render for SubmitDialog {
                 crate::keyboard::focus_step(false, window, cx);
             }))
             .w_full()
-            .gap_3()
+            .gap(px(gap::GROUP))
             .child(
+                // The field's frame; the text area keeps its own inset.
                 div()
                     .debug_selector(|| "submit-summary".into())
-                    .rounded(px(6.))
+                    .rounded(px(radius::MD))
                     .border_1()
                     .border_color(theme.border)
-                    .px_1()
-                    .py_1()
                     .child(
                         Textarea::new(&self.summary)
                             .bordered(false)
@@ -513,19 +528,21 @@ impl Render for SubmitDialog {
                             .w_full(),
                     ),
             )
-            .child(v_flex().gap_0p5().children(verdicts))
+            // The verdicts touch, as a list's rows.
+            .child(v_flex().children(verdicts))
             .child(
+                // A compact card: the drafts and the waiter.
                 v_flex()
+                    .debug_selector(|| "submit-status".into())
                     .w_full()
-                    .gap_1()
-                    .px_2p5()
-                    .py_2()
-                    .rounded(px(6.))
+                    .px(px(edge::COMPACT_X))
+                    .py(px(edge::COMPACT_Y))
+                    .rounded(px(radius::MD))
                     .bg(theme.secondary)
                     .child(
                         div()
                             .debug_selector(|| "submit-drafts".into())
-                            .text_xs()
+                            .text_style(text::SMALL)
                             .text_color(theme.foreground)
                             .child(drafts),
                     )
@@ -535,7 +552,7 @@ impl Render for SubmitDialog {
                 el.child(
                     div()
                         .debug_selector(|| "submit-error".into())
-                        .text_xs()
+                        .text_style(text::SMALL)
                         .text_color(theme.danger)
                         .child(err),
                 )
@@ -543,7 +560,7 @@ impl Render for SubmitDialog {
             .child(
                 h_flex()
                     .w_full()
-                    .gap_2()
+                    .gap(px(gap::CONTROLS))
                     .child(div().flex_1())
                     .child(
                         Button::new("submit-cancel")

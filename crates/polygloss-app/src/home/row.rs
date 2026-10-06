@@ -13,19 +13,16 @@ use std::path::PathBuf;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    Styled as _, div, px,
+    AnyElement, App, Div, Hsla, InteractiveElement as _, ParentElement as _, SharedString,
+    Stateful, Styled as _, div, px,
 };
 use polygloss_core::git::{CompareMode, ReviewKind, Since, Source};
 use polygloss_core::review::{OpenRequest, ReviewSummary, Verdict};
 use polygloss_core::store::events::Actor;
 
+use crate::motion::ink::PressInk as _;
 use crate::review_tab::short_ref;
-
-/// A row's height.
-pub const ROW_HEIGHT: f32 = 60.0;
-/// A row card's corner radius, the file cards' (ADR-0027).
-const CARD_RADIUS: f32 = 8.0;
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, stroke, text};
 
 /// One review on Home, ready to draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,9 +329,12 @@ pub struct RowPlace {
     pub selected: bool,
 }
 
-/// Draws `row` as a card (the viewport theme's card colors, radius 8): kind
-/// badge, title and source, then status, questions, viewed, threads, agent,
-/// time and the trailing ⋯ (`actions`).
+/// Draws `row` as a card on the canvas (ADR-0031: the viewport theme's card
+/// colors, `HOME_CARD` tall, radius `MD`, content `CARD_X` in and the ⋯
+/// `CARD_TRAILING` from the right): kind badge, title and source, then
+/// status, questions, viewed, threads, agent, time and the trailing ⋯
+/// (`actions`). Hover and press ink (ADR-0030) lie over the card's
+/// background, under its content.
 pub fn render_row(
     row: &HomeRow,
     place: RowPlace,
@@ -342,7 +342,7 @@ pub fn render_row(
     utc_offset_s: i64,
     actions: AnyElement,
     cx: &App,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
+) -> Stateful<Div> {
     let theme = cx.theme();
     let s = &row.summary;
     let (status, tone) = status_label(s);
@@ -350,59 +350,67 @@ pub fn render_row(
     let meta = |text: String| {
         div()
             .flex_none()
-            .text_xs()
+            .text_style(text::SMALL)
             .text_color(theme.muted_foreground)
             .child(text)
     };
+    // A fixed column, its content at its right edge.
+    let column = |width: f32| div().flex_none().w(px(width)).flex().justify_end();
     let review_id = s.review_id.clone();
+    let (kind_id, status_id) = (s.review_id.clone(), s.review_id.clone());
     let card = crate::theme::viewport_theme(cx);
-    // Hover and selection tint the card (the theme's colors are
-    // translucent).
-    let (hover, selected) = (
-        card.card_background.blend(theme.list_hover),
-        card.card_background.blend(theme.list_active),
-    );
+    // The selection tints the card (the theme's color is translucent).
+    let selected = card.card_background.blend(theme.list_active);
     h_flex()
         .id(("home-row", place.ix))
         .debug_selector(move || format!("home-row-{review_id}"))
-        .h(px(ROW_HEIGHT))
+        .h(px(layout::HOME_CARD))
         .w_full()
-        .pl_4()
-        .pr_2()
-        .gap_3()
+        .pl(px(edge::CARD_X))
+        .pr(px(edge::CARD_TRAILING))
+        .gap(px(gap::GROUP))
         .bg(card.card_background)
         .border_1()
         .border_color(card.card_border)
-        .rounded(px(CARD_RADIUS))
+        .rounded(px(radius::MD))
         .cursor_pointer()
-        .hover(|d| d.bg(hover))
         .when(place.selected, |d| d.bg(selected))
         .relative()
+        .child(
+            div()
+                .id(("home-row-ink", place.ix))
+                .absolute()
+                .inset_0()
+                .rounded(px(radius::inner(radius::MD, stroke::BORDER)))
+                .press_ink(cx),
+        )
         // The keyboard selection: a bar on the left edge, taking no space.
         .when(place.selected, |d| {
             d.child(
                 div()
                     .absolute()
-                    .left(px(4.))
-                    .top(px((ROW_HEIGHT - 28.) / 2.))
-                    .w(px(3.))
-                    .h(px(28.))
-                    .rounded_full()
-                    .bg(theme.list_active_border),
+                    .left(px(gap::INLINE))
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(stroke::CHANGE_BAR))
+                            .h(px(height::MD))
+                            .rounded_full()
+                            .bg(theme.list_active_border),
+                    ),
             )
         })
         .child(
-            div().flex_none().w(px(68.)).child(
-                div()
-                    .flex()
+            column(layout::HOME_COL_KIND).child(
+                badge(theme.secondary_foreground)
+                    .debug_selector(move || format!("home-kind-{kind_id}"))
+                    .w_full()
                     .justify_center()
-                    .px_1p5()
-                    .py_0p5()
-                    .rounded(theme.radius)
                     .bg(theme.secondary)
-                    .text_xs()
                     .font_medium()
-                    .text_color(theme.secondary_foreground)
                     .child(kind_label(s.kind)),
             ),
         )
@@ -410,16 +418,15 @@ pub fn render_row(
             gpui_kit::component::v_flex()
                 .flex_1()
                 .min_w_0()
-                .gap_0p5()
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap(px(gap::CONTROLS))
                         .min_w_0()
                         .child(
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .text_sm()
+                                .text_style(text::TITLE)
                                 .font_semibold()
                                 .text_color(theme.foreground)
                                 .child(row.title.clone()),
@@ -428,8 +435,8 @@ pub fn render_row(
                             d.child(
                                 h_flex()
                                     .flex_none()
-                                    .gap_1()
-                                    .text_xs()
+                                    .gap(px(gap::ICON_LABEL))
+                                    .text_style(text::SMALL)
                                     .text_color(theme.muted_foreground)
                                     .child(
                                         gpui_kit::component::Icon::new(IconName::Bell)
@@ -444,80 +451,64 @@ pub fn render_row(
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_xs()
+                        .text_style(text::SMALL)
                         .text_color(theme.muted_foreground)
                         .child(row.source.clone()),
                 ),
         )
         .when_some(questions_label(s), |d, q| {
-            d.child(pill(q, theme.warning, theme.warning.opacity(0.14)))
+            d.child(
+                badge(theme.warning)
+                    .bg(theme.warning.opacity(0.14))
+                    .font_medium()
+                    .child(q),
+            )
         })
-        .child(pill(status.to_owned(), tone_fg, tone_bg))
         .child(
-            div()
-                .flex_none()
-                .w(px(96.))
-                .flex()
-                .justify_end()
-                .when_some(viewed_label(s), |d, v| d.child(meta(v))),
+            badge(tone_fg)
+                .debug_selector(move || format!("home-status-{status_id}"))
+                .bg(tone_bg)
+                .font_medium()
+                .child(status),
+        )
+        .child(column(layout::HOME_COL_VIEWED).when_some(viewed_label(s), |d, v| d.child(meta(v))))
+        .child(
+            column(layout::HOME_COL_THREADS).when_some(threads_label(s), |d, t| d.child(meta(t))),
         )
         .child(
-            div()
-                .flex_none()
-                .w(px(104.))
-                .flex()
-                .justify_end()
-                .when_some(threads_label(s), |d, t| d.child(meta(t))),
+            column(layout::HOME_COL_AGENT).when_some(row.agent.clone(), |d, agent| {
+                d.child(
+                    badge(theme.muted_foreground)
+                        .border_1()
+                        .border_color(theme.border)
+                        .child(
+                            gpui_kit::component::Icon::new(IconName::Bot)
+                                .xsmall()
+                                .text_color(theme.muted_foreground),
+                        )
+                        .child(div().truncate().child(agent)),
+                )
+            }),
         )
-        .child(
-            div()
-                .flex_none()
-                .w(px(112.))
-                .flex()
-                .justify_end()
-                .when_some(row.agent.clone(), |d, agent| {
-                    d.child(
-                        h_flex()
-                            .gap_1()
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded(theme.radius)
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(
-                                gpui_kit::component::Icon::new(IconName::Bot)
-                                    .xsmall()
-                                    .text_color(theme.muted_foreground),
-                            )
-                            .child(div().truncate().child(agent)),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .flex_none()
-                .w(px(72.))
-                .flex()
-                .justify_end()
-                .child(meta(relative_time(now_ms, s.updated_at, utc_offset_s))),
-        )
+        .child(column(layout::HOME_COL_UPDATED).child(meta(relative_time(
+            now_ms,
+            s.updated_at,
+            utc_offset_s,
+        ))))
         .child(actions)
 }
 
-/// A small rounded label.
-fn pill(text: String, fg: Hsla, bg: Hsla) -> impl IntoElement {
-    div()
+/// A badge: one shape for the kind, the status, questions and the agent (an
+/// XS capsule, `BADGE_X` in, caption text in `fg`).
+fn badge(fg: Hsla) -> Div {
+    h_flex()
         .flex_none()
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .bg(bg)
-        .text_xs()
-        .font_medium()
+        .h(px(height::XS))
+        .px(px(pad::BADGE_X))
+        .gap(px(gap::ICON_LABEL))
+        .rounded(px(radius::capsule(height::XS)))
+        .text_style(text::CAPTION)
         .text_color(fg)
-        .child(text)
 }
 
 fn tone_colors(tone: Tone, cx: &App) -> (Hsla, Hsla) {

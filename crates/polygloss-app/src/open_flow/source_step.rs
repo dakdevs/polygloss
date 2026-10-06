@@ -47,6 +47,7 @@ use polygloss_core::store::events::{Actor, now_ms};
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::open_flow::ranking::Ranker;
 use crate::open_flow::repo_step::tildify;
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, size, text};
 
 /// How many commits the commit list reads at a time.
 pub const COMMIT_PAGE: u32 = 200;
@@ -54,8 +55,6 @@ pub const COMMIT_PAGE: u32 = 200;
 /// While a query is typed, the list keeps reading pages as you scroll only
 /// up to this many commits (each page walks the history from HEAD again).
 pub const SEARCH_LOAD_CAP: usize = 5_000;
-
-const COMMIT_ROW_HEIGHT: f32 = 48.;
 
 /// The three kinds of source (design §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,12 +276,14 @@ impl ListDelegate for CommitDelegate {
         let row = ix.row;
         Some(
             ListItem::new(("open-flow-commit", ix.row))
-                .h(px(COMMIT_ROW_HEIGHT))
-                .rounded(theme.radius)
+                .debug_selector(move || format!("open-flow-commit-row-{row}"))
+                .h(px(height::ROW2))
+                .px(px(pad::TEXT))
+                .rounded(px(radius::for_height(height::ROW2)))
                 .child(
                     h_flex()
                         .debug_selector(move || format!("open-flow-commit-{row}"))
-                        .gap_3()
+                        .gap(px(gap::CONTROLS))
                         .min_w_0()
                         .child(
                             v_flex()
@@ -291,14 +292,14 @@ impl ListDelegate for CommitDelegate {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_sm()
+                                        .text_style(text::UI)
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(commit.subject.clone()),
                                 )
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_xs()
+                                        .text_style(text::SMALL)
                                         .text_color(theme.muted_foreground)
                                         .child(format!("{} committed {when}", commit.author)),
                                 ),
@@ -319,11 +320,11 @@ impl ListDelegate for CommitDelegate {
             "No matching commits"
         };
         div()
-            .py_6()
+            .py(px(gap::SECTION))
             .w_full()
             .flex()
             .justify_center()
-            .text_sm()
+            .text_style(text::UI)
             .text_color(cx.theme().muted_foreground)
             .child(text)
     }
@@ -364,19 +365,21 @@ impl ListDelegate for CommitDelegate {
     }
 }
 
-/// A short commit id in the code font, in a bordered pill (the commit
-/// lists).
+/// A short commit id in the code font, in a bordered badge (the commit
+/// lists): an XS capsule, `BADGE_X` in (ADR-0031).
 pub fn sha_pill(short: &str, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     div()
         .flex_none()
-        .px_1p5()
-        .py_0p5()
-        .rounded(theme.radius)
+        .flex()
+        .items_center()
+        .h(px(height::XS))
+        .px(px(pad::BADGE_X))
+        .rounded(px(radius::capsule(height::XS)))
         .border_1()
         .border_color(theme.border)
         .font_family(theme.mono_font_family.clone())
-        .text_xs()
+        .text_style(text::CODE_CHROME)
         .text_color(theme.muted_foreground)
         .child(short.to_owned())
 }
@@ -407,40 +410,33 @@ impl SearchableListItem for RefItem {
             RefKind::RemoteBranch => "remote",
             RefKind::Tag => "tag",
         };
+        // The name first, so names share one edge; its kind trails it.
+        let note = |text: &'static str| {
+            div()
+                .flex_none()
+                .text_style(text::SMALL)
+                .text_color(theme.muted_foreground)
+                .child(text)
+        };
         h_flex()
             .w_full()
-            .gap_2()
+            .gap(px(gap::CONTROLS))
             .min_w_0()
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(52.))
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(kind),
-            )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_sm()
+                    .text_style(text::UI)
                     .child(self.info.short_name.clone()),
             )
-            .when(self.info.is_head, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("HEAD"),
-                )
-            })
+            .child(note(kind))
+            .when(self.info.is_head, |d| d.child(note("HEAD")))
             .child(
                 div()
                     .flex_none()
                     .font_family(theme.mono_font_family.clone())
-                    .text_xs()
+                    .text_style(text::CODE_CHROME)
                     .text_color(theme.muted_foreground)
                     .child(self.info.commit.short().to_owned()),
             )
@@ -763,6 +759,7 @@ impl SourceStep {
         for (ix, mode) in SourceMode::ALL.into_iter().enumerate() {
             group = group.child(
                 Button::new(("open-flow-mode", ix))
+                    .small()
                     .label(mode.title())
                     .selected(self.mode == mode)
                     .disabled(mode == SourceMode::Live && !live_ok)
@@ -780,8 +777,8 @@ impl SourceStep {
         let theme = cx.theme().clone();
         if self.data.repo.toplevel.is_none() {
             return div()
-                .py_6()
-                .text_sm()
+                .py(px(gap::SECTION))
+                .text_style(text::UI)
                 .text_color(theme.muted_foreground)
                 .child("A bare repository has no working tree to review.")
                 .into_any_element();
@@ -801,6 +798,8 @@ impl SourceStep {
             }
             None => "No default branch was found, so this is the same as since HEAD.".to_owned(),
         };
+        // An option: a nested card (`COMPACT` insets, radius `MD`), its radio
+        // (`ICON_SM`) centred on the title's line and its dot centred in it.
         let option = |id: &'static str,
                       since: Since,
                       title: String,
@@ -810,10 +809,11 @@ impl SourceStep {
             h_flex()
                 .id(id)
                 .debug_selector(move || id.to_owned())
-                .gap_3()
+                .gap(px(gap::GROUP))
                 .items_start()
-                .p_3()
-                .rounded(theme.radius_lg)
+                .px(px(edge::COMPACT_X))
+                .py(px(edge::COMPACT_Y))
+                .rounded(px(radius::MD))
                 .border_1()
                 .border_color(if selected {
                     theme.primary
@@ -826,149 +826,177 @@ impl SourceStep {
                 .on_click(cx.listener(move |this, _, _, cx| this.set_since(since.clone(), cx)))
                 .child(
                     div()
+                        .debug_selector(move || format!("{id}-radio"))
                         .flex_none()
-                        .mt(px(2.))
-                        .size(px(14.))
+                        .mt(px((text::UI.1 - size::ICON_SM) / 2.0))
+                        .size(px(size::ICON_SM))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .rounded_full()
                         .border_1()
                         .border_color(if selected { theme.primary } else { theme.input })
                         .when(selected, |d| {
-                            d.p(px(3.))
-                                .child(div().size_full().rounded_full().bg(theme.primary))
+                            d.child(
+                                div()
+                                    .debug_selector(move || format!("{id}-dot"))
+                                    .size(px(size::DOT))
+                                    .rounded_full()
+                                    .bg(theme.primary),
+                            )
                         }),
                 )
                 .child(
                     v_flex()
-                        .gap_0p5()
                         .min_w_0()
-                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
                         .child(
                             div()
-                                .text_xs()
+                                .debug_selector(move || format!("{id}-title"))
+                                .text_style(text::UI)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_style(text::SMALL)
                                 .text_color(theme.muted_foreground)
                                 .child(text),
                         ),
                 )
         };
         v_flex()
-            .gap_2()
+            .gap(px(gap::GROUP))
             .child(
                 div()
-                    .pb_1()
-                    .text_sm()
+                    .text_style(text::BODY)
                     .text_color(theme.muted_foreground)
                     .child(format!(
                         "Review the working tree of {} on {branch}, including new files.",
                         tildify(self.data.repo.toplevel.as_deref().unwrap_or(Path::new("")))
                     )),
             )
-            .child(option(
-                "open-flow-since-merge-base",
-                Since::MergeBase,
-                match &default {
-                    Some(d) => format!("Since the merge base with {d}"),
-                    None => "Since the merge base".to_owned(),
-                },
-                merge_base_text,
-                cx,
-            ))
-            .child(option(
-                "open-flow-since-head",
-                Since::Head,
-                "Since HEAD".to_owned(),
-                "Only the uncommitted changes, staged or not.".to_owned(),
-                cx,
-            ))
+            .child(
+                v_flex()
+                    .gap(px(edge::NESTED_Y))
+                    .child(option(
+                        "open-flow-since-merge-base",
+                        Since::MergeBase,
+                        match &default {
+                            Some(d) => format!("Since the merge base with {d}"),
+                            None => "Since the merge base".to_owned(),
+                        },
+                        merge_base_text,
+                        cx,
+                    ))
+                    .child(option(
+                        "open-flow-since-head",
+                        Since::Head,
+                        "Since HEAD".to_owned(),
+                        "Only the uncommitted changes, staged or not.".to_owned(),
+                        cx,
+                    )),
+            )
             .into_any_element()
     }
 
     fn render_compare(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let field = |title: &'static str, select: AnyElement| {
+        // A form field: its label `INLINE` over its control.
+        let field = |title: &'static str, control: AnyElement| {
             v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_1()
+                .gap(px(gap::INLINE))
                 .child(
                     div()
-                        .text_xs()
+                        .text_style(text::SMALL)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.muted_foreground)
                         .child(title),
                 )
-                .child(select)
+                .child(control)
         };
-        let picker = |state: &Entity<SelectState<RefDelegate>>, id: &'static str| {
-            div()
-                .debug_selector(move || id.to_owned())
-                .child(
-                    Select::new(state)
-                        .placeholder("Choose a branch or tag")
-                        .search_placeholder("Search branches and tags…")
-                        .menu_max_h(px(260.)),
+        let picker =
+            |title: &'static str, state: &Entity<SelectState<RefDelegate>>, id: &'static str| {
+                field(
+                    title,
+                    div()
+                        .debug_selector(move || id.to_owned())
+                        .child(
+                            Select::new(state)
+                                .placeholder("Choose a branch or tag")
+                                .search_placeholder("Search branches and tags…")
+                                .menu_max_h(px(layout::OVERLAY_MAX_H)),
+                        )
+                        .into_any_element(),
                 )
-                .into_any_element()
-        };
+                .flex_1()
+                .min_w_0()
+            };
+        // The arrow centres on the selects: a field's column whose label
+        // line is invisible and whose control slot fills the row's height.
+        let arrow = v_flex()
+            .flex_none()
+            .gap(px(gap::INLINE))
+            .child(div().invisible().text_style(text::SMALL).child("·"))
+            .child(
+                div().flex_1().flex().items_center().child(
+                    Icon::new(IconName::ArrowLeft)
+                        .small()
+                        .text_color(theme.muted_foreground),
+                ),
+            );
         let this = cx.entity().downgrade();
         v_flex()
-            .gap_4()
+            .gap(px(gap::GROUP))
             .child(
                 h_flex()
-                    .gap_2()
-                    .items_end()
-                    .child(field("Base", picker(&self.base, "open-flow-base")))
-                    .child(
-                        div().flex_none().pb_2().child(
-                            Icon::new(IconName::ArrowLeft)
-                                .small()
-                                .text_color(theme.muted_foreground),
-                        ),
-                    )
-                    .child(field("Compare", picker(&self.head, "open-flow-head"))),
+                    .gap(px(gap::CONTROLS))
+                    .items_stretch()
+                    .child(picker("Base", &self.base, "open-flow-base"))
+                    .child(arrow)
+                    .child(picker("Compare", &self.head, "open-flow-head")),
             )
             .child(
                 h_flex()
-                    .gap_3()
+                    .gap(px(gap::GROUP))
                     .items_start()
+                    // The switch centred on its title's line.
                     .child(
-                        Switch::new("open-flow-direct")
-                            .checked(self.direct)
-                            .small()
-                            .on_click(move |checked, _, cx| {
-                                this.update(cx, |s, cx| s.set_direct(*checked, cx)).ok();
-                            }),
+                        div()
+                            .flex_none()
+                            .h(px(text::UI.1))
+                            .flex()
+                            .items_center()
+                            .child(
+                                Switch::new("open-flow-direct")
+                                    .checked(self.direct)
+                                    .small()
+                                    .on_click(move |checked, _, cx| {
+                                        this.update(cx, |s, cx| s.set_direct(*checked, cx)).ok();
+                                    }),
+                            ),
                     )
                     .child(
                         v_flex()
-                            .gap_0p5()
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_style(text::UI)
                                     .font_weight(FontWeight::MEDIUM)
                                     .child("Direct comparison"),
                             )
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(
-                                if self.direct {
-                                    "Base's tree against the compare's tree (two dots)."
-                                } else {
-                                    "Changes on the compare side since the merge base (three \
-                                     dots), as in a pull request."
-                                },
-                            )),
+                            .child(
+                                div()
+                                    .text_style(text::SMALL)
+                                    .text_color(theme.muted_foreground)
+                                    .child(if self.direct {
+                                        "Base's tree against the compare's tree (two dots)."
+                                    } else {
+                                        "Changes on the compare side since the merge base \
+                                         (three dots), as in a pull request."
+                                    }),
+                            ),
                     ),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.muted_foreground)
-                            .child("Label"),
-                    )
-                    .child(Input::new(&self.label)),
-            )
+            .child(field("Label", Input::new(&self.label).into_any_element()))
             .into_any_element()
     }
 }
@@ -985,13 +1013,14 @@ impl Render for SourceStep {
             SourceMode::Live => self.render_live(cx),
             SourceMode::Commit => List::new(&self.commits)
                 .search_placeholder("Search commits by message, author or id…")
+                .p(px(edge::OVERLAY))
                 .into_any_element(),
             SourceMode::Compare => self.render_compare(cx),
         };
         v_flex()
             .track_focus(&self.focus)
             .size_full()
-            .gap_3()
+            .gap(px(gap::GROUP))
             .child(self.render_modes(cx))
             .child(
                 div()
@@ -1000,7 +1029,7 @@ impl Render for SourceStep {
                     .when(self.mode == SourceMode::Commit, |d| {
                         d.border_1()
                             .border_color(cx.theme().border)
-                            .rounded(cx.theme().radius_lg)
+                            .rounded(px(radius::MD))
                             .overflow_hidden()
                     })
                     .child(body),

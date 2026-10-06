@@ -27,6 +27,7 @@ use crate::keymap::actions::tab as tab_actions;
 use crate::keymap::handlers;
 use crate::review_tab::ReviewTab;
 use crate::review_tab::toolbar::{self, Narrow};
+use crate::space::{TextStyleExt as _, gap, height, layout, pad, radius, text};
 use crate::threads;
 use crate::window::MenuKind;
 
@@ -201,7 +202,7 @@ fn show_dialog(
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
             .title("Submit review")
-            .w(px(560.))
+            .w(px(layout::DIALOG_W))
             .child(content.clone())
     });
     let handle = view.read(cx).summary_focus(cx);
@@ -250,19 +251,20 @@ pub fn button(tab: &ReviewTab, _window: &mut Window, cx: &mut Context<ReviewTab>
         "Submit review"
     };
     let theme = cx.theme();
+    // A badge (`MINI`, at least round), `INLINE` after the label.
     let count = (drafts > 0).then(|| {
         div()
             .debug_selector(|| "submit-review-count".into())
-            .ml_1()
-            .px_1p5()
-            .min_w(px(18.))
-            .h(px(16.))
+            .ml(px(gap::INLINE))
+            .px(px(pad::BADGE_X))
+            .min_w(px(height::MINI))
+            .h(px(height::MINI))
             .flex()
             .items_center()
             .justify_center()
-            .rounded_full()
+            .rounded(px(radius::capsule(height::MINI)))
             .bg(theme.primary_foreground.opacity(0.22))
-            .text_xs()
+            .text_style(text::CAPTION)
             .child(drafts.to_string())
     });
     Button::new("submit-review")

@@ -7,13 +7,15 @@ use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandSt
 use gpui_kit::component::{ActiveTheme as _, IndexPath, WindowExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, Global, IntoElement, Keystroke,
-    ParentElement as _, Render, SharedString, Styled as _, WeakEntity, Window, div, px,
+    App, AppContext as _, Context, Entity, FocusHandle, Global, InteractiveElement as _,
+    IntoElement, Keystroke, ParentElement as _, Render, SharedString, Styled as _, WeakEntity,
+    Window, div, px,
 };
 
 use crate::keymap::KeymapStore;
 use crate::keymap::actions::{ACTIONS, ActionInfo};
 use crate::palette::key_cap::{key_cap, key_label};
+use crate::space::{TextStyleExt as _, gap, layout, text};
 
 /// One row of the palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,9 +111,10 @@ pub fn open(window: &mut Window, cx: &mut App) -> Entity<CommandPalette> {
     let content = palette.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .w(px(560.))
-            .margin_top(px(96.))
+            .w(px(layout::PICKER_W))
+            .margin_top(px(layout::PICKER_TOP))
             .close_button(false)
+            .p_0()
             .child(content.clone())
     });
     let state = palette.read(cx).state.clone();
@@ -176,12 +179,12 @@ impl Render for CommandPalette {
         let this = cx.entity().downgrade();
         let mut command = Command::new(&self.state)
             .bordered(false)
-            .max_h(px(380.))
+            .max_h(px(layout::OVERLAY_MAX_H))
             .placeholder("Type a command…")
             .empty(|_, _, cx| {
                 div()
-                    .py_6()
-                    .text_sm()
+                    .py(px(gap::SECTION))
+                    .text_style(text::UI)
                     .text_color(cx.theme().muted_foreground)
                     .child("No matching commands")
             })
@@ -194,27 +197,36 @@ impl Render for CommandPalette {
             let items = rows.iter().map(|row| {
                 let title: SharedString = row.title.into();
                 let keys = row.keys.clone();
+                let action = row.action;
                 CommandItem::new().label(title.clone()).child(move |_, cx| {
                     let muted = cx.theme().muted_foreground;
                     h_flex()
+                        .debug_selector(move || format!("palette-row-{action}"))
                         .flex_1()
-                        .gap_2()
+                        .gap(px(gap::CONTROLS))
                         .items_center()
                         .justify_between()
                         .child(div().truncate().child(title.clone()))
                         .when_some(keys.clone(), |row, keys| {
                             row.child(
-                                h_flex().flex_none().gap_1().text_color(muted).children(
-                                    keys.split_whitespace()
-                                        .filter_map(|k| Keystroke::parse(k).ok())
-                                        .map(|k| key_cap(&k, cx)),
-                                ),
+                                h_flex()
+                                    .flex_none()
+                                    .gap(px(gap::INLINE))
+                                    .text_color(muted)
+                                    .children(
+                                        keys.split_whitespace()
+                                            .filter_map(|k| Keystroke::parse(k).ok())
+                                            .map(|k| key_cap(&k, cx)),
+                                    ),
                             )
                         })
                 })
             });
             command = command.group(CommandGroup::new().label(*heading).items(items));
         }
-        command
+        // The picker's frame (ADR-0031): the dialog's whole content.
+        div()
+            .debug_selector(|| "command-palette".into())
+            .child(command)
     }
 }
