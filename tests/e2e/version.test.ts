@@ -1,7 +1,13 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { appCall, appWorld, startApp, stopAllApps } from "../support/app";
+import {
+  type AppWorld,
+  appCall,
+  appWorld,
+  startApp,
+  stopAllApps,
+} from "../support/app";
 import { appBin, cliBin } from "../support/bins";
 
 // The version the executables were built with (ADR-0019): a release's
@@ -17,7 +23,11 @@ const crateVersion = (
 const built = process.env.POLYGLOSS_VERSION || crateVersion;
 
 describe.skipIf(!process.env.POLYGLOSS_E2E)("built version", () => {
-  const world = appWorld();
+  // Made in beforeAll: a skipped describe runs its body but no hooks.
+  let world: AppWorld;
+  beforeAll(() => {
+    world = appWorld();
+  });
   afterAll(async () => {
     await stopAllApps(world.socket);
     world.cleanup();
