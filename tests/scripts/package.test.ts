@@ -334,6 +334,44 @@ describe("icon", () => {
     },
   );
 
+  test("packaging/polygloss.icon draws the svg's shapes as its layers", () => {
+    // The .icns comes from the svg and Assets.car from the Icon Composer
+    // document: both must show the same icon. Each layer reuses the svg's path
+    // in the svg's frame; its viewBox maps the 824 body onto Icon Composer's
+    // canvas, which is the squircle itself.
+    const doc = join(repoRoot, "packaging", "polygloss.icon");
+    const json = JSON.parse(
+      readFileSync(join(doc, "icon.json"), "utf8"),
+    ) as Json;
+    expect(json["supported-platforms"]).toEqual({ squares: ["macOS"] });
+    const images: string[] = json.groups.flatMap((g: Json) =>
+      g.layers.map((l: Json) => l["image-name"] as string),
+    );
+    expect([...images].sort()).toEqual(readdirSync(join(doc, "Assets")).sort());
+    const svg = readFileSync(
+      join(repoRoot, "assets", "icons", "polygloss.svg"),
+      "utf8",
+    );
+    const shapes = new Map(
+      [...svg.matchAll(/<path id="([a-z-]+)" d="([^"]+)"/g)].map((m) => [
+        m[1],
+        m[2],
+      ]),
+    );
+    expect([...shapes.keys()].sort()).toEqual(["added", "deleted", "gloss"]);
+    for (const image of images) {
+      const layer = readFileSync(join(doc, "Assets", image), "utf8");
+      const shape = image.replace(/^\d+-/, "").replace(/\.svg$/, "");
+      expect({ image, viewBox: layer.match(/viewBox="([^"]+)"/)?.[1] }).toEqual(
+        { image, viewBox: "100 100 824 824" },
+      );
+      expect({ image, d: layer.match(/ d="([^"]+)"/)?.[1] }).toEqual({
+        image,
+        d: shapes.get(shape),
+      });
+    }
+  });
+
   test("make-icon.sh rejects a missing svg", () => {
     const r = run([
       makeIcon,
@@ -478,9 +516,27 @@ if [ "$1" = packager ]; then
 fi
 `;
 
+// `xcrun actool <doc> ... --compile <dir> ...` stand-in (see noXcodePath).
+const fakeActoolXcrun = `#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = actool ] || { echo "fake xcrun: unexpected $1" >&2; exit 1; }
+shift
+printf '%s\\n' "$@" >"$FAKE_ACTOOL_LOG"
+while [ $# -gt 0 ]; do
+  if [ "$1" = --compile ]; then echo "stand-in catalog" >"$2/Assets.car"; fi
+  shift
+done
+`;
+
 describe("scripts/package-release.sh", () => {
   let cargoHome = "";
   let packagerPlist = "";
+  // PATHs whose `xcrun` stands in for Xcode (the real actool's helper daemon
+  // reads and logs into the real ~/Library): one finds no developer tools, as
+  // on a machine without Xcode, the other is an actool that logs its
+  // arguments to $FAKE_ACTOOL_LOG and writes a stand-in Assets.car.
+  let noXcodePath = "";
+  let fakeActoolPath = "";
 
   beforeAll(() => {
     cargoHome = scratch("cargo-home");
@@ -489,6 +545,19 @@ describe("scripts/package-release.sh", () => {
     chmodSync(join(cargoHome, "bin", "cargo"), 0o755);
     packagerPlist = join(cargoHome, "packager-info.plist");
     writePlist(packagerPlist, packagerInfoPlist());
+    const noXcode = join(cargoHome, "no-xcode");
+    mkdirSync(noXcode);
+    writeFileSync(
+      join(noXcode, "xcrun"),
+      "#!/bin/sh\necho 'xcrun: error: no developer tools were found' >&2\nexit 1\n",
+    );
+    chmodSync(join(noXcode, "xcrun"), 0o755);
+    noXcodePath = `${noXcode}:${sandbox.env.PATH}`;
+    const fakeActool = join(cargoHome, "fake-actool");
+    mkdirSync(fakeActool);
+    writeFileSync(join(fakeActool, "xcrun"), fakeActoolXcrun);
+    chmodSync(join(fakeActool, "xcrun"), 0o755);
+    fakeActoolPath = `${fakeActool}:${sandbox.env.PATH}`;
   });
 
   function packageRun(
@@ -506,6 +575,7 @@ describe("scripts/package-release.sh", () => {
         FAKE_CARGO_LOG: log,
         FAKE_CARGO_FAIL: "<no-such-step>",
         FAKE_PACKAGER_PLIST: packagerPlist,
+        PATH: noXcodePath,
         ...env,
       },
     });
@@ -571,6 +641,49 @@ describe("scripts/package-release.sh", () => {
     ]);
   });
 
+  test("without Xcode's actool the bundle keeps icon.icns as its only icon", () => {
+    const r = packageRun();
+    expect(r.output).toContain("package-release: warning: no Assets.car");
+    expect(r.exitCode).toBe(0);
+    const app = join(r.dist, "Polygloss.app");
+    expect(existsSync(join(app, "Contents", "Resources", "Assets.car"))).toBe(
+      false,
+    );
+    const plist = readPlist(join(app, "Contents", "Info.plist"));
+    expect(plist.CFBundleIconName).toBeUndefined();
+    expect(plist.CFBundleIconFile).toBe("icon.icns");
+    expect(existsSync(join(r.dist, ".icon-build"))).toBe(false);
+  });
+
+  test("bundles actool's Assets.car for packaging/polygloss.icon and names it before signing", () => {
+    const argsLog = join(scratch("actool"), "args");
+    const r = packageRun([], {
+      PATH: fakeActoolPath,
+      FAKE_ACTOOL_LOG: argsLog,
+    });
+    expect(r.output).toContain("package-release: bundling the app icon");
+    expect(r.exitCode).toBe(0);
+    const app = join(r.dist, "Polygloss.app");
+    const plist = readPlist(join(app, "Contents", "Info.plist"));
+    const args = readFileSync(argsLog, "utf8").split("\n");
+    const flag = (name: string) => args[args.indexOf(name) + 1];
+    expect(args[0]).toBe(join(repoRoot, "packaging", "polygloss.icon"));
+    expect(flag("--platform")).toBe("macosx");
+    // The catalog's icon is the one CFBundleIconName names, built for the
+    // bundle's minimum macOS; icon.icns stays the fallback.
+    expect(plist.CFBundleIconName).toBe(flag("--app-icon"));
+    expect(flag("--minimum-deployment-target")).toBe(
+      plist.LSMinimumSystemVersion,
+    );
+    expect(plist.CFBundleIconFile).toBe("icon.icns");
+    expect(
+      readFileSync(join(app, "Contents", "Resources", "Assets.car"), "utf8"),
+    ).toBe("stand-in catalog\n");
+    expect(existsSync(join(r.dist, ".icon-build"))).toBe(false);
+    // Added before signing: the seal covers it.
+    must(["codesign", "--verify", "--deep", "--strict", app]);
+  });
+
   test("makes Polygloss_<version>_aarch64.dmg holding the signed app and an Applications link", () => {
     const r = packageRun();
     expect(r.exitCode).toBe(0);
@@ -623,6 +736,7 @@ describe("scripts/package-release.sh", () => {
       FAKE_CARGO_FAIL: "<no-such-step>",
       FAKE_PACKAGER_PLIST: packagerPlist,
       FAKE_CARGO_PAUSE: pause,
+      PATH: noXcodePath,
     };
     const release = Bun.spawn([packageRelease], {
       env,
@@ -882,6 +996,41 @@ describe.skipIf(process.env.POLYGLOSS_BUNDLE_E2E !== "1")(
             readFileSync(src),
           ),
         }).toEqual({ name, same: true });
+    });
+
+    test("app icon is icon.icns, plus actool's Assets.car with Xcode 26", () => {
+      const plist = readPlist(join(app, "Contents", "Info.plist"));
+      const car = join(app, "Contents", "Resources", "Assets.car");
+      // Xcode 26's actool is the first to compile Icon Composer documents.
+      const xcode = /<key>short-bundle-version<\/key>\s*<string>(\d+)/.exec(
+        run(["xcrun", "actool", "--version"]).stdout,
+      );
+      if (Number(xcode?.[1] ?? 0) < 26) {
+        expect(existsSync(car)).toBe(false);
+        expect(plist.CFBundleIconName).toBeUndefined();
+        return;
+      }
+      expect(plist.CFBundleIconName).toBe("polygloss");
+      // assetutil reads the catalog back: the layered icon's light, dark and
+      // tinted stacks, plus a flattened 1024 px rendition for macOS 14 and 15.
+      const named = (
+        JSON.parse(must(["xcrun", "assetutil", "--info", car])) as Json[]
+      ).filter((a) => a.Name === "polygloss");
+      expect(
+        named
+          .filter((a) => a.AssetType === "IconImageStack")
+          .map((a) => a.Appearance)
+          .sort(),
+      ).toEqual([
+        "ISAppearanceTintable",
+        "NSAppearanceNameAqua",
+        "NSAppearanceNameDarkAqua",
+      ]);
+      expect(
+        named.some(
+          (a) => a.AssetType === "Icon Image" && a.PixelWidth === 1024,
+        ),
+      ).toBe(true);
     });
 
     test(

@@ -1,37 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- Polygloss app icon (source of packaging/icon.icns; scripts/make-icon.sh).
-       macOS icon grid: an 824 x 824 rounded square centered on a 1024 canvas.
-       A diff (context, deleted and added lines) with a review comment. -->
+  <!-- Polygloss app icon, flat (scripts/make-icon.sh renders packaging/icon.icns from it).
+       A diff and its gloss: a short deleted line, the added line twice its length, and a
+       review note whose pointed corner rests over the added line. Body: the macOS 26
+       squircle (824, continuous corners) at +100+100. Every straight edge sits on the
+       64-unit grid, i.e. whole pixels at 16 px. packaging/AppIcon.icon draws the same
+       paths as Icon Composer layers (scripts/package-release.sh compiles it). -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2a2f3a"/>
-      <stop offset="1" stop-color="#121418"/>
+    <linearGradient id="bg" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9e9e7"/>
     </linearGradient>
-    <linearGradient id="bubble" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#4c9dff"/>
-      <stop offset="1" stop-color="#2f7cf6"/>
+    <linearGradient id="deleted-fill" x1="0" y1="448" x2="0" y2="576" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ea807b"/>
+      <stop offset="1" stop-color="#d75a55"/>
+    </linearGradient>
+    <linearGradient id="added-fill" x1="0" y1="640" x2="0" y2="768" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#79c97d"/>
+      <stop offset="1" stop-color="#52b056"/>
+    </linearGradient>
+    <linearGradient id="gloss-fill" x1="0" y1="256" x2="0" y2="576" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5581de"/>
+      <stop offset="1" stop-color="#275cc9"/>
     </linearGradient>
   </defs>
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
-  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
-
-  <!-- context line -->
-  <rect x="196" y="224" width="456" height="56" rx="28" fill="#6b7280"/>
-
-  <!-- deleted line -->
-  <rect x="172" y="324" width="680" height="120" rx="32" fill="#ff5f56" fill-opacity="0.22"/>
-  <rect x="204" y="370" width="72" height="28" rx="8" fill="#ff6b61"/>
-  <rect x="308" y="356" width="400" height="56" rx="28" fill="#ff6b61"/>
-
-  <!-- added line -->
-  <rect x="172" y="468" width="680" height="120" rx="32" fill="#2fd576" fill-opacity="0.22"/>
-  <rect x="204" y="514" width="72" height="28" rx="8" fill="#35dc7c"/>
-  <rect x="226" y="492" width="28" height="72" rx="8" fill="#35dc7c"/>
-  <rect x="308" y="500" width="336" height="56" rx="28" fill="#35dc7c"/>
-
-  <!-- review comment -->
-  <path d="M452 612 h348 a64 64 0 0 1 64 64 v88 a64 64 0 0 1 -64 64 h-196 l-84 64 v-64 h-68 a64 64 0 0 1 -64 -64 v-88 a64 64 0 0 1 64 -64 z"
-        fill="url(#bubble)"/>
-  <rect x="444" y="676" width="296" height="36" rx="18" fill="#ffffff" fill-opacity="0.95"/>
-  <rect x="444" y="736" width="200" height="36" rx="18" fill="#ffffff" fill-opacity="0.7"/>
+  <path d="M512 100C732.5 100 792.5 94.19 861.15 162.85C929.81 231.5 924 291.5 924 512C924 732.5 929.81 792.5 861.15 861.15C792.5 929.81 732.5 924 512 924C291.5 924 231.5 929.81 162.85 861.15C94.19 792.5 100 732.5 100 512C100 291.5 94.19 231.5 162.85 162.85C231.5 94.19 291.5 100 512 100Z" fill="url(#bg)"/>
+  <!-- the deleted line: red, 4 units (#e5605a) -->
+  <path id="deleted" d="M384 448C418.25 448 427.57 447.1 438.24 457.76C448.9 468.43 448 477.75 448 512C448 546.25 448.9 555.57 438.24 566.24C427.57 576.9 418.25 576 384 576L256 576C221.75 576 212.43 576.9 201.76 566.24C191.1 555.57 192 546.25 192 512C192 477.75 191.1 468.43 201.76 457.76C212.43 447.1 221.75 448 256 448Z" fill="url(#deleted-fill)"/>
+  <!-- the added line that replaced it: green, 8 units (#57bb5c) -->
+  <path id="added" d="M640 640C674.25 640 683.57 639.1 694.24 649.76C704.9 660.43 704 669.75 704 704C704 738.25 704.9 747.57 694.24 758.24C683.57 768.9 674.25 768 640 768L256 768C221.75 768 212.43 768.9 201.76 758.24C191.1 747.57 192 738.25 192 704C192 669.75 191.1 660.43 201.76 649.76C212.43 639.1 221.75 640 256 640Z" fill="url(#added-fill)"/>
+  <!-- the gloss: a review note pinned above the change (#2a62d6) -->
+  <path id="gloss" d="M672 256C710.41 256 760.69 257.14 795.77 292.23C830.86 327.31 832 377.59 832 416C832 454.41 830.86 504.69 795.77 539.77C760.69 574.86 710.41 576 672 576L536 576A24 24 0 0 1 512 552L512 416C512 377.59 513.14 327.31 548.23 292.23C583.31 257.14 633.59 256 672 256Z" fill="url(#gloss-fill)"/>
 </svg>

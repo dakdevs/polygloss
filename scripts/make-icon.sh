@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Renders the app icon: an SVG (default assets/icons/polygloss.svg) into an
 # .icns (default packaging/icon.icns, committed) with every size macOS uses,
-# 16 to 1024 px (plan T5.1). Rerun it after editing the SVG.
+# 16 to 1024 px (plan T5.1). Rerun it after editing the SVG, and keep
+# packaging/polygloss.icon's layers (the Assets.car icon) on the same paths.
 #
 #   scripts/make-icon.sh [<icon.svg> [<icon.icns>]]
 #
