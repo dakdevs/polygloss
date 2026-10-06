@@ -20,6 +20,5 @@
   "crates/polygloss-app/src/tree/mod.rs": 6,
   "crates/polygloss-app/src/tree/panels.rs": 12,
   "crates/polygloss-app/src/tree/row.rs": 16,
-  "crates/polygloss-app/src/viewed/mod.rs": 2,
-  "crates/polygloss-app/src/window.rs": 0
+  "crates/polygloss-app/src/viewed/mod.rs": 2
 }
