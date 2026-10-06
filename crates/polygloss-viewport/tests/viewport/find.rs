@@ -254,9 +254,9 @@ fn find_marks_never_keep_dropped_lines_alive(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn find_rects_follow_the_new_code_x(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    // With bars the code starts half a column after the numbers: 66.3 px in
-    // unified (two 4-column number columns), 35.1 px into each split half
-    // and into a one-sided file's single pane.
+    // With bars the code starts 10 pt after the number gutter (ADR-0031
+    // C1): at 82 in unified (two 3-digit columns, a 72 pt gutter), 50 into
+    // each split half and into a one-sided file's single pane (40 pt).
     let provider = MemProvider::new(vec![one_change(), Spec::added("src/b.rs", "line b\n")]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 800.);
     let t = theme(&view, cx);
@@ -273,7 +273,7 @@ fn find_rects_follow_the_new_code_x(cx: &mut TestAppContext) {
     let found = marks(cx, t.find_match);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(
-        (found[0].0 - 66.3).abs() <= 0.5 && found[0].1 == y,
+        (found[0].0 - 82.0).abs() <= 0.5 && found[0].1 == y,
         "{found:?}"
     );
 
@@ -288,8 +288,8 @@ fn find_rects_follow_the_new_code_x(cx: &mut TestAppContext) {
     );
     let found = marks(cx, t.find_match);
     assert_eq!(found.len(), 2, "{found:?}");
-    assert!((found[0].0 - 35.1).abs() <= 0.5, "{found:?}");
-    assert!((found[1].0 - 535.1).abs() <= 0.5, "{found:?}");
+    assert!((found[0].0 - 50.0).abs() <= 0.5, "{found:?}");
+    assert!((found[1].0 - 550.0).abs() <= 0.5, "{found:?}");
 
     set(
         &view,
@@ -301,5 +301,5 @@ fn find_rects_follow_the_new_code_x(cx: &mut TestAppContext) {
     );
     let found = marks(cx, t.find_match);
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!((found[0].0 - 35.1).abs() <= 0.5, "{found:?}");
+    assert!((found[0].0 - 50.0).abs() <= 0.5, "{found:?}");
 }

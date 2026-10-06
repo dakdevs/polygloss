@@ -14,14 +14,17 @@ use polygloss_highlight::{
     Appearance, FontStyle, Rgba, StyleId, SyntaxTheme, ThemeId, ZedTheme, pierre_theme,
 };
 
+use crate::motion::ink;
+
 /// Change markers (Pierre's diff-style setting, design §11.6 "Styles").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Indicators {
-    /// A 3 px bar at the left edge of each changed row's pane (each half's
-    /// own edge in split), no glyph.
+    /// A 4 pt bar (`stroke::CHANGE_BAR`) at the left edge of each changed
+    /// row's pane (each half's own edge in split), no glyph.
     #[default]
     Bars,
-    /// `+` and `-` glyphs in a column before the code.
+    /// `+` and `-` glyphs in a two-advance cell after the gutter, where
+    /// the code would start.
     PlusMinus,
     /// No markers (the backgrounds, if on, still show the change).
     None,
@@ -104,8 +107,12 @@ pub struct ViewportTheme {
     /// Clickable text (gap expanders, "Load diff") and a checked Viewed box
     /// (`text.accent`).
     pub accent: Hsla,
-    /// Behind a control under the pointer (`ghost_element.hover`).
+    /// Over a control under the pointer: the header text at
+    /// [`crate::motion::ink::HOVER`] (ADR-0030).
     pub hover: Hsla,
+    /// Over a pressed control while the pointer is on it: the header text
+    /// at [`crate::motion::ink::PRESSED`].
+    pub pressed: Hsla,
     /// Header badges: mode, binary, generated, … (`element.background`).
     pub badge_background: Hsla,
     /// Behind the line cursor's row (`editor.active_line.background`).
@@ -169,10 +176,9 @@ impl ViewportTheme {
             &["text.accent", "link_text.hover", "icon.accent"],
             0x009fffff,
         );
-        let hover = t
-            .color("ghost_element.hover")
-            .or_else(|| t.color("element.hover"))
-            .map_or(accent.opacity(0.15), hsla);
+        let header_foreground = pick(&["text", "editor.foreground"], fg);
+        let hover = header_foreground.opacity(ink::HOVER);
+        let pressed = header_foreground.opacity(ink::PRESSED);
         let badge_background = t
             .color("element.background")
             .map_or(subheader.blend(foreground.opacity(0.06)), hsla);
@@ -226,7 +232,7 @@ impl ViewportTheme {
             muted,
             border,
             header_background: subheader,
-            header_foreground: pick(&["text", "editor.foreground"], fg),
+            header_foreground,
             canvas: or("background", subheader),
             card_background: background,
             card_border: border,
@@ -263,6 +269,7 @@ impl ViewportTheme {
             removed_accent,
             accent,
             hover,
+            pressed,
             badge_background,
             cursor_line,
             selection,

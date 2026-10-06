@@ -209,10 +209,9 @@ pub mod ink {
     use gpui_kit::component::ActiveTheme as _;
     use gpui_kit::{App, StatefulInteractiveElement, Styled};
 
-    /// Hover: the foreground at this alpha over the control.
-    pub const HOVER: f32 = 0.06;
-    /// Pressed: the foreground at this alpha.
-    pub const PRESSED: f32 = 0.12;
+    /// The foreground's alphas under the pointer and while pressed (one
+    /// ladder with the viewport's painted controls).
+    pub use polygloss_viewport::motion::ink::{HOVER, PRESSED};
 
     /// Hover and pressed ink on a custom control (one with an element id:
     /// gpui keeps the pressed state in element state), from the mouse down

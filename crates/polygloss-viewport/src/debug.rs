@@ -53,6 +53,8 @@ pub struct ViewportDebug {
     pub headers: Vec<HeaderDebug>,
     /// Every painted section band, top to bottom.
     pub bands: Vec<BandDebug>,
+    /// Every painted file card, top to bottom (none in the flat layout).
+    pub cards: Vec<CardDebug>,
     /// Every clickable control painted, relative to the viewport.
     pub controls: Vec<ControlDebug>,
     /// The "+" on the hovered line numbers.
@@ -135,6 +137,15 @@ pub struct BandDebug {
     /// Its links, left to right: "Show" or "Hide", then "Mark all viewed" or
     /// "Mark all unviewed".
     pub links: Vec<String>,
+}
+
+/// A painted file card: its whole outer bounds, borders included, as
+/// [`crate::DiffViewport::card_bounds`] gives them in window coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CardDebug {
+    pub file_idx: u32,
+    /// `(x, y, width, height)` relative to the viewport.
+    pub bounds: (f32, f32, f32, f32),
 }
 
 /// A clickable control of the last frame.

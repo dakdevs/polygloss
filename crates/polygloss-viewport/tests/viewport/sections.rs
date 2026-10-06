@@ -185,18 +185,18 @@ fn display_order_puts_sections_after_the_other_files(cx: &mut TestAppContext) {
         assert_eq!(hidden, [false, false, true, false, false, false]);
     });
 
-    // Flat: a card is 45 + 3 × 20 = 105 px; a band is 36 px in the lead of
-    // its section's first file. 0, 3, 5 at 0, 105, 210; the band of 7 at
-    // 315; 4 at 351, 1 at 456; the closed band of 9 (file 2's lead) at 561.
+    // Flat: a card is 46 + 3 × 20 = 106 pt; a band is 36 pt in the lead of
+    // its section's first file. 0, 3, 5 at 0, 106, 212; the band of 7 at
+    // 318; 4 at 354, 1 at 460; the closed band of 9 (file 2's lead) at 566.
     let d = debug(&view, cx);
     let headers: Vec<(u32, f32)> = d.headers.iter().map(|h| (h.file_idx, h.y)).collect();
     assert_eq!(
         headers,
-        [(0, 0.0), (3, 105.0), (5, 210.0), (4, 351.0), (1, 456.0)]
+        [(0, 0.0), (3, 106.0), (5, 212.0), (4, 354.0), (1, 460.0)]
     );
     let bands: Vec<(u32, f32, bool)> = d.bands.iter().map(|b| (b.id, b.y, b.open)).collect();
-    assert_eq!(bands, [(7, 315.0, true), (9, 561.0, false)]);
-    assert_eq!(read(&view, cx, |v| v.document().total_height()), 597.0);
+    assert_eq!(bands, [(7, 318.0, true), (9, 566.0, false)]);
+    assert_eq!(read(&view, cx, |v| v.document().total_height()), 602.0);
 
     // The bands are rows of their own, top to bottom with the files.
     let rows = &d.visible_rows;
@@ -225,26 +225,26 @@ fn closed_section_is_its_band_only(cx: &mut TestAppContext) {
     );
     set_sections(&view, cx, vec![section(5, "2 test files", &[1, 2], false)]);
 
-    // Cards: 0 is 45 + 60 + 8 = 113 px; 3 is a 12 px gap and its card
-    // (113..238); file 1 is the band's lead, a gap and the band, then the
-    // gap below the last thing in the document (238..298); file 2 is
+    // Cards: 0 is 46 + 60 + 8 = 114 pt; 3 is a 12 pt gap and its card
+    // (114..240); file 1 is the band's lead, a gap and the band, then the
+    // gap below the last thing in the document (240..300); file 2 is
     // nothing.
     read(&view, cx, |v| {
         let doc = v.document();
         assert_eq!(v.display_order(), &[0, 3, 1, 2]);
         assert_eq!(
             (doc.file_top(1), doc.file_height(1), doc.file_height(2)),
-            (238.0, 60.0, 0.0)
+            (240.0, 60.0, 0.0)
         );
-        assert_eq!(doc.total_height(), 298.0);
+        assert_eq!(doc.total_height(), 300.0);
     });
     let d = debug(&view, cx);
     let headers: Vec<(u32, f32)> = d.headers.iter().map(|h| (h.file_idx, h.y)).collect();
-    assert_eq!(headers, [(0, 0.0), (3, 125.0)]);
+    assert_eq!(headers, [(0, 0.0), (3, 126.0)]);
     let b = band(&d, 5);
     assert_eq!(
         (b.y, b.open, b.label.as_str()),
-        (250.0, false, "2 test files")
+        (252.0, false, "2 test files")
     );
     assert_eq!(b.links, ["Show", "Mark all viewed"]);
     let rows = &d.visible_rows;
@@ -253,21 +253,21 @@ fn closed_section_is_its_band_only(cx: &mut TestAppContext) {
         "{rows:?}"
     );
 
-    // Open: file 1's card follows the band (header at 238 + 48), file 2's
-    // card holds the last gap (411..536 + 12).
+    // Open: file 1's card follows the band (header at 240 + 48), file 2's
+    // card holds the last gap (414..528 + 12).
     view.update(cx, |v, cx| v.set_section_open(5, true, cx));
     settle(cx);
     let d = debug(&view, cx);
     let headers: Vec<(u32, f32)> = d.headers.iter().map(|h| (h.file_idx, h.y)).collect();
-    assert_eq!(headers, [(0, 0.0), (3, 125.0), (1, 286.0), (2, 411.0)]);
-    assert_eq!(band(&d, 5).y, 250.0);
+    assert_eq!(headers, [(0, 0.0), (3, 126.0), (1, 288.0), (2, 414.0)]);
+    assert_eq!(band(&d, 5).y, 252.0);
     assert_eq!(band(&d, 5).links, ["Hide", "Mark all viewed"]);
-    assert_eq!(read(&view, cx, |v| v.document().total_height()), 536.0);
+    assert_eq!(read(&view, cx, |v| v.document().total_height()), 540.0);
 
     // Closed again: the band alone.
     view.update(cx, |v, cx| v.set_section_open(5, false, cx));
     settle(cx);
-    assert_eq!(read(&view, cx, |v| v.document().total_height()), 298.0);
+    assert_eq!(read(&view, cx, |v| v.document().total_height()), 300.0);
     let d = debug(&view, cx);
     assert_eq!(d.headers.len(), 2);
 }
@@ -578,7 +578,8 @@ fn section_counts_update_when_counts_land(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn set_sections_keeps_a_shown_anchor(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    // Four files of 30 lines: 45 + 600 px each.
+    // Four files of 30 lines: a header and 600 pt each.
+    let file_h = HEADER_H + 600.0;
     let (view, cx) = open(
         cx,
         added_files(4, 30),
@@ -602,11 +603,11 @@ fn set_sections_keeps_a_shown_anchor(cx: &mut TestAppContext) {
 
     set_sections(&view, cx, vec![section(5, "2 test files", &[1, 2], false)]);
     assert_eq!(read(&view, cx, |v| v.anchor()), before);
-    // File 3 is second now: line 10 is at 645 + 45 + 200, right below the
-    // pinned header.
+    // File 3 is second now: line 10 is at a file, a header and 200 pt,
+    // right below the pinned header.
     assert_eq!(
         read(&view, cx, |v| v.document().scroll_top()),
-        645.0 + 200.0
+        f64::from(file_h + 200.0)
     );
     let d = debug(&view, cx);
     assert_eq!(d.visible_rows[0], "== f3.txt");
@@ -635,12 +636,13 @@ fn set_sections_hiding_the_anchor_file_moves_it_to_the_band_and_drops_the_cursor
         read(&view, cx, |v| (v.anchor(), v.cursor())),
         (anchor(1, RowKey::Lead, 0.0), None)
     );
-    // Files 0, 3 and 4 come first: the band is at 3 × 645 and the last
-    // thing in the document, so the scroll stops at the end (1,971 − 300)
-    // with the band in view.
+    // Files 0, 3 and 4 come first: the band is at three files' height and
+    // the last thing in the document, so the scroll stops at the end with
+    // the band in view.
+    let file_h = HEADER_H + 600.0;
     assert_eq!(
         read(&view, cx, |v| v.document().scroll_top()),
-        f64::from(3.0 * 645.0 + BAND_H - 300.0)
+        f64::from(3.0 * file_h + BAND_H - 300.0)
     );
     let d = debug(&view, cx);
     assert_eq!(band(&d, 5).y, 300.0 - BAND_H);
@@ -766,11 +768,12 @@ fn events_stay_keyed_by_file_idx_after_reordering(cx: &mut TestAppContext) {
     );
     set_sections(&view, cx, vec![section(5, "1 test file", &[0], true)]);
     let (events, _sub) = record_events(&view, cx);
-    // File 0 is last: three cards (315 px) and its band above it.
+    // File 0 is last: three cards (a header and three rows each) and its
+    // band above it.
     let d = debug(&view, cx);
     let (_, y, _, _) = control(&d, ControlAction::Viewed(0));
     let header = d.headers.iter().find(|h| h.file_idx == 0).unwrap();
-    assert_eq!(header.y, 315.0 + BAND_H);
+    assert_eq!(header.y, 3.0 * (HEADER_H + 3.0 * ROW_H) + BAND_H);
     assert!(y >= header.y && y < header.y + HEADER_H);
     click_control(&view, cx, ControlAction::Viewed(0));
     view.update(cx, |v, cx| v.go_to_file(0, cx));
@@ -1037,4 +1040,38 @@ fn set_generated_off_loads_the_file(cx: &mut TestAppContext) {
     );
     let g = d.headers.iter().find(|h| h.file_idx == 1).unwrap();
     assert!(!g.badges.iter().any(|b| b == "generated"), "{:?}", g.badges);
+}
+
+// ---------------------------------------------------------------------------
+// the spacing system (T7.4, ADR-0031 C2)
+
+/// A band's chevron box and label start where the next card's header puts
+/// its chevron box and path. A band icon is the label's leading box: with
+/// one, the icon starts there and the text 6 pt (`ICON_LABEL`) after the
+/// 16 pt icon.
+#[gpui_kit::test]
+fn bands_align_with_file_headers(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let opts = card_options(LayoutMode::Unified);
+    let (view, cx) = open(cx, added_files(3, 2), opts, 1000., 800.);
+    let plain = Section {
+        icon: None,
+        ..section(1, "plain", &[1], true)
+    };
+    set_sections(&view, cx, vec![plain, section(2, "flask", &[2], true)]);
+    let d = debug(&view, cx);
+    // Three headers and two bands, all open: one chevron column.
+    let chevrons = icons_named(&d, "chevron-down");
+    assert_eq!(chevrons.len(), 5, "{chevrons:?}");
+    assert!(
+        chevrons.iter().all(|c| c.0 == chevrons[0].0 && c.2 == 16.0),
+        "{chevrons:?}"
+    );
+    let (path_1, _) = text_at(&d, "f1.txt");
+    let (path_2, _) = text_at(&d, "f2.txt");
+    assert_eq!(text_at(&d, "plain").0, path_1);
+    let flask = icons_named(&d, "flask-conical");
+    assert_eq!(flask.len(), 1, "{flask:?}");
+    assert_eq!(flask[0].0, path_2);
+    assert!(near(text_at(&d, "flask").0, path_2 + 16.0 + 6.0));
 }

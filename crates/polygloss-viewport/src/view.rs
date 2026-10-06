@@ -21,7 +21,7 @@ use polygloss_diff::word::Granularity;
 use polygloss_diff::{FileChange, FileKind, Side};
 
 use crate::blocks::Blocks;
-use crate::card::{CardStyle, Prelude, inner_bounds, inset};
+use crate::card::{CardStyle, Prelude, inner_bounds, inner_span};
 use crate::controls::Pressed;
 use crate::cursor::Cursor;
 use crate::document::{
@@ -34,7 +34,8 @@ use crate::find::{FindCurrent, FindHighlights, FindState};
 use crate::gap::Gaps;
 use crate::header::HeaderMenu;
 use crate::layout::{
-    Columns, Geometry, LayoutMode, Pane, digits, layout_for, resolve_layout, wrapped_heights,
+    Columns, DEFAULT_CODE_FONT_SIZE, Geometry, LayoutMode, Pane, digits, layout_for,
+    resolve_layout, wrapped_heights,
 };
 use crate::materialize::MaterializedFile;
 #[cfg(feature = "debug-inspect")]
@@ -101,7 +102,7 @@ impl Default for ViewportOptions {
             diff: DiffOptions::default(),
             style: DiffStyle::default(),
             code_font: SharedString::new_static("Lilex"),
-            code_font_size: 13.0,
+            code_font_size: DEFAULT_CODE_FONT_SIZE,
             ligatures: false,
             ui_font: font(".AppleSystemUIFont"),
             theme: Arc::new(ViewportTheme::default()),
@@ -299,7 +300,7 @@ impl DiffViewport {
         // A first guess from the window; the first frame decides with the
         // viewport's real width.
         let outer_width = window.viewport_size().width.as_f32();
-        let width = (outer_width - 2.0 * inset(opts.cards)).max(0.0);
+        let (_, width) = inner_span(outer_width, opts.cards);
         let layout = resolve_layout(
             opts.layout,
             width / geometry.advance,
@@ -703,6 +704,33 @@ impl DiffViewport {
         self.layout
     }
 
+    /// Where file `file_idx`'s code starts on `side`, from its card's inner
+    /// left edge (where its rows start: inside the border, or the
+    /// viewport's edge in the flat layout), at the current width, layout and
+    /// indicators (ADR-0031 C1): the header card's title aligns with it
+    /// (C3). A one-sided file has one pane, which either side names. `None`
+    /// for no such file.
+    pub fn code_x(&self, file_idx: u32, side: Side) -> Option<Pixels> {
+        self.files.get(file_idx as usize)?;
+        let file = match self.doc.state(file_idx) {
+            FileState::Materialized(file) => Some(&**file),
+            _ => None,
+        };
+        let cols = self.columns(file_idx, file);
+        Some(px(cols.code_x(cols.code_pane(side))))
+    }
+
+    /// File `file_idx`'s card as the last frame painted it: its outer
+    /// bounds, borders included, in window coordinates (its quad is cut near
+    /// the viewport's edges; these bounds are not). The origin of the
+    /// reference tests (ADR-0031). `None` in the flat layout and for a card
+    /// the last frame did not paint.
+    pub fn card_bounds(&self, file_idx: u32) -> Option<Bounds<Pixels>> {
+        let frame = self.frame_pool.as_ref()?;
+        let (_, bounds) = frame.card_bounds.iter().find(|(f, _)| *f == file_idx)?;
+        Some(*bounds)
+    }
+
     /// Find's per-line match cache as `(live, freed)` (feature
     /// `debug-inspect`): lines whose shaped text is still alive, and lines
     /// the text cache dropped since. `None` while find is off. The cache
@@ -752,6 +780,26 @@ impl DiffViewport {
                 .unwrap_or_default(),
             headers: self.debug_headers.clone(),
             bands: self.debug_bands.clone(),
+            cards: self
+                .frame_pool
+                .as_ref()
+                .map(|frame| {
+                    let o = frame.origin;
+                    frame
+                        .card_bounds
+                        .iter()
+                        .map(|(f, b)| crate::debug::CardDebug {
+                            file_idx: *f,
+                            bounds: (
+                                (b.origin.x - o.x).as_f32(),
+                                (b.origin.y - o.y).as_f32(),
+                                b.size.width.as_f32(),
+                                b.size.height.as_f32(),
+                            ),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             controls: self
                 .frame_pool
                 .as_ref()
@@ -925,7 +973,7 @@ impl DiffViewport {
     /// Re-decides the layout for a viewport `outer_width` px wide, by the
     /// rows' width (a card's inner width).
     fn fit_width(&mut self, outer_width: f32) {
-        let width = (outer_width - 2.0 * inset(self.opts.cards)).max(0.0);
+        let (_, width) = inner_span(outer_width, self.opts.cards);
         let columns = width / self.geometry.advance;
         let previous = self.measured.then_some(self.layout);
         self.layout = resolve_layout(
@@ -1202,9 +1250,9 @@ fn resolve_font(opts: &ViewportOptions, window: &Window) -> (Font, Geometry) {
     let code = code_font(SharedString::from(family.to_owned()), opts.ligatures);
     let font_id = text_system.resolve_font(&code);
     let size = opts.code_font_size.max(1.0);
+    // Without an advance, `Geometry::new` falls back to a typical one.
     let advance = text_system
         .ch_advance(font_id, px(size))
-        .map(|a| a.as_f32())
-        .unwrap_or(0.6 * size);
+        .map_or(f32::NAN, |a| a.as_f32());
     (code, Geometry::new(size, advance))
 }

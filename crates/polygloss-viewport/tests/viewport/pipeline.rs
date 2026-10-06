@@ -22,14 +22,14 @@ use crate::support::*;
 
 /// `n` added `.txt` files of exactly 20 lines: 20 rows is also the estimate
 /// for a file nothing is known about, so loading them never changes a height
-/// (every file is `HEADER_H + 20 × ROW_H` = 445 px tall from the start).
+/// (every file is `HEADER_H + 20 × ROW_H` = 446 pt tall from the start).
 fn twenty_line_files(n: usize) -> Vec<Spec> {
     (0..n)
         .map(|i| Spec::added(&format!("f{i:02}.txt"), &numbered("line", 20).concat()))
         .collect()
 }
 
-const FILE_H: f64 = 445.0;
+const FILE_H: f64 = (HEADER_H + 20.0 * ROW_H) as f64;
 
 /// `n` modified Rust files of 30 functions each, one renamed.
 fn rust_files(n: usize) -> Vec<Spec> {
@@ -78,9 +78,9 @@ fn counts(view: &Entity<DiffViewport>, cx: &mut VisualTestContext, f: u32) -> Op
 fn materializes_visible_files_first(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let provider = MemProvider::new(twenty_line_files(30));
-    // The first frame is drawn at file 20, which starts at 20 × 445 = 8900:
-    // files 20 and 21 are visible (8900..9500) and the ±2-screen window
-    // (7700..10700) spans 17..=24.
+    // The first frame is drawn at file 20, which starts at 20 × 446 = 8920:
+    // files 20 and 21 are visible (8920..9520) and the ±2-screen window
+    // (7720..10720) spans 17..=24.
     let (view, cx) = open_idle_at(
         cx,
         provider.clone(),
@@ -95,8 +95,8 @@ fn materializes_visible_files_first(cx: &mut TestAppContext) {
     );
     cx.run_until_parked();
     // Visible files first, top to bottom; then the rest of the window by
-    // distance from the viewport: 19 (0 px above), 22 (290 px below), 18
-    // (445 above), 23 (735 below), 17 (890 above), 24 (1180 below). Only then
+    // distance from the viewport: 19 (0 pt above), 22 (292 pt below), 18
+    // (446 above), 23 (738 below), 17 (892 above), 24 (1184 below). Only then
     // does the background pass (started by the first frame that showed every
     // visible row) read the other files.
     let order = provider.load_order();
@@ -250,7 +250,7 @@ fn tokens_swap_in_without_moving_anchor(cx: &mut TestAppContext) {
         v.set_options(o, cx)
     });
     redraw(cx);
-    // 21 code rows: line 30 and the 17.75 below it, and the 2.25 the 45 px
+    // 21 code rows: line 30 and the 17.7 below it, and the 2.3 the 46 pt
     // pinned header covers above it.
     let waiting = last_stats(&events);
     assert_eq!(waiting.unhighlighted_rows, 21, "{waiting:?}");
@@ -1158,7 +1158,7 @@ fn pipeline_never_loads_hidden_files_but_counts_them(cx: &mut TestAppContext) {
     let provider = MemProvider::new(twenty_line_files(10));
     let (view, cx) = open_with_hidden(cx, provider.clone(), &[1, 2]);
     // The window at the top ([0, 1200): 400 px and two screens below) holds
-    // files 0 (0..445), 3 (445..890) and 4 (890..1335): hidden files have no
+    // files 0 (0..446), 3 (446..892) and 4 (892..1338): hidden files have no
     // height, so they are not in its way.
     for f in [0, 3, 4] {
         assert!(state(&view, cx, f).is_materialized(), "file {f}");

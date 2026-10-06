@@ -36,19 +36,5 @@
   "crates/polygloss-app/src/tree/panels.rs": 12,
   "crates/polygloss-app/src/tree/row.rs": 16,
   "crates/polygloss-app/src/viewed/mod.rs": 2,
-  "crates/polygloss-app/src/window.rs": 1,
-  "crates/polygloss-viewport/src/card.rs": 8,
-  "crates/polygloss-viewport/src/cursor.rs": 3,
-  "crates/polygloss-viewport/src/document/metrics.rs": 5,
-  "crates/polygloss-viewport/src/document/window.rs": 1,
-  "crates/polygloss-viewport/src/element.rs": 2,
-  "crates/polygloss-viewport/src/gap.rs": 1,
-  "crates/polygloss-viewport/src/gutter.rs": 4,
-  "crates/polygloss-viewport/src/header.rs": 20,
-  "crates/polygloss-viewport/src/layout.rs": 7,
-  "crates/polygloss-viewport/src/paint_rows.rs": 4,
-  "crates/polygloss-viewport/src/section_band.rs": 10,
-  "crates/polygloss-viewport/src/selection.rs": 1,
-  "crates/polygloss-viewport/src/special.rs": 1,
-  "crates/polygloss-viewport/src/view.rs": 3
+  "crates/polygloss-app/src/window.rs": 1
 }

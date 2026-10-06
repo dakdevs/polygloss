@@ -38,6 +38,7 @@ use crate::layout::Pane;
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::{DebugContent, DebugRow};
 use crate::paint_rows::{Frame, Painter, pane_layer};
+use crate::space::stroke;
 use crate::view::DiffViewport;
 
 /// Height of a block before it is first measured, in code rows.
@@ -119,12 +120,12 @@ fn block_pane(anchor: BlockAnchor, layout: Layout) -> Pane {
 
 /// Left edge and width of a block in `pane` of rows `x..x + width` (a card's
 /// inner width). A left-column block stops before the divider (the left
-/// half's last pixel column), which keeps running between the columns.
+/// half's last point), which keeps running between the columns.
 fn block_column(pane: Pane, x: f32, width: f32) -> (f32, f32) {
     let half = (width / 2.0).floor();
     match pane {
         Pane::Full => (x, width),
-        Pane::Half(0) => (x, (half - 1.0).max(0.0)),
+        Pane::Half(0) => (x, (half - stroke::BORDER).max(0.0)),
         Pane::Half(_) => (x + half, (width - half).max(0.0)),
     }
 }
@@ -169,7 +170,8 @@ impl<'a> Painter<'a> {
             } else {
                 self.quad(1, x, y, half - x, h, theme.empty_cell);
             }
-            self.quad(1, half - 1.0, y, 1.0, h, theme.border);
+            let line = stroke::BORDER;
+            self.quad(1, half - line, y, line, h, theme.border);
         }
         self.block_slot(f, id, pane, y, h, h);
     }
@@ -206,7 +208,8 @@ impl<'a> Painter<'a> {
             self.block_slot(f, id, pane, y, own, h);
         }
         let half = x0 + (width / 2.0).floor();
-        self.quad(1, half - 1.0, y, 1.0, h, theme.border);
+        let line = stroke::BORDER;
+        self.quad(1, half - line, y, line, h, theme.border);
     }
 
     /// Queues the element slot of block `id` in `pane` of a row at `y`,

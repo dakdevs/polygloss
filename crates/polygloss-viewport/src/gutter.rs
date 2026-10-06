@@ -1,9 +1,10 @@
-//! The gutter: line numbers (one column per side in split, two in unified,
-//! one for a one-sided file; design §11.6 "Line numbers"), tinted on changed
-//! rows, change indicators (bars at the pane's left edge or `+`/`-` glyphs,
-//! design §11.6 "Styles") and the "+" shown on the hovered line numbers,
-//! over their column's right edge (design §11.6 "Commenting": pressing there
-//! asks for a comment, dragging selects a range, see [`crate::selection`]).
+//! The gutter (ADR-0031 C1, [`Columns`]): line numbers (one column per side
+//! in split, two in unified, one for a one-sided file; design §11.6 "Line
+//! numbers"), tinted on changed rows, change indicators (bars at the pane's
+//! left edge or `+`/`-` glyphs, design §11.6 "Styles") and the "+" shown on
+//! the hovered line numbers, over their column's right edge (design §11.6
+//! "Commenting": pressing there asks for a comment, dragging selects a
+//! range, see [`crate::selection`]).
 
 use std::rc::Rc;
 
@@ -14,18 +15,16 @@ use crate::layout::{Columns, Pane};
 use crate::materialize::MaterializedFile;
 use crate::paint_rows::{HEADERS, LineCell, Painter};
 use crate::selection::PlusHit;
+use crate::space::{card, height, radius, stroke};
 use crate::style::Indicators;
 use crate::text_cache::{NumberKind, ShapedText, Shaper, TextKey};
 
-/// Width of an indicator bar in pixels.
-pub(crate) const BAR_WIDTH: f32 = 3.0;
-
 impl Painter<'_> {
     /// Queues 1-based line number `n` of a row of `kind` (changed rows
-    /// tint it), right-aligned half a column before `right`.
+    /// tint it), right-aligned at `right`.
     pub(crate) fn number(&mut self, layer: usize, n: u32, kind: NumberKind, right: f32, y: f32) {
         let text = self.number_text(n, kind);
-        let x = right - 0.5 * self.geometry.advance - text.shaped.width();
+        let x = right - text.shaped.width();
         self.text(layer, x, y, text);
     }
 
@@ -47,8 +46,8 @@ impl Painter<'_> {
     }
 
     /// Queues the change marker of a row of `kind` in `pane`: a bar at the
-    /// pane's left edge, or a glyph in its indicator column; nothing for
-    /// context rows.
+    /// pane's left edge, or a glyph centered in its indicator cell (two
+    /// advances, after the gutter); nothing for context rows.
     pub(crate) fn indicator(
         &mut self,
         layer: usize,
@@ -69,7 +68,10 @@ impl Painter<'_> {
                 let x = cols.indicator_x(pane) + 0.5 * self.geometry.advance;
                 self.text(layer, x, y, text);
             }
-            Indicators::Bars => self.quad(layer, cols.pane(pane).0, y, BAR_WIDTH, h, color),
+            Indicators::Bars => {
+                let bar = self.cards.map_or(stroke::CHANGE_BAR, |c| c.bar);
+                self.quad(layer, cols.pane(pane).0, y, bar, h, color);
+            }
             Indicators::None => {}
         }
     }
@@ -90,10 +92,12 @@ impl Painter<'_> {
         self.frame.cells.push(cell);
     }
 
-    /// The "+" centered on the right edge of `cell`'s number column (its
-    /// side's) when the pointer is on its gutter and no header covers the
-    /// row. Drawn in the header layer, so it covers the numbers and code
-    /// under it.
+    /// The "+", a `height::MINI` square (fixed UI geometry), centered
+    /// `card::NUMBER_PAD_R` right of the right edge of `cell`'s number column
+    /// (its side's): in the space after its digits, so it covers neither
+    /// them nor the code (the gutter's end, for the last column). Shown when
+    /// the pointer is on the gutter and no header covers the row; drawn in
+    /// the header layer.
     fn plus_button(&mut self, cols: &Columns, pane: Pane, cell: &LineCell) {
         let Some((px, py)) = self.marks.pointer else {
             return;
@@ -121,11 +125,12 @@ impl Painter<'_> {
             return;
         }
         let row_h = self.geometry.row_height;
-        let size = (row_h - 4.0).max(8.0);
+        let size = height::MINI;
         let column = cols.number_column(cell.side).unwrap_or(0);
-        let center = cols.number_right(pane, column);
+        let center = cols.number_right(pane, column) + card::NUMBER_PAD_R;
         let (x, y) = (center - size / 2.0, cell.y + (row_h - size) / 2.0);
-        self.rounded(HEADERS, (x, y, size, size), self.theme.accent, None, 4.0);
+        let corner = radius::for_height(size);
+        self.rounded(HEADERS, (x, y, size, size), self.theme.accent, None, corner);
         let plus = self.label("+", SLOT_ON_ACCENT, self.theme.background);
         let glyph_x = x + (size - plus.shaped.width()) / 2.0;
         self.text(HEADERS, glyph_x, cell.y, plus);

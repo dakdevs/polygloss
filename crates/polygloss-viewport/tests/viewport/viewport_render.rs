@@ -52,7 +52,7 @@ fn viewport_renders_first_rows_of_synthetic_diff(cx: &mut TestAppContext) {
     assert_eq!(d.visible_rows, expected);
     assert_eq!(d.layout, Layout::Unified);
     assert_eq!(d.anchor, ScrollAnchor::default());
-    // Rows are stacked without gaps: header 45, gap row 32, code rows 20.
+    // Rows are stacked without gaps: header 46, gap row 32, code rows 20.
     assert_eq!(d.row_bounds[0], (0.0, HEADER_H));
     assert_eq!(d.row_bounds[1], (HEADER_H, 32.0));
     assert_eq!(d.row_bounds[2], (HEADER_H + 32.0, ROW_H));
@@ -79,13 +79,13 @@ fn viewport_unified_has_two_line_number_columns(cx: &mut TestAppContext) {
             unified(Some(3), Some(4), ' ', "c"),
         ]
     );
-    // What the gutter painted, and where: two number columns of 4 advances
-    // (3 digits + 1) with numbers right-aligned half an advance from their
-    // edge, then the bars' half-advance indicator column (no glyph), then
-    // the code.
-    let old_x = 4.0 * ADVANCE - 0.5 * ADVANCE - ADVANCE;
-    let new_x = 8.0 * ADVANCE - 0.5 * ADVANCE - ADVANCE;
-    let code_x = 8.5 * ADVANCE;
+    // What the gutter painted, and where (ADR-0031 C1): one 72 pt gutter
+    // (4 + 4 + two 3-digit cells 8 apart + 8, on the 4 pt grid) with each
+    // number right-aligned in its cell, the new one's ending 8 pt before
+    // the gutter's end; no glyph; the code 10 pt after it.
+    let new_x = 72.0 - 8.0 - ADVANCE;
+    let old_x = new_x - 8.0 - 3.0 * ADVANCE;
+    let code_x = 72.0 + 10.0;
     assert_texts(
         &texts_in_row(&d, 1),
         &[(old_x, "1"), (new_x, "1"), (code_x, "a")],
@@ -130,9 +130,9 @@ fn viewport_split_left_old_right_new(cx: &mut TestAppContext) {
         ]
     );
     // Old text is painted in the left half and new text in the right one
-    // (which starts at 500): per half a 4-advance number column, the bars'
-    // half-advance indicator column, then the code.
-    let (num_x, code_x) = (2.5 * ADVANCE, 4.5 * ADVANCE);
+    // (which starts at 500): per half a 40 pt gutter with the number ending
+    // 8 pt before its end, then the code 10 pt after it.
+    let (num_x, code_x) = (40.0 - 8.0 - ADVANCE, 40.0 + 10.0);
     assert_texts(
         &texts_in_row(&d, 5),
         &[
@@ -217,8 +217,8 @@ fn viewport_scroll_updates_anchor(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 400.);
     let (events, _sub) = record_events(&view, cx);
 
-    // Header 45 + 13 rows of 20 = 305.
-    wheel(cx, 305.);
+    // The header and 13 rows of 20.
+    wheel(cx, HEADER_H + 13.0 * ROW_H);
     let anchor = view.read_with(cx, |v, _| v.anchor());
     assert_eq!(
         anchor,
@@ -236,7 +236,7 @@ fn viewport_scroll_updates_anchor(cx: &mut TestAppContext) {
     assert_eq!(rows[0], "== a.rs");
     assert_eq!(rows[1], unified(None, Some(14), '+', "a 13"));
 
-    // Past the end: clamped to 1090 - 400 = 690, the top of b.rs's body.
+    // Past the end: clamped to 1092 - 400 = 692, the top of b.rs's body.
     wheel(cx, 400.);
     let anchor = view.read_with(cx, |v, _| v.anchor());
     assert_eq!(
@@ -260,8 +260,9 @@ fn viewport_scroll_updates_anchor(cx: &mut TestAppContext) {
         .collect();
     assert_eq!(visible_changes, vec![1]);
 
-    // Back up into a.rs's last row (580..600 of its body, 625..645 of the
-    // document): the anchor keeps the offset within the row.
+    // Back up into a.rs's last row (580..600 of its body, 626..646 of the
+    // document; the scroll is at 692 − 50 = 642): the anchor keeps the
+    // offset within the row.
     wheel(cx, -50.);
     let anchor = view.read_with(cx, |v, _| v.anchor());
     assert_eq!(anchor.file_idx, 0);
@@ -272,7 +273,7 @@ fn viewport_scroll_updates_anchor(cx: &mut TestAppContext) {
             line: 29
         }
     );
-    assert_eq!(anchor.offset_px, 15.0);
+    assert_eq!(anchor.offset_px, 16.0);
 }
 
 #[gpui_kit::test]
@@ -354,7 +355,7 @@ fn shaped_line_cache_hits_on_rescroll(cx: &mut TestAppContext) {
     wheel(cx, 400.);
     let down = debug(&view, cx);
     assert!(down.shaped_cache_misses > first.shaped_cache_misses);
-    // Under the pinned header (T2.5): 400 − 45 = 355 px into the body, in
+    // Under the pinned header (T2.5): 400 − 46 = 354 pt into the body, in
     // row 17.
     assert_eq!(down.visible_rows[1], unified(None, Some(18), '+', "row 17"));
 
@@ -749,10 +750,10 @@ fn large_file_placeholder_keeps_no_rows(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn frame_stats_shaped_lines_add_up_across_wrap_passes(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    // Ten 40-char words per line: at 117 columns (960 − 35.1 for the one
-    // number column − 7.8 kept free = 917 px) wrapping at word boundaries
-    // needs 5 rows where the estimate says 4, so the first wrapped frame is
-    // measured and built again.
+    // Ten 40-char words per line: at 115 columns (960 − 50 for the one
+    // number column's code − 7.8 kept free = 902 pt) wrapping at word
+    // boundaries needs 5 rows where the estimate says 4, so the first
+    // wrapped frame is measured and built again.
     let line = format!("{} ", "w".repeat(39)).repeat(10);
     let src: String = (0..20).map(|_| format!("{line}\n")).collect();
     let provider = MemProvider::new(vec![Spec::added("a.txt", &src)]);

@@ -56,9 +56,9 @@ fn sticky_header_pins_while_file_scrolls(cx: &mut TestAppContext) {
     assert_eq!(header(&d, 0).y, 0.0);
     assert!(!header(&d, 0).sticky);
 
-    // 305 px into a.rs (a row's top under the 45 px header): its header
-    // stays at the top, over the rows it hides.
-    wheel(cx, 305.);
+    // A header and 13 rows into a.rs (a row's top under the header): its
+    // header stays at the top, over the rows it hides.
+    wheel(cx, HEADER_H + 13.0 * ROW_H);
     let d = debug(&view, cx);
     assert_eq!(d.visible_rows[0], "== a.rs");
     assert_eq!(d.row_bounds[0], (0.0, HEADER_H));
@@ -78,9 +78,10 @@ fn sticky_header_pins_while_file_scrolls(cx: &mut TestAppContext) {
         "{:?}",
         d.painted_text
     );
-    // Its controls moved with it.
+    // Its controls moved with it: the chevron's 24 pt button centered on
+    // the pinned header.
     let (_, y, _, hh) = control(&d, ControlAction::Collapse(0));
-    assert_eq!((y, hh), (0.0, HEADER_H));
+    assert_eq!((y, hh), ((HEADER_H - 24.0) / 2.0, 24.0));
 
     // The header is painted over the rows: its background comes after the
     // row backgrounds it covers.
@@ -107,19 +108,20 @@ fn sticky_header_pushed_by_next_header(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let (view, cx) = open(cx, two_added(), options(LayoutMode::Unified), 1000., 400.);
 
-    // a.rs ends 35 px below the top: b.rs's header pushes a.rs's up by 10.
+    // a.rs (46 + 600 pt) ends 36 pt below the top: b.rs's header pushes
+    // a.rs's up by 10.
     wheel(cx, 610.);
     let d = debug(&view, cx);
     let (a, b) = (header(&d, 0), header(&d, 1));
     assert!(a.sticky && !b.sticky, "{:?}", d.headers);
-    assert_eq!((a.y, b.y), (-10.0, 35.0));
+    assert_eq!((a.y, b.y), (-10.0, 36.0));
     assert_eq!(d.visible_rows[0], "== a.rs");
     assert_eq!(d.row_bounds[0], (-10.0, HEADER_H));
     let bi = d.visible_rows.iter().position(|r| r == "== b.rs").unwrap();
-    assert_eq!(d.row_bounds[bi], (35.0, HEADER_H));
+    assert_eq!(d.row_bounds[bi], (36.0, HEADER_H));
 
     // At b.rs's top it is in place; one pixel further it pins.
-    wheel(cx, 35.);
+    wheel(cx, 36.);
     let d = debug(&view, cx);
     assert_eq!(d.headers.len(), 1, "{:?}", d.headers);
     assert_eq!((header(&d, 1).y, header(&d, 1).sticky), (0.0, false));
@@ -852,8 +854,8 @@ fn header_menu_keeps_highlight_anyway(cx: &mut TestAppContext) {
     init_kit(cx);
     // 100,001 lines a side, one changed in the middle: plain until
     // "Highlight anyway" (design §11.11, T2.6). A small file below it,
-    // whose rows are out of view (big.py's card is 45 + 32 + 7 × 20 + 32 =
-    // 249 px tall).
+    // whose rows are out of view (big.py's card is 46 + 32 + 7 × 20 + 32 =
+    // 250 pt tall).
     let old = "1\n".repeat(100_001);
     let new = format!("{}2\n{}", "1\n".repeat(50_000), "1\n".repeat(50_000));
     let provider = MemProvider::new(vec![
@@ -1389,25 +1391,23 @@ fn menu_follows_its_button_and_closes_when_the_button_is_gone(cx: &mut TestAppCo
     let popup_right = |cx: &mut VisualTestContext| {
         cx.update(|window, _| window.find("popup-menu").bounds().right().as_f32())
     };
-    // The menu's right edge lines up with its button's.
+    // The menu's right edge lines up with its button's, which ends 8 pt
+    // from the edge (`edge::CARD_TRAILING`).
     let button_right = |cx: &mut VisualTestContext| {
         let (x, _, w, _) = control(&debug(&view, cx), ControlAction::Menu(0));
         x + w
     };
     click_control(&view, cx, ControlAction::Menu(0));
-    assert!((popup_right(cx) - 800.).abs() <= 1.0, "{}", popup_right(cx));
+    assert!((button_right(cx) - 792.).abs() <= 1.0);
+    assert!((popup_right(cx) - 792.).abs() <= 1.0, "{}", popup_right(cx));
     // A wider window moves the button right; the menu goes with it.
     cx.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(800.)));
     settle(cx);
     assert!(debug(&view, cx).menu.is_some());
-    assert!((button_right(cx) - 1000.).abs() <= 1.0);
-    assert!(
-        (popup_right(cx) - 1000.).abs() <= 1.0,
-        "{}",
-        popup_right(cx)
-    );
+    assert!((button_right(cx) - 992.).abs() <= 1.0);
+    assert!((popup_right(cx) - 992.).abs() <= 1.0, "{}", popup_right(cx));
 
-    // b.rs's header (at 640) leaves the window: its menu closes.
+    // b.rs's header (at 646) leaves the window: its menu closes.
     click_control(&view, cx, ControlAction::Menu(1));
     assert_eq!(debug(&view, cx).menu.map(|m| m.file_idx), Some(1));
     cx.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(400.)));
@@ -1589,7 +1589,7 @@ fn header_keeps_its_controls_apart_at_tiny_widths(cx: &mut TestAppContext) {
     use gpui_kit::{px, size};
     let _sb = sandbox();
     let provider = MemProvider::new(vec![Spec::modified("src/component_name.rs", "a\n", "b\n")]);
-    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 150., 300.);
+    let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 180., 300.);
     // Whether the header shows the Viewed checkbox; asserts that the
     // chevron, the checkbox and the menu button do not overlap.
     let apart = |d: &polygloss_viewport::ViewportDebug| {
@@ -1612,8 +1612,9 @@ fn header_keeps_its_controls_apart_at_tiny_widths(cx: &mut TestAppContext) {
         }
         viewed.is_some()
     };
-    // 150 px: the "Viewed" label gives way to the title; the box and open
-    // in editor stay (58.6..82.6, the box at 88.6), the title keeps "…rs".
+    // 180 pt: the "Viewed" label gives way to the title; the box and open
+    // in editor stay (the ⋯ button at 148, the box at 108, the editor at
+    // 76..100), and the title, at the path column (40), keeps "…rs".
     let d = debug(&view, cx);
     assert!(apart(&d));
     assert!(!d.painted_text.iter().any(|(_, _, t)| t == "Viewed"));
@@ -1621,9 +1622,9 @@ fn header_keeps_its_controls_apart_at_tiny_widths(cx: &mut TestAppContext) {
     assert_eq!(h.title, "…rs");
     let (ex, _, ew, _) = control(&d, ControlAction::OpenInEditor(0));
     let (vx, _, _, _) = control(&d, ControlAction::Viewed(0));
-    assert!(ex >= 3.0 * ADVANCE && ex + ew <= vx, "{:?}", d.controls);
-    // 110 px: still apart; open in editor no longer fits.
-    cx.simulate_resize(size(px(110.), px(300.)));
+    assert!(ex >= 40.0 && ex + ew <= vx, "{:?}", d.controls);
+    // 130 pt: still apart; open in editor no longer fits.
+    cx.simulate_resize(size(px(130.), px(300.)));
     settle(cx);
     let d = debug(&view, cx);
     assert!(apart(&d));
@@ -1632,8 +1633,8 @@ fn header_keeps_its_controls_apart_at_tiny_widths(cx: &mut TestAppContext) {
             .iter()
             .any(|c| c.action == ControlAction::OpenInEditor(0))
     );
-    // 60 px: no room for the checkbox; the chevron and the menu remain.
-    cx.simulate_resize(size(px(60.), px(300.)));
+    // 100 pt: no room for the checkbox; the chevron and the menu remain.
+    cx.simulate_resize(size(px(100.), px(300.)));
     settle(cx);
     assert!(!apart(&debug(&view, cx)));
 }
@@ -1746,27 +1747,27 @@ fn sticky_header_pins_square_and_flush(cx: &mut TestAppContext) {
     let opts = card_options(LayoutMode::Unified);
     let theme = opts.theme.clone();
     let (view, cx) = open(cx, two_added(), opts, 1000., 400.);
-    // 300 px into a.rs's body: its header pins at the top edge, square,
-    // across the card (16..984), with side and bottom borders only.
+    // 300 pt into a.rs's body: its header pins at the top edge, square,
+    // across the card (12..988), with side and bottom borders only.
     wheel(cx, 300.);
     let d = debug(&view, cx);
     assert_eq!((header(&d, 0).y, header(&d, 0).sticky), (0.0, true));
     let pinned = header_strip(cx, &theme, 0.0);
-    assert_eq!(pinned.bounds, (16.0, 0.0, 968.0, HEADER_H));
+    assert_eq!(pinned.bounds, (12.0, 0.0, 976.0, HEADER_H));
     assert_eq!(pinned.radii, [0.0; 4]);
     assert_eq!(pinned.borders, [0.0, 1.0, 1.0, 1.0]);
-    // b.rs's card starts below a.rs's (653 = 45 + 600 + 8) and 12 px of
+    // b.rs's card starts below a.rs's (654 = 46 + 600 + 8) and 12 pt of
     // canvas: its header is in place, with the card's top corners.
-    assert_eq!((header(&d, 1).y, header(&d, 1).sticky), (365.0, false));
-    assert_eq!(header_strip(cx, &theme, 365.0).radii, [8.0, 8.0, 0.0, 0.0]);
+    assert_eq!((header(&d, 1).y, header(&d, 1).sticky), (366.0, false));
+    assert_eq!(header_strip(cx, &theme, 366.0).radii, [8.0, 8.0, 0.0, 0.0]);
 
-    // The end of a.rs's body (645) pushes it up: at 610 it is 10 px up,
-    // still square, while b.rs's card is 55 px below the top.
+    // The end of a.rs's body (646) pushes it up: at 610 it is 10 pt up,
+    // still square, while b.rs's card is 56 pt below the top.
     wheel(cx, 310.);
     let d = debug(&view, cx);
     assert_eq!((header(&d, 0).y, header(&d, 0).sticky), (-10.0, true));
     assert_eq!(header_strip(cx, &theme, -10.0).radii, [0.0; 4]);
-    assert_eq!(header(&d, 1).y, 55.0);
+    assert_eq!(header(&d, 1).y, 56.0);
 }
 
 #[gpui_kit::test]
@@ -1776,14 +1777,14 @@ fn header_in_place_has_rounded_top_corners(cx: &mut TestAppContext) {
     let theme = opts.theme.clone();
     let (view, cx) = open(cx, two_added(), opts, 1000., 800.);
     let top = header_strip(cx, &theme, 0.0);
-    assert_eq!(top.bounds, (16.0, 0.0, 968.0, HEADER_H));
+    assert_eq!(top.bounds, (12.0, 0.0, 976.0, HEADER_H));
     assert_eq!(top.radii, [8.0, 8.0, 0.0, 0.0]);
     assert_eq!(top.borders, [1.0; 4]);
     // A collapsed card is its header alone: all four corners.
     view.update(cx, |v, cx| v.set_collapsed(1, true, cx));
     settle(cx);
-    // b.rs's card starts at 45 + 600 + 8 + 12 = 665.
-    assert_eq!(header_strip(cx, &theme, 665.0).radii, [8.0; 4]);
+    // b.rs's card starts at 46 + 600 + 8 + 12 = 666.
+    assert_eq!(header_strip(cx, &theme, 666.0).radii, [8.0; 4]);
 }
 
 #[gpui_kit::test]
@@ -1802,7 +1803,7 @@ fn gap_rows_paint_inside_the_card_border(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, provider, opts, 1000., 600.);
     let d = debug(&view, cx);
     assert_eq!(d.visible_rows[1], "⋯ 1 unchanged line");
-    // The canvas, then each gap row across the card's inner width (17..983):
+    // The canvas, then each gap row across the card's inner width (13..987):
     // one above the hunk, one below its 8 rows. (Pierre Light's header strip
     // has the canvas color too, with a border.)
     let canvas: Vec<ShapedQuad> = shaped_quads(cx)
@@ -1811,25 +1812,25 @@ fn gap_rows_paint_inside_the_card_border(cx: &mut TestAppContext) {
         .collect();
     // Clipped there too, as every row is (the canvas to the viewport).
     let clips: Vec<_> = canvas.iter().map(|q| q.clip).collect();
-    let inner = (17.0, 0.0, 966.0, 600.0);
+    let inner = (13.0, 0.0, 974.0, 600.0);
     assert_eq!(clips, [(0.0, 0.0, 1000.0, 600.0), inner, inner]);
     let canvas: Vec<_> = canvas.into_iter().map(|q| q.bounds).collect();
     assert_eq!(
         canvas,
         [
             (0.0, 0.0, 1000.0, 600.0),
-            (17.0, HEADER_H, 966.0, 32.0),
-            (17.0, HEADER_H + 32.0 + 8.0 * ROW_H, 966.0, 32.0)
+            (13.0, HEADER_H, 974.0, 32.0),
+            (13.0, HEADER_H + 32.0 + 8.0 * ROW_H, 974.0, 32.0)
         ]
     );
-    // Its label at the indicator column: 17 + two 4-column number columns,
-    // centered in the 32 px row (45 + 6).
+    // Its label at the code column: 13 + the two columns' 72 pt gutter +
+    // 10, centered in the 32 pt row (46 + 6).
     assert!(
         d.painted_text
             .iter()
             .any(|(x, y, t)| t == "⋯ 1 unchanged line"
-                && (*x - (17.0 + 8.0 * ADVANCE)).abs() < 0.01
-                && *y == 51.0),
+                && (*x - (13.0 + 72.0 + 10.0)).abs() < 0.01
+                && *y == HEADER_H + 6.0),
         "{:?}",
         d.painted_text
     );
@@ -1854,7 +1855,7 @@ fn gap_rows_use_the_canvas_color(cx: &mut TestAppContext) {
     assert_ne!(theme.canvas, theme.card_background);
     let (view, cx) = open(cx, provider, opts, 1000., 600.);
     assert_eq!(debug(&view, cx).visible_rows[1], "⋯ 1 unchanged line");
-    // The gap rows inside the card (17..983) are canvas, not card.
+    // The gap rows inside the card (13..987) are canvas, not card.
     let gaps: Vec<(f32, f32, f32, f32)> = quads_of(cx, theme.canvas)
         .into_iter()
         .filter(|q| q.0 > 0.0)
@@ -1862,8 +1863,81 @@ fn gap_rows_use_the_canvas_color(cx: &mut TestAppContext) {
     assert_eq!(
         gaps,
         [
-            (17.0, HEADER_H, 966.0, 32.0),
-            (17.0, HEADER_H + 32.0 + 8.0 * ROW_H, 966.0, 32.0)
+            (13.0, HEADER_H, 974.0, 32.0),
+            (13.0, HEADER_H + 32.0 + 8.0 * ROW_H, 974.0, 32.0)
         ]
     );
+}
+
+// ---------------------------------------------------------------------------
+// the spacing system and press ink (T7.4, ADR-0031, ADR-0030)
+
+/// Bands hold UI text: 36 pt at any code size. Gap rows hold code-sized
+/// text: a code row plus 12 pt (20 + 12 at 13 pt, 24 + 12 at 16 pt).
+#[gpui_kit::test]
+fn bands_and_gap_rows_keep_ui_geometry(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    for (size, row) in [(13.0, 20.0), (16.0, 24.0)] {
+        let mut opts = card_options(LayoutMode::Unified);
+        opts.code_font_size = size;
+        let (view, vcx) = open(cx, one_hundred_lines(), opts, 1000., 1200.);
+        let tail = polygloss_viewport::Section {
+            id: 1,
+            label: "tail".into(),
+            icon: None,
+            files: vec![1],
+            open: true,
+        };
+        view.update(vcx, |v, cx| v.set_sections(vec![tail], cx));
+        settle(vcx);
+        let d = debug(&view, vcx);
+        let height_of = |prefix: &str| {
+            let i = d
+                .visible_rows
+                .iter()
+                .position(|r| r.starts_with(prefix))
+                .unwrap_or_else(|| panic!("no {prefix:?} row in {:?}", d.visible_rows));
+            d.row_bounds[i].1
+        };
+        assert_eq!(height_of("▾ tail"), 36.0, "{size} pt: the band");
+        assert_eq!(height_of("⋯ "), row + 12.0, "{size} pt: a gap row");
+    }
+}
+
+/// ADR-0030's press ink on a control the viewport paints: from the mouse
+/// down, the header text at α 0.12 over the control; gone while the pointer
+/// is off it; after the mouse up over it, the hover ink at α 0.06.
+#[gpui_kit::test]
+fn pressed_control_paints_pressed_ink(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton, point, px};
+    let _sb = sandbox();
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    let (pressed, hover) = (
+        theme.header_foreground.opacity(0.12),
+        theme.header_foreground.opacity(0.06),
+    );
+    let (view, cx) = open(cx, two_added(), opts, 1000., 800.);
+    let viewed = control(&debug(&view, cx), ControlAction::Viewed(0));
+    let center = point(px(viewed.0 + viewed.2 / 2.0), px(viewed.1 + viewed.3 / 2.0));
+    let lit = |cx: &mut VisualTestContext, color| quads_of(cx, color);
+
+    cx.simulate_mouse_move(center, None, Modifiers::default());
+    cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+    redraw(cx);
+    let ink = lit(cx, pressed);
+    assert!(ink.len() == 1 && near_painted(ink[0], viewed), "{ink:?}");
+    assert!(lit(cx, hover).is_empty());
+
+    let away = point(px(500.), px(400.));
+    cx.simulate_mouse_move(away, MouseButton::Left, Modifiers::default());
+    redraw(cx);
+    assert!(lit(cx, pressed).is_empty() && lit(cx, hover).is_empty());
+
+    cx.simulate_mouse_move(center, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+    settle(cx);
+    assert!(lit(cx, pressed).is_empty());
+    let ink = lit(cx, hover);
+    assert!(ink.len() == 1 && near_painted(ink[0], viewed), "{ink:?}");
 }

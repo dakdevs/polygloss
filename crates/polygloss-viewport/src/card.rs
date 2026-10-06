@@ -15,6 +15,7 @@ use gpui_kit::{Bounds, Context, Corners, Edges, Pixels, Point, point, px, size};
 use crate::blocks::RenderBlock;
 use crate::document::SlotRange;
 use crate::paint_rows::{FULL, HEADERS, Painter, RoundedQuad};
+use crate::space::{edge, gap, radius, stroke};
 use crate::view::DiffViewport;
 
 /// How file cards sit on the canvas ([`crate::ViewportOptions::cards`];
@@ -32,43 +33,50 @@ pub struct CardStyle {
     pub pad_bottom: f32,
     /// The card's border width.
     pub border: f32,
+    /// The change bar at each pane's left edge (bars mode), inside the
+    /// number gutter, which reserves `stroke::CHANGE_BAR` for it.
+    pub bar: f32,
 }
 
 impl Default for CardStyle {
-    /// Design §11.6: 16 pt from the sides, 12 pt apart, radius 8, 8 pt of
-    /// padding, a 1 px border.
+    /// ADR-0031: on the main column's 12 pt edge (`edge::CANVAS`), 12 pt
+    /// apart (`gap::CARDS`), rounded at `radius::MD`, `edge::CARD_Y` below
+    /// the last row, a 1 pt border and the 4 pt change bar.
     fn default() -> CardStyle {
         CardStyle {
-            margin_x: 16.0,
-            gap: 12.0,
-            radius: 8.0,
-            pad_bottom: 8.0,
-            border: 1.0,
+            margin_x: edge::CANVAS,
+            gap: gap::CARDS,
+            radius: radius::MD,
+            pad_bottom: edge::CARD_Y,
+            border: stroke::BORDER,
+            bar: stroke::CHANGE_BAR,
         }
     }
 }
 
-/// How far rows sit from the viewport's left and right edges: the margin
-/// and the border, 0 in the flat layout.
-pub(crate) fn inset(cards: Option<CardStyle>) -> f32 {
-    cards.map_or(0.0, |c| c.margin_x + c.border)
+/// Left edge and width of the rows in a viewport `width` px wide: inside a
+/// card's margin and border on each side (the whole width in the flat
+/// layout).
+pub(crate) fn inner_span(width: f32, cards: Option<CardStyle>) -> (f32, f32) {
+    let inset = cards.map_or(0.0, |c| c.margin_x + c.border);
+    (inset, (width - inset - inset).max(0.0))
 }
 
-/// Where rows go in a viewport at `bounds`: inset on the left and right by
-/// [`inset`].
+/// Where rows go in a viewport at `bounds` ([`inner_span`]).
 pub(crate) fn inner_bounds(bounds: Bounds<Pixels>, cards: Option<CardStyle>) -> Bounds<Pixels> {
-    let inset = px(inset(cards));
+    let (x, width) = inner_span(bounds.size.width.as_f32(), cards);
     let mut inner = bounds;
-    inner.origin.x += inset;
-    inner.size.width = (inner.size.width - inset * 2.0).max(px(0.));
+    inner.origin.x += px(x);
+    inner.size.width = px(width);
     inner
 }
 
 /// Left edge and width of a card (borders included) in a viewport `width`
-/// px wide: the whole width in the flat layout.
+/// px wide: inside the margin on each side, the whole width in the flat
+/// layout.
 fn card_span(width: f32, cards: Option<CardStyle>) -> (f32, f32) {
     let margin = cards.map_or(0.0, |c| c.margin_x);
-    (margin, (width - 2.0 * margin).max(0.0))
+    (margin, (width - margin - margin).max(0.0))
 }
 
 /// The host's prelude while set.
@@ -157,8 +165,10 @@ impl Painter<'_> {
 
     /// What is behind the rows: the viewport's background in the flat
     /// layout; with cards, the canvas and one rounded quad per visible card
-    /// (their own layer), each cut to the viewport plus its corners and a
-    /// little, so a long card never makes a huge quad.
+    /// (their own layer), each cut to the viewport plus its corners and its
+    /// border, so a long card never makes a huge quad and its cut edges stay
+    /// out of view. Each card's whole outer bounds go into the frame
+    /// ([`crate::DiffViewport::card_bounds`]).
     pub(crate) fn paint_canvas(&mut self, visible: SlotRange) {
         let b = self.bounds;
         let (width, height) = (b.size.width.as_f32(), b.size.height.as_f32());
@@ -170,16 +180,18 @@ impl Painter<'_> {
         layer.clip = Some(b);
         layer.quads.push((b, self.theme.canvas));
         let (x, w) = self.card_x_w();
-        let reach = style.radius + 2.0;
+        let reach = style.radius + style.border;
         let doc = self.doc;
         for f in doc.shown_files(visible) {
             let top = (doc.header_top(f) - self.scroll_top) as f32;
             let bottom = (doc.card_bottom(f) - self.scroll_top) as f32;
-            let (top, bottom) = (top.max(-reach), bottom.min(height + reach));
-            if bottom <= top {
+            let (cut_top, cut_bottom) = (top.max(-reach), bottom.min(height + reach));
+            if cut_bottom <= cut_top {
                 continue;
             }
-            let bounds = self.bounds_at(x, top, w, bottom - top);
+            let whole = self.bounds_at(x, top, w, bottom - top);
+            self.frame.card_bounds.push((f, whole));
+            let bounds = self.bounds_at(x, cut_top, w, cut_bottom - cut_top);
             self.frame.cards.rounded.push(RoundedQuad {
                 bounds,
                 background: self.theme.card_background,
@@ -199,9 +211,10 @@ impl Painter<'_> {
         let theme = self.theme;
         let Some(style) = self.cards else {
             let width = self.bounds.size.width.as_f32();
+            let line = stroke::BORDER;
             self.quad(HEADERS, 0.0, y, width, h, theme.header_background);
-            self.quad(HEADERS, 0.0, y, width, 1.0, theme.border);
-            self.quad(HEADERS, 0.0, y + h - 1.0, width, 1.0, theme.border);
+            self.quad(HEADERS, 0.0, y, width, line, theme.border);
+            self.quad(HEADERS, 0.0, y + h - line, width, line, theme.border);
             let area = self.bounds_at(0.0, y, width, h);
             self.frame.header_areas.push(area);
             return;

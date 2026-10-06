@@ -6,10 +6,11 @@
 //! element turns them into hitboxes: body controls first, then every header's
 //! whole strip (blocking the mouse but not the scroll wheel, so a pinned
 //! header takes the clicks meant for rows under it), then the header
-//! controls, all clipped to the viewport. Paint highlights the control under
-//! the pointer, sets the pointer cursor, and a press followed by a release on
-//! the same control activates it (pressing ⋯ while its menu is open closes
-//! the menu).
+//! controls, all clipped to the viewport. Paint inks the control under the
+//! pointer (ADR-0030's hover ink; its pressed ink from the mouse down until
+//! the mouse up while the pointer stays on it), sets the pointer cursor, and
+//! a press followed by a release on the same control activates it (pressing
+//! ⋯ while its menu is open closes the menu).
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -69,6 +70,8 @@ pub(crate) struct Control {
     /// Window coordinates.
     pub bounds: Bounds<Pixels>,
     pub layer: ControlLayer,
+    /// The corner radius of its ink.
+    pub radius: f32,
     /// A gap expander's hidden run (old lines): a click acts on the run it
     /// was painted on, also when reveals split its gap into several runs.
     pub run: Option<Range<u32>>,
@@ -120,10 +123,26 @@ pub(crate) fn hovered(targets: &[Target], window: &Window) -> Option<usize> {
     targets.iter().position(|t| t.hitbox.is_hovered(window))
 }
 
-/// Bounds and layer of target `i`.
-pub(crate) fn target_bounds(targets: &[Target], i: usize) -> (Bounds<Pixels>, ControlLayer) {
-    let c = &targets[i].control;
-    (c.bounds, c.layer)
+/// The ink over the control under the pointer in `layer`, as `(bounds,
+/// pressed, radius)`: pressed while the press that went down on it holds.
+/// While a press holds, no other control is inked.
+pub(crate) fn ink(
+    targets: &[Target],
+    hovered: Option<usize>,
+    pressed: Option<&Pressed>,
+    layer: ControlLayer,
+) -> Option<(Bounds<Pixels>, bool, f32)> {
+    let c = &targets[hovered?].control;
+    if c.layer != layer {
+        return None;
+    }
+    let on_pressed = match pressed {
+        None => false,
+        Some(p) if c.same_as(p) => true,
+        // Another control holds the press.
+        Some(_) => return None,
+    };
+    Some((c.bounds, on_pressed, c.radius))
 }
 
 /// Sets the pointer cursor over every control and wires press, release and
@@ -160,6 +179,8 @@ pub(crate) fn wire(
                         run: control.run.clone(),
                     });
                 }
+                // The pressed ink shows at once.
+                cx.notify();
             });
             cx.stop_propagation();
         }
@@ -169,7 +190,14 @@ pub(crate) fn wire(
         if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
             return;
         }
-        let pressed = release_view.update(cx, |v, _| v.pressed.take());
+        let pressed = release_view.update(cx, |v, cx| {
+            let pressed = v.pressed.take();
+            if pressed.is_some() {
+                // The pressed ink goes at once.
+                cx.notify();
+            }
+            pressed
+        });
         let Some(t) = release_targets.iter().find(|t| t.hitbox.is_hovered(window)) else {
             return;
         };

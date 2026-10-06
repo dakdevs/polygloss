@@ -19,10 +19,12 @@ use polygloss_diff::Side;
 use polygloss_diff::hunks::FileDiff;
 use polygloss_diff::rows::{ExpandBy, Expansions, GapId, Layout, Row, build_rows};
 
-use crate::controls::ControlAction;
+use crate::controls::{ControlAction, ControlLayer};
 use crate::document::{BodyRow, FileState};
+use crate::header::SLOT_ACCENT;
 use crate::materialize::MaterializedFile;
 use crate::paint_rows::{FULL, Painter};
+use crate::space::gap;
 use crate::view::DiffViewport;
 
 /// Lines one "↑"/"↓" click reveals (design §11.6: 20).
@@ -328,9 +330,11 @@ impl DiffViewport {
 }
 
 impl Painter<'_> {
-    /// A gap row: `⋯ N unchanged lines` and its expanders. A run longer than
-    /// [`EXPAND_STEP`] offers "↑ 20" (when a hunk follows it) and "↓ 20" (when
-    /// one precedes it); every run offers "Expand all".
+    /// A gap row: `⋯ N unchanged lines` at the code column and its
+    /// expanders after it, links whose texts stand `gap::GROUP` apart
+    /// ([`Painter::link`]). A run longer than [`EXPAND_STEP`] offers "↑ 20"
+    /// (when a hunk follows it) and "↓ 20" (when one precedes it); every run
+    /// offers "Expand all".
     pub(crate) fn gap_row(&mut self, f: u32, row: BodyRow, y: f32, h: f32) {
         let BodyRow::Gap {
             id, old_start, len, ..
@@ -347,15 +351,16 @@ impl Painter<'_> {
             return;
         };
         let run = old_start..old_start + len;
-        let a = self.geometry.advance;
-        let mut x = right + 2.0 * a;
+        let mut x = right + gap::GROUP / 2.0;
         let mut expander = |painter: &mut Self, by: ExpandBy, text: &str| {
             let action = ControlAction::Expand {
                 file_idx: f,
                 gap: id,
                 by,
             };
-            x = painter.link(action, text, x, y, h) + 0.5 * a;
+            let accent = painter.theme.accent;
+            let text = painter.label(text, SLOT_ACCENT, accent);
+            x = painter.link(action, ControlLayer::Body, text, x, y, h);
             if let Some(control) = painter.frame.controls.last_mut() {
                 control.run = Some(run.clone());
             }

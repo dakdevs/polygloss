@@ -113,6 +113,18 @@ pub mod tokens {
     pub const FIRST_STEP: Duration = Duration::from_micros(16_667);
 }
 
+/// Hover and press feedback (ADR-0030, Feedback without motion): the
+/// foreground over a control at these alphas, instant in every policy and
+/// color only. The viewport paints them over its controls; the app's
+/// `motion::ink::PressInk` puts them on custom `div` controls.
+pub mod ink {
+    /// Under the pointer.
+    pub const HOVER: f32 = 0.06;
+    /// From the mouse down to the mouse up, while the pointer is on the
+    /// control.
+    pub const PRESSED: f32 = 0.12;
+}
+
 /// What a reduced variant does in one direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReducedPlay {
