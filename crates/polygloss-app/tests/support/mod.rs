@@ -16,6 +16,7 @@
 
 pub mod harness;
 pub mod ink;
+pub mod motion;
 pub mod screenshot;
 
 use std::os::unix::fs::PermissionsExt;

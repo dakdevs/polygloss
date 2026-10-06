@@ -1490,24 +1490,15 @@ fn banner_strip_never_changes_viewport_anchor(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn banner_notice_enters_on_the_test_clock_once_per_appearance(cx: &mut TestAppContext) {
-    use std::collections::HashMap;
     use std::time::Duration;
 
     use gpui_kit::ElementId;
-    use polygloss_app::motion::{self, Entrance};
+    use polygloss_app::motion::{self, MotionPolicy, Recorded};
     use polygloss_app::review_tab::panes::ToggleThreadsPanel;
 
     let _sb = Sandbox::isolate();
-    let drawn: Rc<RefCell<HashMap<ElementId, Entrance>>> = Rc::default();
-    let sink = drawn.clone();
-    cx.update(|cx| {
-        motion::record_entrances(
-            move |id, e| {
-                sink.borrow_mut().insert(id.clone(), e);
-            },
-            cx,
-        )
-    });
+    let drawn: Rc<RefCell<Vec<Recorded>>> = Rc::default();
+    cx.update(|cx| motion::record(drawn.clone(), cx));
     let repo = code_change_repo();
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
@@ -1538,7 +1529,12 @@ fn banner_notice_enters_on_the_test_clock_once_per_appearance(cx: &mut TestAppCo
     let sample = |shell: &mut Shell| {
         let strip = bounds(shell.cx, "banner-strip");
         let notice = bounds(shell.cx, "banner-notice-0");
-        let opacity = drawn.borrow().get(&id).map(|e| e.opacity);
+        let opacity = drawn
+            .borrow()
+            .iter()
+            .rev()
+            .find(|r| r.id == id)
+            .map(|r| r.opacity);
         ((notice.top() - strip.top()).as_f32(), opacity)
     };
     let advance = |shell: &mut Shell, ms: u64| {
@@ -1587,12 +1583,21 @@ fn banner_notice_enters_on_the_test_clock_once_per_appearance(cx: &mut TestAppCo
         (start_top, Some(0.0)),
         "a new appearance"
     );
+    // ADR-0030's stepping protocol: a first step of one 60 Hz frame (a
+    // longer one is clamped to it), then the rest.
+    shell
+        .cx
+        .executor()
+        .advance_clock(motion::tokens::FIRST_STEP);
+    frame(&mut shell);
     advance(&mut shell, 200);
     frame(&mut shell);
     assert_eq!(sample(&mut shell).0, end_top);
 
-    // Under Reduce Motion it is in place on its first frame.
-    shell.cx.update(|_, cx| cx.set_reduce_motion(true));
+    // Under the harnesses' override it is in place on its first frame.
+    shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(MotionPolicy::Off), cx));
     clear(&mut shell);
     frame(&mut shell);
     set(&mut shell, "1 file changed");

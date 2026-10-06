@@ -9,6 +9,7 @@ mod file_header;
 mod find;
 mod headers_gaps;
 mod kit;
+mod motion;
 mod pipeline;
 mod provider_swap;
 mod rows;

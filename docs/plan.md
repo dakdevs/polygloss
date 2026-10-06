@@ -3310,6 +3310,7 @@ impl Track {
     pub fn settle(&mut self);
     pub fn is_settled(&self) -> bool;
     pub fn is_frozen(&self) -> bool;
+    pub fn follow_policy(&mut self, policy: MotionPolicy, now: Instant); // a policy switch mid-motion (Motion policy; As built)
 }
 pub fn quantize(v: f32, scale_factor: f32) -> f32;      // round(v · scale) / scale
 pub enum Settle { All, Frozen } // All: a key down, a scroll, a resize. Frozen: after a mouse up, only if the owner's track is still frozen, so a motion
@@ -3319,10 +3320,11 @@ pub fn set_override(policy: Option<MotionPolicy>, cx: &mut App); // harnesses on
                                                                   // under every override; None restores the saved flag
 pub fn follow_system_reduce_motion(window: &mut Window, cx: &mut App); // kept: runs ReduceMotionSource (gpui-base's apply_system_reduce_motion), redraws on a change
 pub fn initiator(window: &Window) -> Initiator;                 // inside a user-input handler only
-pub fn sample(track: &mut Track, window: &mut Window) -> Sample; // the executor's now; requests a frame while running, never while frozen or settled
+pub fn sample(track: &mut Track, window: &mut Window, cx: &App) -> Sample; // the executor's now (cx: Window has no clock); follows a policy switch
+                                                                        // (Track::follow_policy); requests a frame while running, never while frozen or settled
 // motion/settle.rs (ADR-0030 rule 4), per main window; the registry is rebuilt every frame
 pub fn register(action: Option<Box<dyn Action>>, freeze: impl Fn(Instant, &mut App) + 'static, settle: impl Fn(Settle, &mut App) + 'static,
-                window: &mut Window); // from render, while unsettled; `action` is the motion's toggle (its own shortcut retargets). Each closure notifies its owner
+                window: &mut Window, cx: &mut App); // from render, while unsettled; `action` is the motion's toggle (its own shortcut retargets). Each closure notifies its owner
 pub fn root() -> AnyElement;  // MainWindow's first child, painted first every frame (mouse listeners last one frame): capture-phase mouse down (freeze every
                               // registration, a moving trigger's included, and keep that set: it outlives the per-frame rebuild, so an owner that does not
                               // re-render, a cached view, is still reached), mouse up (Settle::Frozen to that set, queued behind the click's own
@@ -3331,15 +3333,16 @@ pub fn root() -> AnyElement;  // MainWindow's first child, painted first every f
 pub fn init(cx: &mut App);    // cx.intercept_keystrokes, which runs before bindings: a key down settles every registration in its window, except a lone modifier
                               // (`shift`, `control`, `alt`, `platform`, `function` with no key_char) and a keystroke bound to a registration's action
                               // (window.bindings_for_action), whose handler retargets
-// MainWindow::new: cx.observe_window_bounds, Settle::All when the content size or scale factor changed (resize, fullscreen); gpui also calls it on a move
-// (window.rs:1864), which settles nothing
+pub fn bounds_observer<T: 'static>(window: &Window) -> impl FnMut(&mut T, &mut Window, &mut Context<T>) + 'static;
+// MainWindow::new: cx.observe_window_bounds(window, bounds_observer(window)), Settle::All when the content size or scale factor changed (resize, fullscreen);
+// gpui also calls it on a move (window.rs:1864), which settles nothing
 // motion/wrap.rs
 pub fn slide(offset: Point<Pixels>, child: impl IntoElement) -> AnyElement; // a pass-through element: no element id and no layout node (its request_layout
                                                                             // returns the child's, as gpui's AnimationElement does); the offset applied with with_element_offset around
                                                                             // the child's prepaint (hitboxes follow). Opacity is the child's own root Styled::opacity, not a wrapper div's
                                                                             // (Window::with_element_opacity is crate-private; a div would add a layout node). The viewport multiplies
                                                                             // its colors' alpha instead.
-pub fn clip(mask: Bounds<Pixels>, child: impl IntoElement) -> AnyElement;   // pass-through as `slide`, under a content mask
+pub fn clip(mask: Bounds<Pixels>, child: impl IntoElement) -> AnyElement;   // pass-through as `slide`, under a content mask (`mask` relative to the child's laid-out origin)
 // motion/exit.rs: GPUI frees elements every frame, so an exit keeps data, never an element
 pub enum Placement { Overlay(Bounds<Pixels>), InFlow { height: Pixels, gap: Pixels } } // Overlay: absolutely placed, no layout. InFlow: the copy's known rest height
                                                                                       // (never measured) and the list gap above it (0 if none)
@@ -3350,7 +3353,8 @@ pub struct Exit<S: 'static> { /* snapshot: S, render, placement, hitbox, opacity
 impl<S: 'static> Exit<S> {
     pub fn start(snapshot: S, render: fn(&S, &mut Window, &mut App) -> AnyElement, spec: ExitSpec, initiator: Initiator,
                  window: &mut Window, cx: &mut App) -> Option<Self>;                    // None when it snaps
-    pub fn frame(&mut self, window: &mut Window) -> Option<ExitFrame>;                 // None once every channel has settled: the longest decides
+    pub fn frame(&mut self, window: &mut Window, cx: &App) -> Option<ExitFrame>;      // None once every channel has settled: the longest decides
+    pub fn freeze(&mut self, now: Instant);                                            // a mouse down (the owner's registration)
     pub fn render(&mut self, window: &mut Window, cx: &mut App) -> Option<Div>; // the copy at frame()'s offset inside a plain div (no element id) carrying its
                                                                                 // opacity: Overlay absolutely placed at its bounds; InFlow the slot, height share · (height + gap), top
                                                                                 // margin −gap, clipped, the copy `gap` below its top (its rest y), so share 0 is the settled list. The
@@ -3358,7 +3362,7 @@ impl<S: 'static> Exit<S> {
                                                                                 // margin inside another wrapper would not reach the list). None with frame()
 } // the copy has no listeners, focus handles, tab stops or tooltips; Occlude adds an occluding hitbox over it. Reduced: opacity over MICRO, no offset;
   // a height channel holds 1 until the fade settles, then the Exit ends and the slot closes at once
-pub mod ink { pub const HOVER: f32 = 0.06; pub const PRESSED: f32 = 0.12; pub trait PressInk: Styled + InteractiveElement { fn press_ink(self, cx: &App) -> Self; } }
+pub mod ink { pub const HOVER: f32 = 0.06; pub const PRESSED: f32 = 0.12; pub trait PressInk: Styled + StatefulInteractiveElement { fn press_ink(self, cx: &App) -> Self; } }
 pub fn kit_tokens() -> MotionTokens; // gpui-component's theme tokens: ADR-0030's durations, OUT, MOVE, springs at damping 1.0
 pub fn apply_kit_tokens(cx: &mut App);
 pub fn record(sink: Rc<RefCell<Vec<Recorded>>>, cx: &mut App); // test seam replacing record_entrances: (id, offset, opacity, rotation) per sample
@@ -3393,6 +3397,8 @@ bun test tests/scripts/motion-tokens.test.ts
 ```
 
 Then the standard completion block.
+
+**As built (T7.2):** the card's interfaces, with these differences, all recorded in its Interfaces block above. **Clock and registry:** gpui's `Window` has no clock and no globals, so `motion::sample`, `settle::register` and `Exit::frame` also take `cx`. `Track::follow_policy(policy, now)` (called by `motion::sample` and `Exit::frame`) applies a policy switch mid-motion: Off settles; Reduced stops travel on that frame (an entrance jumps to its end, a close holds the value it reached), then the opacity finishes from the share that was visible over QUICK (in) or MICRO (out), or it settles if the motion's Reduced variant snaps; a settled track or a running fade never restarts. A reversal's share travelled is read from the values (`(sampled − from) / (to − from)`), so a click on a frozen trigger reverses from the frozen value with the right duration. `Track` is `Clone`, not `Copy`. **Settling:** registrations made since the last paint become the live set when `root()` paints (render precedes paint, so the order of owners and the root never matters); a window that paints no root registers nothing. `settle::bounds_observer(window)` is the callback `MainWindow::new` hands `observe_window_bounds` (tests' probe windows use it too). The interceptor skips, per registration, a keystroke bound to that registration's own action; other registrations still settle. **Exits:** `Exit::freeze(now)` for an owner's freeze closure; the in-flow slot is `display: none` once its quantized height is 0 (taffy 0.13 sizes a list around a 0 pt item with a negative margin as if the margin were 0, which would jump the list's height by the gap at the end), and it never takes `flex_none`/`flex_shrink_0` (taffy then misplaces the list's items under the negative margin). Offsets and the slot's height are quantized at the window's scale. **Press ink:** `PressInk` requires `StatefulInteractiveElement` (gpui keeps the pressed state in element state, so the control needs an element id; `active` lives on that trait); the pressed ink shows from mouse down to mouse up and, as gpui's `active` style does, stays if the pointer is dragged off while pressed (ADR-0030 says it drops then; T7.4's viewport painter drops it, app `div` controls do not). **`enter_from`:** rebuilt on `Track` with its signature unchanged, its tracks in a global keyed by `(rendering view, id)` with the epoch each played (no keyed element state); it now also stays settled when its element misses frames (a review switch). The M6 tests keep their values (12 pt / 180 ms, 4 pt / 160 ms) but step by the protocol where they jumped more than one frame from the commit (the first-step clamp now applies). `record_entrances`/`Entrance` became `record`/`Recorded`; `motion::report` (crate-private) feeds it. **Kit tokens:** `Theme.motion` is rewritten after every theme applies (`theme::apply`). **Tests:** beyond the card's, `initiator_follows_the_last_input` and the E2E `e2e_press_ink_shows_at_once_on_hover_and_press` (`tests/e2e/press_ink.rs`). The lint (`motion-tokens.test.ts`) also rejects gpui-base's `animate_keyframes` and matches code only (comments and string contents blanked, `#[cfg(test)]` items stripped). T7.1's spacing lint did not exist on this branch, so the new files' debt-map entries are left to the W1 merge (Steps).
 
 ### T7.16 Live Reduce Motion
 

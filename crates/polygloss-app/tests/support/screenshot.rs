@@ -72,7 +72,9 @@ pub fn headless_app_with_assets(assets: Arc<dyn gpui_kit::AssetSource>) -> Headl
     // The app's bundled code font (T3.3): screenshots draw Lilex, as the
     // app does, not the system's Menlo fallback.
     cx.update(polygloss_app::theme::fonts::register_fonts);
-    cx.update(|cx| cx.set_reduce_motion(true));
+    cx.update(|cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
     cx.update(|cx| polygloss_app::review_tab::header::set_clock(|| CLOCK_MS, cx));
     cx
 }

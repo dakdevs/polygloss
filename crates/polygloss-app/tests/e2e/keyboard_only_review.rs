@@ -125,7 +125,9 @@ fn e2e_keyboard_only_review() {
     .expect("an earlier review of the repo");
 
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
-    cx.update(|cx| cx.set_reduce_motion(true));
+    cx.update(|cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
     let (handle, main) = cx.update(|cx| {
         startup::init(core.clone(), cx);
         window::open_main_window_sized(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx)

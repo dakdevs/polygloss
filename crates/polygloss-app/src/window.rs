@@ -322,6 +322,9 @@ impl MainWindow {
             this.sidebar_changed(&chrome, window, cx)
         })
         .detach();
+        // A resize or fullscreen settles running motion (ADR-0030 rule 4).
+        cx.observe_window_bounds(window, crate::motion::settle::bounds_observer(window))
+            .detach();
         let mut this = MainWindow {
             focus,
             tabs: Tabs::new(home),
@@ -541,6 +544,8 @@ impl Render for MainWindow {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            // First, so its mouse listeners are registered first every frame.
+            .child(crate::motion::settle::root())
             .child(div().flex_1().min_h_0().child(active))
     }
 }
