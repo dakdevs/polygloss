@@ -24,6 +24,7 @@ use super::{
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::review_tab::ReviewTab;
 use crate::review_tab::toolbar::{self, Narrow};
+use crate::space::{TextStyleExt as _, height, layout, text};
 
 /// [`label`] for a narrow toolbar: "k/n", "Since review" (a working tree
 /// not pinned stays "Working tree").
@@ -170,24 +171,26 @@ pub(crate) fn build_menu(
                 }),
         );
     }
-    menu.min_w(px(280.)).max_h(px(420.)).scrollable(true)
+    menu.min_w(px(layout::MENU_MIN_W))
+        .max_h(px(layout::OVERLAY_MAX_H))
+        .scrollable(true)
 }
 
-/// A menu row: a title and a muted note below it.
+/// A menu row: a title and a muted note below it, a two-line row (`ROW2`).
 fn two_lines(title: &str, note: String, cx: &gpui_kit::App) -> AnyElement {
     let theme = cx.theme();
     v_flex()
-        .gap_0p5()
-        .py_0p5()
+        .h(px(height::ROW2))
+        .justify_center()
         .child(
             div()
-                .text_sm()
+                .text_style(text::UI)
                 .text_color(theme.foreground)
                 .child(SharedString::from(title.to_owned())),
         )
         .child(
             div()
-                .text_xs()
+                .text_style(text::SMALL)
                 .text_color(theme.muted_foreground)
                 .child(SharedString::from(note)),
         )

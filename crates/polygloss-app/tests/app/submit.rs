@@ -473,3 +473,35 @@ fn submit_dialog_keeps_cmd_1_for_its_verdict(cx: &mut gpui_kit::TestAppContext) 
     draw(shell.cx);
     assert_eq!(shell.tabs(), (3, 1));
 }
+
+/// ADR-0031 (T7.6): the dialog's gaps are on the scale: 12 between a
+/// verdict's radio and its label and inside the drafts box, a 6 pt dot.
+#[gpui_kit::test]
+fn submit_dialog_has_no_off_scale_values(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    open(&mut shell, &tab);
+    let bounds = |shell: &mut Shell, name: &str| {
+        shell
+            .cx
+            .debug_bounds(Box::leak(name.to_owned().into_boxed_str()))
+            .unwrap_or_else(|| panic!("{name} was not painted"))
+    };
+    let twelve = gpui_kit::px(12.);
+    for slug in ["comment", "approve", "request-changes"] {
+        let radio = bounds(&mut shell, &format!("submit-verdict-radio-{slug}"));
+        let label = bounds(&mut shell, &format!("submit-verdict-label-{slug}"));
+        assert_eq!(label.left() - radio.right(), twelve, "{slug}");
+    }
+    let status = bounds(&mut shell, "submit-status");
+    let drafts = bounds(&mut shell, "submit-drafts");
+    assert_eq!(
+        drafts.left() - status.left(),
+        twelve,
+        "the drafts box's inset"
+    );
+    let dot = bounds(&mut shell, "submit-waiter-dot");
+    assert_eq!(dot.size, gpui_kit::size(gpui_kit::px(6.), gpui_kit::px(6.)));
+}

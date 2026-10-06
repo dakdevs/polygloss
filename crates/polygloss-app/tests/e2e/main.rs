@@ -25,6 +25,7 @@ mod kit_fonts;
 mod ligatures;
 mod live;
 mod open_flow;
+mod overlay_geometry;
 mod palette;
 mod press_ink;
 mod shell;
@@ -71,5 +72,6 @@ fn main() -> std::process::ExitCode {
         press_ink::TESTS,
         filmstrip::TESTS,
         card_geometry::TESTS,
+        overlay_geometry::TESTS,
     ])
 }

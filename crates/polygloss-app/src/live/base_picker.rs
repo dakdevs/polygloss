@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, Global, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, Div, Entity, Global, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, Styled as _, Task, WeakEntity, Window, div, px,
 };
 use polygloss_core::git::listing::{CommitInfo, list_commits};
@@ -28,8 +28,10 @@ use polygloss_core::store::events::{Actor, now_ms};
 
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::open_flow::ranking::Ranker;
+use crate::open_flow::repo_step::list_header;
 use crate::open_flow::source_step::sha_pill;
 use crate::review_tab::{ReviewTab, open_review};
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, size, text};
 
 /// Commits listed (newest first).
 pub const COMMITS: u32 = 500;
@@ -115,6 +117,13 @@ impl BasePickerDelegate {
         self.choices.get(*self.matches.get(self.selected?)?)
     }
 
+    /// Reads relative dates as seen at `now_ms` (Unix ms) in the time zone
+    /// `utc_offset_s` seconds east of UTC (screenshots pin both).
+    pub fn set_clock(&mut self, now_ms: i64, utc_offset_s: i64) {
+        self.now_ms = now_ms;
+        self.utc_offset_s = utc_offset_s;
+    }
+
     fn rerank(&mut self) {
         let mut ranked = Ranker::text().rank(&self.query, &self.haystacks);
         // A query that starts an id (`1a2b3c4`) finds that commit first.
@@ -190,30 +199,20 @@ pub fn open(
     });
     cx.set_global(OpenPicker(Some(state.downgrade())));
     let list = state.clone();
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .w(px(560.))
-            .margin_top(px(96.))
+            .w(px(layout::PICKER_W))
+            .margin_top(px(layout::PICKER_TOP))
             .close_button(false)
             .p_0()
             .child(
-                v_flex()
-                    .debug_selector(|| "base-picker".into())
-                    .child(
-                        div()
-                            .px_3()
-                            .pt_3()
-                            .pb_1()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Compare the working tree with…"),
-                    )
-                    .child(
-                        List::new(&list)
-                            .search_placeholder("Choose a base…")
-                            .max_h(px(420.)),
-                    ),
+                // The picker's frame (ADR-0031): the dialog's whole content.
+                div().debug_selector(|| "base-picker".into()).child(
+                    List::new(&list)
+                        .search_placeholder("Choose a base…")
+                        .max_h(px(layout::OVERLAY_MAX_H))
+                        .p(px(edge::OVERLAY)),
+                ),
             )
     });
     state.update(cx, |s, cx| s.focus(window, cx));
@@ -252,6 +251,15 @@ pub fn choose(
         actor: Actor::human(),
     };
     Some(open_review(req, window, cx))
+}
+
+/// The list's heading: its section header, and above the empty state.
+fn header(cx: &App) -> Div {
+    list_header(cx).child(
+        div()
+            .debug_selector(|| "base-picker-header".into())
+            .child("Compare the working tree with…"),
+    )
 }
 
 fn close(window: &mut Window, cx: &mut App) {
@@ -310,15 +318,17 @@ impl ListDelegate for BasePickerDelegate {
         };
         Some(
             ListItem::new(("base-choice", ix.row))
+                .debug_selector(move || format!("base-row-{row}"))
                 .selected(self.selected == Some(ix.row))
-                .h(px(44.))
-                .px_3()
+                .h(px(height::ROW2))
+                .px(px(pad::TEXT))
+                .rounded(px(radius::for_height(height::ROW2)))
                 .child(
                     h_flex()
                         .debug_selector(move || format!("base-choice-{row}"))
                         .w_full()
-                        .gap_3()
-                        .child(div().w(px(14.)).flex_none().when(checked, |d| {
+                        .gap(px(gap::ICON_LABEL))
+                        .child(div().w(px(size::ICON_SM)).flex_none().when(checked, |d| {
                             d.child(
                                 Icon::new(IconName::Check)
                                     .xsmall()
@@ -332,7 +342,7 @@ impl ListDelegate for BasePickerDelegate {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_sm()
+                                        .text_style(text::UI)
                                         .font_medium()
                                         .text_color(theme.foreground)
                                         .child(SharedString::from(title)),
@@ -340,7 +350,7 @@ impl ListDelegate for BasePickerDelegate {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_xs()
+                                        .text_style(text::SMALL)
                                         .text_color(theme.muted_foreground)
                                         .child(SharedString::from(detail)),
                                 ),
@@ -348,6 +358,15 @@ impl ListDelegate for BasePickerDelegate {
                         .children(pill.map(|p| sha_pill(&p, cx).into_any_element())),
                 ),
         )
+    }
+
+    fn render_section_header(
+        &mut self,
+        _section: usize,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<impl IntoElement> {
+        Some(header(cx))
     }
 
     fn render_empty(
@@ -360,14 +379,22 @@ impl ListDelegate for BasePickerDelegate {
         } else {
             "No matching commits"
         };
-        div()
-            .py_6()
+        // The heading stays when nothing matches (an empty list has no
+        // sections), where the list's padding put it.
+        v_flex()
             .w_full()
-            .flex()
-            .justify_center()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text)
+            .p(px(edge::OVERLAY))
+            .child(header(cx))
+            .child(
+                div()
+                    .py(px(gap::SECTION))
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .text_style(text::UI)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text),
+            )
     }
 
     fn set_selected_index(

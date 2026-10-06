@@ -41,14 +41,12 @@ use crate::keymap::actions::window as window_actions;
 use crate::keymap::handlers;
 use crate::open_flow::repo_step::{RECENT_REPOS, RepoChoice, RepoDelegate, load_rows, tildify};
 use crate::open_flow::source_step::{RepoData, SourceEvent, SourceMode, SourceStep, load_repo};
+use crate::palette::key_cap::key_cap;
+use crate::space::{TextStyleExt as _, edge, gap, layout, radius, text};
 use crate::window::{MainWindow, MenuKind};
 
 /// The dialog's key context.
 pub const CONTEXT: &str = "OpenFlow";
-
-/// The dialog's size, in points.
-const WIDTH: f32 = 640.;
-const HEIGHT: f32 = 460.;
 
 gpui_kit::actions!(
     open_flow,
@@ -133,8 +131,8 @@ pub fn open(window: &mut Window, cx: &mut App) -> Entity<OpenFlow> {
     let content = flow.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .w(px(WIDTH))
-            .margin_top(px(72.))
+            .w(px(layout::OPEN_FLOW.0))
+            .margin_top(px(layout::DIALOG_TOP))
             .close_button(false)
             .child(content.clone())
     });
@@ -355,7 +353,7 @@ impl OpenFlow {
             }
         };
         h_flex()
-            .gap_2()
+            .gap(px(gap::CONTROLS))
             .items_center()
             .when(self.source.is_some(), |d| {
                 d.child(
@@ -373,14 +371,14 @@ impl OpenFlow {
                     .child(
                         div()
                             .truncate()
-                            .text_base()
+                            .text_style(text::TITLE)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
                     )
                     .child(
                         div()
                             .truncate()
-                            .text_xs()
+                            .text_style(text::SMALL)
                             .text_color(theme.muted_foreground)
                             .child(subtitle),
                     ),
@@ -389,33 +387,19 @@ impl OpenFlow {
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        // Key caps like gpui-kit's `Kbd`; Escape reads "esc" (its ⎋ glyph
-        // is easy to mistake for a reload arrow).
-        let cap = |key: String| {
-            div()
-                .px_1()
-                .py_0p5()
-                .min_w(px(18.))
-                .flex()
-                .justify_center()
-                .rounded(theme.radius)
-                .bg(theme.muted)
-                .text_color(theme.muted_foreground)
-                .child(key)
-        };
-        let hint = |keys: &str, text: &'static str| {
+        // The palette's key caps (Escape reads "Esc"), `ICON_LABEL` before
+        // what they do.
+        let hint = |keys: &str, what: &'static str, cx: &App| {
             h_flex()
-                .gap_1()
-                .items_center()
-                .children(keys.split_whitespace().filter_map(|k| {
-                    let label = if k == "escape" {
-                        "esc".to_owned()
-                    } else {
-                        Kbd::format(&Keystroke::parse(k).ok()?)
-                    };
-                    Some(cap(label))
-                }))
-                .child(div().pl_0p5().child(text))
+                .gap(px(gap::ICON_LABEL))
+                .child(
+                    h_flex().gap(px(gap::INLINE)).children(
+                        keys.split_whitespace()
+                            .filter_map(|k| Keystroke::parse(k).ok())
+                            .map(|k| key_cap(&k, cx)),
+                    ),
+                )
+                .child(what)
         };
         let status: Option<(SharedString, bool)> = if let Some(error) = &self.error {
             Some((error.clone(), true))
@@ -426,7 +410,7 @@ impl OpenFlow {
         };
         let left = match status {
             Some((text, is_error)) => h_flex()
-                .gap_2()
+                .gap(px(gap::ICON_LABEL))
                 .min_w_0()
                 .when(!is_error, |d| d.child(Spinner::new().small()))
                 .child(
@@ -442,15 +426,15 @@ impl OpenFlow {
                 .into_any_element(),
             None => match &self.source {
                 None => h_flex()
-                    .gap_3()
-                    .child(hint("up down", "select"))
-                    .child(hint("enter", "choose"))
-                    .child(hint("escape", "close"))
+                    .gap(px(gap::GROUP))
+                    .child(hint("up down", "select", cx))
+                    .child(hint("enter", "choose", cx))
+                    .child(hint("escape", "close", cx))
                     .into_any_element(),
                 Some(_) => h_flex()
-                    .gap_3()
-                    .child(hint("cmd-1 cmd-2 cmd-3", "source"))
-                    .child(hint("cmd-[", "back"))
+                    .gap(px(gap::GROUP))
+                    .child(hint("cmd-1 cmd-2 cmd-3", "source", cx))
+                    .child(hint("cmd-[", "back", cx))
                     .into_any_element(),
             },
         };
@@ -459,10 +443,10 @@ impl OpenFlow {
             .as_ref()
             .is_some_and(|s| s.read(cx).request(cx).is_ok());
         h_flex()
-            .gap_3()
+            .gap(px(gap::GROUP))
             .items_center()
             .justify_between()
-            .text_xs()
+            .text_style(text::SMALL)
             .text_color(theme.muted_foreground)
             .child(div().flex_1().min_w_0().child(left))
             .when(self.source.is_some(), |d| {
@@ -473,9 +457,8 @@ impl OpenFlow {
                         .label("Open")
                         .disabled(!ready)
                         .child(
-                            h_flex()
-                                .pl_1()
-                                .gap_0p5()
+                            div()
+                                .pl(px(gap::INLINE))
                                 .children(Keystroke::parse("cmd-enter").ok().map(Kbd::new)),
                         )
                         .on_click(cx.listener(|flow, _, window, cx| flow.confirm(window, cx))),
@@ -497,9 +480,13 @@ impl Render for OpenFlow {
                 .size_full()
                 .border_1()
                 .border_color(cx.theme().border)
-                .rounded(cx.theme().radius_lg)
+                .rounded(px(radius::MD))
                 .overflow_hidden()
-                .child(List::new(&self.repos).search_placeholder("Search recent repositories…"))
+                .child(
+                    List::new(&self.repos)
+                        .search_placeholder("Search recent repositories…")
+                        .p(px(edge::OVERLAY)),
+                )
                 .into_any_element(),
             Some(source) => source.clone().into_any_element(),
         };
@@ -519,8 +506,8 @@ impl Render for OpenFlow {
                 flow.set_mode(SourceMode::Compare, window, cx)
             }))
             .w_full()
-            .h(px(HEIGHT))
-            .gap_3()
+            .h(px(layout::OPEN_FLOW.1))
+            .gap(px(gap::GROUP))
             .child(self.render_header(cx))
             .child(div().flex_1().min_h_0().child(body))
             .child(self.render_footer(cx))

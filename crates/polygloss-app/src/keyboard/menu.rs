@@ -15,6 +15,8 @@ use gpui_kit::{
     Window, anchored, deferred, div, px,
 };
 
+use crate::space::gap;
+
 /// An open keyboard menu.
 pub struct KeyMenu {
     view: Entity<PopupMenu>,
@@ -82,8 +84,10 @@ impl KeyMenu {
         let menu = deferred(
             anchored()
                 .anchor(anchor)
-                .snap_to_window_with_margin(px(8.))
-                .child(div().mt_1().child(self.view.clone())),
+                // A control gap from the window's edges, as the kit's menus
+                // keep; `INLINE` below the button.
+                .snap_to_window_with_margin(px(gap::CONTROLS))
+                .child(div().mt(px(gap::INLINE)).child(self.view.clone())),
         )
         .with_priority(gpui_kit::base::POPUP_PRIORITY);
         let corner = div().absolute().top_full();

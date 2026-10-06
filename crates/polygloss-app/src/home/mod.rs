@@ -47,6 +47,7 @@ use polygloss_core::store::events::{Actor, now_ms};
 
 use crate::app_state::AppState;
 use crate::home::row::{HomeRow, RowPlace};
+use crate::space::{TextStyleExt as _, edge, gap, layout, text};
 
 /// The key context of Home.
 pub const CONTEXT: &str = "Home";
@@ -543,14 +544,20 @@ impl HomeView {
         let now = (self.clock)();
         let offset = row::local_utc_offset_s(now);
         let theme = cx.theme().clone();
+        // A later section's title sits `SECTION` below the card before it:
+        // the list's `CARDS` gap and the rest as padding.
         let section = |title: &'static str, count: usize, first: bool| {
             h_flex()
-                .gap_2()
-                .when(!first, |d| d.pt_4())
-                .text_xs()
+                .gap(px(gap::CONTROLS))
+                .when(!first, |d| d.pt(px(gap::SECTION - gap::CARDS)))
+                .text_style(text::SMALL)
                 .font_semibold()
                 .text_color(theme.muted_foreground)
-                .child(title)
+                .child(
+                    div()
+                        .debug_selector(move || format!("home-section-{title}"))
+                        .child(title),
+                )
                 .child(div().font_normal().child(count.to_string()))
                 .into_any_element()
         };
@@ -685,7 +692,7 @@ impl Render for HomeView {
         let theme = cx.theme().clone();
         let count = (self.loaded && !self.rows.is_empty()).then(|| {
             div()
-                .text_sm()
+                .text_style(text::SMALL)
                 .text_color(theme.muted_foreground)
                 .child(SharedString::from(match self.rows.len() {
                     1 => "1 review".to_owned(),
@@ -694,7 +701,7 @@ impl Render for HomeView {
                 .into_any_element()
         });
         let title = div()
-            .text_base()
+            .text_style(text::HEADING)
             .font_semibold()
             .text_color(theme.foreground)
             .child("Reviews")
@@ -722,16 +729,15 @@ impl Render for HomeView {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .gap_2()
                 .child(
                     div()
-                        .text_size(px(15.))
+                        .text_style(text::HEADING)
                         .text_color(theme.foreground)
                         .child("No reviews yet"),
                 )
                 .child(
                     div()
-                        .text_sm()
+                        .text_style(text::BODY)
                         .text_color(theme.muted_foreground)
                         .child("Run `polygloss` in a repository, or press ⌘O to open one."),
                 )
@@ -744,17 +750,19 @@ impl Render for HomeView {
                 .items_center()
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll)
-                .px_8()
-                .pt_6()
-                .pb_10()
-                .gap_2()
+                .px(px(edge::PAGE))
+                .pt(px(gap::SECTION))
+                .pb(px(edge::PAGE))
+                .gap(px(gap::CARDS))
                 // One child per section title and row, so `scroll_to_item`
                 // finds rows by index.
-                .children(
-                    self.render_rows(window, cx)
-                        .into_iter()
-                        .map(|child| div().flex_none().w_full().max_w(px(1120.)).child(child)),
-                )
+                .children(self.render_rows(window, cx).into_iter().map(|child| {
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .max_w(px(layout::HOME_MAX_W))
+                        .child(child)
+                }))
                 .into_any_element()
         };
         // The rows are cards on the diff's canvas (design §11.2).

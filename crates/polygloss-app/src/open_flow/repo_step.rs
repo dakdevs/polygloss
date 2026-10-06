@@ -15,19 +15,18 @@ use gpui_kit::component::list::{ListDelegate, ListItem, ListState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, h_flex, v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     Styled as _, Task, Window, div, px,
 };
 use polygloss_core::review::RecentRepo;
 
 use crate::open_flow::ranking::Ranker;
+use crate::space::{TextStyleExt as _, gap, height, pad, radius, stroke, text};
 
 /// How many recent repos the list offers.
 pub const RECENT_REPOS: u32 = 50;
-
-/// Height of every row (the list measures one row for all).
-const ROW_HEIGHT: f32 = 46.;
 
 /// One recent repo.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,12 +174,17 @@ impl ListDelegate for RepoDelegate {
         };
         Some(
             ListItem::new(("open-flow-repo", ix.section * 100_000 + ix.row))
-                .h(px(ROW_HEIGHT))
-                .rounded(theme.radius)
+                .when(ix.section == 0, |item| {
+                    item.debug_selector(move || format!("open-flow-repo-row-{}", ix.row))
+                })
+                // Every row is as tall (the list measures one for all).
+                .h(px(height::ROW2))
+                .px(px(pad::TEXT))
+                .rounded(px(radius::for_height(height::ROW2)))
                 .child(
                     h_flex()
                         .debug_selector(move || selector.clone())
-                        .gap_3()
+                        .gap(px(gap::ICON_LABEL))
                         .min_w_0()
                         .child(Icon::new(icon).small().text_color(theme.muted_foreground))
                         .child(
@@ -189,14 +193,14 @@ impl ListDelegate for RepoDelegate {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_sm()
+                                        .text_style(text::UI)
                                         .font_weight(gpui_kit::FontWeight::MEDIUM)
                                         .child(title),
                                 )
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_xs()
+                                        .text_style(text::SMALL)
                                         .text_color(theme.muted_foreground)
                                         .child(detail),
                                 ),
@@ -212,22 +216,20 @@ impl ListDelegate for RepoDelegate {
         cx: &mut Context<ListState<Self>>,
     ) -> Option<impl IntoElement> {
         // Every header gets the height of section 0's (the list measures
-        // one): the "Browse…" section's is a divider with the same padding.
-        let theme = cx.theme();
-        let header = div()
-            .px_3()
-            .pt_2()
-            .pb_1()
-            .text_xs()
-            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-            .text_color(theme.muted_foreground);
+        // one): the "Browse…" section's is a divider in the same frame.
+        let border = cx.theme().border;
+        let header = list_header(cx);
         Some(match section {
-            0 => header.child("RECENT REPOSITORIES"),
+            0 => header.child(
+                div()
+                    .debug_selector(|| "open-flow-repo-header".into())
+                    .child("RECENT REPOSITORIES"),
+            ),
             _ => header.child(
                 div()
                     .flex()
                     .items_center()
-                    .child(div().flex_1().h(px(1.)).bg(theme.border))
+                    .child(div().flex_1().h(px(stroke::BORDER)).bg(border))
                     .child(div().w_0().invisible().child("·")),
             ),
         })
@@ -239,8 +241,8 @@ impl ListDelegate for RepoDelegate {
         cx: &mut Context<ListState<Self>>,
     ) -> impl IntoElement {
         div()
-            .py_6()
-            .text_sm()
+            .py(px(gap::SECTION))
+            .text_style(text::UI)
             .text_color(cx.theme().muted_foreground)
             .child("No matching repositories")
     }
@@ -252,6 +254,20 @@ impl ListDelegate for RepoDelegate {
         _cx: &mut Context<ListState<Self>>,
     ) {
     }
+}
+
+/// An overlay list's section header (ADR-0031: one header for every
+/// overlay): its text on the rows' content column (`OVERLAY` + `TEXT`, as
+/// the rows' `TEXT` inside a list padded by `OVERLAY`), `GROUP` above it and
+/// `INLINE` below.
+pub fn list_header(cx: &App) -> Div {
+    div()
+        .px(px(pad::TEXT))
+        .pt(px(gap::GROUP))
+        .pb(px(gap::INLINE))
+        .text_style(text::SMALL)
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+        .text_color(cx.theme().muted_foreground)
 }
 
 /// Reads the recent repos whose directory still exists (on the background

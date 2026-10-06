@@ -18,6 +18,7 @@ use polygloss_viewport::ScrollTarget;
 use super::filters::Fuzzy;
 use super::row::status_badge;
 use crate::review_tab::ReviewTab;
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, size, text};
 
 /// The files of `order` (display order) matching `query`, best first, ties
 /// in display order; all of them for a blank query.
@@ -92,15 +93,17 @@ pub fn open(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab
     let list = state.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .w(px(560.))
-            .margin_top(px(96.))
+            .w(px(layout::PICKER_W))
+            .margin_top(px(layout::PICKER_TOP))
             .close_button(false)
             .p_0()
             .child(
+                // The picker's frame (ADR-0031): the dialog's whole content.
                 div().debug_selector(|| "file-finder".into()).child(
                     List::new(&list)
                         .search_placeholder("Go to file…")
-                        .max_h(px(400.)),
+                        .max_h(px(layout::OVERLAY_MAX_H))
+                        .p(px(edge::OVERLAY)),
                 ),
             )
     });
@@ -173,38 +176,46 @@ impl ListDelegate for FinderDelegate {
         let selected = self.selected == Some(ix.row);
         Some(
             ListItem::new(("finder-file", idx as usize))
+                .debug_selector(move || format!("finder-row-{}", ix.row))
                 .selected(selected)
-                .h(px(30.))
+                .h(px(height::MD))
                 .py_0()
-                .px_3()
-                .text_sm()
+                .px(px(pad::TEXT))
+                .rounded(px(radius::for_height(height::MD)))
+                .text_style(text::UI)
                 .child(
                     h_flex()
                         .w_full()
-                        .gap_2()
+                        .gap(px(gap::ICON_LABEL))
                         .child(
                             div()
-                                .w(px(10.))
+                                .w(px(size::STATUS_COL))
                                 .flex_none()
-                                .text_xs()
+                                .text_style(text::SMALL)
                                 .font_semibold()
                                 .text_color(color)
                                 .child(letter),
                         )
                         .child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.foreground)
-                                .child(SharedString::from(name.to_owned())),
-                        )
-                        .child(
-                            div()
+                            h_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(SharedString::from(dir.to_owned())),
+                                .gap(px(gap::CONTROLS))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(theme.foreground)
+                                        .child(SharedString::from(name.to_owned())),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_style(text::SMALL)
+                                        .text_color(theme.muted_foreground)
+                                        .child(SharedString::from(dir.to_owned())),
+                                ),
                         ),
                 ),
         )
@@ -216,11 +227,11 @@ impl ListDelegate for FinderDelegate {
         cx: &mut Context<ListState<Self>>,
     ) -> impl IntoElement {
         div()
-            .py_6()
+            .py(px(gap::SECTION))
             .w_full()
             .flex()
             .justify_center()
-            .text_sm()
+            .text_style(text::UI)
             .text_color(cx.theme().muted_foreground)
             .child("No matching files")
     }

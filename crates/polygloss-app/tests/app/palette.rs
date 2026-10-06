@@ -640,3 +640,288 @@ fn toggle_wrap_reaches_the_viewport_options(cx: &mut TestAppContext) {
     draw(shell.cx);
     assert!(!wrap(&mut shell));
 }
+
+// ---------------------------------------------------------------- T7.6
+// Overlay geometry (ADR-0031: one overlay frame, one row ladder, one header
+// edge). Expected heights are AppKit's ladder, written by hand.
+
+/// Twelve commits, then twenty new files in the worktree: the palette, the
+/// finder and the base picker each have more rows than fit.
+fn crowded_repo() -> FixtureRepo {
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    for i in 0..12 {
+        repo.write("log.txt", format!("{i}\n").as_bytes());
+        repo.commit(&format!("Step {i}"));
+    }
+    for i in 0..20 {
+        repo.write(&format!("src/file_{i:02}.rs"), b"fn f() {}\n");
+    }
+    repo
+}
+
+/// The working tree of `repo` since HEAD.
+fn live_head(repo: &FixtureRepo) -> OpenRequest {
+    OpenRequest {
+        worktree: repo.path().to_path_buf(),
+        source: Source::Live {
+            since: polygloss_core::git::Since::Head,
+        },
+        label: None,
+        pin: None,
+        actor: Actor::human(),
+    }
+}
+
+/// Opens the base picker of the active live review and waits for its log.
+fn open_base_picker(shell: &mut Shell) {
+    shell
+        .cx
+        .dispatch_action(polygloss_app::keymap::actions::tab::ChooseBase);
+    draw(shell.cx);
+    wait_until(shell.cx, |cx| {
+        cx.update(|_, cx| {
+            polygloss_app::live::base_picker::current(cx)
+                .is_some_and(|p| !p.read(cx).delegate().loading())
+        })
+    });
+    draw(shell.cx);
+}
+
+fn close_overlay(shell: &mut Shell) {
+    shell.cx.simulate_keystrokes("escape");
+    draw(shell.cx);
+    assert!(!has_dialog(shell));
+}
+
+#[gpui_kit::test]
+fn pickers_share_one_frame(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = crowded_repo();
+    let mut shell = start(cx);
+    // gpui-kit's dialogs slide in; settled, each sits where it rests.
+    shell.cx.update(|_, cx| {
+        use polygloss_app::motion::{MotionPolicy, set_override};
+        set_override(Some(MotionPolicy::Off), cx)
+    });
+    shell.open(live_head(&repo)).unwrap();
+
+    shell.cx.simulate_keystrokes("cmd-k");
+    draw(shell.cx);
+    let palette = bounds(shell.cx, "command-palette");
+    let last = shell.cx.update(|_, cx| {
+        let p = command::current(cx).expect("the palette is open");
+        p.read(cx).rows().last().unwrap().action
+    });
+    assert!(
+        painted(shell.cx, &format!("palette-row-{last}")).is_none(),
+        "the palette's list is at its maximum height"
+    );
+    close_overlay(&mut shell);
+
+    shell.cx.simulate_keystrokes("cmd-p");
+    draw(shell.cx);
+    let finder = bounds(shell.cx, "file-finder");
+    let files = shell.cx.update(|_, cx| {
+        let f = polygloss_app::tree::finder::current(cx).expect("the finder is open");
+        f.read(cx).delegate().matches().len()
+    });
+    assert!(files >= 20, "{files} files");
+    assert!(
+        painted(shell.cx, &format!("finder-row-{}", files - 1)).is_none(),
+        "the finder's list is at its maximum height"
+    );
+    close_overlay(&mut shell);
+
+    open_base_picker(&mut shell);
+    let picker = bounds(shell.cx, "base-picker");
+    let choices = shell.cx.update(|_, cx| {
+        let p = polygloss_app::live::base_picker::current(cx).expect("the picker is open");
+        p.read(cx).delegate().matches().len()
+    });
+    assert!(choices >= 14, "{choices} bases");
+    assert!(
+        painted(shell.cx, &format!("base-row-{}", choices - 1)).is_none(),
+        "the base picker's list is at its maximum height"
+    );
+    close_overlay(&mut shell);
+
+    // One width, one left edge, one top and one maximum height.
+    for (name, other) in [("the finder", finder), ("the base picker", picker)] {
+        assert_eq!(other.size.width, palette.size.width, "{name}'s width");
+        assert_eq!(other.left(), palette.left(), "{name}'s left edge");
+        assert_eq!(other.top(), palette.top(), "{name}'s top");
+        assert_eq!(
+            other.size.height, palette.size.height,
+            "{name}'s maximum height"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn overlay_rows_follow_the_ladder(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = crowded_repo();
+    let mut shell = start(cx);
+    shell.open(live_head(&repo)).unwrap();
+    let height = |shell: &mut Shell, name: &str| f32::from(bounds(shell.cx, name).size.height);
+
+    // The palette: gpui-kit's rows (6 above and below one line) at
+    // `text::UI`'s 20 pt line: 32, on the grid, though off the ladder.
+    shell.cx.simulate_keystrokes("cmd-k");
+    draw(shell.cx);
+    let (first, second) = shell.cx.update(|_, cx| {
+        let p = command::current(cx).expect("the palette is open");
+        let rows = &p.read(cx).groups()[0].1;
+        (rows[0].action, rows[1].action)
+    });
+    let top = |shell: &mut Shell, action: &str| {
+        f32::from(bounds(shell.cx, &format!("palette-row-{action}")).top())
+    };
+    assert_eq!(
+        top(&mut shell, second) - top(&mut shell, first),
+        32.0,
+        "a palette row"
+    );
+    close_overlay(&mut shell);
+
+    // The finder: one-line rows, MD.
+    shell.cx.simulate_keystrokes("cmd-p");
+    draw(shell.cx);
+    assert_eq!(height(&mut shell, "finder-row-0"), 28.0, "a finder row");
+    close_overlay(&mut shell);
+
+    // Two-line rows, ROW2: the base picker, the open flow's repos and
+    // commits.
+    open_base_picker(&mut shell);
+    assert_eq!(height(&mut shell, "base-row-0"), 44.0, "a base");
+    close_overlay(&mut shell);
+    shell.cx.simulate_keystrokes("cmd-o");
+    draw(shell.cx);
+    assert_eq!(height(&mut shell, "open-flow-repo-row-0"), 44.0, "a repo");
+    let flow = shell
+        .cx
+        .update(|_, cx| polygloss_app::open_flow::current(cx))
+        .expect("the open flow is open");
+    let path = repo.path().to_path_buf();
+    shell
+        .cx
+        .update(|window, cx| flow.update(cx, |f, cx| f.choose_repo(path, window, cx)));
+    draw(shell.cx);
+    let source = flow
+        .read_with(shell.cx, |f, _| f.source().cloned())
+        .expect("the source step");
+    shell.cx.update(|window, cx| {
+        source.update(cx, |s, cx| {
+            s.set_mode(
+                polygloss_app::open_flow::source_step::SourceMode::Commit,
+                window,
+                cx,
+            )
+        })
+    });
+    draw(shell.cx);
+    assert_eq!(
+        height(&mut shell, "open-flow-commit-row-0"),
+        44.0,
+        "a commit"
+    );
+    close_overlay(&mut shell);
+
+    // The cheat sheet: a leaf result list, SM.
+    shell.cx.simulate_keystrokes("?");
+    draw(shell.cx);
+    assert_eq!(
+        height(&mut shell, "cheat-row-viewport::CursorDown"),
+        24.0,
+        "a cheat-sheet row"
+    );
+}
+
+#[gpui_kit::test]
+fn overlay_headers_and_rows_share_an_edge(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = crowded_repo();
+    let mut shell = start(cx);
+    shell.open(live_head(&repo)).unwrap();
+    // A header's text starts on its rows' content column: their first box
+    // (a check slot, an icon or the text itself).
+    let left = |shell: &mut Shell, name: &str| bounds(shell.cx, name).left();
+
+    open_base_picker(&mut shell);
+    assert_eq!(
+        left(&mut shell, "base-picker-header"),
+        left(&mut shell, "base-choice-0"),
+        "the base picker"
+    );
+    close_overlay(&mut shell);
+
+    shell.cx.simulate_keystrokes("cmd-o");
+    draw(shell.cx);
+    assert_eq!(
+        left(&mut shell, "open-flow-repo-header"),
+        left(&mut shell, "open-flow-repo-0"),
+        "the open flow's repositories"
+    );
+    close_overlay(&mut shell);
+
+    shell.cx.simulate_keystrokes("?");
+    draw(shell.cx);
+    assert_eq!(
+        left(&mut shell, "cheat-heading-Diff"),
+        left(&mut shell, "cheat-row-viewport::CursorDown"),
+        "the cheat sheet"
+    );
+}
+
+#[gpui_kit::test]
+fn base_picker_keeps_its_heading_when_nothing_matches(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = crowded_repo();
+    let mut shell = start(cx);
+    // gpui-kit's dialogs slide in; settled, each sits where it rests.
+    shell.cx.update(|_, cx| {
+        use polygloss_app::motion::{MotionPolicy, set_override};
+        set_override(Some(MotionPolicy::Off), cx)
+    });
+    shell.open(live_head(&repo)).unwrap();
+    open_base_picker(&mut shell);
+    // The heading's place in the picker's frame.
+    let place = |shell: &mut Shell| {
+        let frame = bounds(shell.cx, "base-picker");
+        let heading = bounds(shell.cx, "base-picker-header");
+        (heading.origin - frame.origin, heading.size)
+    };
+    let heading = place(&mut shell);
+    shell.cx.simulate_input("no such base qqzz");
+    draw(shell.cx);
+    let matches = shell.cx.update(|_, cx| {
+        let p = polygloss_app::live::base_picker::current(cx).expect("the picker is open");
+        p.read(cx).delegate().matches().len()
+    });
+    assert_eq!(matches, 0, "nothing matches");
+    assert_eq!(place(&mut shell), heading, "the heading stays where it was");
+}
+
+#[gpui_kit::test]
+fn key_caps_use_the_small_radius(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    let _sb = Sandbox::isolate();
+    let shell = start(cx);
+    shell.cx.simulate_keystrokes("?");
+    draw(shell.cx);
+    // A cap as the cheat sheet draws it is at most 20 pt tall, so the height
+    // rule gives it the small radius: 4.
+    let cap = bounds(shell.cx, "key-cap:escape=Esc");
+    assert!(cap.size.height <= gpui_kit::px(20.), "{cap:?}");
+    let escape = gpui_kit::Keystroke::parse("escape").unwrap();
+    let mut element = shell.cx.update(|_, cx| key_cap::key_cap(&escape, cx));
+    let radii = element.style().corner_radii.clone();
+    for corner in [
+        radii.top_left,
+        radii.top_right,
+        radii.bottom_right,
+        radii.bottom_left,
+    ] {
+        assert_eq!(corner, Some(gpui_kit::px(4.).into()));
+    }
+}
