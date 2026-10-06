@@ -317,14 +317,22 @@ describe("scripts/cargo.sh", () => {
     });
     mkdirSync(join(buildDir, "debug", ".fingerprint"), { recursive: true });
     writeFileSync(log, "");
-    // Someone else holds the build dir's lock for the whole test.
+    // Someone else holds the build dir's lock for the whole test, and marks
+    // when it lets go: a command that waited for the lock finishes after that.
+    const released = `${buildDir}.released`;
     const holder = Bun.spawn(
-      ["/usr/bin/lockf", "-k", `${buildDir}.lock`, "/bin/sleep", "5"],
+      [
+        "/usr/bin/lockf",
+        "-k",
+        `${buildDir}.lock`,
+        "/bin/sh",
+        "-c",
+        `sleep 10; touch '${released}'`,
+      ],
       { stdout: "ignore", stderr: "ignore" },
     );
     try {
       Bun.sleepSync(200);
-      const started = performance.now();
       for (const args of [["tree", "-p", "x"], ["metadata"], ["--version"]]) {
         const r = runCargoSh({
           script: join(worktree, "scripts", "cargo.sh"),
@@ -333,7 +341,7 @@ describe("scripts/cargo.sh", () => {
         });
         expect(r.exitCode).toBe(0);
       }
-      expect(performance.now() - started).toBeLessThan(3_000);
+      expect(existsSync(released)).toBe(false);
     } finally {
       holder.kill();
     }

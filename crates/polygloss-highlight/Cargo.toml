@@ -16,6 +16,8 @@ thiserror.workspace = true
 [dev-dependencies]
 insta.workspace = true
 criterion.workspace = true
+# `polygloss_diff::testing`: the scaling checks of the timing tests.
+polygloss-diff = { workspace = true, features = ["test-support"] }
 
 # One integration test binary (`tests/highlight/main.rs`, one module per area):
 # every test binary links all lumis grammars, so fewer binaries save link time

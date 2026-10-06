@@ -3,11 +3,11 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use polygloss_diff::hunks::{Block, FileDiff, Hunk, diff_blobs};
 use polygloss_diff::lines::LineIndex;
 use polygloss_diff::options::{Algorithm, DiffOptions};
+use polygloss_diff::testing::assert_ratio_below;
 use polygloss_diff::unified_text::unified_text;
 
 fn fixture(case: &str) -> (Vec<u8>, Vec<u8>) {
@@ -382,23 +382,32 @@ fn line_index_ranges_and_trailing_newline() {
     assert!(idx.has_trailing_newline());
 }
 
-#[test]
-fn hunks_200k_lines_stay_fast() {
-    // RF4: no quadratic blowups on a 200k-line file with scattered edits.
-    let old: Vec<String> = (0..200_000u32)
+/// `n` lines and a copy with every 997th line changed.
+fn scattered_edits(n: usize) -> (Vec<u8>, Vec<u8>) {
+    let old: Vec<String> = (0..n)
         .map(|i| format!("    let v{i} = compute({i});\n"))
         .collect();
     let mut new = old.clone();
-    for i in (0..200_000usize).step_by(997) {
+    for i in (0..n).step_by(997) {
         new[i] = format!("    let v{i} = changed({i});\n");
     }
-    let (old, new) = (join(&old), join(&new));
-    let start = Instant::now();
+    (join(&old), join(&new))
+}
+
+#[test]
+fn hunks_200k_lines_stay_fast() {
+    // RF4: no quadratic blowups on a 200k-line file with scattered edits:
+    // 10x the lines (and edits) cost about 10x; 100x if quadratic.
+    assert_ratio_below(
+        "diffing, 5k -> 50k lines",
+        30.0,
+        [scattered_edits(5_000), scattered_edits(50_000)],
+        |(old, new)| diff_blobs(old, new, &DiffOptions::default()),
+    );
+    let (old, new) = scattered_edits(200_000);
     let fd = diff_blobs(&old, &new, &DiffOptions::default());
-    let elapsed = start.elapsed();
     assert_eq!(fd.additions, 201);
     assert_eq!(fd.deletions, 201);
-    assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
 }
 
 /// Compact, stable rendering of a `FileDiff`'s structure for snapshots.

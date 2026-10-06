@@ -4,8 +4,8 @@
 #![allow(clippy::single_range_in_vec_init)]
 
 use std::ops::Range;
-use std::time::{Duration, Instant};
 
+use polygloss_diff::testing::assert_ratio_below;
 use polygloss_diff::word::{
     Granularity, LinePair, WORD_DIFF_MAX_LINE_CHARS, WordRanges, pair_lines, word_ranges,
 };
@@ -102,12 +102,28 @@ fn word_ranges_char_granularity() {
     assert_eq!(chars(old, new), ranges(&[], &[4..5]));
 }
 
+/// A minified `len`-byte line and a copy with one edit.
+fn minified(len: usize) -> (String, String) {
+    let line: String = "var a=1;".repeat(len / 8);
+    let changed = line.replacen("a=1", "a=2", 1);
+    (line, changed)
+}
+
+/// 100 rounds of the three skipped shapes below; how many skipped all three.
+fn skipped_rounds((line, changed): &(String, String)) -> usize {
+    (0..100)
+        .filter(|_| {
+            word_ranges(line.as_bytes(), changed.as_bytes(), Granularity::Word).is_none()
+                && word_ranges(line.as_bytes(), b"short", Granularity::Char).is_none()
+                && word_ranges(b"short", line.as_bytes(), Granularity::Word).is_none()
+        })
+        .count()
+}
+
 #[test]
 fn word_diff_skips_long_lines() {
     // RF4: a 5 MB minified single line gets no word diff, and fast.
-    let huge: String = "var a=1;".repeat(5 * 1024 * 1024 / 8);
-    let huge_changed = huge.replacen("a=1", "a=2", 1);
-    let start = Instant::now();
+    let (huge, huge_changed) = minified(5 * 1024 * 1024);
     assert_eq!(
         word_ranges(huge.as_bytes(), huge_changed.as_bytes(), Granularity::Word),
         None
@@ -120,8 +136,14 @@ fn word_diff_skips_long_lines() {
         word_ranges(b"short", huge.as_bytes(), Granularity::Word),
         None
     );
-    let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_millis(50), "took {elapsed:?}");
+    // Skipping is O(1) in the line's length: 100x longer lines cost about the
+    // same; 100x if the limit check walked the line (or diffed it first).
+    assert_ratio_below(
+        "skipping, 40 KB -> 4 MB lines",
+        10.0,
+        [minified(40 * 1024), minified(4 * 1024 * 1024)],
+        |lines| skipped_rounds(lines),
+    );
 
     // The limit counts chars, not bytes: exactly at the limit still diffs.
     let at_limit = "x".repeat(WORD_DIFF_MAX_LINE_CHARS);

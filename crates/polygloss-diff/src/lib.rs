@@ -11,6 +11,8 @@ pub mod lines;
 mod myers_core;
 pub mod options;
 pub mod rows;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub mod types;
 pub mod unified_text;
 pub mod whitespace;

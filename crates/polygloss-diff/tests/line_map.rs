@@ -1,10 +1,9 @@
 //! Blob-to-blob line mapping (T1.8, design §8.6, ADR-0010, ADR-0021).
 
-use std::time::{Duration, Instant};
-
 use polygloss_diff::hunks::diff_blobs;
 use polygloss_diff::line_map::{LineMap, Mapped, MappedRange};
 use polygloss_diff::options::DiffOptions;
+use polygloss_diff::testing::assert_ratio_below;
 
 /// `n` distinct lines `line 0\n` .. `line n-1\n`.
 fn numbered(n: u32) -> Vec<String> {
@@ -258,40 +257,62 @@ fn line_map_out_of_range_lines_do_not_panic() {
     assert_eq!(map.map_range(3, 99), MappedRange::Outdated { nearest: 5 });
 }
 
-#[test]
-fn line_map_150k_lines_fast() {
-    let old: Vec<String> = (0..150_000u32)
+/// `n` lines with every 211th changed, `n / 300` lines inserted at the middle
+/// and `n / 500` removed at 4/5.
+fn edited_blobs(n: usize) -> (Vec<u8>, Vec<u8>) {
+    let old: Vec<String> = (0..n)
         .map(|i| format!("    let v{i} = compute({i});\n"))
         .collect();
     let mut new = old.clone();
-    for i in (0..150_000usize).step_by(211) {
+    for i in (0..n).step_by(211) {
         new[i] = format!("    let v{i} = changed({i});\n");
     }
     new.splice(
-        75_000..75_000,
-        (0..500)
+        n / 2..n / 2,
+        (0..n / 300)
             .map(|i| format!("inserted {i}\n"))
             .collect::<Vec<_>>(),
     );
-    new.drain(120_000..120_300);
-    let (old, new) = (join(&old), join(&new));
+    new.drain(n * 4 / 5..n * 4 / 5 + n / 500);
+    (join(&old), join(&new))
+}
 
-    let start = Instant::now();
+/// 2k lookups spread over `map`'s old lines; how many are unchanged.
+fn spread_lookups(map: &LineMap) -> usize {
+    let len = u64::from(map.old_len());
+    (0..2_000)
+        .map(|i| (i * len / 2_000) as u32)
+        .filter(|&l| matches!(map.map_line(l), Mapped::Unchanged(_)))
+        .count()
+}
+
+#[test]
+fn line_map_150k_lines_fast() {
+    let (old, new) = edited_blobs(150_000);
+    // One diff: about 10x the time for 10x the lines (and changes); 100x if
+    // building the map were quadratic.
+    assert_ratio_below(
+        "building, 5k -> 50k lines",
+        30.0,
+        [edited_blobs(5_000), edited_blobs(50_000)],
+        |(old, new)| LineMap::new(old, new),
+    );
     let map = LineMap::new(&old, &new);
-    let built = start.elapsed();
-    let mut moved = 0u32;
-    for line in (0..150_000u32).step_by(7) {
-        if matches!(map.map_line(line), Mapped::Unchanged(_)) {
-            moved += 1;
-        }
-    }
-    let elapsed = start.elapsed();
     assert_eq!(map.map_line(1), Mapped::Unchanged(1));
     assert_eq!(map.map_line(100_000), Mapped::Unchanged(100_500));
     assert_eq!(map.map_line(149_999), Mapped::Unchanged(150_199));
+    let moved = (0..150_000u32)
+        .step_by(7)
+        .filter(|&line| matches!(map.map_line(line), Mapped::Unchanged(_)))
+        .count();
     assert!(moved > 20_000);
-    assert!(
-        elapsed < Duration::from_millis(500),
-        "build {built:?}, total {elapsed:?}"
+    // Lookups are binary searches over the changes: 10x the changes cost
+    // about 1.3x per lookup; 10x if a lookup scanned them.
+    let (old_15k, new_15k) = edited_blobs(15_000);
+    assert_ratio_below(
+        "2k lookups, 15k -> 150k lines",
+        4.0,
+        [&LineMap::new(&old_15k, &new_15k), &map],
+        |map| spread_lookups(map),
     );
 }

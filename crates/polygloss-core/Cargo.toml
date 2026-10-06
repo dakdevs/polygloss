@@ -37,5 +37,7 @@ test-support = ["dep:tempfile"]
 [dev-dependencies]
 # Core lists itself so its own integration tests get `testing` (plan M1 conventions).
 polygloss-core = { path = ".", features = ["test-support"] }
+# `polygloss_diff::testing`: the scaling checks of the timing tests.
+polygloss-diff = { workspace = true, features = ["test-support"] }
 insta.workspace = true
 tempfile.workspace = true

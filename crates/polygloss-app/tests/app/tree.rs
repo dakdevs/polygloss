@@ -8,7 +8,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{AppContext as _, Entity, Focusable as _, TestAppContext};
@@ -18,6 +17,7 @@ use polygloss_app::tree::filters::{self, StatusFilter, TreeFilter};
 use polygloss_app::tree::model::{ItemId, NodeKind, TreeModel};
 use polygloss_app::tree::{FileTree, FileTreeEvent, file_tree, finder};
 use polygloss_core::categories::{CategoriesConfig, Categorizer};
+use polygloss_diff::testing::assert_ratio_below;
 use polygloss_diff::{FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, ObjectFormat, Oid};
 use polygloss_viewport::{
     DiffProvider, DiffViewport, FileFlags, ScrollTarget, ViewportEvent, ViewportOptions,
@@ -157,30 +157,6 @@ pub fn settle_counts(shell: &mut Shell, tab: &Entity<ReviewTab>, n: usize) {
         }
     }
     panic!("the line counts never settled");
-}
-
-/// The one-minute load average when `sysctl -n vm.loadavg` reads (the M6
-/// timing-test rule: assert wall-clock budgets only below 4).
-fn load_average() -> Option<f64> {
-    let out = std::process::Command::new("/usr/sbin/sysctl")
-        .args(["-n", "vm.loadavg"])
-        .output()
-        .ok()?;
-    // "{ 5.28 9.47 19.69 }"
-    String::from_utf8(out.stdout)
-        .ok()?
-        .split_whitespace()
-        .find_map(|w| w.parse::<f64>().ok())
-}
-
-/// Asserts `elapsed < budget` on a quiet machine; otherwise prints it.
-fn assert_under(what: &str, elapsed: Duration, budget: Duration) {
-    match load_average() {
-        Some(load) if load < 4.0 => {
-            assert!(elapsed < budget, "{what} took {elapsed:?} (load {load})")
-        }
-        load => eprintln!("{what} took {elapsed:?}; load {load:?}: not asserted"),
-    }
 }
 
 #[test]
@@ -820,37 +796,49 @@ fn synthetic_files(n: usize) -> Vec<FileChange> {
         .collect()
 }
 
-#[gpui_kit::test]
-fn tree_builds_13k_files_under_200ms(cx: &mut TestAppContext) {
-    let _sb = Sandbox::isolate();
-    let shell = start(cx);
-    let files = Arc::new(synthetic_files(13_000));
-    // The partition is the categories feature's (timed by its own test).
+/// `n` synthetic files ([`synthetic_files`]), their default partition and a
+/// viewport listing them.
+fn tree_inputs(
+    shell: &mut Shell,
+    n: usize,
+) -> (Arc<Vec<FileChange>>, Arc<Partition>, Entity<DiffViewport>) {
+    let files = Arc::new(synthetic_files(n));
+    // The partition is the categories feature's (checked by its own test).
     let categorizer = Categorizer::new(&CategoriesConfig::default(), &[]).unwrap();
     let partition = Arc::new(Partition::new(Arc::new(categorizer), &files));
-    let sizes: Vec<usize> = std::iter::once(partition.main.len())
-        .chain(partition.sections.iter().map(|s| s.files.len()))
+    let viewport = shell.cx.update(|window, cx| {
+        let provider: Arc<dyn DiffProvider> = Arc::new(ListOnly(files.clone()));
+        cx.new(|cx| DiffViewport::new(provider, ViewportOptions::default(), window, cx))
+    });
+    (files, partition, viewport)
+}
+
+/// A tree with every panel of `inputs` built.
+fn build_tree(
+    shell: &mut Shell,
+    (files, partition, viewport): &(Arc<Vec<FileChange>>, Arc<Partition>, Entity<DiffViewport>),
+) -> Entity<FileTree> {
+    shell.cx.update(|window, cx| {
+        cx.new(|cx| {
+            let mut tree = FileTree::new(Arc::default(), viewport.clone(), window, cx);
+            tree.set_partition(files.clone(), Some(partition.clone()), Vec::new(), cx);
+            tree
+        })
+    })
+}
+
+#[gpui_kit::test]
+fn tree_builds_13k_files_in_linear_time(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    let review = tree_inputs(&mut shell, 13_000);
+    let sizes: Vec<usize> = std::iter::once(review.1.main.len())
+        .chain(review.1.sections.iter().map(|s| s.files.len()))
         .collect();
     // By hand: 37 lockfiles; of the other 12,963, every third (i % 3 == 0
     // for i in 37..13,000: 4,321) under `tests/`.
     assert_eq!(sizes, [8_642, 4_321, 37]);
-    let (tree, elapsed) = shell.cx.update(|window, cx| {
-        let provider: Arc<dyn DiffProvider> = Arc::new(ListOnly(files.clone()));
-        let viewport =
-            cx.new(|cx| DiffViewport::new(provider, ViewportOptions::default(), window, cx));
-        let start = Instant::now();
-        let tree = cx.new(|cx| {
-            let mut tree = FileTree::new(Arc::default(), viewport, window, cx);
-            tree.set_partition(files.clone(), Some(partition.clone()), Vec::new(), cx);
-            tree
-        });
-        (tree, start.elapsed())
-    });
-    assert_under(
-        "building the 13k-file tree's panels",
-        elapsed,
-        Duration::from_millis(200),
-    );
+    let tree = build_tree(&mut shell, &review);
     let (panels, order, rows) = tree.read_with(shell.cx, |t, cx| {
         let panels: Vec<usize> = t
             .panels()
@@ -865,15 +853,37 @@ fn tree_builds_13k_files_under_200ms(cx: &mut TestAppContext) {
     // Every file and folder of the open panel is a row (all expanded).
     let dirs = tree.read_with(shell.cx, |t, _| t.model().dir_paths().len());
     assert_eq!(rows, 8_642 + dirs);
-    // Filtering all 13k with nucleo, every panel, stays interactive too.
-    let start = Instant::now();
-    shell
-        .cx
-        .update(|window, cx| tree.update(cx, |t, cx| t.set_query("d07part3", window, cx)));
-    assert_under(
-        "the 13k-file fuzzy filter",
-        start.elapsed(),
-        Duration::from_millis(400),
+    // Building every panel: 10x the files cost at most 10x (less with the
+    // fixed costs); 100x if quadratic. Sizes past 13k, where a quadratic term
+    // outgrows the linear work.
+    let inputs = [
+        tree_inputs(&mut shell, 5_000),
+        tree_inputs(&mut shell, 50_000),
+    ];
+    let trees = [
+        build_tree(&mut shell, &inputs[0]),
+        build_tree(&mut shell, &inputs[1]),
+    ];
+    assert_ratio_below(
+        "building every panel, 5k -> 50k files",
+        30.0,
+        [&inputs[0], &inputs[1]],
+        |inputs| build_tree(&mut shell, inputs),
+    );
+    // Filtering with nucleo, every panel, and clearing the query again: as
+    // linear.
+    assert_ratio_below(
+        "fuzzy filter and clear, 5k -> 50k files",
+        30.0,
+        trees,
+        |tree| {
+            shell.cx.update(|window, cx| {
+                tree.update(cx, |t, cx| {
+                    t.set_query("d07part3", window, cx);
+                    t.set_query("", window, cx);
+                })
+            })
+        },
     );
 }
 

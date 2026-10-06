@@ -2,12 +2,12 @@
 
 use std::fmt::Write as _;
 use std::ops::Range;
-use std::time::{Duration, Instant};
 
 use polygloss_diff::Side;
 use polygloss_diff::hunks::{FileDiff, diff_blobs};
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::{Cell, ExpandBy, Expansions, GapId, Layout, LineKind, Row, build_rows};
+use polygloss_diff::testing::assert_ratio_below;
 
 /// `n` distinct lines `line 0\n` .. `line n-1\n`.
 fn numbered(n: u32) -> Vec<String> {
@@ -665,23 +665,39 @@ fn layout_serde_names() {
     );
 }
 
-#[test]
-fn rows_200k_lines_expand_all_fast() {
-    let old = numbered(200_000);
+/// The diff of `n` numbered lines with every 1000th changed.
+fn sparse_diff(n: usize) -> FileDiff {
+    let old = numbered(n as u32);
     let mut new = old.clone();
-    for i in (0..200_000).step_by(1000) {
+    for i in (0..n).step_by(1000) {
         new[i] = format!("changed {i}\n");
     }
-    let fd = diff(&join(&old), &join(&new));
+    diff(&join(&old), &join(&new))
+}
+
+/// Collapsed split rows, then every gap expanded, in both layouts.
+fn expand_all(fd: &FileDiff) -> [Vec<Row>; 3] {
     let mut exp = Expansions::default();
-    let start = Instant::now();
-    let collapsed = build_rows(&fd, &exp, Layout::Split);
-    exp.expand_file(&fd);
-    let unified = build_rows(&fd, &exp, Layout::Unified);
-    let split = build_rows(&fd, &exp, Layout::Split);
-    let elapsed = start.elapsed();
+    let collapsed = build_rows(fd, &exp, Layout::Split);
+    exp.expand_file(fd);
+    let unified = build_rows(fd, &exp, Layout::Unified);
+    let split = build_rows(fd, &exp, Layout::Split);
+    [collapsed, unified, split]
+}
+
+#[test]
+fn rows_200k_lines_expand_all_fast() {
+    let fd = sparse_diff(200_000);
+    let [collapsed, unified, split] = expand_all(&fd);
     assert_eq!(gaps(&collapsed).len(), 200);
     assert_eq!(unified.len(), 200_000 + 200);
     assert_eq!(split.len(), 200_000);
-    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+    // Rows are built in one pass: 10x the lines cost about 10x; 100x if
+    // quadratic.
+    assert_ratio_below(
+        "expanding all rows, 20k -> 200k lines",
+        30.0,
+        [&sparse_diff(20_000), &fd],
+        |fd| expand_all(fd),
+    );
 }

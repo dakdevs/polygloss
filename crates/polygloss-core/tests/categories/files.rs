@@ -1,5 +1,5 @@
 //! Files (raw non-UTF-8 paths), the lenient settings reader and the
-//! 13k-path timing.
+//! 13k-path scaling check.
 
 use super::*;
 
@@ -106,7 +106,7 @@ fn categories_config_reads_the_sandboxed_settings_file() {
 }
 
 #[test]
-fn categorizing_13k_paths_with_every_category_on_takes_under_250ms() {
+fn categorizing_13k_paths_with_every_category_on_scales_linearly() {
     // A Linux-sized tree (~13k paths) with every built-in and every group on.
     let dirs = [
         "drivers/net/ethernet/intel",
@@ -154,12 +154,8 @@ fn categorizing_13k_paths_with_every_category_on_takes_under_250ms() {
         .map(|p| file(p.as_bytes(), Unspecified, false))
         .collect();
 
-    let started = Instant::now();
     let c = Categorizer::new(&cfg, &[]).unwrap();
-    let built = started.elapsed();
-    let started = Instant::now();
     let got = c.categorize_files(&files);
-    let elapsed = started.elapsed();
     assert_eq!(got.len(), files.len());
     // Spot checks, by hand: `tools/testing/selftests/net/sub3/3-main.c` is
     // Tests (`testing/`), `Documentation/admin-guide/sub52/52-index.rst` is
@@ -168,14 +164,14 @@ fn categorizing_13k_paths_with_every_category_on_takes_under_250ms() {
     assert_eq!(id(3).as_deref(), Some("tests"));
     assert_eq!(id(52).as_deref(), Some("docs"));
     assert_eq!(id(1), None);
-    println!("build {built:?}, categorize 13k paths {elapsed:?}");
-    match quiet_machine() {
-        Some(load) if load < 4.0 => assert!(
-            elapsed.as_millis() < 250,
-            "categorizing 13k paths took {elapsed:?} (load {load})"
-        ),
-        load => println!("load {load:?}: timing not asserted"),
-    }
+    // One pass per path: 10x the paths cost about 10x; 100x if each path's
+    // cost grew with the number of paths.
+    assert_ratio_below(
+        "categorizing, 1.3k -> 13k paths",
+        30.0,
+        [&files[..1_300], &files[..]],
+        |files| c.categorize_files(files),
+    );
 }
 
 #[test]
