@@ -76,6 +76,23 @@ Other entry points:
 
 The user docs are tested too: `tests/scripts/docs.test.ts` holds [`docs/user-guide.md`](docs/user-guide.md) to the app's default key bindings and settings (`Polygloss --dump-keymap --json`, `--dump-settings --json`) and [`docs/agents.md`](docs/agents.md) to the MCP server's tools. When you add an action, a binding, a setting or a tool, update those docs in the same change.
 
+## Releases
+
+Every push to `main` whose CI jobs all pass is released ([ADR-0019](docs/adr/0019-distribution-and-signing.md)). `ci.yml`'s `release` job runs `.github/workflows/release.yml`, one release at a time:
+
+1. The version is CalVer `YYYYMMDD.N`: the date in Los Angeles, and N one more than that day's highest release tag (`bun scripts/release-version.ts` prints it from origin's tags; `--previous` prints the last release tag).
+2. `bun scripts/release-notes.ts` writes the notes from the commits since the last release tag, grouped by conventional-commit type, so commit subjects are the changelog: `feat(app): …`, `fix(cli): …`. Merge, `wip` and checkpoint commits are left out.
+3. `scripts/package-release.sh --sign` builds with `POLYGLOSS_VERSION`, signs as team 5U7E4UQ5M3 from a temporary keychain, notarizes and staples; `scripts/smoke-bundle.sh` runs the result.
+4. `scripts/make-appcast.sh` signs the Sparkle appcast, the notes embedded, and `gh release create v<version>` tags the commit and publishes the DMG, `appcast.xml` and `SHA256SUMS` as the latest release, the notes as its body.
+
+A missing secret fails the job before it builds anything, naming what is missing; there is never an unsigned release. Crate versions stay semver, and local builds report them; `POLYGLOSS_VERSION=20261005.1 scripts/package-release.sh` builds a release version.
+
+- **Secrets:** `scripts/setup-release-secrets.sh` (try `--dry-run` first) reads the Developer ID `.p12`, the App Store Connect API key and the Sparkle key pair from 1Password (vault `dak.dev`) and sets the secrets and the `SPARKLE_PUBLIC_ED_KEY` variable that `release.yml` reads. It makes the Sparkle key pair, and saves it in 1Password, when there is none.
+- **Rotating a secret:** replace the attachment or field in its 1Password item (a renewed certificate as `developer-id-application.p12` with its `p12 password`; a new API key as `AuthKey_<Key ID>.p8` with its `Key ID`), then run `scripts/setup-release-secrets.sh` again; it sets every secret again. Rotate the Sparkle key only if it leaks: installed copies check updates against the public key they shipped with, so an update signed with a new key reaches only users who install it by hand. To rotate it anyway, delete its 1Password item and the `dev.dak.polygloss` key in the login keychain, then run the script.
+- **Local signed build:** `APPLE_SIGNING_IDENTITY="Developer ID Application: Dak Washbrook (5U7E4UQ5M3)" APPLE_KEYCHAIN_PROFILE=polygloss scripts/package-release.sh --sign`.
+- **Dry runs:** run the `release` workflow by hand (`dry_run` is the default) to build an ad-hoc signed DMG and the notes as a run artifact; clear `dry_run` on `main` to release again. Locally: `bun scripts/release-dry-run.ts --event workflow_dispatch --skip "Compute the version" --env POLYGLOSS_VERSION=20261005.1`.
+- Downloads and Sparkle's update checks are unauthenticated, so they work only while the repository is public.
+
 ## Test rules
 
 - **Every change adds or updates tests.** Unit tests for logic, GPUI tests (`crates/polygloss-app/tests/app/`, one module per feature) for UI behavior, E2E tests (`tests/e2e/` in the app crate for the GPUI suites, `tests/e2e/` at the root for the agent surface) for features.
