@@ -16,6 +16,7 @@ use crate::review_tab::toolbar::{self, Narrow};
 pub fn init(cx: &mut App) {
     crate::theme::init(cx);
     crate::motion::init(cx);
+    crate::reduce_motion::init(cx);
     // Before `window`: "Check for Updates…" leads the Polygloss menu.
     crate::updates::init(cx);
     crate::window::init(cx);

@@ -41,6 +41,7 @@ pub mod open_flow;
 pub mod palette;
 pub mod perf;
 pub mod provider;
+pub mod reduce_motion;
 pub mod review_tab;
 pub mod settings;
 pub mod space;

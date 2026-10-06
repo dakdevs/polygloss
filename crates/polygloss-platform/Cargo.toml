@@ -18,8 +18,10 @@ polygloss-core.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true, optional = true }
-objc2-foundation = { workspace = true, optional = true }
-objc2-app-kit = { workspace = true, optional = true }
+# `NSNotification` and `NSWorkspace`/`NSAccessibility`: the live Reduce
+# Motion observer (T7.16), on top of the workspace's features.
+objc2-foundation = { workspace = true, optional = true, features = ["NSNotification"] }
+objc2-app-kit = { workspace = true, optional = true, features = ["NSWorkspace", "NSAccessibility"] }
 
 [dev-dependencies]
 # Temp dirs for the editor tests' fake shims, bundles and scratch files.
@@ -36,4 +38,9 @@ required-features = ["appkit"]
 # The Sparkle loader is objc2 FFI too (T5.3).
 [[test]]
 name = "sparkle"
+required-features = ["appkit"]
+
+# The live Reduce Motion observer is objc2 FFI too (T7.16).
+[[test]]
+name = "reduce_motion"
 required-features = ["appkit"]

@@ -27,6 +27,7 @@ mod open_flow;
 mod palette;
 mod perf;
 mod provider;
+mod reduce_motion;
 mod screenshot;
 mod settings;
 mod shell;

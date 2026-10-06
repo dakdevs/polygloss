@@ -3442,6 +3442,16 @@ scripts/cargo.sh build -p polygloss-platform --features appkit
 
 Then the standard completion block, plus a manual check in the dev app: with the app running and focused, toggle Reduce Motion with the Accessibility Shortcuts panel (⌥⌘F5) and in System Settings; record whether each reaches the app (and a kit dialog's entrance) without an activation.
 
+**As built (T7.16):**
+
+- objc2-app-kit also needs `NSAccessibility`: `accessibilityDisplayShouldReduceMotion` and the notification name are in AppKit's `NSAccessibility` header. The platform's `Cargo.toml` enables `NSWorkspace` and `NSAccessibility`, and objc2-foundation's `NSNotification`.
+- nextest's `test()` matches test names, not binary names, so the platform test sits in a `reduce_motion` module of `tests/reduce_motion.rs` (`reduce_motion::a_posted_notification_reaches_the_callback_until_drop`), where the Verify filter selects it.
+- The callback is not `Send`, so the observer runs it only on the thread that observed (AppKit posts on the main thread); `a_post_on_another_thread_runs_nothing` pins this. Dropping the observer removes it and drops the callback on that thread.
+- The app follows for every window (`cx.windows()`), a superset of "every main window". The app has one main window, and a second one redraws forever under the test platform (production never opens a second one: `reopen` returns early while one exists). `reduce_motion_change_is_followed_without_activation` therefore uses the main window and a kit-rooted probe window, and records each draw through a `RootPlugin`.
+- `ObserverSource::default()` is the platform observer, as `ReduceMotionSource::default()` is gpui-base's reader, so `startup.rs` is unchanged. App tests that install no fake register an in-process observer that nothing posts to.
+- `system_reduce_motion()` exists as specified but has no caller yet and no test, because reading it reads the user's real setting.
+- The manual check is left to the M7 gate: toggling the real Reduce Motion setting belongs to the user.
+
 ### T7.3 Motion perf scenario, filmstrips and recordings
 
 **Files**
