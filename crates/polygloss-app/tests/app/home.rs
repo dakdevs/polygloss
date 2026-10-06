@@ -1024,30 +1024,72 @@ fn nav_row_menu_archives_mutes_and_assigns(cx: &mut TestAppContext) {
 }
 
 /// ADR-0031 (T7.6): Home's cards sit as far apart as the review canvas's,
-/// and its kind and status badges are one shape.
+/// its sections `SECTION` apart, and its badges (kind, status, questions,
+/// agent) are one shape.
 #[gpui_kit::test]
 fn home_cards_share_the_canvas_gap(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let core = Core::open_default().unwrap();
     let (compare, head, base) = three_reviews(&core, repo.path());
+    question(&core, &compare);
+    let session = core
+        .upsert_session(&SessionInfo {
+            id: "session-one".into(),
+            client_name: "claude-code".into(),
+            client_version: None,
+            owner_pid: None,
+            cwd: Some(repo.path().to_path_buf()),
+        })
+        .unwrap();
+    core.assign_review(&head.review_id, &session, AssignedBy::OpenDiff)
+        .unwrap();
     let mut shell = start(cx);
-    sections(&mut shell);
+    assert_eq!(
+        sections(&mut shell),
+        (
+            vec![compare.review_id.clone()],
+            vec![head.review_id.clone(), base.review_id.clone()]
+        )
+    );
 
     // Two cards of one section (Recent): the space between them.
     let upper = bounds(shell.cx, &format!("home-row-{}", head.review_id));
     let lower = bounds(shell.cx, &format!("home-row-{}", base.review_id));
     let home_gap = lower.top() - upper.bottom();
-    // Each row's kind badge and status badge: one 20 pt tall capsule shape.
+    // Between sections: Awaiting you's last card to Recent's title, 24.
+    let awaiting = bounds(shell.cx, &format!("home-row-{}", compare.review_id));
+    let recent = bounds(shell.cx, "home-section-RECENT");
+    assert_eq!(recent.top() - awaiting.bottom(), gpui_kit::px(24.));
+    // Every badge is 20 tall, ...
+    let mut badges = vec![
+        format!("home-questions-{}", compare.review_id),
+        format!("home-agent-{}", head.review_id),
+    ];
     for id in [&compare.review_id, &head.review_id, &base.review_id] {
-        let kind = bounds(shell.cx, &format!("home-kind-{id}"));
-        let status = bounds(shell.cx, &format!("home-status-{id}"));
+        badges.push(format!("home-kind-{id}"));
+        badges.push(format!("home-status-{id}"));
+    }
+    for name in &badges {
         assert_eq!(
-            kind.size.height,
+            bounds(shell.cx, name).size.height,
             gpui_kit::px(20.),
-            "the kind badge of {id}"
+            "{name}"
         );
-        assert_eq!(status.size.height, gpui_kit::px(20.), "the status of {id}");
+    }
+    // ... and the one badge they are built from is a capsule: radius 10.
+    let mut badge = shell
+        .cx
+        .update(|_, cx| row::badge(gpui_kit::component::ActiveTheme::theme(cx).foreground));
+    let radii = badge.style().corner_radii.clone();
+    for corner in [
+        radii.top_left,
+        radii.top_right,
+        radii.bottom_right,
+        radii.bottom_left,
+    ] {
+        assert_eq!(corner, Some(gpui_kit::px(10.).into()));
     }
 
     // The review canvas, measured the same way: the header card's bottom to

@@ -357,7 +357,7 @@ pub fn render_row(
     // A fixed column, its content at its right edge.
     let column = |width: f32| div().flex_none().w(px(width)).flex().justify_end();
     let review_id = s.review_id.clone();
-    let (kind_id, status_id) = (s.review_id.clone(), s.review_id.clone());
+    let [kind_id, status_id, questions_id, agent_id] = [(); 4].map(|_| s.review_id.clone());
     let card = crate::theme::viewport_theme(cx);
     // The selection tints the card (the theme's color is translucent).
     let selected = card.card_background.blend(theme.list_active);
@@ -459,6 +459,7 @@ pub fn render_row(
         .when_some(questions_label(s), |d, q| {
             d.child(
                 badge(theme.warning)
+                    .debug_selector(move || format!("home-questions-{questions_id}"))
                     .bg(theme.warning.opacity(0.14))
                     .font_medium()
                     .child(q),
@@ -479,6 +480,7 @@ pub fn render_row(
             column(layout::HOME_COL_AGENT).when_some(row.agent.clone(), |d, agent| {
                 d.child(
                     badge(theme.muted_foreground)
+                        .debug_selector(move || format!("home-agent-{agent_id}"))
                         .border_1()
                         .border_color(theme.border)
                         .child(
@@ -500,7 +502,7 @@ pub fn render_row(
 
 /// A badge: one shape for the kind, the status, questions and the agent (an
 /// XS capsule, `BADGE_X` in, caption text in `fg`).
-fn badge(fg: Hsla) -> Div {
+pub fn badge(fg: Hsla) -> Div {
     h_flex()
         .flex_none()
         .h(px(height::XS))

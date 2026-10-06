@@ -1,7 +1,11 @@
 //! Home and overlay geometry as Metal draws it (T7.6, ADR-0031, ADR-0030
-//! Feedback without motion): press ink on a Home row, and the file finder
-//! over a review (`e2e_overlay_finder`: the picker frame, `MD` rows with
-//! their status letters, names and folders, the first one selected).
+//! Feedback without motion): press ink on a Home row, the file finder over
+//! a review (`e2e_overlay_finder`: the picker frame, `MD` rows with their
+//! status letters, names and folders, the first one selected) and the base
+//! picker over a live review (`e2e_overlay_base_picker`: the same frame, its
+//! heading as the list's section header, `ROW2` rows with the check slot,
+//! subject, author and date, and the SHA pills; the dates are read at a
+//! pinned clock, so they are the same on every run).
 
 use std::sync::Arc;
 
@@ -13,17 +17,27 @@ use gpui_kit::{
 use image::RgbaImage;
 use polygloss_app::home::HomeView;
 use polygloss_app::keymap::actions::window as window_actions;
-use polygloss_app::review_tab::open_review;
+use polygloss_app::live::base_picker;
+use polygloss_app::review_tab::{ReviewTab, open_review};
 use polygloss_app::tabs::TabItem;
 use polygloss_app::window::MainWindow;
 use polygloss_app::{startup, window};
-use polygloss_core::review::Core;
+use polygloss_core::git::{CompareMode, Since, Source};
+use polygloss_core::review::{Core, OpenRequest};
+use polygloss_core::store::events::Actor;
+use polygloss_diff::ObjectFormat;
 
 use crate::support::harness::Test;
 use crate::support::screenshot::{self, SCALE, WINDOW_HEIGHT, WINDOW_WIDTH, assert_screenshot};
-use crate::support::{Sandbox, code_change_repo, open_compare};
+use crate::support::{
+    CONFIG_RS_BASE, CONFIG_RS_HEAD, FixtureRepo, Sandbox, code_change_repo, open_compare,
+};
 
-pub const TESTS: &[Test] = &crate::tests![e2e_press_ink_home, e2e_overlay_finder];
+pub const TESTS: &[Test] = &crate::tests![
+    e2e_press_ink_home,
+    e2e_overlay_finder,
+    e2e_overlay_base_picker
+];
 
 /// Frames drawn at most while Home loads.
 const MAX_FRAMES: usize = 20;
@@ -189,8 +203,34 @@ fn e2e_press_ink_home() {
 fn e2e_overlay_finder() {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
+    let (mut cx, handle, _tab) = settled_review(
+        &repo,
+        Source::Compare {
+            base: "refs/tags/base".into(),
+            head: "refs/tags/head".into(),
+            mode: CompareMode::Direct,
+        },
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(window_actions::FileFinder), cx)
+    })
+    .expect("the window is open");
+    for _ in 0..4 {
+        screenshot::draw(&mut cx, handle);
+    }
+    let open = cx.update(|cx| polygloss_app::tree::finder::current(cx).is_some());
+    assert!(open, "the finder is open");
+    assert_screenshot(&screenshot::capture(&mut cx, handle));
+}
+
+/// The app over `repo` (`HOME` above it; the Off override, so gpui-kit's
+/// dialogs settle on their first frame) with `source` open in a settled
+/// review tab.
+fn settled_review(
+    repo: &FixtureRepo,
+    source: Source,
+) -> (HeadlessAppContext, AnyWindowHandle, Entity<ReviewTab>) {
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
-    // gpui-kit's dialog settles on its first frame.
     cx.update(|cx| {
         use polygloss_app::motion::{MotionPolicy, set_override};
         set_override(Some(MotionPolicy::Off), cx)
@@ -203,21 +243,16 @@ fn e2e_overlay_finder() {
             .expect("open the main window")
     });
     screenshot::park_pointer(&mut cx, handle);
-    let req = polygloss_core::review::OpenRequest {
+    let req = OpenRequest {
         worktree: repo.path().to_path_buf(),
-        source: polygloss_core::git::Source::Compare {
-            base: "refs/tags/base".into(),
-            head: "refs/tags/head".into(),
-            mode: polygloss_core::git::CompareMode::Direct,
-        },
+        source,
         label: None,
         pin: None,
-        actor: polygloss_core::store::events::Actor::human(),
+        actor: Actor::human(),
     };
-    let _task = cx
-        .update_window(handle, |_, window, cx| open_review(req, window, cx))
-        .expect("the window is open");
-    let mut settled = false;
+    cx.update_window(handle, |_, window, cx| open_review(req, window, cx))
+        .expect("the window is open")
+        .detach();
     for _ in 0..MAX_FRAMES {
         screenshot::draw(&mut cx, handle);
         let tab = cx.update(|cx| {
@@ -227,26 +262,77 @@ fn e2e_overlay_finder() {
                 .and_then(TabItem::review)
                 .cloned()
         });
-        if let Some(tab) = tab {
-            let debug = cx.update(|cx| tab.read(cx).viewport.read(cx).debug());
-            if debug.visible_rows.len() > 10
-                && !debug.visible_rows.iter().any(|r| r == "Loading…")
-                && debug.styled_rows > 0
-            {
-                settled = true;
-                break;
-            }
+        let Some(tab) = tab else { continue };
+        let debug = cx.update(|cx| tab.read(cx).viewport.read(cx).debug());
+        if debug.visible_rows.len() > 10
+            && !debug.visible_rows.iter().any(|r| r == "Loading…")
+            && debug.styled_rows > 0
+        {
+            return (cx, handle, tab);
         }
     }
-    assert!(settled, "the review tab never settled");
-    cx.update_window(handle, |_, window, cx| {
-        window.dispatch_action(Box::new(window_actions::FileFinder), cx)
-    })
-    .expect("the window is open");
+    panic!("the review tab never settled");
+}
+
+/// The base picker's "now": 2026-01-01 01:00 UTC, an hour after
+/// `FixtureRepo`'s first commit (its commits are a minute apart from
+/// 2026-01-01 00:00 UTC).
+const BASE_PICKER_NOW_MS: i64 = (1_767_225_600 + 60 * 60) * 1000;
+
+fn e2e_overlay_base_picker() {
+    let _sb = Sandbox::isolate();
+    // Four commits on main, three on `feature` (checked out) and an
+    // uncommitted edit: more bases than the frame shows.
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("README.md", b"# app\n");
+    repo.commit("Initial commit");
+    repo.write("src/config.rs", CONFIG_RS_BASE.as_bytes());
+    repo.commit("Add the config parser");
+    repo.write("app.conf", b"greeting = Hello\n");
+    repo.commit("Ship a sample app.conf");
+    repo.write("README.md", b"# app\n\nReads `app.conf` at startup.\n");
+    repo.commit("Document app.conf in the README");
+    repo.branch("feature");
+    repo.checkout("feature");
+    repo.write("src/config.rs", CONFIG_RS_HEAD.as_bytes());
+    repo.commit("Keep config entries sorted by key");
+    repo.write("app.conf", b"greeting = Hello\nname = World\n");
+    repo.commit("Add a name to the sample config");
+    repo.write("CHANGELOG.md", b"- Sorted config entries\n");
+    repo.commit("Start a changelog");
+    repo.write("src/main.rs", b"mod config;\n\nfn main() {}\n");
+
+    let (mut cx, handle, tab) = settled_review(
+        &repo,
+        Source::Live {
+            since: Since::MergeBase,
+        },
+    );
+    let picker = cx
+        .update_window(handle, |_, window, cx| {
+            tab.update(cx, |t, cx| base_picker::open(t, window, cx))
+        })
+        .expect("the window is open")
+        .expect("a live review has a base picker");
+    let mut loaded = false;
+    for _ in 0..MAX_FRAMES {
+        screenshot::draw(&mut cx, handle);
+        if cx.update(|cx| !picker.read(cx).delegate().loading()) {
+            loaded = true;
+            break;
+        }
+    }
+    assert!(loaded, "the base picker never read the log");
+    let bases = cx.update(|cx| picker.read(cx).delegate().matches().len());
+    assert_eq!(bases, 2 + 7, "the moving bases, then every commit");
+    cx.update(|cx| {
+        picker.update(cx, |p, cx| {
+            p.delegate_mut().set_clock(BASE_PICKER_NOW_MS, 0);
+            cx.notify();
+        })
+    });
     for _ in 0..4 {
         screenshot::draw(&mut cx, handle);
     }
-    let open = cx.update(|cx| polygloss_app::tree::finder::current(cx).is_some());
-    assert!(open, "the finder is open");
     assert_screenshot(&screenshot::capture(&mut cx, handle));
 }

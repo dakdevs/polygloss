@@ -765,6 +765,25 @@ fn overlay_rows_follow_the_ladder(cx: &mut TestAppContext) {
     shell.open(live_head(&repo)).unwrap();
     let height = |shell: &mut Shell, name: &str| f32::from(bounds(shell.cx, name).size.height);
 
+    // The palette: gpui-kit's rows (6 above and below one line) at
+    // `text::UI`'s 20 pt line: 32, on the grid, though off the ladder.
+    shell.cx.simulate_keystrokes("cmd-k");
+    draw(shell.cx);
+    let (first, second) = shell.cx.update(|_, cx| {
+        let p = command::current(cx).expect("the palette is open");
+        let rows = &p.read(cx).groups()[0].1;
+        (rows[0].action, rows[1].action)
+    });
+    let top = |shell: &mut Shell, action: &str| {
+        f32::from(bounds(shell.cx, &format!("palette-row-{action}")).top())
+    };
+    assert_eq!(
+        top(&mut shell, second) - top(&mut shell, first),
+        32.0,
+        "a palette row"
+    );
+    close_overlay(&mut shell);
+
     // The finder: one-line rows, MD.
     shell.cx.simulate_keystrokes("cmd-p");
     draw(shell.cx);
@@ -852,6 +871,35 @@ fn overlay_headers_and_rows_share_an_edge(cx: &mut TestAppContext) {
         left(&mut shell, "cheat-row-viewport::CursorDown"),
         "the cheat sheet"
     );
+}
+
+#[gpui_kit::test]
+fn base_picker_keeps_its_heading_when_nothing_matches(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = crowded_repo();
+    let mut shell = start(cx);
+    // gpui-kit's dialogs slide in; settled, each sits where it rests.
+    shell.cx.update(|_, cx| {
+        use polygloss_app::motion::{MotionPolicy, set_override};
+        set_override(Some(MotionPolicy::Off), cx)
+    });
+    shell.open(live_head(&repo)).unwrap();
+    open_base_picker(&mut shell);
+    // The heading's place in the picker's frame.
+    let place = |shell: &mut Shell| {
+        let frame = bounds(shell.cx, "base-picker");
+        let heading = bounds(shell.cx, "base-picker-header");
+        (heading.origin - frame.origin, heading.size)
+    };
+    let heading = place(&mut shell);
+    shell.cx.simulate_input("no such base qqzz");
+    draw(shell.cx);
+    let matches = shell.cx.update(|_, cx| {
+        let p = polygloss_app::live::base_picker::current(cx).expect("the picker is open");
+        p.read(cx).delegate().matches().len()
+    });
+    assert_eq!(matches, 0, "nothing matches");
+    assert_eq!(place(&mut shell), heading, "the heading stays where it was");
 }
 
 #[gpui_kit::test]

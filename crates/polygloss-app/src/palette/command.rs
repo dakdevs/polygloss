@@ -224,9 +224,12 @@ impl Render for CommandPalette {
             });
             command = command.group(CommandGroup::new().label(*heading).items(items));
         }
-        // The picker's frame (ADR-0031): the dialog's whole content.
+        // The picker's frame (ADR-0031): the dialog's whole content. Rows
+        // and headings inherit `text::UI`'s line height, so the kit's rows
+        // (`py_1p5` around one line) land on the grid at 32.
         div()
             .debug_selector(|| "command-palette".into())
+            .text_style(text::UI)
             .child(command)
     }
 }

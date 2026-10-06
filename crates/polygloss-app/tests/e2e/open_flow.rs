@@ -1,5 +1,6 @@
 //! Screenshots of T3.5, the open flow (⌘O) over Home: the recent repos
-//! (`e2e_open_flow_repos`), a repo's commit log (`e2e_open_flow_commits`)
+//! (`e2e_open_flow_repos`), a repo's working tree options
+//! (`e2e_open_flow_working_tree`), its commit log (`e2e_open_flow_commits`)
 //! and a branch compare with its label (`e2e_open_flow_compare`). The repos
 //! live under the sandbox's `HOME`, so their paths read `~/…`, and the
 //! history is written with fixed dates and authors, so ids and relative
@@ -23,6 +24,7 @@ use crate::support::screenshot::{self, WINDOW_HEIGHT, WINDOW_WIDTH, assert_scree
 
 pub const TESTS: &[Test] = &crate::tests![
     e2e_open_flow_repos,
+    e2e_open_flow_working_tree,
     e2e_open_flow_commits,
     e2e_open_flow_compare
 ];
@@ -233,6 +235,16 @@ fn e2e_open_flow_repos() {
     let sb = Sandbox::isolate();
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
     let (handle, _flow) = app_with_flow(&mut cx, sb.home());
+    let image = screenshot::capture(&mut cx, handle);
+    assert_screenshot(&image);
+}
+
+fn e2e_open_flow_working_tree() {
+    let sb = Sandbox::isolate();
+    let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
+    let (handle, flow) = app_with_flow(&mut cx, sb.home());
+    let source = choose_repo(&mut cx, handle, &flow, sb.home());
+    set_mode(&mut cx, handle, &source, SourceMode::Live);
     let image = screenshot::capture(&mut cx, handle);
     assert_screenshot(&image);
 }

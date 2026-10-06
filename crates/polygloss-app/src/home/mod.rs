@@ -544,14 +544,20 @@ impl HomeView {
         let now = (self.clock)();
         let offset = row::local_utc_offset_s(now);
         let theme = cx.theme().clone();
+        // A later section's title sits `SECTION` below the card before it:
+        // the list's `CARDS` gap and the rest as padding.
         let section = |title: &'static str, count: usize, first: bool| {
             h_flex()
                 .gap(px(gap::CONTROLS))
-                .when(!first, |d| d.pt(px(gap::SECTION)))
+                .when(!first, |d| d.pt(px(gap::SECTION - gap::CARDS)))
                 .text_style(text::SMALL)
                 .font_semibold()
                 .text_color(theme.muted_foreground)
-                .child(title)
+                .child(
+                    div()
+                        .debug_selector(move || format!("home-section-{title}"))
+                        .child(title),
+                )
                 .child(div().font_normal().child(count.to_string()))
                 .into_any_element()
         };

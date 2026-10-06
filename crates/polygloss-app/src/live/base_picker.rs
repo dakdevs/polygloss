@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, Global, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, Div, Entity, Global, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, Styled as _, Task, WeakEntity, Window, div, px,
 };
 use polygloss_core::git::listing::{CommitInfo, list_commits};
@@ -115,6 +115,13 @@ impl BasePickerDelegate {
     /// The row Enter would choose.
     pub fn selected_choice(&self) -> Option<&BaseChoice> {
         self.choices.get(*self.matches.get(self.selected?)?)
+    }
+
+    /// Reads relative dates as seen at `now_ms` (Unix ms) in the time zone
+    /// `utc_offset_s` seconds east of UTC (screenshots pin both).
+    pub fn set_clock(&mut self, now_ms: i64, utc_offset_s: i64) {
+        self.now_ms = now_ms;
+        self.utc_offset_s = utc_offset_s;
     }
 
     fn rerank(&mut self) {
@@ -246,6 +253,15 @@ pub fn choose(
     Some(open_review(req, window, cx))
 }
 
+/// The list's heading: its section header, and above the empty state.
+fn header(cx: &App) -> Div {
+    list_header(cx).child(
+        div()
+            .debug_selector(|| "base-picker-header".into())
+            .child("Compare the working tree with…"),
+    )
+}
+
 fn close(window: &mut Window, cx: &mut App) {
     window.close_dialog(cx);
     cx.set_global(OpenPicker(None));
@@ -350,13 +366,7 @@ impl ListDelegate for BasePickerDelegate {
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<impl IntoElement> {
-        Some(
-            list_header(cx).child(
-                div()
-                    .debug_selector(|| "base-picker-header".into())
-                    .child("Compare the working tree with…"),
-            ),
-        )
+        Some(header(cx))
     }
 
     fn render_empty(
@@ -369,14 +379,22 @@ impl ListDelegate for BasePickerDelegate {
         } else {
             "No matching commits"
         };
-        div()
-            .py(px(gap::SECTION))
+        // The heading stays when nothing matches (an empty list has no
+        // sections), where the list's padding put it.
+        v_flex()
             .w_full()
-            .flex()
-            .justify_center()
-            .text_style(text::UI)
-            .text_color(cx.theme().muted_foreground)
-            .child(text)
+            .p(px(edge::OVERLAY))
+            .child(header(cx))
+            .child(
+                div()
+                    .py(px(gap::SECTION))
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .text_style(text::UI)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text),
+            )
     }
 
     fn set_selected_index(
