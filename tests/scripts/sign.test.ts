@@ -1106,6 +1106,84 @@ describe("release workflow", () => {
     );
   });
 
+  test("compiles the app icon with the runner's newest Xcode 26 and never ships without it", () => {
+    const steps = releaseJob().steps ?? [];
+    const select = stepRunning("POLYGLOSS_ACTOOL_DEVELOPER_DIR=");
+    const pkg = stepRunning("scripts/package-release.sh");
+    expect(select.if).toBe(BUILD);
+    // Right after the version: an image without Xcode 26 fails before the build.
+    expect(steps.indexOf(select)).toBe(
+      steps.indexOf(stepRunning("scripts/release-version.ts")) + 1,
+    );
+    // A release, or a dry run, never falls back to icon.icns alone.
+    expect(pkg.env?.POLYGLOSS_REQUIRE_APP_ICON).toBe("1");
+    // Xcode 26 runs actool only: the default Xcode builds, as in ci.yml.
+    for (const step of steps) {
+      expect(step.env?.DEVELOPER_DIR).toBeUndefined();
+      expect(step.run ?? "").not.toMatch(
+        /xcode-select|\bDEVELOPER_DIR=[^\n]*GITHUB_ENV/,
+      );
+    }
+    expect(releaseJob().env?.DEVELOPER_DIR).toBeUndefined();
+
+    // The step against a stand-in /Applications, laid out as on the runner
+    // image (version symlinks, Xcode.app the default), and an xcodebuild and
+    // xcrun that print the Xcode they run from.
+    const apps = scratch("applications");
+    const xcodes = (versions: string[]) => {
+      for (const v of versions)
+        mkdirSync(join(apps, `Xcode_${v}.app`, "Contents", "Developer"), {
+          recursive: true,
+        });
+    };
+    const bin = scratch("bin");
+    for (const tool of ["xcodebuild", "xcrun"]) {
+      writeFileSync(
+        join(bin, tool),
+        `#!/bin/bash\necho "${tool} $* from $DEVELOPER_DIR"\n`,
+      );
+      chmodSync(join(bin, tool), 0o755);
+    }
+    const selectIn = () => {
+      const githubEnv = join(scratch("github-env"), "env");
+      const r = run(
+        [
+          "bash",
+          "--noprofile",
+          "--norc",
+          "-eo",
+          "pipefail",
+          "-c",
+          (select.run ?? "").replaceAll("/Applications/", `${apps}/`),
+        ],
+        { GITHUB_ENV: githubEnv, PATH: `${bin}:${process.env.PATH}` },
+      );
+      const env = existsSync(githubEnv) ? readFileSync(githubEnv, "utf8") : "";
+      return { ...r, env };
+    };
+
+    xcodes(["16.4"]);
+    symlinkSync(join(apps, "Xcode_16.4.app"), join(apps, "Xcode.app"));
+    const none = selectIn();
+    expect(none.exitCode).toBe(1);
+    expect(none.output).toContain(
+      "Xcode_26.*.app: the app icon (packaging/polygloss.icon) needs actool from Xcode 26",
+    );
+    expect(none.env).toBe("");
+
+    // Version order, not text order: 26.10 is newer than 26.2. A symlink
+    // resolves to the Xcode it names.
+    xcodes(["26.0.1", "26.2", "26.10"]);
+    symlinkSync(join(apps, "Xcode_26.10.app"), join(apps, "Xcode_26.10.0.app"));
+    const picked = selectIn();
+    const developerDir = join(apps, "Xcode_26.10.app", "Contents", "Developer");
+    expect(picked.exitCode).toBe(0);
+    expect(picked.output).toBe(
+      `xcodebuild -version from ${developerDir}\nxcrun actool --version from ${developerDir}\n`,
+    );
+    expect(picked.env).toBe(`POLYGLOSS_ACTOOL_DEVELOPER_DIR=${developerDir}\n`);
+  });
+
   test("smoke-tests the bundle, then a dry run keeps the DMG as an artifact", () => {
     const steps = releaseJob().steps ?? [];
     const smoke = stepRunning("scripts/smoke-bundle.sh dist/Polygloss.app");

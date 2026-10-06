@@ -599,6 +599,7 @@ set -euo pipefail
 [ "$1" = actool ] || { echo "fake xcrun: unexpected $1" >&2; exit 1; }
 shift
 printf '%s\\n' "$@" >"$FAKE_ACTOOL_LOG"
+printf '%s\\n' "\${DEVELOPER_DIR-<unset>}" >"$FAKE_ACTOOL_LOG.developer-dir"
 while [ $# -gt 0 ]; do
   if [ "$1" = --compile ]; then echo "stand-in catalog" >"$2/Assets.car"; fi
   shift
@@ -809,6 +810,45 @@ describe("scripts/package-release.sh", () => {
     expect(existsSync(join(r.dist, ".icon-build"))).toBe(false);
     // Added before signing: the seal covers it.
     must(["codesign", "--verify", "--deep", "--strict", app]);
+    // The active Xcode's actool: no DEVELOPER_DIR of its own.
+    expect(readFileSync(`${argsLog}.developer-dir`, "utf8")).toBe("<unset>\n");
+  });
+
+  test("POLYGLOSS_ACTOOL_DEVELOPER_DIR runs that Xcode's actool for the icon", () => {
+    const argsLog = join(scratch("actool"), "args");
+    const xcode = "/Applications/Xcode_26.3.app/Contents/Developer";
+    const r = packageRun([], {
+      PATH: fakeActoolPath,
+      FAKE_ACTOOL_LOG: argsLog,
+      POLYGLOSS_ACTOOL_DEVELOPER_DIR: xcode,
+    });
+    expect(r.output).toContain("package-release: bundling the app icon");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(`${argsLog}.developer-dir`, "utf8")).toBe(`${xcode}\n`);
+  });
+
+  test("with POLYGLOSS_REQUIRE_APP_ICON=1 a bundle without Assets.car fails before signing or a DMG", () => {
+    const r = packageRun([], { POLYGLOSS_REQUIRE_APP_ICON: "1" });
+    expect(r.exitCode).toBe(1);
+    expect(r.output).toContain(
+      "package-release: no Assets.car: packaging/polygloss.icon needs actool from Xcode 26 or later",
+    );
+    // actool's own output says why.
+    expect(r.output).toContain(
+      "actool: xcrun: error: no developer tools were found",
+    );
+    expect(r.output).not.toContain("warning: no Assets.car");
+    expect(r.output).not.toContain("signing ad-hoc");
+    expect(readdirSync(r.dist).filter((f) => f.endsWith(".dmg"))).toEqual([]);
+    expect(existsSync(join(r.dist, ".icon-build"))).toBe(false);
+    // With a compiled icon the same requirement passes.
+    const ok = packageRun([], {
+      POLYGLOSS_REQUIRE_APP_ICON: "1",
+      PATH: fakeActoolPath,
+      FAKE_ACTOOL_LOG: join(scratch("actool"), "args"),
+    });
+    expect(ok.output).toContain("package-release: done");
+    expect(ok.exitCode).toBe(0);
   });
 
   test("makes Polygloss_<version>_aarch64.dmg holding the signed app and an Applications link", () => {
@@ -1128,9 +1168,13 @@ describe.skipIf(process.env.POLYGLOSS_BUNDLE_E2E !== "1")(
     test("app icon is icon.icns, plus actool's Assets.car with Xcode 26", () => {
       const plist = readPlist(join(app, "Contents", "Info.plist"));
       const car = join(app, "Contents", "Resources", "Assets.car");
-      // Xcode 26's actool is the first to compile Icon Composer documents.
+      // Xcode 26's actool is the first to compile Icon Composer documents;
+      // the one package-release.sh ran.
+      const developerDir = process.env.POLYGLOSS_ACTOOL_DEVELOPER_DIR;
       const xcode = /<key>short-bundle-version<\/key>\s*<string>(\d+)/.exec(
-        run(["xcrun", "actool", "--version"]).stdout,
+        run(["xcrun", "actool", "--version"], {
+          env: developerDir ? { DEVELOPER_DIR: developerDir } : {},
+        }).stdout,
       );
       if (Number(xcode?.[1] ?? 0) < 26) {
         expect(existsSync(car)).toBe(false);
