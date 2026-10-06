@@ -34,7 +34,8 @@
 #   6. runs scripts/smoke-bundle.sh --static on the result.
 #
 # Step 3 also copies LICENSE-MIT, LICENSE-APACHE, NOTICE and
-# packaging/third-party-notices.md (plan T5.7) into Contents/Resources.
+# packaging/third-party-notices.md (plan T5.7) into Contents/Resources, and,
+# with Xcode 26 or later, adds the app icon's Assets.car (actool).
 #
 # Outputs go to dist/ (gitignored), or $POLYGLOSS_DIST_DIR. Needs
 # cargo-packager 0.11.8: `cargo install cargo-packager --version =0.11.8 --locked`.
@@ -139,6 +140,26 @@ for f in LICENSE-MIT LICENSE-APACHE NOTICE packaging/third-party-notices.md; do
   [ -f "$repo_root/$f" ] || die "missing $f"
   cp "$repo_root/$f" "$app/Contents/Resources/"
 done
+
+# App icon (design §21): Xcode 26's actool compiles the Icon Composer document
+# into Assets.car, which macOS 14 and later prefer to icon.icns once
+# CFBundleIconName names it (on macOS 26: glass, dark, clear and tinted).
+# Without that actool the bundle keeps icon.icns alone.
+icon_build="$dist/.icon-build"
+rm -rf "$icon_build"
+mkdir "$icon_build"
+if xcrun actool "$repo_root/packaging/polygloss.icon" --compile "$icon_build" \
+  --platform macosx --minimum-deployment-target 14.0 --app-icon polygloss \
+  --output-partial-info-plist "$icon_build/partial.plist" >"$icon_build/log" 2>&1 &&
+  [ -f "$icon_build/Assets.car" ]; then
+  say "bundling the app icon (Assets.car from packaging/polygloss.icon)"
+  cp "$icon_build/Assets.car" "$app/Contents/Resources/"
+  plutil -replace CFBundleIconName -string polygloss "$plist"
+else
+  say "warning: no Assets.car: packaging/polygloss.icon needs actool from Xcode 26 or later; the bundle keeps icon.icns only"
+  sed 's/^/  actool: /' "$icon_build/log" >&2
+fi
+rm -rf "$icon_build"
 
 sparkle_fw="$app/Contents/Frameworks/Sparkle.framework"
 if [ "$sparkle" = 1 ]; then

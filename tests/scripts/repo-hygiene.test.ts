@@ -46,6 +46,8 @@ function namingViolation(path: string): string | null {
     (name.endsWith(".rs") || name.endsWith(".snap"));
   for (const [i, dir] of segments.slice(0, -1).entries()) {
     if (dir.startsWith(".") || kebabName.test(dir)) continue;
+    // An Icon Composer document keeps Apple's folder name: `<name>.icon/Assets/`.
+    if (dir === "Assets" && segments[i - 1]?.endsWith(".icon")) continue;
     if (isRustOwned && i >= 2 && rustModuleDir.test(dir)) continue;
     return `directory "${dir}" is not kebab-case`;
   }
@@ -116,6 +118,7 @@ describe("naming rules", () => {
       "crates/polygloss-app/tests/e2e/main.rs",
       "plugins/polygloss/skills/review/SKILL.md",
       "packaging/Info.plist",
+      "packaging/polygloss.icon/Assets/1-deleted.svg",
       "assets/fonts/lilex/lilex-regular.ttf",
       "assets/themes/pierre-light.json",
     ]) {
@@ -138,6 +141,8 @@ describe("naming rules", () => {
       "crates/polygloss-core/fixtures/some_dir/input.json",
       "tests/support_files/sandbox.ts",
       "assets/icons/app icon.png",
+      "packaging/Assets/1-deleted.svg",
+      "packaging/AppIcon.icon/Assets/1-deleted.svg",
       "fixtures/foo--bar.txt",
     ]) {
       expect({ path, rejected: namingViolation(path) !== null }).toEqual({
