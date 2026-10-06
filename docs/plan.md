@@ -3724,7 +3724,18 @@ bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budget
 
 Then the standard completion block.
 
-### T7.9 Chrome motions: segmented fill, tree chevrons, banner notices, open-flow step, Home row removal
+**As built (T7.8):** the card's interfaces, plus `DiffViewport::motion_running` (a reveal runs, frozen included: what `review_tab/mod.rs` registers with `motion::settle` while it is true, with no `action`, since the reveal's only trigger is the pointer and `z` snaps) and `RevealDebug { file_idx, slot, height, curtain, opacity, frozen }` with `ViewportDebug::{slots, reveal, chevrons, relayouts}`. Details and deviations:
+
+- **`h` includes the card's bottom padding.** A body's `h` is the card below its header as painted: its rows and the card's bottom padding, which a collapsed card does not have. So the frame's bottom is the body's top + `h(t)` and the curtain sits `CARD_Y` above it (never above the body's top); the next card is always `CARDS` below the frame. The viewport tests' 400 pt body is 392 pt of rows plus the 8 pt padding, so every later slot moves by exactly ADR-0030's `h(t) − h₁`.
+- **Reduced fades by a veil.** A Reduced fade paints the card's background (the canvas's in the flat layout) at `1 − opacity` over the body's rows and host blocks, under the headers, instead of lowering each painted color's alpha: over the opaque card the result is a group opacity (no tint showing through the text), which rule 8 asks for.
+- **A closing body is inert.** It is closed in the model from the commit, so its painted rows register no code cells, controls or "+" hover (rule 9); a press on them moves nothing (`a_press_on_a_collapsing_body_is_inert`). An opening body's rows are live where they are painted.
+- **Freeze holds the painted frame.** `freeze_motion(now)` freezes the track at the instant the last frame sampled it (`now` only before any), so the mouse up hit-tests exactly what the mouse down was aimed at, not where the clock had got to between frames.
+- **Size changes settle.** A change of the viewport's width (outside `hold_layout`) or height settles a running reveal, as a resize does (`a_resize_settles_the_reveal`); so do `hold_layout` and `release_layout` when the width they resolve at changes.
+- **The pinned case animates** (OQ-63's default): its filmstrip shows no pop. A reversal of a pinned collapse puts the scroll anchor back, so the rows end where they are painted (`pinned_collapse_reversed_puts_the_rows_back`).
+- **The commit frame builds the settled frame first** (discarded), so whatever the motion uncovers is laid out and shaped then; later frames shape nothing.
+- **`z` keeps calling `toggle_collapsed`** (a snap, as `toggle_collapsed_by(.., Keyboard, ..)` is); `cursor/mod.rs` is unchanged.
+- **Files beyond the card's list:** `blocks.rs` (a host block is laid out at the held width and cut to the revealing rows) and `layout.rs` (`Columns::with_width`, the held wrap width), in wave order before T7.11; `polygloss-perf`'s `args.rs`, `harness.rs` (`at_next_frame`: a toggle at the start of a display frame) and `main.rs` for the new scenario; the viewport tests' `support.rs` opens every window under the Off policy.
+- **Budgets:** `collapse_commit_ms` on synthetic is 16.7 ms (typical's; the card names only typical and linux).: segmented fill, tree chevrons, banner notices, open-flow step, Home row removal
 
 **Files**
 

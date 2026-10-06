@@ -30,10 +30,12 @@
 //! the height snaps. Keyboard and programmatic changes, and a body whose
 //! data is not loaded, snap.
 //!
-//! The viewport settles a running reveal before any change to its layout or
-//! scroll ([`DiffViewport::after_scroll`]); the host freezes and settles it
-//! for key downs and mouse downs ([`DiffViewport::freeze_motion`],
-//! [`DiffViewport::settle_motion`]). One reveal runs at a time.
+//! The viewport settles a running reveal before any change to its layout,
+//! scroll or size ([`DiffViewport::after_scroll`], a resize); the host
+//! freezes and settles it for key downs and mouse downs
+//! ([`DiffViewport::freeze_motion`], [`DiffViewport::settle_motion`]). A
+//! closing body is closed in the model from the commit, so its rows take no
+//! clicks. One reveal runs at a time.
 
 use std::time::{Duration, Instant};
 
@@ -101,6 +103,8 @@ pub(crate) struct Reveal {
     pub restore: Option<ScrollAnchor>,
     /// The commit frame built the settled frame (layout and shaping).
     pub primed: bool,
+    /// When the last frame sampled it: a mouse down holds that frame.
+    pub painted_at: Option<Instant>,
 }
 
 /// What one frame paints of the running reveal, in screen y relative to
@@ -129,10 +133,11 @@ pub(crate) struct RevealGeom {
 
 impl DiffViewport {
     /// Collapses or expands file `file_idx` as `initiator` asks. The painted
-    /// chevron passes `Pointer`, which glides (ADR-0030 M3); `z` passes
-    /// `Keyboard` and, like every other path ([`DiffViewport::set_collapsed`]),
-    /// snaps. A second click on the same chevron reverses from the painted
-    /// height; any other toggle settles a running reveal first.
+    /// chevron passes `Pointer`, which glides (ADR-0030 M3); `Keyboard`
+    /// (`z`) and `Programmatic` snap, as every other path does
+    /// ([`DiffViewport::set_collapsed`], [`DiffViewport::toggle_collapsed`]).
+    /// A second click on the same chevron reverses from the painted height;
+    /// any other toggle settles a running reveal first.
     pub fn toggle_collapsed_by(
         &mut self,
         file_idx: u32,
@@ -209,14 +214,16 @@ impl DiffViewport {
             track,
             restore,
             primed: false,
+            painted_at: None,
         });
     }
 
     /// Holds the running reveal's sampled frame, its paint and hitboxes,
-    /// requesting no frames (a mouse down, ADR-0030 rule 4).
+    /// requesting no frames (a mouse down, ADR-0030 rule 4): the frame last
+    /// painted, which the press was aimed at (`now` before any).
     pub fn freeze_motion(&mut self, now: Instant, cx: &mut Context<Self>) {
         if let Some(reveal) = &mut self.reveal {
-            reveal.track.freeze(now);
+            reveal.track.freeze(reveal.painted_at.unwrap_or(now));
             cx.notify();
         }
     }
@@ -273,6 +280,7 @@ impl DiffViewport {
         let policy = motion::policy(cx);
         reveal.track.follow_policy(policy, now);
         let sample = reveal.track.sample(now);
+        reveal.painted_at = Some(now);
         if sample.settled {
             self.reveal = None;
             return None;

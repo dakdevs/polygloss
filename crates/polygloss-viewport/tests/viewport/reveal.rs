@@ -249,6 +249,11 @@ fn card_frame_follows_the_curtain(cx: &mut TestAppContext) {
     set_policy(cx, MotionPolicy::Full);
     let check = |d: &ViewportDebug, what: &str| {
         let reveal = d.reveal.unwrap_or_else(|| panic!("{what}: no reveal"));
+        assert_eq!(
+            (reveal.file_idx, reveal.slot),
+            (0, 0),
+            "{what}: a.rs reveals"
+        );
         let (_, y, _, h) = card(d, 0);
         let bottom = y + h;
         assert_y(bottom - CARD_Y, reveal.curtain, &format!("{what}: curtain"));
@@ -673,16 +678,83 @@ fn model_changes_settle_the_reveal(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_resize_settles_the_reveal(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = collapsed_a(cx, MotionPolicy::Full);
+    click_chevron(&view, cx, 0);
+    step_to(cx, ms(60.0));
+    assert!(running(&view, cx));
+    // Narrower: unified and unwrapped, so the rows keep their heights.
+    cx.simulate_resize(size(px(900.), px(VIEW_H)));
+    frame(cx);
+    assert!(!running(&view, cx), "a width change settles");
+    assert_y(header_y(&debug(&view, cx), 1), B_OPEN, "settled");
+    // A height change too.
+    set_policy(cx, MotionPolicy::Off);
+    view.update(cx, |v, cx| v.set_collapsed(0, true, cx));
+    frame(cx);
+    set_policy(cx, MotionPolicy::Full);
+    click_chevron(&view, cx, 0);
+    step_to(cx, ms(60.0));
+    assert!(running(&view, cx));
+    cx.simulate_resize(size(px(900.), px(VIEW_H - 100.0)));
+    frame(cx);
+    assert!(!running(&view, cx), "a height change settles");
+    assert_y(header_y(&debug(&view, cx), 1), B_OPEN, "settled");
+}
+
+#[gpui_kit::test]
+fn a_press_on_a_collapsing_body_is_inert(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = open_cards(cx, fixture(10), 1000.);
+    set_policy(cx, MotionPolicy::Full);
+    let cursor = view.read_with(cx, |v, _| v.cursor());
+    click_chevron(&view, cx, 0);
+    step_to(cx, ms(40.0));
+    // a.rs's rows still show under the curtain, but its body is closed in
+    // the model: pressing one of them neither moves the cursor nor
+    // settles anything.
+    let d = debug(&view, cx);
+    let curtain = d.reveal.expect("revealing").curtain;
+    let (_, (y, h)) = d
+        .visible_rows
+        .iter()
+        .zip(d.row_bounds.iter().copied())
+        .find(|(t, (y, h))| t.contains("a 28") && y + h < curtain)
+        .expect("a.rs's line 29 is painted");
+    let at = point(px(300.), px(y + h / 2.0));
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    cx.simulate_mouse_down(at, gpui_kit::MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(at, gpui_kit::MouseButton::Left, Modifiers::default());
+    assert_eq!(view.read_with(cx, |v, _| v.cursor()), cursor);
+    assert!(running(&view, cx));
+}
+
+#[gpui_kit::test]
 fn freeze_holds_paint_and_hitboxes(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let (view, cx) = collapsed_a(cx, MotionPolicy::Full);
     click_chevron(&view, cx, 0);
     step_to(cx, ms(60.0));
+    let painted = debug(&view, cx);
+    // The mouse down comes between two display frames: it holds what the
+    // last one painted, not where the clock has got to since.
+    cx.executor().advance_clock(ms(6.0));
     let now = cx.update(|_, cx| cx.background_executor().now());
     view.update(cx, |v, cx| v.freeze_motion(now, cx));
     frame(cx);
     let held = debug(&view, cx);
     assert!(held.reveal.expect("revealing").frozen);
+    assert_eq!(
+        header_y(&held, 1),
+        header_y(&painted, 1),
+        "the painted frame"
+    );
+    assert_eq!(
+        control(&held, ControlAction::Collapse(1)),
+        control(&painted, ControlAction::Collapse(1)),
+        "the painted hitbox"
+    );
     for _ in 0..3 {
         assert_eq!(requested_frames(cx), 0, "no frame while frozen");
         advance(cx, FIRST_STEP);

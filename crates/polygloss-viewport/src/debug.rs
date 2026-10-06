@@ -83,6 +83,8 @@ pub struct ViewportDebug {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RevealDebug {
     pub file_idx: u32,
+    /// The file's display slot: every slot after it rides below the frame.
+    pub slot: u32,
     /// The body's painted height below its header, the card's bottom
     /// padding included: the card's frame ends this far below the header.
     pub height: f32,

@@ -333,6 +333,7 @@ impl Painter<'_> {
         {
             self.frame.reveal = self.reveal.map(|r| crate::debug::RevealDebug {
                 file_idx: r.file,
+                slot: r.slot,
                 height: r.frame_bottom - r.body_top,
                 curtain: r.curtain,
                 opacity: r.opacity,
@@ -443,7 +444,9 @@ impl Painter<'_> {
 
     /// The revealing body (ADR-0030 M3): its rows at the screen y they had
     /// before the commit, cut at the curtain into the [`REVEAL`] layers (and
-    /// its hit targets with them), and a Reduced fade's veil over them.
+    /// its hit targets with them), and a Reduced fade's veil over them. A
+    /// closing body is closed in the model from the commit, so its rows take
+    /// no clicks or hover (rule 9: what leaves is inert).
     fn reveal_body(&mut self, reveal: RevealGeom, height: f32) {
         let f = reveal.file;
         let (lo, hi) = (reveal.body_top.max(0.0), reveal.curtain.min(height));
@@ -465,6 +468,11 @@ impl Painter<'_> {
             self.frame.layers[REVEAL + 2].clip = Some(band(right));
         }
         let (cells, controls) = (self.frame.cells.len(), self.frame.controls.len());
+        let closing = self.doc.is_collapsed(f);
+        let pointer = self.marks.pointer;
+        if closing {
+            self.marks.pointer = None;
+        }
         self.in_reveal = true;
         self.rows_clip = Some(shown);
         let skip = f64::from(lo - reveal.rows_y).max(0.0);
@@ -482,13 +490,19 @@ impl Painter<'_> {
         }
         self.in_reveal = false;
         self.rows_clip = None;
-        // What is cut away takes no clicks.
-        for c in &mut self.frame.cells[cells..] {
-            c.h = c.h.min(hi - c.y);
-        }
-        self.frame.cells.retain(|c| c.h > 0.0);
-        for c in &mut self.frame.controls[controls..] {
-            c.bounds = c.bounds.intersect(&shown);
+        self.marks.pointer = pointer;
+        if closing {
+            self.frame.cells.truncate(cells);
+            self.frame.controls.truncate(controls);
+        } else {
+            // What is cut away takes no clicks.
+            for c in &mut self.frame.cells[cells..] {
+                c.h = c.h.min(hi - c.y);
+            }
+            self.frame.cells.retain(|c| c.h > 0.0);
+            for c in &mut self.frame.controls[controls..] {
+                c.bounds = c.bounds.intersect(&shown);
+            }
         }
         if reveal.opacity < 1.0 {
             let background = match self.cards {

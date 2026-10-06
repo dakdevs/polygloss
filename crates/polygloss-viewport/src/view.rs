@@ -915,6 +915,8 @@ impl DiffViewport {
             self.fit_width(width);
         }
         if self.doc.viewport_height() != height {
+            // A resize settles a running reveal (ADR-0030 rule 4).
+            self.reveal = None;
             self.doc.set_viewport_height(height);
         }
         self.text_cache.begin_frame();
@@ -1057,6 +1059,11 @@ impl DiffViewport {
     /// Re-decides the layout for a viewport `outer_width` px wide, by the
     /// rows' width (a card's inner width).
     fn fit_width(&mut self, outer_width: f32) {
+        if outer_width != self.outer_width {
+            // What reshapes follows the width, so a running reveal's heights
+            // would be stale: a resize settles it (ADR-0030 rule 4).
+            self.reveal = None;
+        }
         let (_, width) = inner_span(outer_width, self.opts.cards);
         let columns = width / self.geometry.advance;
         let previous = self.measured.then_some(self.layout);
