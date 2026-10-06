@@ -28,6 +28,21 @@ fn section(category: &str, files: &[u32], open: bool) -> (String, Vec<u32>, bool
     (category.to_owned(), files.to_vec(), open)
 }
 
+/// The sidebar's open panel and its selected file (design §11.5: the open
+/// panel follows the viewport, whose top file's row is selected).
+fn tree_follows(
+    shell: &mut Shell,
+    tab: &gpui_kit::Entity<polygloss_app::review_tab::ReviewTab>,
+) -> (Option<String>, Option<u32>) {
+    tab.read_with(shell.cx, |t, cx| {
+        let tree = polygloss_app::tree::file_tree(t).unwrap().read(cx);
+        (
+            tree.panels().open_key().map(ToString::to_string),
+            tree.selected_file(),
+        )
+    })
+}
+
 #[gpui_kit::test]
 fn open_sections_round_trip_through_view_state(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
@@ -156,6 +171,11 @@ fn restored_anchor_in_a_closed_section_lands_on_its_band(cx: &mut TestAppContext
             offset_px: 0.0,
         }
     );
+    // The band names `src/a.test.rs`: the sidebar opens Tests on its row.
+    assert_eq!(
+        tree_follows(&mut shell, &tab),
+        (Some("tests".to_owned()), Some(3))
+    );
 }
 
 #[gpui_kit::test]
@@ -184,6 +204,10 @@ fn restored_anchor_in_a_saved_open_section_keeps_its_line(cx: &mut TestAppContex
     );
     assert_eq!(shown_line(&mut shell, &tab), Some((3, Side::New, 39)));
     assert!(row_below_header(&mut shell, &tab).contains("src/a.test.rs line 40"));
+    assert_eq!(
+        tree_follows(&mut shell, &tab),
+        (Some("tests".to_owned()), Some(3))
+    );
 }
 
 #[gpui_kit::test]
@@ -229,32 +253,46 @@ fn fresh_open_with_a_changed_generated_verdict_keeps_the_restored_view_state(
     );
 }
 
-/// T6.15: `tree_expanded` covers every panel of the Files accordion: a
-/// category panel's folders as `<category>:<path>`, Changes' plainly. A
-/// review reopened restores them before its first frame.
+/// The expansion names of `tab`'s tree ([`FileTree::expanded_dirs`]).
+fn expanded(
+    shell: &mut Shell,
+    tab: &gpui_kit::Entity<polygloss_app::review_tab::ReviewTab>,
+) -> Vec<String> {
+    tab.read_with(shell.cx, |t, cx| {
+        polygloss_app::tree::file_tree(t)
+            .unwrap()
+            .read(cx)
+            .expanded_dirs()
+    })
+}
+
+/// T6.15: `tree_expanded` covers every panel of the Files accordion:
+/// Changes' folders plainly, a category panel's after its `/<category>`
+/// entry as `/<category>/<path>`. A review reopened restores them before
+/// its first frame.
 #[gpui_kit::test]
 fn tree_expansion_of_every_panel_round_trips_through_view_state(cx: &mut TestAppContext) {
-    use polygloss_app::tree::file_tree;
     let _sb = Sandbox::isolate();
     // Changes: `docs/x.md`, `src/a.rs`, `src/b.rs`; Tests: `src/a.test.rs`,
     // `tests/it.rs`; Generated: `Cargo.lock`.
     let repo = mixed_repo(3);
     let mut shell = start(cx);
     let tab = shell.open(compare(&repo)).unwrap();
-    let expanded =
-        |shell: &mut Shell, tab: &gpui_kit::Entity<polygloss_app::review_tab::ReviewTab>| {
-            tab.read_with(shell.cx, |t, cx| {
-                file_tree(t).unwrap().read(cx).expanded_dirs()
-            })
-        };
     assert_eq!(
         expanded(&mut shell, &tab),
-        ["docs", "src", "tests:src", "tests:tests"]
+        [
+            "docs",
+            "src",
+            "/tests",
+            "/tests/src",
+            "/tests/tests",
+            "/generated"
+        ]
     );
     // Collapse the Tests panel's `src/` (not Changes' `src/`).
     crate::shell::click(shell.cx, "tree-panel-tests");
     crate::shell::click(shell.cx, "tree-row-d:src");
-    let saved = ["docs", "src", "tests:tests"];
+    let saved = ["docs", "src", "/tests", "/tests/tests", "/generated"];
     assert_eq!(expanded(&mut shell, &tab), saved);
     settle(&mut shell);
     assert_eq!(
@@ -262,6 +300,51 @@ fn tree_expansion_of_every_panel_round_trips_through_view_state(cx: &mut TestApp
         Some(saved.map(String::from).to_vec())
     );
 
+    close(&mut shell, &tab);
+    restart(&mut shell);
+    let tab = shell.open(compare(&repo)).unwrap();
+    assert_eq!(expanded(&mut shell, &tab), saved);
+}
+
+/// A state saved before panels existed names Changes' folders only: they
+/// restore as saved, and a category panel it does not name (no
+/// `/<category>` entry) keeps every folder expanded.
+#[gpui_kit::test]
+fn a_tree_expansion_without_a_panels_entry_leaves_that_panel_expanded(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(3);
+    let mut shell = start(cx);
+    let req = compare(&repo);
+    saved_state(
+        &mut shell,
+        &req,
+        ViewState {
+            // `docs/` collapsed.
+            tree_expanded: Some(vec!["src".into()]),
+            ..ViewState::default()
+        },
+    );
+    let tab = shell.open(req).unwrap();
+    assert_eq!(
+        expanded(&mut shell, &tab),
+        ["src", "/tests", "/tests/src", "/tests/tests", "/generated"]
+    );
+}
+
+/// A Changes folder may be named like a category panel's folder in the
+/// old `<category>:<path>` form (`tests:src`); the two restore apart.
+#[gpui_kit::test]
+fn a_changes_folder_never_shares_a_name_with_a_panels_folder(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // Changes: `tests:src/x.rs`; Tests: `src/a.test.rs`.
+    let repo = repo_with(&["src/a.test.rs", "tests:src/x.rs"], 3);
+    let mut shell = start(cx);
+    let tab = shell.open(compare(&repo)).unwrap();
+    // Collapse Changes' `tests:src/`; Tests' `src/` stays expanded.
+    crate::shell::click(shell.cx, "tree-row-d:tests:src");
+    let saved = ["/tests", "/tests/src"];
+    assert_eq!(expanded(&mut shell, &tab), saved);
+    settle(&mut shell);
     close(&mut shell, &tab);
     restart(&mut shell);
     let tab = shell.open(compare(&repo)).unwrap();

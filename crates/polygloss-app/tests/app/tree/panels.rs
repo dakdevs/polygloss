@@ -18,7 +18,8 @@ use polygloss_app::viewed;
 use polygloss_viewport::FileFlags;
 
 use crate::categories::{
-    cursor, go_to_file, mixed_repo, numstat, repo_with, section_id, set_cursor,
+    cursor, go_to_file, mixed_repo, numstat, reload_settings, repo_with, scroll_to_line,
+    section_id, set_cursor,
 };
 use crate::shell::{Shell, compare_req, draw, painted, start};
 use crate::support::{FixtureRepo, Sandbox};
@@ -357,6 +358,124 @@ fn a_user_opened_panel_stays_until_the_next_crossing(cx: &mut TestAppContext) {
     // Into Tests: its panel opens.
     go_to_file(&mut o.shell, &o.tab, 5);
     assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+}
+
+#[gpui_kit::test]
+fn a_repartition_moving_the_top_file_into_a_panel_opens_it(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(120);
+    let mut o = open(cx, &repo);
+    // Reading `docs/x.md` (Changes) with Generated opened by hand.
+    scroll_to_line(&mut o.shell, &o.tab, 1, 60);
+    click(&mut o, "tree-panel-generated");
+    assert_eq!(open_panel(&mut o).as_deref(), Some("generated"));
+    // Docs goes on: the view lands on its band, a crossing into Docs.
+    reload_settings(
+        &mut o.shell,
+        r#"{ "categories": { "docs": { "enabled": true } } }"#,
+    );
+    assert_eq!(top_file(&mut o), 1);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("docs"));
+    assert_eq!(selected_file(&mut o), Some(1));
+    // A repartition that leaves the top file in its panel keeps the one
+    // the user opened.
+    click(&mut o, "tree-panel-generated");
+    reload_settings(
+        &mut o.shell,
+        r#"{ "categories": { "docs": { "enabled": true }, "tests": { "enabled": false } } }"#,
+    );
+    assert_eq!(
+        panels(&mut o),
+        [
+            p("changes", &[2, 3, 4, 5]),
+            p("generated", &[0]),
+            p("docs", &[1])
+        ]
+    );
+    assert_eq!(open_panel(&mut o).as_deref(), Some("generated"));
+}
+
+#[gpui_kit::test]
+fn a_crossing_never_carries_a_selected_folder_into_the_next_panel(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(120);
+    let mut shell = start(cx);
+    // Tests off: Changes holds `src/a.rs`, `src/a.test.rs`, `src/b.rs`.
+    reload_settings(
+        &mut shell,
+        r#"{ "categories": { "tests": { "enabled": false } } }"#,
+    );
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    draw(shell.cx);
+    let tree = tab.read_with(shell.cx, |t, _| file_tree(t).cloned().unwrap());
+    let mut o = Opened { shell, tab, tree };
+    scroll_to_line(&mut o.shell, &o.tab, 3, 60);
+    click(&mut o, "tree-row-d:src");
+    let dir = o.tree.read_with(o.shell.cx, |t, _| t.selected_dir());
+    assert_eq!(dir.map(|(d, _)| d).as_deref(), Some("src"));
+    // Tests on: `src/a.test.rs` moves into it, and so does the view (onto
+    // its band). Tests' own `src/` is another folder: the row marked is
+    // the top file's.
+    reload_settings(&mut o.shell, "{}");
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    assert_eq!(selected_file(&mut o), Some(3));
+}
+
+#[gpui_kit::test]
+fn following_a_crossing_keeps_the_keyboard_in_the_tree(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let mut o = open(cx, &repo);
+    // Tests' section open, the view and cursor on `src/b.rs` (Changes).
+    go_to_file(&mut o.shell, &o.tab, 3);
+    go_to_file(&mut o.shell, &o.tab, 4);
+    set_cursor(&mut o.shell, &o.tab, 4, 0);
+    let tree = o.tree.clone();
+    o.shell
+        .cx
+        .update(|window, cx| tree.update(cx, |t, cx| t.focus(window, cx)));
+    draw(o.shell.cx);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("changes"));
+    assert_eq!(selected_file(&mut o), Some(4));
+    // `v` in the tree: the jump to the next unviewed file crosses into
+    // Tests; its list takes the keyboard from the Changes list.
+    o.shell.cx.simulate_keystrokes("v");
+    draw(o.shell.cx);
+    assert_eq!(viewed_files(&mut o), [4]);
+    assert_eq!(top_file(&mut o), 3);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    let focused = o
+        .shell
+        .cx
+        .update(|window, cx| tree.read(cx).contains_focus(window, cx));
+    assert!(focused);
+    o.shell.cx.simulate_keystrokes("n");
+    draw(o.shell.cx);
+    assert_eq!(selected_file(&mut o), Some(5));
+}
+
+#[gpui_kit::test]
+fn file_finder_lists_files_in_display_order(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // Git order: 0 `Cargo.lock` (Generated), 1 `tests/x.rs` (Tests), 2
+    // `units/x.rs` (Changes); display order 2, 1, 0.
+    let repo = repo_with(&["Cargo.lock", "tests/x.rs", "units/x.rs"], 3);
+    let mut o = open(cx, &repo);
+    o.shell.cx.simulate_keystrokes("cmd-p");
+    draw(o.shell.cx);
+    let finder = o
+        .shell
+        .cx
+        .update(|_, cx| polygloss_app::tree::finder::current(cx))
+        .expect("the finder is open");
+    let listed =
+        |o: &mut Opened| finder.read_with(o.shell.cx, |s, _| s.delegate().matches().to_vec());
+    assert_eq!(listed(&mut o), [2, 1, 0]);
+    // `x.rs` matches both paths at the same place after a five-letter
+    // folder: equal scores, so display order breaks the tie.
+    o.shell.cx.simulate_input("x.rs");
+    draw(o.shell.cx);
+    assert_eq!(listed(&mut o), [2, 1]);
 }
 
 #[gpui_kit::test]

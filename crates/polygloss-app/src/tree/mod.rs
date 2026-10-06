@@ -12,11 +12,13 @@
 //!   file scrolls the viewport to it (opening its section); the viewport's
 //!   top file is highlighted in the tree.
 //! - **Panels follow the viewport** (OQ-44): when its top file moves into
-//!   another panel's files (a jump, or a scroll across a section's edge),
-//!   that panel opens; a panel the user opens stays open until the next
-//!   such crossing. The panels are rebuilt from the tab's partition on
-//!   [`Repartitioned`] (once per partition: attach, a settings reload, a
-//!   palette toggle, a refresh or an iteration switch).
+//!   another panel's files (a jump, a scroll across a section's edge, the
+//!   first partition or one moving the top file), that panel opens, and
+//!   takes the keyboard from the list that had it; a panel the user opens
+//!   stays open until the next such crossing. The panels are rebuilt from
+//!   the tab's partition on [`Repartitioned`] (once per partition: attach,
+//!   a settings reload, a palette toggle, a refresh or an iteration
+//!   switch).
 //! - The pane is a cached view: the diff's scroll frames do not render it.
 //!   It renders again when notified: its own changes, new line counts
 //!   (`ViewportEvent::CountsUpdated`, `BinaryDetected`) and a new top file.
@@ -204,6 +206,9 @@ pub struct FileTree {
     /// An expansion restored before the panels were first built (view state
     /// restores before the tab's first partition reaches the tree).
     restored: Option<HashSet<String>>,
+    /// The open panel as last rendered: when another one opens, the
+    /// keyboard in the old list moves to the new one.
+    rendered_open: Option<PanelKey>,
     /// The filter menu, when opened from the keyboard (`f`).
     key_menu: Option<KeyMenu>,
     /// Times [`Render::render`] ran ([`FileTree::render_count`]).
@@ -265,6 +270,7 @@ impl FileTree {
             jumped: None,
             followed: None,
             restored: None,
+            rendered_open: None,
             key_menu: None,
             renders: 0,
             builds: 0,
@@ -413,18 +419,27 @@ impl FileTree {
         self.jumped = None;
         self.current = (!self.files.is_empty()).then(|| self.viewport.read(cx).anchor().file_idx);
         self.panels.replace(built, self.files.len());
-        self.followed = self.current.and_then(|f| self.key_of(f));
-        // The open panel stays; when it went, the top file's opens. The
-        // first build opens the first panel ([`FilesPanel::ensure_open_shown`]).
-        let open = was_open.and_then(|k| {
-            self.panels
-                .index_of(&k)
-                .or_else(|| self.panels.index_of(self.followed.as_ref()?))
-        });
-        if let Some(ix) = open {
+        // A crossing (the top file in another panel than last seen: the
+        // first partition, a restored position, a repartition moving it)
+        // opens the top file's panel. Otherwise the open panel stays, else
+        // the top file's opens, else the first ([`FilesPanel::ensure_open_shown`]).
+        let followed = self.current.and_then(|f| self.key_of(f));
+        let mut keys = [&followed, &was_open];
+        if followed == self.followed {
+            keys.reverse();
+        }
+        if let Some(ix) = keys
+            .into_iter()
+            .flatten()
+            .find_map(|k| self.panels.index_of(k))
+        {
             self.panels.set_open(ix);
         }
-        if !matches!(self.selected, Some(ItemId::Dir(_))) {
+        self.followed = followed;
+        // A selected folder stays only in the panel it was selected in.
+        if !matches!(self.selected, Some(ItemId::Dir(_)))
+            || self.panels.open_key() != was_open.as_ref()
+        {
             self.selected = None;
         }
         self.rebuild(cx);
@@ -539,8 +554,9 @@ impl FileTree {
     }
 
     /// Every panel's expanded directories of its unfiltered tree
-    /// (compacted chains by their deepest path; a category panel's as
-    /// `<category>:<path>`), panel by panel in tree order.
+    /// (compacted chains by their deepest path; a category panel's
+    /// `/<category>`, then its folders as `/<category>/<path>`), panel by
+    /// panel in tree order.
     pub fn expanded_dirs(&self) -> Vec<String> {
         self.panels
             .panels()
@@ -556,8 +572,9 @@ impl FileTree {
     }
 
     /// Expands exactly `dirs` ([`FileTree::expanded_dirs`]'s names) of the
-    /// unfiltered trees (view-state restore). Before the first partition,
-    /// it also waits for the panels it builds.
+    /// unfiltered trees (view-state restore); a category panel without its
+    /// `/<category>` in them expands every folder. Before the first
+    /// partition, it also waits for the panels it builds.
     pub fn set_expanded_dirs(
         &mut self,
         dirs: impl IntoIterator<Item = String>,
@@ -889,10 +906,11 @@ impl FileTree {
 }
 
 impl Render for FileTree {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
         let theme = cx.theme().clone();
         let filtering = self.filter.is_active();
+        self.follow_focus(window, cx);
         let open = self.panels.open_key().cloned();
         let headers = self.panels.has_headers();
         let this = cx.entity().downgrade();

@@ -7,7 +7,8 @@
 //!   gpui-kit `TreeState` (virtualized, scrolling on its own) and its own
 //!   collapsed folders; [`FilesPanel`] holds them and which one is open.
 //!   Only the open panel's tree is rendered; the others are their headers.
-//!   Switching is instant (no gpui-component `Accordion`: no motion).
+//!   Switching is instant (no gpui-component `Accordion`: no motion), and
+//!   the keyboard in the old list moves to the new one.
 //! - **Headers:** chevron, the category's icon, its title and file count
 //!   ("3 of 12" while the filter is on), then, over the panel's files, the
 //!   changed-since-viewed dot, the open-thread count and the agent badge. A
@@ -37,7 +38,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    WeakEntity, div, px,
+    WeakEntity, Window, div, px,
 };
 use polygloss_core::categories::CategoryId;
 use polygloss_diff::FileChange;
@@ -46,7 +47,7 @@ use polygloss_viewport::{BandFlags, FileFlags, group_digits};
 use super::filters::TreeFilter;
 use super::model::{NodeId, TreeModel};
 use super::row::Check;
-use super::{FileTree, row};
+use super::{FileTree, KEY_CONTEXT, row};
 use crate::categories::Partition;
 use crate::review_tab::toolbar::tooltip;
 
@@ -73,11 +74,21 @@ impl fmt::Display for PanelKey {
 
 impl PanelKey {
     /// How view state names this panel's folder `path`: Changes' plainly
-    /// (as before panels existed), a category's as `<category>:<path>`.
+    /// (as before panels existed), a category's as `/<category>/<path>`
+    /// (no git path starts with `/`, so it is never one of Changes').
     fn dir_key(&self, path: &str) -> String {
         match self {
             PanelKey::Changes => path.to_owned(),
-            PanelKey::Category(id) => format!("{id}:{path}"),
+            PanelKey::Category(id) => format!("/{id}/{path}"),
+        }
+    }
+
+    /// A category panel's marker, `/<category>`: view state records its
+    /// folders (Changes' are always recorded).
+    fn marker(&self) -> Option<String> {
+        match self {
+            PanelKey::Changes => None,
+            PanelKey::Category(id) => Some(format!("/{id}")),
         }
     }
 }
@@ -269,17 +280,30 @@ impl PanelTree {
     }
 
     /// Its expanded folders of the unfiltered tree, as view state names
-    /// them ([`PanelKey::dir_key`]), in tree order.
+    /// them ([`PanelKey::dir_key`]), in tree order, after a category
+    /// panel's marker ([`PanelKey::marker`]).
     pub(super) fn expanded_dirs(&self) -> impl Iterator<Item = String> + '_ {
-        self.full
-            .dir_paths()
-            .into_iter()
-            .filter(|d| !self.collapsed.contains(d))
-            .map(|d| self.key.dir_key(&d))
+        self.key.marker().into_iter().chain(
+            self.full
+                .dir_paths()
+                .into_iter()
+                .filter(|d| !self.collapsed.contains(d))
+                .map(|d| self.key.dir_key(&d)),
+        )
     }
 
-    /// Expands exactly the folders of `expanded` (view state's names).
+    /// Expands exactly the folders of `expanded` (view state's names); a
+    /// category panel without its marker in them (a state saved before
+    /// panels, or before the category was on) expands every folder.
     pub(super) fn set_expanded(&mut self, expanded: &HashSet<String>) {
+        if self
+            .key
+            .marker()
+            .is_some_and(|marker| !expanded.contains(&marker))
+        {
+            self.collapsed.clear();
+            return;
+        }
         let key = self.key.clone();
         self.collapsed = self
             .full
@@ -589,6 +613,29 @@ impl FileTree {
             stat_added: colors.stat_added,
             stat_removed: colors.stat_removed,
         }
+    }
+
+    /// When another panel opened since the last frame (a crossing, a
+    /// repartition), its list takes the keyboard from the list that had it,
+    /// which is no longer rendered: gpui-kit's `Tree` key context inside
+    /// [`KEY_CONTEXT`] in that frame (only the active tab renders, and
+    /// activating a tab moves the keyboard into it).
+    pub(super) fn follow_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self.panels.open_key();
+        if open == self.rendered_open.as_ref() {
+            return;
+        }
+        // Before a list was rendered, none had the keyboard.
+        if self.rendered_open.is_some() {
+            let stack = window.context_stack();
+            if [KEY_CONTEXT, "Tree"]
+                .iter()
+                .all(|name| stack.iter().any(|c| c.contains(name)))
+            {
+                self.focus(window, cx);
+            }
+        }
+        self.rendered_open = open.cloned();
     }
 
     /// The open panel's tree, or why nothing shows.

@@ -661,14 +661,16 @@ fn file_finder_jumps_to_file(cx: &mut TestAppContext) {
     let repo = tree_repo();
     let mut o = open_tree(cx, &repo);
     let files = o.tab.read_with(o.shell.cx, |t, _| t.opened.files.clone());
-    // Ranking: blank lists everything in diff order; a query ranks by
-    // nucleo's score and drops what does not match.
-    assert_eq!(finder::rank(&files, ""), [0, 1, 2, 3, 4, 5, 6]);
-    assert_eq!(finder::rank(&files, "lib").first(), Some(&5));
-    let mut ui = finder::rank(&files, "srcui");
+    // Ranking: blank lists everything in display order (here diff order:
+    // nothing is categorized); a query ranks by nucleo's score and drops
+    // what does not match.
+    let order: Vec<u32> = (0..7).collect();
+    assert_eq!(finder::rank(&files, &order, ""), order);
+    assert_eq!(finder::rank(&files, &order, "lib").first(), Some(&5));
+    let mut ui = finder::rank(&files, &order, "srcui");
     ui.sort();
     assert_eq!(ui, [3, 4]);
-    assert!(finder::rank(&files, "zzz").is_empty());
+    assert!(finder::rank(&files, &order, "zzz").is_empty());
 
     o.shell.cx.simulate_keystrokes("cmd-p");
     draw(o.shell.cx);
