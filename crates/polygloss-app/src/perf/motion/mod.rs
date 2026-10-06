@@ -22,6 +22,7 @@
 //! opens and closes) and `<name>_late_frames` (intervals between a toggle's
 //! frames over 1.5 display periods).
 
+pub mod card;
 pub mod frames;
 
 use std::cell::{Cell, RefCell};
@@ -59,7 +60,9 @@ pub struct Driver {
 /// One driver per animated surface, appended by the task that animates it:
 /// card (T7.8), section (T7.11), sidebar and threads (T7.10), accordion
 /// (T7.13).
-pub const DRIVERS: &[Driver] = &[];
+pub const DRIVERS: &[Driver] = &[
+    card::DRIVER, // T7.8
+];
 
 /// The surfaces whose metrics `benches/budgets.json` registers: each is
 /// reported, null until its driver exists, because run-perf requires every

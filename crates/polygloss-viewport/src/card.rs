@@ -168,7 +168,9 @@ impl Painter<'_> {
     /// (their own layer), each cut to the viewport plus its corners and its
     /// border, so a long card never makes a huge quad and its cut edges stay
     /// out of view. Each card's whole outer bounds go into the frame
-    /// ([`crate::DiffViewport::card_bounds`]).
+    /// ([`crate::DiffViewport::card_bounds`]). A revealing card's frame
+    /// closes at its reveal's frame bottom, and the cards after it ride
+    /// below ([`crate::reveal`]).
     pub(crate) fn paint_canvas(&mut self, visible: SlotRange) {
         let b = self.bounds;
         let (width, height) = (b.size.width.as_f32(), b.size.height.as_f32());
@@ -183,8 +185,12 @@ impl Painter<'_> {
         let reach = style.radius + style.border;
         let doc = self.doc;
         for f in doc.shown_files(visible) {
-            let top = (doc.header_top(f) - self.scroll_top) as f32;
-            let bottom = (doc.card_bottom(f) - self.scroll_top) as f32;
+            let shift = self.shift(doc.slot(f));
+            let top = (doc.header_top(f) - self.scroll_top) as f32 + shift;
+            let bottom = match self.reveal {
+                Some(r) if r.file == f => r.frame_bottom,
+                _ => (doc.card_bottom(f) - self.scroll_top) as f32 + shift,
+            };
             let (cut_top, cut_bottom) = (top.max(-reach), bottom.min(height + reach));
             if cut_bottom <= cut_top {
                 continue;
@@ -233,7 +239,11 @@ impl Painter<'_> {
                 },
             )
         } else {
-            let bottom = if self.doc.body_height(f) > 0.0 {
+            // A revealing body counts while any of it shows.
+            let revealing = self
+                .reveal
+                .is_some_and(|g| g.file == f && g.frame_bottom > g.body_top);
+            let bottom = if self.doc.body_height(f) > 0.0 || revealing {
                 px(0.)
             } else {
                 r
@@ -258,7 +268,8 @@ impl Painter<'_> {
 
     /// Places the prelude at the top of the document, at a card's width, when
     /// it reaches into the viewport (a prelude not measured yet is 0 px tall
-    /// and placed at the top, so it gets measured).
+    /// and placed at the top, so it gets measured). A held layout keeps the
+    /// width it is laid out at; it is cut to the live card.
     pub(crate) fn place_prelude(&mut self) {
         let Some(render) = self.prelude else {
             return;
@@ -273,7 +284,7 @@ impl Painter<'_> {
         let origin = point(o.x + px(x), o.y + px(y));
         self.frame.prelude = Some(PreludeSlot {
             origin,
-            width: w,
+            width: self.prelude_width,
             height: h,
             clip: Bounds::new(origin, size(px(w), px(h))).intersect(&self.bounds),
             render: render.clone(),

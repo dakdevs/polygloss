@@ -8,6 +8,7 @@
 //! | `highlight` | `highlight_ms`       | last scroll event → first frame with every visible row highlighted, p95 of 20 stops |
 //! | `blocks`    | `comment_repaint_ms` | `set_blocks` adding a 6-line block on a visible file → next frame, p95 of 20 |
 //! | `sections`  | `sections_scroll_p95_ms`, `section_toggle_ms` | `scroll` over a document with category sections; opening a big closed section → next frame, p95 of 20 |
+//! | `reveal`    | `collapse_anim_p95_ms`, `collapse_commit_ms` | 20 cards collapsed and expanded by pointer (T7.8): prepaint + paint of the animation frames, p95; an expand's input → its commit frame, p95 |
 //!
 //! All but `open` first [`settle`]: wait for first paint, then for the
 //! visible rows' tokens, then for a quiet window. Random choices come from a
@@ -16,6 +17,7 @@
 pub mod blocks;
 pub mod highlight;
 pub mod open;
+pub mod reveal;
 pub mod scroll;
 pub mod sections;
 
@@ -67,6 +69,10 @@ pub async fn run(
             sections::prepare(h, cx);
             settle(h, cx, clock, result).await?;
             sections::run(h, cx, &args.knobs, &mut rng, result).await
+        }
+        ScenarioName::Reveal => {
+            settle(h, cx, clock, result).await?;
+            reveal::run(h, cx, &args.knobs, result).await
         }
     }
 }

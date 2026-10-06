@@ -227,8 +227,7 @@ impl DiffViewport {
     ) {
         match control.action {
             ControlAction::Collapse(f) => {
-                let collapsed = self.doc.is_collapsed(f);
-                self.set_collapsed(f, !collapsed, cx);
+                self.toggle_collapsed_by(f, crate::motion::Initiator::Pointer, window, cx)
             }
             ControlAction::Viewed(f) => cx.emit(ViewportEvent::ViewedToggled(f)),
             ControlAction::Menu(f) => self.open_menu(f, control.bounds, window, cx),

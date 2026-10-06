@@ -43,6 +43,7 @@ use crate::paint_rows::DebugRow;
 use crate::paint_rows::{Frame, Marks, Painter, failed_label};
 use crate::pipeline::{Applied, Done, FileCounts, Pipeline, PipelineStats};
 use crate::provider::DiffProvider;
+use crate::reveal::{Reveal, RevealGeom};
 use crate::section_band::Band;
 use crate::selection::{Drag, TextSelection};
 use crate::special::{BodyLabel, Specials, large_label, needs_blobs};
@@ -276,6 +277,13 @@ pub struct DiffViewport {
     pub(crate) old_side_comments: bool,
     /// Find matches marked in the code ([`crate::find`]).
     pub(crate) find: Option<FindState>,
+    /// The running reveal ([`crate::reveal`]).
+    pub(crate) reveal: Option<Reveal>,
+    /// [`DiffViewport::hold_layout`]: the layout, wrap and measurement
+    /// widths stay at the held width instead of following the live one.
+    held: bool,
+    #[cfg(feature = "debug-inspect")]
+    relayouts: u32,
     #[cfg(feature = "debug-inspect")]
     pub(crate) debug_rows: Vec<DebugRow>,
     #[cfg(feature = "debug-inspect")]
@@ -351,6 +359,10 @@ impl DiffViewport {
             pointer_inside: false,
             old_side_comments: true,
             find: None,
+            reveal: None,
+            held: false,
+            #[cfg(feature = "debug-inspect")]
+            relayouts: 0,
             #[cfg(feature = "debug-inspect")]
             debug_rows: Vec::new(),
             #[cfg(feature = "debug-inspect")]
@@ -412,6 +424,7 @@ impl DiffViewport {
     /// changes re-lay files out around the scroll anchor; a theme change
     /// re-highlights; diff or word-diff changes recompute the diffs.
     pub fn set_options(&mut self, opts: ViewportOptions, cx: &mut Context<Self>) {
+        self.reveal = None;
         let old = std::mem::replace(&mut self.opts, opts);
         let theme_changed = !Arc::ptr_eq(&old.theme, &self.opts.theme);
         let font_changed = old.code_font != self.opts.code_font
@@ -685,8 +698,11 @@ impl DiffViewport {
         self.after_scroll(cx);
     }
 
-    /// Reports a change of the file at the top and repaints.
+    /// Reports a change of the file at the top and repaints. Every change
+    /// of the layout or the scroll comes through here, so it settles a
+    /// running reveal (ADR-0030 rule 4).
     pub(crate) fn after_scroll(&mut self, cx: &mut Context<Self>) {
+        self.reveal = None;
         let top = self.doc.anchor().file_idx;
         if top != self.top_file {
             self.top_file = top;
@@ -702,6 +718,28 @@ impl DiffViewport {
     /// Split or unified, as painted.
     pub fn effective_layout(&self) -> Layout {
         self.layout
+    }
+
+    /// While a panel's width moves (ADR-0030 Panels): resolves what
+    /// reshapes at a viewport `target_outer_width` wide now (split or
+    /// unified, the wrap width, the gutters and the widths host blocks and
+    /// the prelude are measured at) and keeps it until
+    /// [`DiffViewport::release_layout`]. Everything else follows the live
+    /// width without reshaping: card frames, the split halves (the right one
+    /// starts half the live inner width in; each clips its content at its
+    /// own edge), right-aligned header controls, the sticky header and row
+    /// tints.
+    pub fn hold_layout(&mut self, target_outer_width: Pixels, cx: &mut Context<Self>) {
+        self.fit_width(target_outer_width.as_f32());
+        self.held = true;
+        cx.notify();
+    }
+
+    /// Ends [`DiffViewport::hold_layout`]: the layout follows the live width
+    /// again from the next frame.
+    pub fn release_layout(&mut self, cx: &mut Context<Self>) {
+        self.held = false;
+        cx.notify();
     }
 
     /// Where file `file_idx`'s code starts on `side`, from its card's inner
@@ -766,7 +804,7 @@ impl DiffViewport {
                     frame
                         .icons
                         .iter()
-                        .map(|(b, path, _)| crate::debug::IconDebug {
+                        .map(|(b, path, _, _)| crate::debug::IconDebug {
                             path: path.to_string(),
                             bounds: (
                                 (b.origin.x - o.x).as_f32(),
@@ -842,11 +880,26 @@ impl DiffViewport {
                     p.height,
                 ))
             }),
+            slots: self
+                .frame_pool
+                .as_ref()
+                .map(|f| f.slots.clone())
+                .unwrap_or_default(),
+            reveal: self.frame_pool.as_ref().and_then(|f| f.reveal),
+            chevrons: self
+                .frame_pool
+                .as_ref()
+                .map(|f| f.chevrons.clone())
+                .unwrap_or_default(),
+            relayouts: self.relayouts,
         }
     }
 
-    /// Prepaint: fits the document to `bounds`, lays out and loads files near
-    /// the viewport, and builds the frame's display list.
+    /// Prepaint: fits the document to `bounds` (unless its layout is held),
+    /// lays out and loads files near the viewport, and builds the frame's
+    /// display list. A reveal's commit frame first builds the settled frame
+    /// (discarded), so whatever the motion uncovers is laid out and shaped
+    /// now and its later frames shape nothing.
     pub(crate) fn prepare_frame(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -858,7 +911,9 @@ impl DiffViewport {
             self.geometry_dirty = false;
         }
         let (width, height) = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
-        self.fit_width(width);
+        if !self.held {
+            self.fit_width(width);
+        }
         if self.doc.viewport_height() != height {
             self.doc.set_viewport_height(height);
         }
@@ -884,9 +939,38 @@ impl DiffViewport {
             old_side_comments: self.old_side_comments,
         };
 
-        let scale = f64::from(window.scale_factor().max(1.0));
+        let scale = window.scale_factor().max(1.0);
         let mut frame = self.frame_pool.take().unwrap_or_default();
         let misses = self.text_cache.misses;
+        let reveal = self.reveal_geometry(scale, self.snapped_scroll(scale), cx);
+        if reveal.is_some() && self.take_reveal_commit() {
+            let mut settled = Frame::default();
+            self.build_frame(&mut settled, bounds, marks, scale, None, window, cx);
+        }
+        self.build_frame(&mut frame, bounds, marks, scale, reveal, window, cx);
+        // Every pass's cache misses: lines shaped by a pass that was then
+        // rebuilt were still shaped this frame.
+        frame.shaped = (self.text_cache.misses - misses) as u32;
+        self.follow_menu_button(&frame, window, cx);
+        frame
+    }
+
+    /// Fills `frame` with the rows intersecting the viewport (and `reveal`'s
+    /// motion), laying it out again while wrapped rows measure other heights
+    /// than estimated.
+    #[allow(clippy::too_many_arguments)]
+    fn build_frame(
+        &mut self,
+        frame: &mut Frame,
+        bounds: Bounds<Pixels>,
+        marks: Marks,
+        scale: f32,
+        reveal: Option<RevealGeom>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prelude_width = self.prelude_width();
+        let scroll_top = self.snapped_scroll(scale);
         for pass in 0..WRAP_PASSES {
             frame.clear();
             #[cfg(feature = "debug-inspect")]
@@ -913,9 +997,14 @@ impl DiffViewport {
                 layout: self.layout,
                 bounds,
                 inner: inner_bounds(bounds, self.opts.cards),
+                layout_width: self.width,
+                prelude_width,
                 cards: self.opts.cards,
                 prelude: self.prelude.as_ref().map(|p| &p.render),
-                scroll_top: (self.doc.scroll_top() * scale).round() / scale,
+                scroll_top,
+                reveal,
+                in_reveal: false,
+                rows_clip: None,
                 cache: &mut self.text_cache,
                 pipeline: &self.pipeline,
                 blocks: &self.blocks,
@@ -923,7 +1012,7 @@ impl DiffViewport {
                 find: self.find.as_mut(),
                 text_system: window.text_system().clone(),
                 marks,
-                frame: &mut frame,
+                frame: &mut *frame,
                 corrections: Vec::new(),
                 #[cfg(feature = "debug-inspect")]
                 debug: &mut self.debug_rows,
@@ -951,11 +1040,6 @@ impl DiffViewport {
                 window.on_next_frame(move |_, cx| cx.notify(view));
             }
         }
-        // Every pass's cache misses: lines shaped by a pass that was then
-        // rebuilt were still shaped this frame.
-        frame.shaped = (self.text_cache.misses - misses) as u32;
-        self.follow_menu_button(&frame, window, cx);
-        frame
     }
 
     /// After paint: keeps the frame's buffers for the next one and reports
@@ -992,6 +1076,10 @@ impl DiffViewport {
         );
         if *self.doc.metrics() != metrics {
             self.doc.set_metrics(metrics);
+            #[cfg(feature = "debug-inspect")]
+            {
+                self.relayouts += 1;
+            }
         }
     }
 
@@ -1004,18 +1092,23 @@ impl DiffViewport {
         // Laying a file out changes heights: collect the files first.
         let files: Vec<u32> = self.doc.shown_files(range).collect();
         for f in files {
-            if self.doc.is_collapsed(f) {
-                continue;
-            }
-            self.apply_deferred_reveals(f);
-            let key = self.layout_key(f);
-            let stale =
-                self.doc.file_layout(f).is_none() || self.layout_keys[f as usize] != Some(key);
-            if stale && let Some(layout) = self.build_layout(f, key) {
-                self.doc.set_file_layout(f, layout);
-                self.layout_keys[f as usize] = Some(key);
+            if !self.doc.is_collapsed(f) {
+                self.ensure_layout(f);
             }
         }
+    }
+
+    /// Lays file `f` out when it has no layout or a stale one and its data
+    /// is there; whether it is laid out for the current options now.
+    pub(crate) fn ensure_layout(&mut self, f: u32) -> bool {
+        self.apply_deferred_reveals(f);
+        let key = self.layout_key(f);
+        let stale = self.doc.file_layout(f).is_none() || self.layout_keys[f as usize] != Some(key);
+        if stale && let Some(layout) = self.build_layout(f, key) {
+            self.doc.set_file_layout(f, layout);
+            self.layout_keys[f as usize] = Some(key);
+        }
+        self.doc.file_layout(f).is_some() && self.layout_keys[f as usize] == Some(key)
     }
 
     /// The columns of file `f`'s rows ([`Columns::for_file`]).

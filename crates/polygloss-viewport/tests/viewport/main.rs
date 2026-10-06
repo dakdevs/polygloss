@@ -12,6 +12,7 @@ mod kit;
 mod motion;
 mod pipeline;
 mod provider_swap;
+mod reveal;
 mod rows;
 mod sections;
 mod slots;

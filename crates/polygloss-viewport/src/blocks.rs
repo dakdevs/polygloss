@@ -214,7 +214,9 @@ impl<'a> Painter<'a> {
 
     /// Queues the element slot of block `id` in `pane` of a row at `y`,
     /// `row_h` tall: the block is `height` tall (its size in the layout, which
-    /// measuring checks) and clipped to its column of the row.
+    /// measuring checks) and clipped to its column of the row (and to a
+    /// revealing body's rows). It is laid out at the layout's width, which a
+    /// held layout keeps.
     fn block_slot(&mut self, f: u32, id: BlockId, pane: Pane, y: f32, height: f32, row_h: f32) {
         let blocks: &'a Blocks = self.blocks;
         let Some(spec) = blocks.spec(id) else {
@@ -222,14 +224,18 @@ impl<'a> Painter<'a> {
         };
         let (x0, width) = self.inner_x_w();
         let (x, w) = block_column(pane, x0, width);
+        let (_, laid_w) = block_column(pane, x0, self.layout_width);
         let o = self.bounds.origin;
         let origin = point(o.x + px(x), o.y + px(y));
-        let clip = Bounds::new(origin, size(px(w), px(row_h))).intersect(&self.bounds);
+        let mut clip = Bounds::new(origin, size(px(w), px(row_h))).intersect(&self.bounds);
+        if let Some(rows) = self.rows_clip {
+            clip = clip.intersect(&rows);
+        }
         self.frame.blocks.push(BlockSlot {
             id,
             file: f,
             origin,
-            width: w,
+            width: laid_w,
             height,
             clip,
             render: spec.render.clone(),

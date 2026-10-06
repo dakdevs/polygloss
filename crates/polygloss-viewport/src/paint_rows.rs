@@ -39,6 +39,7 @@ use crate::gap::Gaps;
 use crate::layout::{Columns, Geometry, Pane, digits, layout_for};
 use crate::materialize::MaterializedFile;
 use crate::pipeline::Pipeline;
+use crate::reveal::RevealGeom;
 use crate::section_band::Band;
 use crate::selection::{PlusHit, TextSelection};
 use crate::space::{gap, height, radius, stroke};
@@ -69,16 +70,18 @@ pub(crate) struct Layer {
 }
 
 /// Layer indexes: the whole row, the left (old) half, the right (new) half,
-/// and the file headers on top of them all.
+/// the same three for a revealing body's rows ([`REVEAL`] on, each also cut
+/// at the curtain), and the file headers on top of them all.
 pub(crate) const FULL: usize = 0;
-pub(crate) const HEADERS: usize = 3;
+pub(crate) const REVEAL: usize = 3;
+pub(crate) const HEADERS: usize = 6;
 
 /// Everything one frame paints, in window coordinates.
 #[derive(Default)]
 pub(crate) struct Frame {
     /// The canvas and the cards, under everything else.
     pub cards: Layer,
-    pub layers: [Layer; 4],
+    pub layers: [Layer; 7],
     /// The viewport's top-left corner.
     pub origin: Point<Pixels>,
     /// Clickable controls, in paint order.
@@ -115,9 +118,23 @@ pub(crate) struct Frame {
     pub cells: Vec<LineCell>,
     /// The "+" painted on the hovered line numbers.
     pub plus: Option<PlusHit>,
-    /// SVG icons (`icons/<name>.svg`) in window coordinates, painted after
-    /// the header layer's quads and before its text.
-    pub icons: Vec<(Bounds<Pixels>, SharedString, Hsla)>,
+    /// SVG icons (`icons/<name>.svg`) in window coordinates and their
+    /// rotation in degrees about their centre (a turning chevron), painted
+    /// after the header layer's quads and before its text.
+    pub icons: Vec<(Bounds<Pixels>, SharedString, Hsla, f32)>,
+    /// A Reduced fade's veil over a revealing body's rows: the card's
+    /// background at the share of the rows not yet (or no longer) shown,
+    /// painted over the rows and blocks, under the headers.
+    pub veil: Option<(Bounds<Pixels>, Hsla)>,
+    /// Each painted file's card top, viewport-relative.
+    #[cfg(feature = "debug-inspect")]
+    pub slots: Vec<(u32, f32)>,
+    /// Each painted header's chevron angle, in degrees.
+    #[cfg(feature = "debug-inspect")]
+    pub chevrons: Vec<(u32, f32)>,
+    /// The running reveal as painted.
+    #[cfg(feature = "debug-inspect")]
+    pub reveal: Option<crate::debug::RevealDebug>,
 }
 
 /// A painted code cell, viewport-relative: the gutter (numbers and
@@ -167,6 +184,13 @@ impl Frame {
         self.cells.clear();
         self.plus = None;
         self.icons.clear();
+        self.veil = None;
+        #[cfg(feature = "debug-inspect")]
+        {
+            self.slots.clear();
+            self.chevrons.clear();
+            self.reveal = None;
+        }
         self.rows = 0;
         self.shaped = 0;
         self.loading = 0;
@@ -238,11 +262,24 @@ pub(crate) struct Painter<'a> {
     /// Where rows go: `bounds` inset by a card's margin and border on the
     /// left and right (`bounds` in the flat layout).
     pub inner: Bounds<Pixels>,
+    /// The rows' width that wrapping and host blocks go by: `inner`'s, or a
+    /// held one ([`crate::DiffViewport::hold_layout`]).
+    pub layout_width: f32,
+    /// The width the prelude is measured and laid out at.
+    pub prelude_width: f32,
     pub cards: Option<CardStyle>,
     /// The host's prelude.
     pub prelude: Option<&'a RenderBlock>,
     /// `scroll_top` snapped to device pixels.
     pub scroll_top: f64,
+    /// The running reveal, placed for this frame ([`crate::reveal`]).
+    pub reveal: Option<RevealGeom>,
+    /// Painting the revealing body's rows: row layers map to their
+    /// [`REVEAL`] twins.
+    pub in_reveal: bool,
+    /// While painting the revealing body: where its rows show, in window
+    /// coordinates (host blocks are cut to it too).
+    pub rows_clip: Option<Bounds<Pixels>>,
     pub cache: &'a mut TextCache,
     /// Which sides still wait for syntax tokens.
     pub pipeline: &'a Pipeline,
@@ -282,16 +319,25 @@ impl Painter<'_> {
         // Rows never paint over a card's border or the canvas beside it.
         self.frame.layers[FULL].clip = Some(self.inner);
         self.frame.layers[HEADERS].clip = Some(b);
-        let visible = self.doc.visible(height);
+        // A body opening moves the slots below it up from where the model
+        // has them: those further down come into view.
+        let lifted = self.reveal.map_or(0.0, |r| (-r.shift).max(0.0));
+        let visible = self.doc.visible(height + lifted);
         self.paint_canvas(visible);
         if self.layout == Layout::Split {
-            let i = self.inner;
-            let half = (i.size.width.as_f32() / 2.0).floor();
-            self.frame.layers[1].clip = Some(Bounds::new(i.origin, size(px(half), i.size.height)));
-            self.frame.layers[2].clip = Some(Bounds::new(
-                point(i.origin.x + px(half), i.origin.y),
-                size(i.size.width - px(half), i.size.height),
-            ));
+            let [left, right] = self.halves(self.inner);
+            self.frame.layers[1].clip = Some(left);
+            self.frame.layers[2].clip = Some(right);
+        }
+        #[cfg(feature = "debug-inspect")]
+        {
+            self.frame.reveal = self.reveal.map(|r| crate::debug::RevealDebug {
+                file_idx: r.file,
+                height: r.frame_bottom - r.body_top,
+                curtain: r.curtain,
+                opacity: r.opacity,
+                frozen: r.frozen,
+            });
         }
         self.place_prelude();
         let header_h = self.doc.metrics().header_height;
@@ -305,24 +351,29 @@ impl Painter<'_> {
             while let Some(s) = bands.next_if(|&s| doc.band_slot(s) <= slot) {
                 self.paint_band(s, height);
             }
-            let top = (self.doc.header_top(f) - self.scroll_top) as f32;
+            let top = (self.doc.header_top(f) - self.scroll_top) as f32 + self.shift(slot);
             if top >= height {
                 // Only its lead shows (the canvas above its card, or the
                 // prelude): nothing of the card is in view.
                 break;
             }
+            #[cfg(feature = "debug-inspect")]
+            self.frame.slots.push((f, top));
             // The first shown file's header pins at the top while its body
             // scrolls under it, until its body's end (the next card in the
             // flat layout) pushes it up.
             let pins = std::mem::take(&mut first);
             let y = if pins && top < 0.0 {
-                let body_bottom = self.doc.body_top(f) + f64::from(self.doc.body_height(f));
-                ((body_bottom - self.scroll_top) as f32 - header_h).min(0.0)
+                painted_header_y(doc, f, self.scroll_top)
             } else {
                 top
             };
             if y + header_h > 0.0 {
                 self.header(f, y, header_h, y != top);
+            }
+            if let Some(reveal) = self.reveal.filter(|r| r.file == f) {
+                self.reveal_body(reveal, height);
+                continue;
             }
             if self.doc.is_collapsed(f) {
                 continue;
@@ -369,9 +420,89 @@ impl Painter<'_> {
         }
     }
 
+    /// The left and right halves of `rows` (split).
+    fn halves(&self, rows: Bounds<Pixels>) -> [Bounds<Pixels>; 2] {
+        let half = (rows.size.width.as_f32() / 2.0).floor();
+        [
+            Bounds::new(rows.origin, size(px(half), rows.size.height)),
+            Bounds::new(
+                point(rows.origin.x + px(half), rows.origin.y),
+                size(rows.size.width - px(half), rows.size.height),
+            ),
+        ]
+    }
+
+    /// How far a slot is painted from where the model has it: by the running
+    /// reveal's frame, for every slot after its body's.
+    pub(crate) fn shift(&self, slot: u32) -> f32 {
+        match self.reveal {
+            Some(r) if slot > r.slot => r.shift,
+            _ => 0.0,
+        }
+    }
+
+    /// The revealing body (ADR-0030 M3): its rows at the screen y they had
+    /// before the commit, cut at the curtain into the [`REVEAL`] layers (and
+    /// its hit targets with them), and a Reduced fade's veil over them.
+    fn reveal_body(&mut self, reveal: RevealGeom, height: f32) {
+        let f = reveal.file;
+        let (lo, hi) = (reveal.body_top.max(0.0), reveal.curtain.min(height));
+        let Some(layout) = self.doc.file_layout(f).filter(|_| hi > lo) else {
+            return;
+        };
+        let band = |rows: Bounds<Pixels>| {
+            let o = self.bounds.origin;
+            Bounds::new(
+                point(rows.origin.x, o.y + px(lo)),
+                size(rows.size.width, px(hi - lo)),
+            )
+        };
+        let shown = band(self.inner);
+        self.frame.layers[REVEAL + FULL].clip = Some(shown);
+        if self.layout == Layout::Split {
+            let [left, right] = self.halves(self.inner);
+            self.frame.layers[REVEAL + 1].clip = Some(band(left));
+            self.frame.layers[REVEAL + 2].clip = Some(band(right));
+        }
+        let (cells, controls) = (self.frame.cells.len(), self.frame.controls.len());
+        self.in_reveal = true;
+        self.rows_clip = Some(shown);
+        let skip = f64::from(lo - reveal.rows_y).max(0.0);
+        let (first, _) = layout.row_at(skip);
+        let mut y = reveal.rows_y + layout.row_top(first) as f32;
+        for i in first..layout.len() {
+            if y >= hi {
+                break;
+            }
+            let h = layout.row_height(i);
+            if y + h > lo {
+                self.body_row(f, i as u32, layout.rows()[i], y, h);
+            }
+            y += h;
+        }
+        self.in_reveal = false;
+        self.rows_clip = None;
+        // What is cut away takes no clicks.
+        for c in &mut self.frame.cells[cells..] {
+            c.h = c.h.min(hi - c.y);
+        }
+        self.frame.cells.retain(|c| c.h > 0.0);
+        for c in &mut self.frame.controls[controls..] {
+            c.bounds = c.bounds.intersect(&shown);
+        }
+        if reveal.opacity < 1.0 {
+            let background = match self.cards {
+                Some(_) => self.theme.card_background,
+                None => self.theme.background,
+            };
+            let veil = background.opacity(1.0 - reveal.opacity);
+            self.frame.veil = Some((shown, veil));
+        }
+    }
+
     /// Section `s`'s band, when it reaches into the viewport (`height` tall).
     fn paint_band(&mut self, s: usize, height: f32) {
-        let y = (self.doc.band_top(s) - self.scroll_top) as f32;
+        let y = (self.doc.band_top(s) - self.scroll_top) as f32 + self.shift(self.doc.band_slot(s));
         if y < height && y + self.doc.metrics().band_height > 0.0 {
             self.band(s, y);
         }
@@ -718,6 +849,7 @@ impl Painter<'_> {
         radius: f32,
     ) {
         let bounds = self.bounds_at(x, y, w, h);
+        let layer = self.layer(layer);
         self.frame.layers[layer].rounded.push(RoundedQuad {
             bounds,
             background,
@@ -797,8 +929,9 @@ impl Painter<'_> {
         paired: bool,
     ) -> (Rc<ShapedText>, u32) {
         let tokens = if self.syntax { file.tokens(side) } else { None };
+        // Wrapped at the layout's width, which a held layout keeps.
         let wrap_width = if self.style.wrap {
-            cols.code_width(pane).floor()
+            cols.with_width(self.layout_width).code_width(pane).floor()
         } else {
             0.0
         };
@@ -908,13 +1041,35 @@ impl Painter<'_> {
         size: f32,
         color: Hsla,
     ) {
+        self.turned_icon(path, (x, y, size), color, 0.0);
+    }
+
+    /// [`Painter::icon`] turned `degrees` about its centre.
+    pub(crate) fn turned_icon(
+        &mut self,
+        path: impl Into<SharedString>,
+        (x, y, size): (f32, f32, f32),
+        color: Hsla,
+        degrees: f32,
+    ) {
         let bounds = self.bounds_at(x, y, size, size);
-        self.frame.icons.push((bounds, path.into(), color));
+        self.frame.icons.push((bounds, path.into(), color, degrees));
+    }
+
+    /// The layer `layer` goes to: a row layer's [`REVEAL`] twin while the
+    /// revealing body paints.
+    fn layer(&self, layer: usize) -> usize {
+        if self.in_reveal && layer < REVEAL {
+            layer + REVEAL
+        } else {
+            layer
+        }
     }
 
     /// Queues a quad at viewport-relative coordinates.
     pub(crate) fn quad(&mut self, layer: usize, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
         let bounds = self.bounds_at(x, y, w, h);
+        let layer = self.layer(layer);
         self.frame.layers[layer].quads.push((bounds, color));
     }
 
@@ -923,6 +1078,7 @@ impl Painter<'_> {
         #[cfg(feature = "debug-inspect")]
         self.debug_text.push((x, y, text.clone()));
         let o = self.bounds.origin;
+        let layer = self.layer(layer);
         self.frame.layers[layer]
             .texts
             .push((point(o.x + px(x), o.y + px(y)), text));
@@ -956,4 +1112,16 @@ pub(crate) fn pane_layer(pane: Pane) -> usize {
         Pane::Half(0) => 1,
         Pane::Half(_) => 2,
     }
+}
+
+/// Where file `f`'s header is painted at `scroll_top`, relative to the
+/// viewport: its place in the document, or pinned at the top while its body
+/// scrolls under it (its body's end pushing it up).
+pub(crate) fn painted_header_y(doc: &Document, f: u32, scroll_top: f64) -> f32 {
+    let top = (doc.header_top(f) - scroll_top) as f32;
+    if top >= 0.0 {
+        return top;
+    }
+    let body_bottom = doc.body_top(f) + f64::from(doc.body_height(f));
+    ((body_bottom - scroll_top) as f32 - doc.metrics().header_height).min(0.0)
 }

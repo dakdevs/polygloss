@@ -370,6 +370,7 @@ pub fn open(
     height: f32,
 ) -> (Entity<DiffViewport>, &mut VisualTestContext) {
     assert_sandboxed();
+    motion_off(cx);
     let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
         DiffViewport::new(provider, opts, window, cx)
     });
@@ -403,6 +404,7 @@ pub fn open_idle_at(
     target: ScrollTarget,
 ) -> (Entity<DiffViewport>, &mut VisualTestContext) {
     assert_sandboxed();
+    motion_off(cx);
     let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
         let mut view = DiffViewport::new(provider, opts, window, cx);
         view.scroll_to(target, cx);
@@ -411,6 +413,18 @@ pub fn open_idle_at(
     let view = window.root(cx).expect("window has a root view");
     let cx = VisualTestContext::from_window(*window, cx).into_mut();
     (view, cx)
+}
+
+/// The harnesses' motion policy (plan M7 "Baselines"): everything settles
+/// on its first frame, unless the test already set one. Motion tests set
+/// Full or Reduced after opening.
+pub fn motion_off(cx: &mut TestAppContext) {
+    use polygloss_viewport::motion::{MotionPolicy, MotionPolicyOverride};
+    cx.update(|cx| {
+        if !cx.has_global::<MotionPolicyOverride>() {
+            cx.set_global(MotionPolicyOverride(Some(MotionPolicy::Off)));
+        }
+    });
 }
 
 /// The viewport's background pipeline counters.
@@ -694,6 +708,7 @@ pub fn open_inset(
     height: f32,
 ) -> (Entity<Inset>, Entity<DiffViewport>, &mut VisualTestContext) {
     assert_sandboxed();
+    motion_off(cx);
     let window = cx.open_window(size(px(width), px(height)), move |window, cx| {
         let viewport =
             cx.new(|cx| DiffViewport::new(provider as Arc<dyn DiffProvider>, opts, window, cx));
