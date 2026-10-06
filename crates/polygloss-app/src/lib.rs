@@ -42,6 +42,7 @@ pub mod perf;
 pub mod provider;
 pub mod review_tab;
 pub mod settings;
+pub mod space;
 pub mod startup;
 pub mod submit;
 pub mod tabs;

@@ -55,6 +55,7 @@ pub mod pipeline;
 pub mod provider;
 mod section_band;
 mod selection;
+pub mod space;
 pub mod special;
 pub mod style;
 mod text_cache;
