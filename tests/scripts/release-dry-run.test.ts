@@ -4,7 +4,7 @@
 // throwaway workflows in a sandbox; only --plan and the tag check read the
 // real release.yml.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   evaluateCondition,
@@ -16,12 +16,6 @@ const repoRoot = resolve(import.meta.dir, "../..");
 const script = join(repoRoot, "scripts/release-dry-run.ts");
 const sandbox = makeSandbox();
 afterAll(() => sandbox.cleanup());
-
-const crateVersion = (
-  Bun.TOML.parse(readFileSync(join(repoRoot, "Cargo.toml"), "utf8")) as {
-    workspace: { package: { version: string } };
-  }
-).workspace.package.version;
 
 let n = 0;
 /** Writes `yaml` as a workflow in a fresh dir; returns its path and dir. */
@@ -70,6 +64,7 @@ describe("expressions", () => {
     repository: "owner/polygloss",
     runnerTemp: "/tmp/rt",
     vars: { HOMEBREW_TAP_REPO: "owner/homebrew-tap" },
+    inputs: { dry_run: "true" },
   };
 
   test("conditions github would evaluate for the release workflow", () => {
@@ -91,6 +86,15 @@ describe("expressions", () => {
     expect(
       evaluateCondition("github.event_name == 'workflow_dispatch'", ctx, false),
     ).toBe(true);
+    // Inputs, negated or not; `false` and empty are false.
+    expect(evaluateCondition("${{ inputs.dry_run }}", ctx, false)).toBe(true);
+    expect(evaluateCondition("${{ !inputs.dry_run }}", ctx, false)).toBe(false);
+    const release = { ...ctx, inputs: { dry_run: "false" } };
+    expect(evaluateCondition("${{ !inputs.dry_run }}", release, false)).toBe(
+      true,
+    );
+    expect(evaluateCondition("inputs.dry_run", release, false)).toBe(false);
+    expect(evaluateCondition("!inputs.unset", ctx, false)).toBe(true);
     // A tag condition never runs after a failure (an implicit success()).
     expect(
       evaluateCondition(
@@ -108,6 +112,7 @@ describe("expressions", () => {
       "owner/homebrew-tap",
     );
     expect(expandExpressions("${{ vars.UNSET }}", ctx)).toBe("");
+    expect(expandExpressions("${{ inputs.dry_run }}", ctx)).toBe("true");
     expect(expandExpressions("release-${{ github.ref }}", ctx)).toBe(
       "release-refs/heads/main",
     );
@@ -125,51 +130,45 @@ describe("expressions", () => {
 });
 
 describe("--plan on the real release.yml", () => {
-  test("workflow_dispatch builds and keeps the DMG but publishes nothing", () => {
+  test("workflow_dispatch is a dry run by default: it builds and keeps the DMG, publishes nothing", () => {
     const p = plan(["--event", "workflow_dispatch"]);
-    expect(p["Build, sign and notarize the bundle and DMG"]).toBe("run");
-    expect(p["Fetch Sparkle"]).toBe("run");
     expect(p["actions/checkout@v7"]).toBe("action");
+    for (const step of [
+      "Check the release secrets",
+      "Compute the version",
+      "Write the release notes",
+      "Fetch Sparkle",
+      "Build, sign and notarize the bundle and DMG",
+      "Remove the notarytool API key",
+      "Smoke-test the bundle",
+    ])
+      expect({ step, decision: p[step] }).toEqual({ step, decision: "run" });
     expect(p["actions/upload-artifact@v7"]).toBe("artifact-check");
-    expect(p["Check the tag against the crate version"]).toBe("skip-if");
-    expect(p["Upload the DMG to the GitHub release"]).toBe("skip-if");
-    expect(p["Update the Sparkle appcast"]).toBe("skip-if");
-    expect(p["Bump the Homebrew tap (T5.4)"]).toBe("skip-if");
-    expect(p["Remove the notarytool API key"]).toBe("run");
+    for (const step of [
+      "Write the notarytool API key",
+      "Make the appcast and checksums",
+      "Publish the GitHub release",
+      "Bump the Homebrew tap",
+    ])
+      expect({ step, decision: p[step] }).toEqual({
+        step,
+        decision: "skip-if",
+      });
   });
 
-  test("a v tag also runs the tag check, and its publish steps are refused", () => {
-    const p = plan(["--event", "push", "--ref", "refs/tags/v0.1.0-rc.1"]);
-    expect(p["Check the tag against the crate version"]).toBe("run");
-    expect(p["Upload the DMG to the GitHub release"]).toBe("refuse-publish");
-    expect(p["Update the Sparkle appcast"]).toBe("refuse-publish");
-    expect(p["Bump the Homebrew tap (T5.4)"]).toBe("refuse-publish");
+  test("ci.yml's call on main releases: it signs and publishes, which a local run refuses", () => {
+    for (const args of [
+      ["--event", "push", "--ref", "refs/heads/main"],
+      ["--event", "workflow_dispatch", "--input", "dry_run=false"],
+    ]) {
+      const p = plan(args);
+      expect(p["Write the notarytool API key"]).toBe("run");
+      expect(p["Make the appcast and checksums"]).toBe("run");
+      expect(p["actions/upload-artifact@v7"]).toBe("skip-if");
+      expect(p["Publish the GitHub release"]).toBe("refuse-publish");
+      expect(p["Bump the Homebrew tap"]).toBe("refuse-publish");
+    }
   });
-
-  test("the tag check passes only for v<crate version>", () => {
-    const only = ["--only", "Check the tag against the crate version"];
-    const ok = dryRun([
-      "--event",
-      "push",
-      "--ref",
-      `refs/tags/v${crateVersion}`,
-      ...only,
-    ]);
-    expect(ok.stderr).toBe("");
-    expect(ok.code).toBe(0);
-    // An rc tag needs the workspace version bumped to the rc first.
-    const rc = dryRun([
-      "--event",
-      "push",
-      "--ref",
-      `refs/tags/v${crateVersion}-rc.1`,
-      ...only,
-    ]);
-    expect(rc.code).toBe(1);
-    expect(rc.stderr).toContain(
-      `tag v${crateVersion}-rc.1 does not match the crate version ${crateVersion}`,
-    );
-  }, 60_000);
 });
 
 describe("running steps", () => {
@@ -220,6 +219,57 @@ jobs:
       r.stdout.indexOf("second carried"),
     );
     expect(r.stdout).toMatch(/action\s+actions\/checkout@v7/);
+  });
+
+  test("--env seeds the steps' environment; GITHUB_ENV and step env win over it", () => {
+    const wf = workflow(`
+on: workflow_dispatch
+jobs:
+  release:
+    steps:
+      - name: first
+        run: |
+          echo "first seeded=$SEEDED over=$OVER"
+          echo "OVER=from-github-env" >>"$GITHUB_ENV"
+      - name: second
+        run: echo "second over=$OVER"
+`);
+    const r = dryRun(
+      ["--workflow", wf.path, "--env", "SEEDED=yes", "--env", "OVER=seed"],
+      wf.dir,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("first seeded=yes over=seed");
+    expect(r.stdout).toContain("second over=from-github-env");
+    expect(dryRun(["--env", "NOEQUALS", "--plan"]).code).toBe(2);
+  });
+
+  test("GITHUB_SHA is the checkout's HEAD, empty outside a git repo", () => {
+    const yaml = `
+on: workflow_dispatch
+jobs:
+  release:
+    steps:
+      - name: sha
+        run: echo "sha=[$GITHUB_SHA]"
+`;
+    const plain = workflow(yaml);
+    expect(dryRun(["--workflow", plain.path], plain.dir).stdout).toContain(
+      "sha=[]",
+    );
+    const repo = workflow(yaml);
+    const git = (args: string[]) =>
+      Bun.spawnSync(["git", ...args], { cwd: repo.dir, env: sandbox.env })
+        .stdout.toString()
+        .trim();
+    git(["init", "-q"]);
+    git(["add", "release.yml"]);
+    git(["commit", "-q", "-m", "workflow"]);
+    const head = git(["rev-parse", "HEAD"]);
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    expect(dryRun(["--workflow", repo.path], repo.dir).stdout).toContain(
+      `sha=[${head}]`,
+    );
   });
 
   test("a failing step skips the rest except always() steps and exits 1", () => {

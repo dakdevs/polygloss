@@ -277,25 +277,32 @@ describe("scripts/fetch-sparkle.sh", () => {
 
 // A fake generate_appcast: logs argv and stdin (the private key), lists the
 // archives folder, and writes the appcast named by -o with
-// $FAKE_APPCAST_VERSION as sparkle:version.
+// $FAKE_APPCAST_VERSION as sparkle:version and, with --embed-release-notes
+// (unless FAKE_APPCAST_NO_EMBED), the archives' .md notes as its description.
 const fakeGenerateAppcast = `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >"$FAKE_APPCAST_LOG.argv"
 cat >"$FAKE_APPCAST_LOG.stdin"
 out=""
 archives=""
+embed=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
     --ed-key-file|--download-url-prefix) shift 2 ;;
+    --embed-release-notes) embed=1; shift ;;
     *) archives="$1"; shift ;;
   esac
 done
 ls -A "$archives" >"$FAKE_APPCAST_LOG.archives"
+description=""
+if [ "$embed" = 1 ] && [ -z "\${FAKE_APPCAST_NO_EMBED-}" ]; then
+  description="<description sparkle:format=\\"markdown\\"><![CDATA[$(cat "$archives"/*.md)]]></description>"
+fi
 cat >"$out" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel><item><sparkle:version>$FAKE_APPCAST_VERSION</sparkle:version></item></channel>
+  <channel><item><sparkle:version>$FAKE_APPCAST_VERSION</sparkle:version>$description</item></channel>
 </rss>
 EOF
 `;
@@ -395,6 +402,49 @@ describe("scripts/make-appcast.sh", () => {
     );
   });
 
+  test("embeds SPARKLE_RELEASE_NOTES, named after the DMG, in the appcast", () => {
+    const dist = makeDist();
+    const notes = join(scratch("notes"), "release-notes-sparkle.md");
+    writeFileSync(notes, "### Fixes\n\n- **cli:** exit 2\n");
+    const r = appcastRun(dist, { ...withKey, SPARKLE_RELEASE_NOTES: notes });
+    expect(r.output).toContain("make-appcast: wrote");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(`${r.log}.argv`, "utf8")).toContain(
+      " --embed-release-notes -o ",
+    );
+    // generate_appcast takes notes from the file named like the archive.
+    expect(
+      readFileSync(`${r.log}.archives`, "utf8").trim().split("\n"),
+    ).toEqual(["Polygloss_0.1.0_aarch64.dmg", "Polygloss_0.1.0_aarch64.md"]);
+    expect(readFileSync(join(dist, "appcast.xml"), "utf8")).toContain(
+      '<description sparkle:format="markdown"><![CDATA[### Fixes\n\n- **cli:** exit 2]]></description>',
+    );
+
+    // Notes that do not exist, or that generate_appcast left out, fail it.
+    const missing = appcastRun(makeDist(), {
+      ...withKey,
+      SPARKLE_RELEASE_NOTES: join(sandbox.home, "no-notes.md"),
+    });
+    expect(missing.exitCode).toBe(1);
+    expect(missing.output).toContain(
+      "no release notes at SPARKLE_RELEASE_NOTES=",
+    );
+    const dropped = makeDist();
+    const notEmbedded = appcastRun(dropped, {
+      ...withKey,
+      SPARKLE_RELEASE_NOTES: notes,
+      FAKE_APPCAST_NO_EMBED: "1",
+    });
+    expect(notEmbedded.exitCode).toBe(1);
+    expect(notEmbedded.output).toContain("did not embed the release notes");
+    expect(existsSync(join(dropped, "appcast.xml"))).toBe(false);
+    // Without notes nothing is embedded or asked for.
+    const plain = appcastRun(makeDist(), withKey);
+    expect(readFileSync(`${plain.log}.argv`, "utf8")).not.toContain(
+      "--embed-release-notes",
+    );
+  });
+
   test("adds the trailing slash to the download prefix", () => {
     const dist = makeDist();
     const r = appcastRun(dist, {
@@ -479,14 +529,19 @@ describe("release workflow (Sparkle)", () => {
     );
   });
 
-  test("makes the appcast with the tag's download prefix and uploads it", () => {
+  test("makes the appcast with the release's download prefix and publishes it", () => {
     const appcast = running("scripts/make-appcast.sh dist");
-    expect(appcast.if).toContain("startsWith(github.ref, 'refs/tags/v')");
+    expect(appcast.if).toBe("${{ !inputs.dry_run }}");
     expect(appcast.run).toContain(
-      'SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/"',
+      'SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/$GITHUB_REPOSITORY/releases/download/v$POLYGLOSS_VERSION/"',
     );
-    expect(appcast.run).toContain("gh release upload");
-    expect(appcast.run).toContain("dist/appcast.xml");
+    // A release without its appcast fails before anything is published.
+    expect(appcast.run).toContain("[ -f dist/appcast.xml ]");
+    // Sparkle's dialog shows the release notes, without <details>.
+    expect(appcast.run).toContain(
+      "export SPARKLE_RELEASE_NOTES=dist/release-notes-sparkle.md",
+    );
+    expect(running("gh release create").run).toContain("dist/appcast.xml");
   });
 
   test("no step waits for T5.3 any more", () => {

@@ -1,41 +1,50 @@
-# Release for polygloss (plan T5.2, design §21, ADR-0019). macOS arm64 only.
+# Release for polygloss (ADR-0019, design §21, plan T5.2–T5.4). macOS arm64 only.
 #
-# A `v*` tag builds the release bundle with scripts/package-release.sh --sign:
-# with the signing secrets it is signed as team 5U7E4UQ5M3, notarized and
-# stapled (scripts/sign-and-notarize.sh); without them the artifacts stay
-# ad-hoc signed. The DMG is uploaded to the tag's GitHub release, then the
-# Sparkle appcast (T5.3) and the Homebrew tap (T5.4) are updated.
+# ci.yml calls this workflow on every push to main once all of its jobs pass.
+# One release runs at a time (never cancelled), and inside that group
+# scripts/release-version.ts computes the CalVer version YYYYMMDD.N from the
+# tags on GitHub, so two releases never share a version, and names the last
+# release tag, from which scripts/release-notes.ts writes the release notes.
+# The job builds the bundle with POLYGLOSS_VERSION (scripts/package-release.sh
+# --sign: signed as team 5U7E4UQ5M3 from a temporary keychain, notarized and
+# stapled by scripts/sign-and-notarize.sh), smoke-tests it, signs the Sparkle
+# appcast (the notes embedded), writes SHA256SUMS, and `gh release create
+# v<version>` tags the commit and publishes the DMG, appcast.xml and
+# SHA256SUMS as the latest release, the notes as its body. Then it bumps the
+# Homebrew tap, when HOMEBREW_TAP_TOKEN and HOMEBREW_TAP_REPO are set.
 #
-# Sparkle (T5.3): scripts/fetch-sparkle.sh vendors the checksum-pinned
-# framework and tools; package-release.sh embeds it and writes SUFeedURL and
-# SUPublicEDKey only when both variables POLYGLOSS_APPCAST_URL (e.g.
-# https://github.com/<owner>/polygloss/releases/latest/download/appcast.xml)
-# and SPARKLE_PUBLIC_ED_KEY are set; without them the release has no updater.
-# scripts/make-appcast.sh signs the DMG's appcast entry with
-# SPARKLE_PRIVATE_ED_KEY and it is uploaded as the release's appcast.xml.
-# `workflow_dispatch` is a dry run: the same build, with the DMG kept as a run
-# artifact and nothing published.
+# A release is never unsigned: when a required secret or variable is missing,
+# the first step names every missing one and fails before anything is built.
+# `workflow_dispatch` re-runs a release from main (dry_run: false) or makes a
+# dry run (dry_run: true, the default): the same build, ad-hoc signed, the DMG
+# and the notes kept as a run artifact, nothing tagged or published.
 #
 # Secrets reach the scripts only through step `env:` (pinned by
 # tests/scripts/sign.test.ts): APPLE_CERTIFICATE (base64 .p12),
 # APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY,
 # APPLE_API_ISSUER, APPLE_API_PRIVATE_KEY (the notarytool .p8 contents),
-# SPARKLE_PRIVATE_ED_KEY and HOMEBREW_TAP_TOKEN. Repository variables (not
-# secret): POLYGLOSS_APPCAST_URL, SPARKLE_PUBLIC_ED_KEY and HOMEBREW_TAP_REPO
-# (owner/name of the tap).
+# SPARKLE_PRIVATE_ED_KEY, and the optional HOMEBREW_TAP_TOKEN. Repository
+# variables: SPARKLE_PUBLIC_ED_KEY (required), POLYGLOSS_APPCAST_URL (default
+# https://github.com/<repo>/releases/latest/download/appcast.xml) and the
+# optional HOMEBREW_TAP_REPO (owner/name of the tap).
+# scripts/setup-release-secrets.sh sets them.
 name: release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        default: false
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: build and ad-hoc sign, keep the DMG as a run artifact, publish nothing"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,8 +56,48 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write
+    concurrency:
+      group: polygloss-release
+      cancel-in-progress: false
+    env:
+      DRY_RUN: ${{ inputs.dry_run }}
     steps:
+      # The whole history and every tag: the release notes span the commits
+      # since the last release.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the release secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            echo "dry run: the bundle stays ad-hoc signed and nothing is published"
+            exit 0
+          fi
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::releases are published only from main, not $GITHUB_REF; use dry_run"
+            exit 1
+          fi
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+            APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY SPARKLE_PRIVATE_ED_KEY \
+            SPARKLE_PUBLIC_ED_KEY; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::release: missing ${missing[*]} (secrets; SPARKLE_PUBLIC_ED_KEY is a variable). Set them with scripts/setup-release-secrets.sh. Nothing was built or published."
+            exit 1
+          fi
+
       # rustup >= 1.28 no longer installs the toolchain on `rustup show`; with no
       # argument, `toolchain install` installs the one rust-toolchain.toml pins.
       - run: rustup toolchain install
@@ -63,14 +112,27 @@ jobs:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
 
-      - name: Check the tag against the crate version
-        if: startsWith(github.ref, 'refs/tags/v')
+      # From origin's tags, read now: inside the concurrency group.
+      - name: Compute the version
         run: |
-          version="$(bun -e 'console.log(Bun.TOML.parse(await Bun.file("Cargo.toml").text()).workspace.package.version)')"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "tag $GITHUB_REF_NAME does not match the crate version $version (Cargo.toml)" >&2
-            exit 1
-          fi
+          version="$(bun scripts/release-version.ts)"
+          previous="$(bun scripts/release-version.ts --previous)"
+          echo "POLYGLOSS_VERSION=$version" >>"$GITHUB_ENV"
+          echo "POLYGLOSS_PREVIOUS_TAG=$previous" >>"$GITHUB_ENV"
+          echo "release version $version, previous release ${previous:-none}"
+
+      # From the commits since the previous release tag (none: the first
+      # release). Sparkle's copy has no <details> block, which it would print.
+      - name: Write the release notes
+        run: |
+          mkdir -p dist
+          for flavor in github sparkle; do
+            flags=(--version "$POLYGLOSS_VERSION" --previous "$POLYGLOSS_PREVIOUS_TAG"
+              --commit "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --out "dist/release-notes-$flavor.md")
+            [ "$flavor" = github ] || flags+=(--sparkle)
+            bun scripts/release-notes.ts "${flags[@]}"
+          done
+          cat dist/release-notes-github.md
 
       - name: Install cargo-packager
         run: scripts/cargo.sh install cargo-packager --version =0.11.8 --locked
@@ -82,18 +144,17 @@ jobs:
         run: scripts/fetch-sparkle.sh
 
       - name: Write the notarytool API key
+        if: ${{ !inputs.dry_run }}
         env:
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
-          if [ -n "$APPLE_API_PRIVATE_KEY" ]; then
-            key="$RUNNER_TEMP/notarytool-api-key.p8"
-            (umask 077 && printf '%s\n' "$APPLE_API_PRIVATE_KEY" >"$key")
-            echo "APPLE_API_KEY_PATH=$key" >>"$GITHUB_ENV"
-          fi
+          key="$RUNNER_TEMP/notarytool-api-key.p8"
+          (umask 077 && printf '%s\n' "$APPLE_API_PRIVATE_KEY" >"$key")
+          echo "APPLE_API_KEY_PATH=$key" >>"$GITHUB_ENV"
 
-      # Without APPLE_CERTIFICATE/APPLE_SIGNING_IDENTITY the signer prints
-      # "signing skipped: no credentials" and the bundle stays ad-hoc signed.
-      # With them, missing notarytool credentials fail the release.
+      # A release is signed as team 5U7E4UQ5M3, notarized and stapled; missing
+      # notarytool credentials fail it. A dry run stays ad-hoc signed. With
+      # SPARKLE_PUBLIC_ED_KEY the bundle embeds Sparkle and its feed URL.
       - name: Build, sign and notarize the bundle and DMG
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -104,46 +165,60 @@ jobs:
           POLYGLOSS_REQUIRE_NOTARIZATION: "1"
           POLYGLOSS_APPCAST_URL: ${{ vars.POLYGLOSS_APPCAST_URL }}
           SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
-        run: scripts/package-release.sh --sign
+        run: |
+          if [ -n "$SPARKLE_PUBLIC_ED_KEY" ]; then
+            export POLYGLOSS_APPCAST_URL="${POLYGLOSS_APPCAST_URL:-https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml}"
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            scripts/package-release.sh
+          else
+            scripts/package-release.sh --sign
+          fi
 
       - name: Remove the notarytool API key
         if: always()
         run: rm -f "$RUNNER_TEMP/notarytool-api-key.p8"
 
+      # The bundle as shipped, launched in a sandbox: both executables and the
+      # app's socket report POLYGLOSS_VERSION, the URL scheme opens a review,
+      # and Sparkle (when embedded) loads.
+      - name: Smoke-test the bundle
+        run: |
+          scripts/smoke-bundle.sh dist/Polygloss.app
+          [ -f "dist/Polygloss_${POLYGLOSS_VERSION}_aarch64.dmg" ]
+
       - uses: actions/upload-artifact@v7
+        if: ${{ inputs.dry_run }}
         with:
           name: polygloss-dmg
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/release-notes-*.md
           if-no-files-found: error
 
-      - name: Upload the DMG to the GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          flags=()
-          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag "${flags[@]}" \
-              --title "Polygloss ${GITHUB_REF_NAME#v}" --notes "Polygloss ${GITHUB_REF_NAME#v}"
-          fi
-          gh release upload "$GITHUB_REF_NAME" "dist/Polygloss_${GITHUB_REF_NAME#v}_aarch64.dmg" --clobber
-
-      # Skips without SPARKLE_PRIVATE_ED_KEY or when the bundle has no appcast.
-      - name: Update the Sparkle appcast
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Make the appcast and checksums
+        if: ${{ !inputs.dry_run }}
         env:
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        run: |
+          export SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/$GITHUB_REPOSITORY/releases/download/v$POLYGLOSS_VERSION/"
+          export SPARKLE_RELEASE_NOTES=dist/release-notes-sparkle.md
+          scripts/make-appcast.sh dist
+          [ -f dist/appcast.xml ]
+          (cd dist && shasum -a 256 "Polygloss_${POLYGLOSS_VERSION}_aarch64.dmg" appcast.xml >SHA256SUMS)
+
+      # Creates the tag v<version> on this commit.
+      - name: Publish the GitHub release
+        if: ${{ !inputs.dry_run }}
+        env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          export SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/"
-          scripts/make-appcast.sh dist
-          if [ -f dist/appcast.xml ]; then
-            gh release upload "$GITHUB_REF_NAME" dist/appcast.xml --clobber
-          fi
+          gh release create "v$POLYGLOSS_VERSION" --target "$GITHUB_SHA" --latest \
+            --title "$POLYGLOSS_VERSION" --notes-file dist/release-notes-github.md \
+            "dist/Polygloss_${POLYGLOSS_VERSION}_aarch64.dmg" dist/appcast.xml dist/SHA256SUMS
 
-      - name: Bump the Homebrew tap (T5.4)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Bump the Homebrew tap
+        if: ${{ !inputs.dry_run }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
@@ -152,7 +227,7 @@ jobs:
             echo "tap bump skipped: HOMEBREW_TAP_TOKEN or HOMEBREW_TAP_REPO is not set"
             exit 0
           fi
-          version="${GITHUB_REF_NAME#v}"
+          version="$POLYGLOSS_VERSION"
           sha="$(shasum -a 256 "dist/Polygloss_${version}_aarch64.dmg" | cut -d ' ' -f 1)"
           tap="$RUNNER_TEMP/homebrew-tap"
           export GH_TOKEN="$HOMEBREW_TAP_TOKEN"
