@@ -205,11 +205,14 @@ function makeBundle(
   return app;
 }
 
-function smokeStatic(app: string): {
+function smokeStatic(
+  app: string,
+  env: Env = {},
+): {
   exitCode: number;
   output: string;
 } {
-  return run([smokeBundle, "--static", app]);
+  return run([smokeBundle, "--static", app], { env });
 }
 
 describe("packaging config", () => {
@@ -380,6 +383,55 @@ describe("scripts/smoke-bundle.sh --static", () => {
       });
       expect(r.output).toContain(key);
     }
+  });
+
+  test("finds the polygloss scheme in any URL type, and only there", () => {
+    const types = (schemes: string[][]) =>
+      packagerInfoPlist({
+        CFBundleVersion: workspaceVersion,
+        CFBundleURLTypes: schemes.map((CFBundleURLSchemes, i) => ({
+          CFBundleURLName: `type-${i}`,
+          CFBundleURLSchemes,
+        })),
+      });
+    const second = smokeStatic(
+      makeBundle(scratch("schemes"), {
+        plist: types([["x-other"], ["a", "polygloss"]]),
+      }),
+    );
+    expect(second.output).toContain("polygloss:// scheme");
+    expect(second.exitCode).toBe(0);
+    const none = smokeStatic(
+      makeBundle(scratch("schemes"), { plist: types([["polygloss-dev"], []]) }),
+    );
+    expect(none.exitCode).toBe(1);
+    expect(none.output).toContain("does not register the polygloss scheme");
+  });
+
+  test("a plutil that prints its errors on stdout, as macOS 15's does, changes nothing", () => {
+    // The CI runner's plutil: "Could not extract value" on stdout, exit 1.
+    const bin = scratch("macos15-plutil");
+    writeFileSync(
+      join(bin, "plutil"),
+      '#!/bin/bash\nexec /usr/bin/plutil "$@" 2>&1\n',
+    );
+    chmodSync(join(bin, "plutil"), 0o755);
+    const env = { PATH: `${bin}:${process.env.PATH}` };
+    const ok = smokeStatic(makeBundle(scratch("macos15")), env);
+    expect(ok.output).toContain("no updater (built without an appcast)");
+    expect(ok.output).toContain("smoke-bundle: static checks passed");
+    expect(ok.exitCode).toBe(0);
+    const noScheme = smokeStatic(
+      makeBundle(scratch("macos15"), {
+        plist: packagerInfoPlist({
+          CFBundleVersion: workspaceVersion,
+          CFBundleURLTypes: [],
+        }),
+      }),
+      env,
+    );
+    expect(noScheme.exitCode).toBe(1);
+    expect(noScheme.output).toContain("does not register the polygloss scheme");
   });
 
   test("a bundle without its licenses or third-party notices fails", () => {

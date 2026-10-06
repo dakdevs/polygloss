@@ -285,27 +285,34 @@ mod tests {
         assert_eq!(start_time_ms(0), None);
     }
 
+    /// Set in the impostor below: this test then only sleeps.
+    const IMPOSTOR_ENV: &str = "POLYGLOSS_TEST_IMPOSTOR";
+
     /// A process that got a waiter's pid after the waiter registered is not the
     /// waiter, even when its executable has the waiter's name (T5.9 #5).
     #[test]
     fn a_same_named_process_started_after_registration_is_no_waiter() {
+        if std::env::var_os(IMPOSTOR_ENV).is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            return;
+        }
+        // The impostor is a copy of this test binary, running this test. Not
+        // a copy of /bin/sleep: system binaries are arm64e, a re-signed copy
+        // is no platform binary, and macOS 15 kills a non-platform arm64e
+        // process right after exec (macOS 26 runs it).
         let dir = tempfile::tempdir().unwrap();
         let impostor = dir.path().join("polygloss-cli");
-        std::fs::copy("/bin/sleep", &impostor).unwrap();
-        // A moved platform binary is killed at launch unless re-signed.
-        let signed = Command::new("/usr/bin/codesign")
-            .args(["--sign", "-", "--force"])
-            .arg(&impostor)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(signed.success());
+        std::fs::copy(std::env::current_exe().unwrap(), &impostor).unwrap();
         let registered_at = now_ms();
         std::thread::sleep(std::time::Duration::from_millis(20));
         let mut child = Command::new(&impostor)
-            .arg("30")
+            .args([
+                "--exact",
+                "process::tests::a_same_named_process_started_after_registration_is_no_waiter",
+            ])
+            .env(IMPOSTOR_ENV, "1")
             .stdin(Stdio::null())
+            .stdout(Stdio::null())
             .spawn()
             .unwrap();
         let pid = i32::try_from(child.id()).unwrap();

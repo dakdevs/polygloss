@@ -61,9 +61,12 @@ function generate(script: string, root: string, args: string[] = []): Entry {
 
 /** git in `repo` only: discovery never climbs above it. */
 function git(repo: string, args: string[]): string {
-  const r = Bun.spawnSync(["git", "-C", repo, ...args], {
-    env: { ...sandbox.env, GIT_CEILING_DIRECTORIES: dirname(repo) },
-  });
+  // No background `git maintenance` after a commit: its objects/maintenance.lock
+  // would come and go between two fingerprints of a repo (seen on CI).
+  const r = Bun.spawnSync(
+    ["git", "-C", repo, "-c", "maintenance.auto=false", ...args],
+    { env: { ...sandbox.env, GIT_CEILING_DIRECTORIES: dirname(repo) } },
+  );
   if (r.exitCode !== 0)
     throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
   return r.stdout.toString();

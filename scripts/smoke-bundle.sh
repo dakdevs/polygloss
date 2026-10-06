@@ -67,8 +67,15 @@ for exe in Polygloss polygloss-cli; do
 done
 ok "Contents/MacOS has Polygloss and polygloss-cli"
 
-# One Info.plist value (raw), or empty when the key is missing.
-plist_get() { plutil -extract "$1" raw -o - "$plist" 2>/dev/null || true; }
+# One Info.plist value (raw), or empty when the key is missing. Only plutil's
+# exit status tells: on macOS 15 it prints its "Could not extract value" error
+# to stdout, which, taken for a value, sent the URL scheme loop below past the
+# end of the array forever (CI's bun job hung for an hour).
+plist_get() {
+  local value
+  value="$(plutil -extract "$1" raw -o - "$plist" 2>/dev/null)" && printf '%s' "$value"
+  return 0
+}
 
 expect_key() { # <key> <expected>
   local got
