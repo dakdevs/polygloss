@@ -41,6 +41,7 @@ use crate::materialize::MaterializedFile;
 use crate::pipeline::Pipeline;
 use crate::section_band::Band;
 use crate::selection::{PlusHit, TextSelection};
+use crate::space::{gap, height, radius, stroke};
 use crate::special::{BodyLabel, Specials};
 use crate::style::{DiffStyle, ViewportTheme};
 use crate::text_cache::{FONT_CODE, FONT_UI, NumberKind, ShapedText, Shaper, TextCache, TextKey};
@@ -85,8 +86,13 @@ pub(crate) struct Frame {
     /// Every painted header strip: it takes the clicks over the rows it
     /// covers.
     pub header_areas: Vec<Bounds<Pixels>>,
-    /// Behind the control under the pointer.
+    /// Every painted card's whole outer bounds, borders included (its quad
+    /// is cut near the viewport's edges), top to bottom.
+    pub card_bounds: Vec<(u32, Bounds<Pixels>)>,
+    /// Over the control under the pointer.
     pub hover: Hsla,
+    /// Over the pressed control while the pointer is on it.
+    pub pressed: Hsla,
     pub line_height: Pixels,
     /// Rows (headers included) intersecting the viewport.
     pub rows: u32,
@@ -155,6 +161,7 @@ impl Frame {
         }
         self.controls.clear();
         self.header_areas.clear();
+        self.card_bounds.clear();
         self.blocks.clear();
         self.prelude = None;
         self.cells.clear();
@@ -271,6 +278,7 @@ impl Painter<'_> {
         self.frame.line_height = px(self.geometry.row_height);
         self.frame.origin = b.origin;
         self.frame.hover = self.theme.hover;
+        self.frame.pressed = self.theme.pressed;
         // Rows never paint over a card's border or the canvas beside it.
         self.frame.layers[FULL].clip = Some(self.inner);
         self.frame.layers[HEADERS].clip = Some(b);
@@ -348,8 +356,11 @@ impl Painter<'_> {
                             "Loading…".to_owned()
                         }
                     };
+                    // Centered as a placeholder's would be, in the body's
+                    // first placeholder height.
                     let h = self.doc.body_height(f);
-                    self.label_row(f, &label, body_top, h.min(self.geometry.row_height * 2.0));
+                    let placeholder = self.doc.metrics().placeholder_height;
+                    self.label_row(f, &label, body_top, h.min(placeholder));
                 }
             }
         }
@@ -452,8 +463,9 @@ impl Painter<'_> {
         let _ = h;
     }
 
-    /// A muted label row (gaps, placeholders) at the code column; returns
-    /// the right edge of the label, for controls that follow it.
+    /// A muted label row (gaps, placeholders) at the code column, centered
+    /// in the row `y..y + h`; returns the right edge of the label, for the
+    /// links that follow it.
     pub(crate) fn label_at(&mut self, f: u32, label: &str, y: f32, h: f32) -> f32 {
         let cols = self.columns(f, self.materialized(f).map(|m| &**m));
         let pane = match cols.layout {
@@ -462,7 +474,7 @@ impl Painter<'_> {
         };
         let text = self.label(label, 1, self.theme.muted);
         let row_h = self.geometry.row_height;
-        let x = cols.indicator_x(pane);
+        let x = cols.code_x(pane);
         self.text(FULL, x, y + ((h - row_h) / 2.0).max(0.0), text.clone());
         let right = x + text.shaped.width();
         #[cfg(feature = "debug-inspect")]
@@ -481,24 +493,30 @@ impl Painter<'_> {
         self.label_at(f, label, y, h);
     }
 
-    /// A clickable text control after a label: `text` in the accent color,
-    /// starting at `x`, centered in the row `y..y + h`. Returns its right
-    /// edge.
+    /// A text link (ADR-0031 C2): `text`'s box starts at `x`, half a
+    /// `gap::GROUP` wider than the text on each side, so neighbouring links'
+    /// boxes meet and their texts stand `GROUP` apart, and `height::SM`
+    /// tall, centered in the row `y..y + h`. The box is its control, and
+    /// where its hover and press ink go. Returns the box's right edge.
     pub(crate) fn link(
         &mut self,
         action: ControlAction,
-        text: &str,
+        layer: ControlLayer,
+        text: Rc<ShapedText>,
         x: f32,
         y: f32,
         h: f32,
     ) -> f32 {
-        let a = self.geometry.advance;
+        let pad = gap::GROUP / 2.0;
+        let w = link_width(&text);
         let row_h = self.geometry.row_height;
-        let shaped = self.label(text, crate::header::SLOT_ACCENT, self.theme.accent);
-        let w = shaped.shaped.width() + a;
-        self.text(FULL, x + 0.5 * a, y + ((h - row_h) / 2.0).max(0.0), shaped);
-        let pad = ((h - row_h) / 2.0).clamp(0.0, 4.0);
-        self.control(action, ControlLayer::Body, x, y + pad, w, h - 2.0 * pad);
+        let text_layer = match layer {
+            ControlLayer::Body => FULL,
+            ControlLayer::Header => HEADERS,
+        };
+        self.text(text_layer, x + pad, y + ((h - row_h) / 2.0).max(0.0), text);
+        let box_h = height::SM.min(h);
+        self.control(action, layer, x, y + (h - box_h) / 2.0, w, box_h);
         x + w
     }
 
@@ -623,9 +641,10 @@ impl Painter<'_> {
             rows = rows.max(r);
             cells[k] = Some((cell.line + 1, marker(cell.kind), text));
         }
-        // The divider is the left half's last pixel column, drawn after its
+        // The divider is the left half's last point, drawn after its
         // background (the right half's quads start at `half`).
-        self.quad(1, cols.half - 1.0, y, 1.0, h, self.theme.border);
+        let line = stroke::BORDER;
+        self.quad(1, cols.half - line, y, line, h, self.theme.border);
         self.measure(f, i, h, rows);
         let sides = match (left, right) {
             (Some(_), Some(_)) => &[Side::Old, Side::New][..],
@@ -650,7 +669,8 @@ impl Painter<'_> {
         let _ = cells;
     }
 
-    /// Records a clickable control at viewport-relative `(x, y)`.
+    /// Records a clickable control at viewport-relative `(x, y)`, its ink
+    /// rounded by its height (`radius::for_height`).
     pub(crate) fn control(
         &mut self,
         action: ControlAction,
@@ -660,10 +680,23 @@ impl Painter<'_> {
         w: f32,
         h: f32,
     ) {
+        self.rounded_control(action, layer, (x, y, w, h), radius::for_height(h));
+    }
+
+    /// [`Painter::control`] with its ink rounded at `radius` (a capsule's,
+    /// say).
+    pub(crate) fn rounded_control(
+        &mut self,
+        action: ControlAction,
+        layer: ControlLayer,
+        (x, y, w, h): (f32, f32, f32, f32),
+        radius: f32,
+    ) {
         self.frame.controls.push(Control {
             action,
             bounds: self.bounds_at(x, y, w, h),
             layer,
+            radius,
             run: None,
         });
     }
@@ -674,8 +707,8 @@ impl Painter<'_> {
         Bounds::new(point(o.x + px(x), o.y + px(y)), size(px(w), px(h)))
     }
 
-    /// Queues a rounded rectangle with a 1 px border (when `border` is set)
-    /// at viewport-relative coordinates.
+    /// Queues a rounded rectangle with a `stroke::BORDER` border (when
+    /// `border` is set) at viewport-relative coordinates.
     pub(crate) fn rounded(
         &mut self,
         layer: usize,
@@ -689,7 +722,7 @@ impl Painter<'_> {
             bounds,
             background,
             border,
-            border_widths: Edges::all(px(1.)),
+            border_widths: Edges::all(px(stroke::BORDER)),
             radius: Corners::all(px(radius)),
         });
     }
@@ -910,6 +943,11 @@ fn marker(kind: LineKind) -> char {
         LineKind::Removed => '-',
         LineKind::Added => '+',
     }
+}
+
+/// The width of a [`Painter::link`] showing `text`.
+pub(crate) fn link_width(text: &ShapedText) -> f32 {
+    text.shaped.width() + gap::GROUP
 }
 
 pub(crate) fn pane_layer(pane: Pane) -> usize {

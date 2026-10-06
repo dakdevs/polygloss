@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn picks_a_line_near_the_middle_of_the_viewport() {
         let mut doc = doc(3, 100);
-        // File 0 is 40 + 2,000 px tall: the middle (y = 1,000 + 450) is in it.
+        // File 0 is 46 + 2,000 pt tall: the middle (y = 1,000 + 450) is in it.
         doc.scroll_by(1_000.0);
         let (f, anchor) = visible_line(&doc, &HashSet::new()).unwrap();
         assert_eq!(f, 0);
@@ -232,7 +232,7 @@ mod tests {
             panic!("{anchor:?}")
         };
         assert_eq!(side, Side::New);
-        // Row at 1,450 - 40 = 1,410 px into the body: row 70, new line 69.
+        // Row at 1,450 - 46 = 1,404 pt into the body: row 70, new line 69.
         assert_eq!(line, 69);
     }
 
@@ -240,9 +240,9 @@ mod tests {
     fn a_removed_line_anchors_on_the_old_side() {
         let doc = doc(20, 1);
         // Every body is its removed line; the middle of the first screen is
-        // in file 7 (60 px per file).
+        // in file 6 (66 pt per file: 396..462).
         let (f, anchor) = visible_line(&doc, &HashSet::new()).unwrap();
-        assert_eq!(f, 7);
+        assert_eq!(f, 6);
         assert_eq!(
             anchor,
             BlockAnchor::Line {
@@ -257,7 +257,7 @@ mod tests {
         let mut doc = doc(3, 100);
         // The middle of the viewport is on file 1's header: the nearest
         // line row below it is file 1's first.
-        doc.scroll_by((2_040.0 - 450.0 + 10.0) as f32);
+        doc.scroll_by((2_046.0 - 450.0 + 10.0) as f32);
         let (f, anchor) = visible_line(&doc, &HashSet::new()).unwrap();
         assert_eq!(f, 1);
         assert_eq!(
@@ -277,8 +277,8 @@ mod tests {
             placeholders.set_file_layout(f, FileLayout::placeholder(48.0));
         }
         let (f, anchor) = visible_line(&placeholders, &HashSet::new()).unwrap();
-        // 88 px per file: y = 450 is in file 5.
-        assert_eq!((f, anchor), (5, BlockAnchor::FileTop));
+        // 94 pt per file (46 + 48): y = 450 is in file 4 (376..470).
+        assert_eq!((f, anchor), (4, BlockAnchor::FileTop));
 
         let empty = Document::new(Arc::new(Vec::new()), Metrics::default());
         assert_eq!(visible_line(&empty, &HashSet::new()), None);

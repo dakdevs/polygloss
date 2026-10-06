@@ -88,11 +88,18 @@ fn comment(file_idx: u32, side: Side, start_line: u32, line: u32) -> ViewportEve
     }
 }
 
-// Unified geometry of `two_files` (3 digits: 4-column numbers, two of them,
-// then the bars' half-column indicator): code starts at 66.3 px. Rows:
-// header 0..45, gap 45..77, then 20 px lines: ctx 2 at 77, ctx 3 at 97,
-// ctx 4 at 117, -5 at 137, +5 at 157, ctx 6 at 177.
-const CODE_X: f32 = 8.5 * ADVANCE;
+// Unified geometry of `two_files` (ADR-0031 C1; 3 digits, two number
+// columns): a 72 pt gutter whose new column ends 8 pt before its end (64)
+// and whose old one ends 8 + 3 digits before that (32.6); code at 82. Rows:
+// header 0..46, gap 46..78, then 20 pt lines: ctx 2 at 78, ctx 3 at 98,
+// ctx 4 at 118, -5 at 138, +5 at 158, ctx 6 at 178.
+const CODE_X: f32 = 72.0 + 10.0;
+const NEW_NUMBERS_END: f32 = 72.0 - 8.0;
+const OLD_NUMBERS_END: f32 = NEW_NUMBERS_END - 8.0 - 3.0 * ADVANCE;
+/// A split half's or a one-sided file's one column: a 40 pt gutter, the
+/// numbers ending at 32, code at 50.
+const ONE_NUMBERS_END: f32 = 40.0 - 8.0;
+const ONE_CODE_X: f32 = 40.0 + 10.0;
 fn row_y(i: u32) -> f32 {
     HEADER_H + 32.0 + i as f32 * ROW_H
 }
@@ -323,9 +330,9 @@ fn gutter_plus_on_hover_emits_comment_requested(cx: &mut TestAppContext) {
     assert_eq!((plus.file_idx, plus.side, plus.line), (0, Side::New, 3));
     let (x, y, w, h) = plus.bounds;
     assert!(y >= row_y(1) && y + h <= row_y(2), "{:?}", plus.bounds);
-    // Over the right edge of the new number column (8 columns in).
+    // 8 pt right of the new number column's right edge: the gutter's end.
     assert!(
-        (x + w / 2.0 - 8.0 * ADVANCE).abs() < 0.01,
+        (x + w / 2.0 - (NEW_NUMBERS_END + 8.0)).abs() < 0.01,
         "{:?}",
         plus.bounds
     );
@@ -467,13 +474,13 @@ fn drag_line_numbers_selects_range(cx: &mut TestAppContext) {
     assert_eq!(comments(&events), [comment(0, Side::New, 4, 5)]);
 }
 
-/// On a card, rows start at its inner edge, 17 px in (a 16 px margin and a
-/// 1 px border); without a prelude the first card's rows are as high as in
+/// On a card, rows start at its inner edge, 13 pt in (a 12 pt margin and a
+/// 1 pt border); without a prelude the first card's rows are as high as in
 /// the flat layout. The gutter "+" and a text selection hit the same lines
-/// and characters as there, 17 px to the right.
+/// and characters as there, 13 pt to the right.
 #[gpui_kit::test]
 fn gutter_plus_and_selection_hit_rows_inside_the_card(cx: &mut TestAppContext) {
-    const INSET: f32 = 17.0;
+    const INSET: f32 = 13.0;
     let _sb = sandbox();
     let opts = card_options(LayoutMode::Unified);
     let (view, cx) = open(cx, two_files(), opts, 1000., 2000.);
@@ -487,7 +494,7 @@ fn gutter_plus_and_selection_hit_rows_inside_the_card(cx: &mut TestAppContext) {
     let (x, y, w, h) = plus.bounds;
     assert!(y >= row_y(1) && y + h <= row_y(2), "{:?}", plus.bounds);
     assert!(
-        x >= INSET && (x + w / 2.0 - (INSET + 8.0 * ADVANCE)).abs() < 0.01,
+        x >= INSET && (x + w / 2.0 - (INSET + NEW_NUMBERS_END + 8.0)).abs() < 0.01,
         "{:?}",
         plus.bounds
     );
@@ -545,7 +552,7 @@ fn copy_excludes_gutters_and_markers(cx: &mut TestAppContext) {
 
     // Split: a selection stays in the side it started in.
     set_options(&view, cx, |o| o.layout = LayoutMode::Split);
-    let left_code = 4.5 * ADVANCE;
+    let left_code = ONE_CODE_X;
     let from = point(px(left_code + 1.0), px(row_y(2) + 10.));
     let to = point(px(700.), px(row_y(3) + 10.));
     cx.simulate_mouse_move(from, None, Modifiers::default());
@@ -653,9 +660,9 @@ fn reveal_line_before_the_file_loads_applies_once_it_does(cx: &mut TestAppContex
 #[gpui_kit::test]
 fn cursor_reveal_and_top_row_use_header_top(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    // Cards with a 72 px prelude: a.rs's header starts at 84 (72 + a 12 px
-    // gap), its body (30 rows) at 129 and ends at 729, its card at 737;
-    // b.rs's header starts at 749, its body (60 rows) at 794.
+    // Cards with a 72 pt prelude: a.rs's header starts at 84 (72 + a 12 pt
+    // gap), its body (30 rows) at 130 and ends at 730, its card at 738;
+    // b.rs's header starts at 750, its body (60 rows) at 796.
     let provider = MemProvider::new(vec![
         Spec::added("a.rs", &numbered("a", 30).concat()),
         Spec::added("b.rs", &numbered("b", 60).concat()),
@@ -675,7 +682,7 @@ fn cursor_reveal_and_top_row_use_header_top(cx: &mut TestAppContext) {
     settle(cx);
 
     // Line 11 of a.rs right below the pinned header (its row starts at
-    // 129 + 200 = 329): without a cursor, `j` puts one on it.
+    // 130 + 200 = 330): without a cursor, `j` puts one on it.
     view.update(cx, |v, cx| {
         v.scroll_to(
             polygloss_viewport::ScrollTarget::Line {
@@ -689,17 +696,17 @@ fn cursor_reveal_and_top_row_use_header_top(cx: &mut TestAppContext) {
     settle(cx);
     assert_eq!(
         view.read_with(cx, |v, _| v.document().scroll_top()),
-        329.0 - HEADER_H as f64
+        330.0 - HEADER_H as f64
     );
     move_cursor(&view, cx, Direction::Down);
     assert_eq!(cursor(&view, cx), Some(pos(0, Side::New, 10)));
 
-    // A jump to line 16 of b.rs (its row starts at 794 + 300 = 1094) puts it
-    // a third of the way below the header: ⌊45 + 355 / 3⌋ = 163 px down.
+    // A jump to line 16 of b.rs (its row starts at 796 + 300 = 1096) puts it
+    // a third of the way below the header: ⌊46 + 354 / 3⌋ = 164 pt down.
     set_cursor(&view, cx, pos(1, Side::New, 15));
     assert_eq!(
         view.read_with(cx, |v, _| v.document().scroll_top()),
-        1094.0 - 163.0
+        1096.0 - 164.0
     );
     let d = debug(&view, cx);
     let i = d
@@ -707,15 +714,16 @@ fn cursor_reveal_and_top_row_use_header_top(cx: &mut TestAppContext) {
         .iter()
         .position(|r| *r == unified(None, Some(16), '+', "b 15"))
         .unwrap();
-    assert_eq!(d.row_bounds[i].0, 163.0);
+    assert_eq!(d.row_bounds[i].0, 164.0);
 }
 
 #[gpui_kit::test]
 fn comment_button_sits_over_the_number_column(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let (view, cx) = open(cx, two_files(), options(LayoutMode::Unified), 1000., 2000.);
-    // Centered on the right edge of the hovered side's number column:
-    // unified's new column ends at 8 columns (62.4), its old one at 4.
+    // Centered 8 pt right of the hovered side's number column, in the
+    // space after its digits: unified's new column ends at 64, its old one
+    // at 32.6; neither the numbers nor the code (at 82) are under it.
     let center_at = |cx: &mut VisualTestContext, x: f32, y: f32| {
         cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
         settle(cx);
@@ -725,23 +733,35 @@ fn comment_button_sits_over_the_number_column(cx: &mut TestAppContext) {
         (plus.side, bx + w / 2.0)
     };
     let (side, x) = center_at(cx, 20.0, row_y(1) + 10.0);
-    assert!(side == Side::New && (x - 8.0 * ADVANCE).abs() < 0.01, "{x}");
+    assert!(
+        side == Side::New && (x - (NEW_NUMBERS_END + 8.0)).abs() < 0.01,
+        "{x}"
+    );
     let (side, x) = center_at(cx, 20.0, row_y(3) + 10.0);
-    assert!(side == Side::Old && (x - 4.0 * ADVANCE).abs() < 0.01, "{x}");
+    assert!(
+        side == Side::Old && (x - (OLD_NUMBERS_END + 8.0)).abs() < 0.01,
+        "{x}"
+    );
     // Split: each half's one number column.
     set_options(&view, cx, |o| o.layout = LayoutMode::Split);
     let (side, x) = center_at(cx, 10.0, row_y(1) + 10.0);
-    assert!(side == Side::Old && (x - 4.0 * ADVANCE).abs() < 0.01, "{x}");
+    assert!(
+        side == Side::Old && (x - (ONE_NUMBERS_END + 8.0)).abs() < 0.01,
+        "{x}"
+    );
     let (side, x) = center_at(cx, 510.0, row_y(1) + 10.0);
     assert!(
-        side == Side::New && (x - (500.0 + 4.0 * ADVANCE)).abs() < 0.01,
+        side == Side::New && (x - (500.0 + ONE_NUMBERS_END + 8.0)).abs() < 0.01,
         "{x}"
     );
     // The added file's one pane, in split too: its first row.
     let d = debug(&view, cx);
     let b = d.headers.iter().find(|h| h.file_idx == 1).expect("b.rs");
     let (side, x) = center_at(cx, 10.0, b.y + HEADER_H + 10.0);
-    assert!(side == Side::New && (x - 4.0 * ADVANCE).abs() < 0.01, "{x}");
+    assert!(
+        side == Side::New && (x - (ONE_NUMBERS_END + 8.0)).abs() < 0.01,
+        "{x}"
+    );
 }
 
 #[gpui_kit::test]
@@ -749,9 +769,9 @@ fn selection_on_an_added_file_copies_its_text(cx: &mut TestAppContext) {
     let _sb = sandbox();
     let provider = MemProvider::new(vec![Spec::added("new.rs", "alpha\nbeta\n")]);
     let (view, cx) = open(cx, provider, options(LayoutMode::Split), 1000., 400.);
-    // One pane: code at 4.5 columns (35.1) on rows 45 and 65. From before
-    // "alpha" to after "beta".
-    let code_x = 4.5 * ADVANCE;
+    // One pane: code at 50 on rows 46 and 66. From before "alpha" to after
+    // "beta".
+    let code_x = ONE_CODE_X;
     let from = point(px(code_x + 1.0), px(HEADER_H + 10.));
     let to = point(px(code_x + 4.0 * ADVANCE + 1.0), px(HEADER_H + ROW_H + 10.));
     cx.simulate_mouse_move(from, None, Modifiers::default());

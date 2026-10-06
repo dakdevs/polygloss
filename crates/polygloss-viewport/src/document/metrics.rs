@@ -4,6 +4,9 @@
 use polygloss_diff::rows::Layout;
 use polygloss_diff::{FileChange, FileKind};
 
+use crate::layout::DEFAULT_CODE_FONT_SIZE;
+use crate::space::{card, height, stroke, text};
+
 /// Pixel geometry and estimation parameters. Everything here affects heights,
 /// so changing it ([`crate::document::Document::set_metrics`]) re-estimates
 /// every file and drops every row layout.
@@ -13,8 +16,9 @@ pub struct Metrics {
     pub layout: Layout,
     /// One code row (a line, or a `\ No newline` marker).
     pub row_height: f32,
-    /// The file header, including any separator above it. A collapsed card is
-    /// exactly this tall.
+    /// The file header: its interior (`card::header`) inside the strip's
+    /// top border and the separator below it. A collapsed card is exactly
+    /// this tall.
     pub header_height: f32,
     /// Canvas between file cards: above every card but the first (whose lead
     /// is the prelude and a gap, or nothing), and below the last one. 0 in the
@@ -42,16 +46,28 @@ pub struct Metrics {
 }
 
 impl Default for Metrics {
+    /// At the default code size (13 pt): rows 20, the file header 46 (1 +
+    /// 44 + 1), gap rows 32, placeholders 48 and bands 36; the flat layout.
     fn default() -> Metrics {
+        Metrics::for_row(text::code_row(DEFAULT_CODE_FONT_SIZE))
+    }
+}
+
+impl Metrics {
+    /// The flat layout's metrics for code rows `row` tall (ADR-0031
+    /// "Scaling"): what holds code text scales with the row (the file
+    /// header, gap rows, placeholders); a band holds UI text and is a fixed
+    /// bar.
+    pub(crate) fn for_row(row: f32) -> Metrics {
         Metrics {
             layout: Layout::Split,
-            row_height: 20.0,
-            header_height: 40.0,
+            row_height: row,
+            header_height: card::header(row) + stroke::BORDER + stroke::BORDER,
             card_gap: 0.0,
             card_pad_bottom: 0.0,
-            band_height: 36.0,
-            gap_height: 32.0,
-            placeholder_height: 48.0,
+            band_height: height::BAR,
+            gap_height: card::gap_row(row),
+            placeholder_height: card::placeholder(row),
             context_lines: 3,
             load_diff_changed_lines: 20_000,
             bytes_per_line: 32,

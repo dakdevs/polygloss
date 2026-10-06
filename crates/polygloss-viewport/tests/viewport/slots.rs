@@ -439,7 +439,7 @@ fn hiding_the_anchor_file_moves_the_anchor_and_drops_the_cursor(cx: &mut TestApp
     assert_eq!(d.scroll_top(), 100.0);
     assert_eq!(shown(&d, d.visible(100.0)), [2, 3]);
 
-    // The view: three files of 30 added lines (45 + 600 px each).
+    // The view: three files of 30 added lines (46 + 600 pt each).
     let _sb = sandbox();
     let specs = (0..3)
         .map(|i| Spec::added(&format!("f{i}.txt"), &numbered("line", 30).concat()))
@@ -500,7 +500,8 @@ fn display_rank_and_order_follow_set_order(cx: &mut TestAppContext) {
     let d = debug(&view, cx);
     let painted: Vec<u32> = d.headers.iter().map(|h| h.file_idx).collect();
     assert_eq!(painted, [3, 1, 0, 2]);
-    // Each card is its header and three rows: 45 + 60 px.
+    // Each card is its header and three rows.
+    let card = HEADER_H + 3.0 * ROW_H;
     let ys: Vec<f32> = d.headers.iter().map(|h| h.y).collect();
-    assert_eq!(ys, [0.0, 105.0, 210.0, 315.0]);
+    assert_eq!(ys, [0.0, card, 2.0 * card, 3.0 * card]);
 }

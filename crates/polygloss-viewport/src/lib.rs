@@ -70,7 +70,7 @@ pub use card::CardStyle;
 pub use controls::ControlAction;
 pub use cursor::{CursorPos, Direction};
 pub use debug::{
-    BandDebug, ControlDebug, HeaderDebug, IconDebug, MenuDebug, PlusDebug, TitleStyle,
+    BandDebug, CardDebug, ControlDebug, HeaderDebug, IconDebug, MenuDebug, PlusDebug, TitleStyle,
     ViewportDebug,
 };
 pub use document::{

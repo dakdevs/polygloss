@@ -1,5 +1,6 @@
 //! Horizontal and vertical geometry: split vs unified (design §11.6, OQ-15),
-//! row heights from the code font, and the columns of a row.
+//! row heights from the code font, and the columns of a row (ADR-0031 C1:
+//! the change bar, the number gutter, then code).
 
 use polygloss_diff::rows::{Layout, LineKind, Row};
 use polygloss_diff::{FileChange, Side};
@@ -8,6 +9,7 @@ use crate::card::CardStyle;
 use crate::document::{BodyRow, FileLayout, Metrics};
 use crate::materialize::MaterializedFile;
 use crate::numbers::one_sided;
+use crate::space::{card, text};
 use crate::style::Indicators;
 use crate::text_cache::MAX_CHARS_WRAPPED;
 
@@ -27,6 +29,9 @@ pub const AUTO_LAYOUT_HYSTERESIS_COLUMNS: f32 = 8.0;
 
 /// Spaces per tab stop when displaying code (**Provisional**).
 pub const TAB_WIDTH: usize = 4;
+
+/// The code font's default size (`diff.font.size`), in points.
+pub const DEFAULT_CODE_FONT_SIZE: f32 = 13.0;
 
 /// The layout `mode` resolves to for a viewport `columns` code-font columns
 /// wide. In `Auto`, the first decision is split at `split_min_columns` or
@@ -81,8 +86,8 @@ impl Geometry {
         }
     }
 
-    /// Document metrics for `layout`: a header is 2.25 rows, a gap row 1.6
-    /// and a placeholder 2.4 (20/45/32/48 px at 13 px); the cards' gap and
+    /// Document metrics for `layout` at this code row
+    /// ([`Metrics::for_row`]: 20/46/32/48 pt at 13 pt); the cards' gap and
     /// padding when `cards` is set.
     pub fn metrics(
         &self,
@@ -90,25 +95,20 @@ impl Geometry {
         load_diff_changed_lines: u32,
         cards: Option<CardStyle>,
     ) -> Metrics {
-        let row = self.row_height;
         Metrics {
             layout,
-            row_height: row,
-            header_height: (2.25 * row).round(),
             card_gap: cards.map_or(0.0, |c| c.gap),
             card_pad_bottom: cards.map_or(0.0, |c| c.pad_bottom),
-            gap_height: (1.6 * row).round(),
-            placeholder_height: (2.4 * row).round(),
             load_diff_changed_lines,
-            ..Metrics::default()
+            ..Metrics::for_row(self.row_height)
         }
     }
 }
 
-/// Row height for a code font size: 1.5 × the size, rounded to whole pixels
-/// so rows stay on the pixel grid (20 px at 13 px).
+/// Row height for a code font size: `text::code_row`, on whole points so
+/// rows stay on the pixel grid (20 at 13 pt), and never under 1.
 pub(crate) fn row_height_for(font_size: f32) -> f32 {
-    (font_size * 1.5).round().max(1.0)
+    text::code_row(font_size).max(1.0)
 }
 
 /// The layout file `change` is drawn in: unified for a one-sided file
@@ -125,11 +125,13 @@ pub(crate) fn layout_for(change: &FileChange, layout: Layout) -> Layout {
 /// The columns of a code row, relative to the viewport's left edge: a row
 /// spans `x..x + width` (a card's inner width).
 ///
-/// Unified: `[old number][new number][indicator][code]`; a one-sided file
-/// has only its side's number. Split: each half is
-/// `[number][indicator][code]`, the old side on the left. Numbers are right
-/// aligned in a column one character wider than the file's longest line
-/// number on each side.
+/// Each pane (the row, or a split half) starts with its number gutter
+/// (`card::gutter`): the change bar's room, then the number columns, each
+/// right-aligned in a `digits · advance` cell, the last one
+/// `card::NUMBER_PAD_R` before the gutter's end. Unified has two (old, then
+/// new, `card::NUMBER_GAP` apart), a split half and a one-sided file one.
+/// Code starts `card::CODE_PAD` after the gutter, or after the `+-`
+/// indicator's two-advance cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Columns {
     pub layout: Layout,
@@ -141,8 +143,9 @@ pub(crate) struct Columns {
     pub advance: f32,
     /// Where the right half starts (split); `x + width` in unified.
     pub half: f32,
-    pub number_width: f32,
-    pub indicator_width: f32,
+    /// Digits of the widest line number ([`digits`]).
+    pub digits: u32,
+    pub indicators: Indicators,
 }
 
 /// Which part of a row a cell occupies.
@@ -167,10 +170,6 @@ impl Columns {
             Layout::Split => (width / 2.0).floor(),
             Layout::Unified => width,
         };
-        let indicator_width = match indicators {
-            Indicators::PlusMinus => 2.0 * advance,
-            Indicators::Bars | Indicators::None => 0.5 * advance,
-        };
         Columns {
             layout,
             one_sided: None,
@@ -178,8 +177,8 @@ impl Columns {
             width,
             advance,
             half,
-            number_width: (digits.max(1) + 1) as f32 * advance,
-            indicator_width,
+            digits,
+            indicators,
         }
     }
 
@@ -207,10 +206,10 @@ impl Columns {
     }
 
     /// Number of line-number columns in a pane.
-    fn numbers(&self) -> f32 {
+    fn numbers(&self) -> u32 {
         match (self.layout, self.one_sided) {
-            (Layout::Unified, None) => 2.0,
-            _ => 1.0,
+            (Layout::Unified, None) => 2,
+            _ => 1,
         }
     }
 
@@ -225,26 +224,35 @@ impl Columns {
         }
     }
 
-    /// Right edge of line-number column `i` (0 = old in unified) in `pane`.
+    /// A pane's number gutter, change bar included (`card::gutter`).
+    pub fn gutter(&self) -> f32 {
+        card::gutter(self.digits, self.advance, self.numbers())
+    }
+
+    /// Right edge of line-number column `i` (0 = old in unified) in `pane`:
+    /// the last one `card::NUMBER_PAD_R` before the gutter's end, an
+    /// earlier one a cell and `card::NUMBER_GAP` before the next.
     pub fn number_right(&self, pane: Pane, i: u8) -> f32 {
-        let (x, _) = self.pane(pane);
-        x + self.number_width * f32::from(i + 1)
+        let last = self.gutter_right(pane) - card::NUMBER_PAD_R;
+        let cell = self.digits as f32 * self.advance;
+        let after = self.numbers().saturating_sub(u32::from(i) + 1);
+        last - after as f32 * (cell + card::NUMBER_GAP)
     }
 
-    /// Right edge of the last line-number column in `pane` (where the
-    /// number gutter ends).
+    /// Where the number gutter of `pane` ends (its tint's right edge).
     pub fn gutter_right(&self, pane: Pane) -> f32 {
-        self.pane(pane).0 + self.numbers() * self.number_width
+        self.pane(pane).0 + self.gutter()
     }
 
-    /// Left edge of the indicator column in `pane`.
+    /// Left edge of the `+-` indicator's cell in `pane`: the gutter's end.
     pub fn indicator_x(&self, pane: Pane) -> f32 {
         self.gutter_right(pane)
     }
 
     /// Left edge of the code in `pane`.
     pub fn code_x(&self, pane: Pane) -> f32 {
-        self.indicator_x(pane) + self.indicator_width
+        let plus_minus = self.indicators == Indicators::PlusMinus;
+        self.pane(pane).0 + card::code_x(self.gutter(), self.advance, plus_minus)
     }
 
     /// Width available to code in `pane`, keeping one column free at the end.

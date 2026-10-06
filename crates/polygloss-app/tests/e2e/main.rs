@@ -11,6 +11,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod card_geometry;
 mod categories;
 mod cursor;
 mod feed;
@@ -69,5 +70,6 @@ fn main() -> std::process::ExitCode {
         categories::TESTS,
         press_ink::TESTS,
         filmstrip::TESTS,
+        card_geometry::TESTS,
     ])
 }

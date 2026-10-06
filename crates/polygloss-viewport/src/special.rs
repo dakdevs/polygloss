@@ -21,10 +21,12 @@ use std::sync::Arc;
 use gpui_kit::{Context, SharedString};
 use polygloss_diff::{FileChange, FileKind, FileStatus};
 
-use crate::controls::ControlAction;
+use crate::controls::{ControlAction, ControlLayer};
 use crate::document::{FileState, RowKey};
+use crate::header::SLOT_ACCENT;
 use crate::materialize::MaterializedFile;
 use crate::paint_rows::Painter;
+use crate::space::gap;
 use crate::view::DiffViewport;
 
 /// What a body without code rows shows.
@@ -318,8 +320,11 @@ impl Painter<'_> {
         };
         let right = self.label_at(f, &label.text, y, h);
         if label.load_diff {
-            let x = right + 2.0 * self.geometry.advance;
-            self.link(ControlAction::LoadDiff(f), "Load diff", x, y, h);
+            // A link after the label, as a gap row's expanders.
+            let text = self.label("Load diff", SLOT_ACCENT, self.theme.accent);
+            let x = right + gap::GROUP / 2.0;
+            let action = ControlAction::LoadDiff(f);
+            self.link(action, ControlLayer::Body, text, x, y, h);
         }
     }
 }

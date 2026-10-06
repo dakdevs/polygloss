@@ -26,9 +26,6 @@ use crate::paint_rows::{Frame, HEADERS, Layer};
 use crate::selection;
 use crate::view::{DiffViewport, FrameStats};
 
-/// Corner radius of a header control's highlight (the header pills').
-const HOVER_RADIUS: f32 = 6.0;
-
 pub(crate) struct DiffElement {
     view: Entity<DiffViewport>,
 }
@@ -134,11 +131,19 @@ impl Element for DiffElement {
             return;
         };
         let hovered = controls::hovered(&prepainted.targets, window);
-        let hover = |layer: ControlLayer| {
-            hovered
-                .map(|i| controls::target_bounds(&prepainted.targets, i))
-                .filter(|(_, l)| *l == layer)
-                .map(|(b, _)| (b, frame.hover))
+        let pressed = self.view.read(cx).pressed.clone();
+        let ink = |layer: ControlLayer| {
+            controls::ink(&prepainted.targets, hovered, pressed.as_ref(), layer).map(
+                |(bounds, on_pressed, radius)| Ink {
+                    bounds,
+                    color: if on_pressed {
+                        frame.pressed
+                    } else {
+                        frame.hover
+                    },
+                    radius,
+                },
+            )
         };
         // The wheel handler goes first, so the handlers of the host blocks
         // and controls painted below run before it (bubble order is reverse
@@ -148,7 +153,8 @@ impl Element for DiffElement {
         let line_height = frame.line_height;
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
-                let delta = event.delta.pixel_delta(line_height.max(px(1.)));
+                // A code row is never under 1 pt (`layout::row_height_for`).
+                let delta = event.delta.pixel_delta(line_height);
                 view.update(cx, |view, cx| view.scroll_by(-delta.y.as_f32(), cx));
                 cx.stop_propagation();
             }
@@ -168,9 +174,7 @@ impl Element for DiffElement {
             for layer in rows {
                 paint_quads(layer, window);
             }
-            if let Some((b, color)) = hover(ControlLayer::Body) {
-                window.paint_quad(fill(b, color));
-            }
+            paint_ink(None, ink(ControlLayer::Body), window);
             for layer in rows {
                 paint_rounded(layer, window);
             }
@@ -180,12 +184,12 @@ impl Element for DiffElement {
             // Host blocks and the prelude over the rows, under the headers.
             blocks::paint(&mut prepainted.blocks, window, cx);
             // Headers last: the pinned one covers the rows and blocks under
-            // it. The highlight goes over a header's strip and pills (rounded
-            // quads on a card), its icons over that, its text on top.
+            // it. The ink goes over a header's strip and pills (rounded quads
+            // on a card), its icons over that, its text on top.
             for layer in headers {
                 paint_quads(layer, window);
                 paint_rounded(layer, window);
-                paint_hover(layer, hover(ControlLayer::Header), window);
+                paint_ink(layer.clip, ink(ControlLayer::Header), window);
                 paint_icons(layer, &frame, window, cx);
                 paint_texts(layer, &frame, window, cx);
             }
@@ -215,15 +219,21 @@ fn paint_quads(layer: &Layer, window: &mut Window) {
     });
 }
 
-/// The highlighted header control, rounded like the header's pills, under
-/// `layer`'s clip.
-fn paint_hover(layer: &Layer, hover: Option<(Bounds<Pixels>, Hsla)>, window: &mut Window) {
-    let Some((bounds, color)) = hover else {
+/// The hover or pressed ink over one control (ADR-0030): a quad of its
+/// bounds and radius.
+struct Ink {
+    bounds: Bounds<Pixels>,
+    color: Hsla,
+    radius: f32,
+}
+
+/// `ink`, if any, under `clip`.
+fn paint_ink(clip: Option<Bounds<Pixels>>, ink: Option<Ink>, window: &mut Window) {
+    let Some(ink) = ink else {
         return;
     };
-    let clip = layer.clip.map(|bounds| ContentMask { bounds });
-    window.with_content_mask(clip, |window| {
-        window.paint_quad(fill(bounds, color).corner_radii(px(HOVER_RADIUS)));
+    window.with_content_mask(clip.map(|bounds| ContentMask { bounds }), |window| {
+        window.paint_quad(fill(ink.bounds, ink.color).corner_radii(px(ink.radius)));
     });
 }
 

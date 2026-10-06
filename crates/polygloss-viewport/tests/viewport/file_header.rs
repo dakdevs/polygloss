@@ -1,13 +1,15 @@
-//! The file header (T6.7, design §11.6 "File header"), 2.25 rows = 45 px.
+//! The file header (T6.7, design §11.6 "File header"; ADR-0031 C2): a row
+//! plus 24 inside its two 1 pt borders, 46 pt at 13 pt.
 //!
-//! Flat geometry at 7.8 px a column, 1000 px wide: the chevron control is
-//! 0..23.4 and the title starts there; right to left, the ⋯ control
-//! (976.6..1000), 6 px, the Viewed pill (8 + 16 box + 6 + label + 8), 6 px,
-//! the `+a −d` pill (6 + "+a" + one column + "−d" + 6), 6 px, the
-//! open-in-editor control (24), 6 px, then the review-state pills (6 + 14
-//! icon + 4 + label + 6, or 6 + label + 6), 6 px apart. Kind pills (6 +
-//! label + 6) follow the title 6 px after it. Text tops are at
-//! (45 − 20) / 2 = 12.5; 16 px icons at 14.5, 14 px ones at 15.5.
+//! Flat geometry at 7.8 pt a column, 1000 pt wide: the chevron's 16 pt box
+//! at 12 in a 24 pt button (8..32), the title at 40. Right to left: the ⋯
+//! button (968..992, 8 pt from the edge); the Viewed pill (its box and label
+//! 8 pt inside each end, 6 pt apart; 28 tall); the `+a −d` pill ("+a", 4 pt,
+//! "−d", 8 pt inside each end); the open-in-editor button (24); then the
+//! review-state pills (a 14 pt icon 6 pt before the label, 8 pt inside each
+//! end); all 8 pt apart. Kind pills follow the title 8 pt after it. Pills
+//! are 24 pt capsules. Text tops are at (46 − 20) / 2 = 13; 24 pt buttons
+//! at 11, 16 pt icons at 15, 14 pt ones at 16.
 
 use gpui_kit::{TestAppContext, VisualTestContext};
 use polygloss_diff::Side;
@@ -64,7 +66,7 @@ fn header_title_dims_the_directory_and_bolds_the_name(cx: &mut TestAppContext) {
     assert_eq!(b.title_runs, [("top.rs".to_owned(), TitleStyle::Bold)]);
     // Painted right of the chevron; its first run is the muted directory.
     let (x, y) = text_at(&d, "src/app/main.rs");
-    assert!(near(x, 3.0 * ADVANCE) && near(y, 12.5), "{x},{y}");
+    assert!(near(x, 40.0) && near(y, 13.0), "{x},{y}");
     assert_eq!(text_color(&d, "src/app/main.rs"), theme.muted);
     assert_eq!(text_color(&d, "top.rs"), theme.header_foreground);
 }
@@ -140,22 +142,22 @@ fn header_keeps_review_state_and_similarity_badges(cx: &mut TestAppContext) {
         ]
     );
     assert_eq!(h.counts, Some((1, 1)));
-    // Left: the title, then the kind pill 6 px after its end (23.4 + 23
-    // columns = 202.8). Right: the review-state pills, ending 6 px before
-    // the open-in-editor control (798.8), then the counts and Viewed.
+    // Left: the title at 40, then the kind pill 8 pt after its end (40 +
+    // 23 columns = 219.4). Right: Viewed (875.2), the counts (816), open in
+    // editor (784), then the review-state pills, ending 8 pt before it.
     for (text, x) in [
-        ("src/old.rs → src/new.rs", 23.4),
-        ("92% similar", 214.8),
-        ("changed since viewed", 410.6),
-        ("2 open threads", 602.6),
-        ("agent", 747.8),
-        ("+1", 834.8),
-        ("−1", 858.2),
-        ("Viewed", 915.8),
+        ("src/old.rs → src/new.rs", 40.0),
+        ("92% similar", 235.4),
+        ("changed since viewed", 375.8),
+        ("2 open threads", 575.8),
+        ("agent", 729.0),
+        ("+1", 824.0),
+        ("−1", 843.6),
+        ("Viewed", 905.2),
     ] {
         let (tx, ty) = text_at(&d, text);
         assert!(
-            near(tx, x) && near(ty, 12.5),
+            near(tx, x) && near(ty, 13.0),
             "{text:?} at {tx},{ty}, expected {x}"
         );
     }
@@ -167,12 +169,12 @@ fn header_keeps_review_state_and_similarity_badges(cx: &mut TestAppContext) {
     // The icons: chevron, message and bot in their pills, open in editor,
     // the Viewed box and ⋯.
     for (name, rect) in [
-        ("chevron-down", (3.7, 14.5, 16.0, 16.0)),
-        ("message-square", (584.6, 15.5, 14.0, 14.0)),
-        ("bot", (729.8, 15.5, 14.0, 14.0)),
-        ("square-arrow-out-up-right", (802.8, 14.5, 16.0, 16.0)),
-        ("square", (893.8, 14.5, 16.0, 16.0)),
-        ("ellipsis", (980.3, 14.5, 16.0, 16.0)),
+        ("chevron-down", (12.0, 15.0, 16.0, 16.0)),
+        ("message-square", (555.8, 16.0, 14.0, 14.0)),
+        ("bot", (709.0, 16.0, 14.0, 14.0)),
+        ("square-arrow-out-up-right", (788.0, 15.0, 16.0, 16.0)),
+        ("square", (883.2, 15.0, 16.0, 16.0)),
+        ("ellipsis", (972.0, 15.0, 16.0, 16.0)),
     ] {
         let found = icons_named(&d, name);
         assert!(
@@ -181,10 +183,10 @@ fn header_keeps_review_state_and_similarity_badges(cx: &mut TestAppContext) {
         );
     }
     for (action, rect) in [
-        (ControlAction::Collapse(0), (0.0, 0.0, 23.4, 45.0)),
-        (ControlAction::OpenInEditor(0), (798.8, 10.5, 24.0, 24.0)),
-        (ControlAction::Viewed(0), (885.8, 8.5, 84.8, 28.0)),
-        (ControlAction::Menu(0), (976.6, 0.0, 23.4, 45.0)),
+        (ControlAction::Collapse(0), (8.0, 11.0, 24.0, 24.0)),
+        (ControlAction::OpenInEditor(0), (784.0, 11.0, 24.0, 24.0)),
+        (ControlAction::Viewed(0), (875.2, 9.0, 84.8, 28.0)),
+        (ControlAction::Menu(0), (968.0, 11.0, 24.0, 24.0)),
     ] {
         let at = control(&d, action);
         assert!(
@@ -262,12 +264,12 @@ fn header_pill_shows_both_counts_once_known(cx: &mut TestAppContext) {
     settle(cx);
     let d = debug(&view, cx);
     assert_eq!(header(&d, 0).counts, Some((3, 0)));
-    // Both counts, the zero included, in one pill: "+3" at 834.8 + 15.6
-    // (the pill is 51 px, as for "+1 −1") and "−0" a column after it.
+    // Both counts, the zero included, in one pill: "+3", then "−0" 4 pt
+    // (`gap::INLINE`) after it; the pill is 8 + 15.6 + 4 + 15.6 + 8 wide.
     let (plus_x, _) = text_at(&d, "+3");
     let (minus_x, _) = text_at(&d, "−0");
     assert!(
-        near(minus_x, plus_x + 2.0 * ADVANCE + ADVANCE),
+        near(minus_x, plus_x + 2.0 * ADVANCE + 4.0),
         "{plus_x} {minus_x}"
     );
     let pill = shaped_quads(cx)
@@ -275,7 +277,7 @@ fn header_pill_shows_both_counts_once_known(cx: &mut TestAppContext) {
         .find(|q| q.fill == Some(theme.pill_background) && q.radii[0] > 0.0)
         .expect("a pill");
     assert!(
-        near_painted(pill.bounds, (828.8, 11.5, 51.0, 22.0)),
+        near_painted(pill.bounds, (816.0, 11.0, 51.2, 24.0)),
         "{pill:?}"
     );
 }
@@ -426,6 +428,112 @@ fn header_controls_highlight_over_the_card_header(cx: &mut TestAppContext) {
         assert!(
             lit > strip,
             "{action:?}: highlight {lit} under the strip {strip}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// the spacing system (T7.4, ADR-0031 C2)
+
+/// The header's controls on the card's columns, 1200 pt wide so nothing
+/// gives way: the chevron's 16 pt box 12 pt from the card's inner edge
+/// (13 pt into the viewport), pills 24 pt capsules, Viewed a 28 pt capsule,
+/// the last trailing control (⋯) ending 8 pt from the inner right edge, and
+/// the path where a one-column gutter of up to three digits ends.
+#[gpui_kit::test]
+fn file_header_controls_follow_their_rules(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // A renamed file (a kind pill, and every review pill once flagged) and
+    // an added file (one number column).
+    let provider = MemProvider::new_with(
+        vec![
+            Spec::renamed("src/old.rs", "src/new.rs", "a\n", "b\n"),
+            Spec::added("src/add.rs", "x\n"),
+        ],
+        |files| files[0].similarity = Some(92),
+    );
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, provider, opts, 1200., 600.);
+    set_all_flags(&view, cx);
+    let d = debug(&view, cx);
+    const LEFT: f32 = 13.0;
+    const RIGHT: f32 = 1200.0 - 13.0;
+
+    let chevrons = icons_named(&d, "chevron-down");
+    assert_eq!(chevrons.len(), 2, "{chevrons:?}");
+    for (x, _, w, h) in chevrons {
+        assert!(
+            near(x, LEFT + 12.0) && w == 16.0 && h == 16.0,
+            "{x} {w} {h}"
+        );
+    }
+    for f in 0..2 {
+        let (x, _, w, _) = control(&d, ControlAction::Menu(f));
+        assert!(near(x + w, RIGHT - 8.0), "file {f}: ⋯ ends at {}", x + w);
+    }
+
+    let quads = shaped_quads(cx);
+    // File 0: the similarity pill, three review pills and the counts; file
+    // 1: the counts.
+    let pills: Vec<&ShapedQuad> = quads
+        .iter()
+        .filter(|q| q.fill == Some(theme.pill_background))
+        .collect();
+    assert_eq!(pills.len(), 6, "{pills:?}");
+    for p in pills {
+        assert!(near(p.bounds.3, 24.0) && p.radii == [12.0; 4], "{p:?}");
+    }
+    let viewed: Vec<&ShapedQuad> = quads
+        .iter()
+        .filter(|q| {
+            q.fill == Some(theme.card_background)
+                && q.border == theme.card_border
+                && q.bounds.3 < 40.0
+        })
+        .collect();
+    assert_eq!(viewed.len(), 2, "{viewed:?}");
+    for v in viewed {
+        assert!(near(v.bounds.3, 28.0) && v.radii == [14.0; 4], "{v:?}");
+    }
+    assert!(near(control(&d, ControlAction::Viewed(0)).3, 28.0));
+
+    // Both measured: the added file's path and its gutter tint's end (its
+    // one row is the last added row; the rename's comes first).
+    let gutter = *quads_of(cx, theme.added_gutter).last().expect("tinted");
+    let (path_x, _) = text_at(&d, "src/add.rs");
+    assert!(near(path_x, gutter.0 + gutter.2), "{path_x} vs {gutter:?}");
+}
+
+/// The header's interior, between the strip's top border and the
+/// separator, is a code row plus 24 pt: 20 + 24 at 13 pt, 24 + 24 at 16 pt;
+/// with its two 1 pt borders the header is 46 and 50 pt.
+#[gpui_kit::test]
+fn file_header_is_a_row_plus_24(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    for (size, row, interior) in [(13.0, 20.0, 44.0), (16.0, 24.0, 48.0)] {
+        let mut opts = card_options(LayoutMode::Unified);
+        opts.code_font_size = size;
+        let theme = opts.theme.clone();
+        let (view, vcx) = open(cx, two_added(), opts, 1000., 800.);
+        let m = view.read_with(vcx, |v, _| v.document().metrics().clone());
+        assert_eq!((m.row_height, m.header_height), (row, interior + 2.0));
+        // The strip in place: square bottom corners over its body.
+        let strip = shaped_quads(vcx)
+            .into_iter()
+            .find(|q| {
+                q.fill == Some(theme.header_background)
+                    && q.border == theme.card_border
+                    && q.radii == [8.0, 8.0, 0.0, 0.0]
+            })
+            .expect("the strip");
+        let inside = strip.bounds.3 - strip.borders[0] - strip.borders[2];
+        assert_eq!(inside, interior, "{size} pt: {strip:?}");
+        // The first row starts below the separator.
+        assert_eq!(
+            debug(&view, vcx).row_bounds[1].0,
+            strip.bounds.3,
+            "{size} pt"
         );
     }
 }

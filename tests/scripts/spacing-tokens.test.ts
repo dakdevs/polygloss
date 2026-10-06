@@ -808,9 +808,36 @@ const ALLOW: Allow[] = [
     reason: "byte units (KiB) in a file size, not points",
   },
   {
-    path: "crates/polygloss-viewport/src/view.rs",
-    snippet: "code_font_size: 13.0",
+    path: "crates/polygloss-viewport/src/layout.rs",
+    snippet: "const DEFAULT_CODE_FONT_SIZE: f32 = 13.0",
     reason: "the code font's default size, a user setting, not layout",
+  },
+  {
+    path: "crates/polygloss-viewport/src/layout.rs",
+    snippet: "0.6 * font_size",
+    reason:
+      "a monospace advance's usual share of its size: the fallback when the font reports none",
+  },
+  {
+    path: "crates/polygloss-viewport/src/cursor.rs",
+    snippet:
+      "let margin = (2.0 * row_h).min(((view_h - header) / 2.0 - row_h).max(0.0));",
+    reason: "a scroll margin of two code rows, not points",
+  },
+  {
+    path: "crates/polygloss-viewport/src/cursor.rs",
+    snippet: "top - (vis_top + (view_h - header) / 3.0).floor()",
+    reason: "a jump lands a third of the way down: a ratio, not a dimension",
+  },
+  {
+    path: "crates/polygloss-viewport/src/selection.rs",
+    snippet: "y - (c.y + c.h) + 0.5",
+    reason: "a tie-break between equally distant cells, not a dimension",
+  },
+  {
+    path: "crates/polygloss-viewport/src/document/window.rs",
+    snippet: "let bottom = bottom.min(self.heights.total() - 0.5);",
+    reason: "a probe half a point inside the document's end, not a dimension",
   },
   {
     path: "crates/polygloss-app/src/settings/model.rs",

@@ -486,14 +486,14 @@ fn document_blocks_count_in_estimates_layouts_and_explicit_heights() {
             "o8 n8", "o9 n9",
         ])
     );
-    assert_eq!(d.file_height(1), 40.0 + 200.0 + 100.0);
+    assert_eq!(d.file_height(1), HEADER_H + 200.0 + 100.0);
 
     // A measured height is kept by relayouts.
     assert!(d.set_block_height(1, BlockId(1), 75.0));
     assert!(!d.set_block_height(1, BlockId(9), 75.0));
     assert_eq!(d.blocks(1)[0].height, 75.0);
     d.set_file_layout(1, context_layout(10));
-    assert_eq!(d.file_height(1), 40.0 + 200.0 + 115.0);
+    assert_eq!(d.file_height(1), HEADER_H + 200.0 + 115.0);
     // So is one set on the block's row directly.
     let row = d
         .file_layout(1)
@@ -514,7 +514,7 @@ fn document_blocks_count_in_estimates_layouts_and_explicit_heights() {
 
     // A collapsed file is its header alone, blocks included.
     d.set_collapsed(1, true);
-    assert_eq!(d.file_height(1), 40.0);
+    assert_eq!(d.file_height(1), HEADER_H);
     d.set_collapsed(1, false);
 
     // Removing blocks re-lays out the rows alone.
@@ -573,7 +573,10 @@ fn document_scroll_to_block_lands_once_its_file_is_laid_out() {
     d.scroll_to(4, RowKey::Block(BlockId(7)));
     assert_eq!(d.anchor().row, RowKey::Block(BlockId(7)));
     // Estimated: below its line, spread at the row height.
-    assert_eq!(d.scroll_top(), d.file_top(4) + 40.0 + 13.0 * 20.0);
+    assert_eq!(
+        d.scroll_top(),
+        d.file_top(4) + f64::from(HEADER_H) + 13.0 * 20.0
+    );
     d.set_file_layout(4, context_layout(30));
     let row = d
         .file_layout(4)
@@ -581,7 +584,10 @@ fn document_scroll_to_block_lands_once_its_file_is_laid_out() {
         .find(RowKey::Block(BlockId(7)))
         .unwrap();
     assert_eq!(row, 13);
-    assert_eq!(d.scroll_top(), d.file_top(4) + 40.0 + 13.0 * 20.0);
+    assert_eq!(
+        d.scroll_top(),
+        d.file_top(4) + f64::from(HEADER_H) + 13.0 * 20.0
+    );
     assert_eq!(d.anchor().row, RowKey::Block(BlockId(7)));
 }
 
@@ -1170,7 +1176,8 @@ fn pinned_header_covers_blocks_and_takes_their_clicks(cx: &mut TestAppContext) {
     // (T2.5): the header is painted over it and takes the clicks there.
     wheel(cx, 160.0);
     let d = debug(&view, cx);
-    assert_eq!(bounds_of(&view, cx, "[block 1]"), (-55.0, 200.0));
+    let top = HEADER_H + 3.0 * ROW_H - 160.0;
+    assert_eq!(bounds_of(&view, cx, "[block 1]"), (top, 200.0));
     let h = &d.headers[0];
     assert!(h.sticky && h.y == 0.0, "{h:?}");
     cx.simulate_click(point(px(500.), px(HEADER_H / 2.0)), Modifiers::default());
@@ -1248,7 +1255,7 @@ fn split_blocks_pair_up_with_wrap_on(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn blocks_measure_at_the_card_inner_width(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    // Five 200 px boxes wrap at a card's inner width (1000 − 2 × 17 = 966):
+    // Five 200 px boxes wrap at a card's inner width (1000 − 2 × 13 = 974):
     // two rows, 40 px. At the viewport's width they would fit in one.
     let wrapping = |id: u64, anchor: BlockAnchor, c: Hsla| BlockSpec {
         id: BlockId(id),
@@ -1271,14 +1278,14 @@ fn blocks_measure_at_the_card_inner_width(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 600.);
     let c = color(0.3);
     set_blocks(&view, cx, 0, vec![wrapping(1, new(4), c)]);
-    // One far below the viewport (b.rs's card starts at 324, its line 50
-    // ends at 324 + 40 + 1000): measured off screen, at the same width.
+    // One far below the viewport (b.rs's line 50 ends more than 1,000 pt
+    // into its card): measured off screen, at the same width.
     set_blocks(&view, cx, 1, vec![wrapping(2, new(49), color(0.6))]);
 
-    // Below "+LINE 4": 40 (header) + 32 (gap row) + 5 rows.
+    // Below "+LINE 4": the header, the gap row (32) and 5 rows.
     let y = HEADER_H + 32.0 + 5.0 * ROW_H;
     assert_eq!(bounds_of(&view, cx, "[block 1]"), (y, 40.0));
-    assert_quads(&quads_of(cx, c), &[(17.0, y, 966.0, 40.0)]);
+    assert_quads(&quads_of(cx, c), &[(13.0, y, 974.0, 40.0)]);
     view.read_with(cx, |v, _| {
         assert_eq!(v.document().blocks(1), &[placed(2, new(49), 40.0)]);
     });
@@ -1287,8 +1294,8 @@ fn blocks_measure_at_the_card_inner_width(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn thread_on_an_added_file_spans_the_card(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    // Five 200 px boxes: two rows (40 px) at the card's inner width (966),
-    // three (60 px) at a split half's (482).
+    // Five 200 px boxes: two rows (40 px) at the card's inner width (974),
+    // three (60 px) at a split half's (486).
     let wrapping = |id: u64, anchor: BlockAnchor, c: Hsla| BlockSpec {
         id: BlockId(id),
         anchor,
@@ -1310,7 +1317,7 @@ fn thread_on_an_added_file_spans_the_card(cx: &mut TestAppContext) {
     // Below line 2: the header and two rows. No spacer beside it.
     let y = HEADER_H + 2.0 * ROW_H;
     assert_eq!(bounds_of(&view, cx, "[block 1]"), (y, 40.0));
-    assert_quads(&quads_of(cx, c), &[(17.0, y, 966.0, 40.0)]);
+    assert_quads(&quads_of(cx, c), &[(13.0, y, 974.0, 40.0)]);
     let theme = view.read_with(cx, |v, _| v.options().theme.clone());
     assert!(quads_of(cx, theme.empty_cell).is_empty());
 }

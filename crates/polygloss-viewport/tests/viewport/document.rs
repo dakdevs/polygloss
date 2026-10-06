@@ -58,8 +58,14 @@ fn files(n: u32) -> Arc<Vec<FileChange>> {
     Arc::new((0..n).map(modified).collect())
 }
 
+/// The document model's geometry in these tests: the default metrics with a
+/// 40 px header, which the hand-computed positions below are written for
+/// (the default header's own height is pinned by `cards.rs`).
 fn metrics() -> Metrics {
-    Metrics::default()
+    Metrics {
+        header_height: 40.0,
+        ..Metrics::default()
+    }
 }
 
 fn doc(n: u32) -> Document {
@@ -1261,7 +1267,7 @@ fn card_metrics() -> Metrics {
     Metrics {
         card_gap: 12.0,
         card_pad_bottom: 8.0,
-        ..Metrics::default()
+        ..metrics()
     }
 }
 

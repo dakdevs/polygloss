@@ -1,10 +1,19 @@
-//! File headers (design §11.6 "File header", §6.4), 2.25 rows tall: the
-//! collapse chevron, the path in the code font with the directory dim and
-//! the name bold (`old → new` for renames), muted kind pills (similarity,
-//! mode, binary, symlink, submodule, generated, LFS), then right-aligned the
-//! host's review-state pills, open in editor, the `+a −d` pill, the Viewed
-//! pill and the ⋯ menu. Icons are Lucide SVGs ([`Painter::icon`]); pills
-//! and "Viewed" use the UI font.
+//! File headers (design §11.6 "File header", §6.4): the collapse chevron,
+//! the path in the code font with the directory dim and the name bold
+//! (`old → new` for renames), muted kind pills (similarity, mode, binary,
+//! symlink, submodule, generated, LFS), then right-aligned the host's
+//! review-state pills, open in editor, the `+a −d` pill, the Viewed pill and
+//! the ⋯ menu. Icons are Lucide SVGs ([`Painter::icon`]); pills and "Viewed"
+//! use the UI font.
+//!
+//! Geometry (ADR-0031 C2): the interior is a code row plus 24 pt
+//! (`card::header`) inside the strip's top border and the separator; the
+//! rest is fixed points from the card's inner edges. The chevron's 16 pt box
+//! at `card::CHEVRON_X`, the path at `card::PATH_X`, the ⋯ button ending
+//! `edge::CARD_TRAILING` from the inner right edge; the chevron, open in
+//! editor and ⋯ are `height::SM` buttons around 16 pt icons, pills
+//! `height::SM` capsules, Viewed a bordered `height::MD` capsule; sibling
+//! controls `gap::CONTROLS` apart.
 //!
 //! Headers are painted in their own layer after every row, so the header of
 //! the first visible file can pin at the top while its body scrolls under it;
@@ -31,6 +40,7 @@ use crate::debug::TitleStyle;
 use crate::document::{BodyRow, FileState, SizeHint};
 use crate::numbers::group_digits;
 use crate::paint_rows::{Frame, HEADERS, Painter};
+use crate::space::{card, edge, gap, height, pad, radius, size};
 use crate::text_cache::{ShapedText, Shaper, TextKey};
 use crate::title::Title;
 use crate::view::{DiffViewport, ViewportEvent};
@@ -75,22 +85,6 @@ pub(crate) fn kind_badges(change: &FileChange, lfs: bool) -> Vec<Cow<'static, st
     badges
 }
 
-/// Header geometry in px (design §11.6, the reference's file header).
-pub(crate) const GAP: f32 = 6.0;
-/// Inside a pill, left and right.
-pub(crate) const PILL_PAD: f32 = 6.0;
-const PILL_RADIUS: f32 = 6.0;
-/// The chevron, open-in-editor, the Viewed box and ⋯.
-pub(crate) const ICON: f32 = 16.0;
-/// In a review-state pill, and the gap after it.
-const SMALL_ICON: f32 = 14.0;
-const ICON_GAP: f32 = 4.0;
-/// The open-in-editor button: its icon and 4 px around it.
-const BUTTON: f32 = ICON + 8.0;
-/// Inside the Viewed pill, left and right, and between its box and label.
-const VIEWED_PAD: f32 = 8.0;
-const VIEWED_GAP: f32 = 6.0;
-
 pub(crate) const CHEVRON_DOWN: &str = "icons/chevron-down.svg";
 pub(crate) const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
 const ELLIPSIS: &str = "icons/ellipsis.svg";
@@ -126,7 +120,12 @@ impl Painter<'_> {
         let a = self.geometry.advance;
         let row_h = self.geometry.row_height;
         let ty = y + (h - row_h) / 2.0;
-        let icon_y = y + (h - ICON).max(0.0) / 2.0;
+        let icon_y = y + (h - size::ICON).max(0.0) / 2.0;
+        // The chevron, open in editor and ⋯: SM buttons centered on their
+        // 16 pt icons.
+        let button = height::SM;
+        let button_y = y + (h - button) / 2.0;
+        let icon_inset = (button - size::ICON) / 2.0;
         self.frame.rows += 1;
         self.header_strip(f, y, h, sticky);
 
@@ -137,54 +136,48 @@ impl Painter<'_> {
         } else {
             CHEVRON_DOWN
         };
-        self.icon(
-            chevron,
-            x0 + (3.0 * a - ICON) / 2.0,
-            icon_y,
-            ICON,
-            theme.muted,
-        );
+        let chevron_x = x0 + card::CHEVRON_X;
+        self.icon(chevron, chevron_x, icon_y, size::ICON, theme.muted);
+        let action = ControlAction::Collapse(f);
+        let chevron_button = chevron_x - icon_inset;
         self.control(
-            ControlAction::Collapse(f),
+            action,
             ControlLayer::Header,
-            x0,
-            y,
-            3.0 * a,
-            h,
+            chevron_button,
+            button_y,
+            button,
+            button,
         );
-        let menu_x = x0 + width - 3.0 * a;
-        self.icon(
-            ELLIPSIS,
-            menu_x + (3.0 * a - ICON) / 2.0,
-            icon_y,
-            ICON,
-            theme.muted,
-        );
+        let menu_x = x0 + width - edge::CARD_TRAILING - button;
+        let ellipsis_x = menu_x + icon_inset;
+        self.icon(ELLIPSIS, ellipsis_x, icon_y, size::ICON, theme.muted);
+        let action = ControlAction::Menu(f);
         self.control(
-            ControlAction::Menu(f),
+            action,
             ControlLayer::Header,
             menu_x,
-            y,
-            3.0 * a,
-            h,
+            button_y,
+            button,
+            button,
         );
 
         // Viewed (labeled while the title keeps its room, else its box
         // alone) and open in editor, each while it fits right of the
         // chevron.
-        let left = x0 + 3.0 * a;
+        let left = x0 + card::PATH_X;
         let title = Title::of(change);
         let full_title = self.title(f, &title, f32::INFINITY);
         let min_title = full_title.shaped.width().min(MIN_TITLE_COLUMNS * a);
         let flags = self.flags.get(f as usize).copied().unwrap_or_default();
         let viewed_label = self.ui_label("Viewed", SLOT_HEADER, theme.header_foreground);
-        let box_w = VIEWED_PAD + ICON + VIEWED_PAD;
-        let labeled_w = box_w + VIEWED_GAP + viewed_label.shaped.width();
-        let fixed = |viewed_w: f32| GAP + viewed_w + GAP + BUTTON + GAP;
+        let box_w = pad::PILL_X + size::ICON + pad::PILL_X;
+        let labeled_w = box_w + gap::ICON_LABEL + viewed_label.shaped.width();
+        let between = gap::CONTROLS;
+        let fixed = |viewed_w: f32| between + viewed_w + between + button + between;
         let (viewed_w, editor) = if menu_x - fixed(labeled_w) - left >= min_title {
             (Some(labeled_w), true)
-        } else if menu_x - GAP - box_w >= left {
-            (Some(box_w), menu_x - fixed(box_w) + GAP >= left)
+        } else if menu_x - between - box_w >= left {
+            (Some(box_w), menu_x - fixed(box_w) + between >= left)
         } else {
             (None, false)
         };
@@ -193,7 +186,8 @@ impl Painter<'_> {
         let counts_pill = counts.map(|(adds, dels)| {
             let added = self.count(adds, true);
             let removed = self.count(dels, false);
-            let w = PILL_PAD + added.shaped.width() + a + removed.shaped.width() + PILL_PAD;
+            let cluster = added.shaped.width() + gap::INLINE + removed.shaped.width();
+            let w = pad::PILL_X + cluster + pad::PILL_X;
             (added, removed, w)
         });
         let mut kinds: Vec<Pill> = kind_badges(change, self.special.is_lfs(f))
@@ -217,17 +211,17 @@ impl Painter<'_> {
         let limit = |reviews: &[Pill], counts: bool| {
             let mut rx = menu_x;
             if let Some(w) = viewed_w {
-                rx -= GAP + w;
+                rx -= between + w;
             }
             if let Some((_, _, w)) = counts_pill.as_ref().filter(|_| counts) {
-                rx -= GAP + w;
+                rx -= between + w;
             }
             if editor {
-                rx -= GAP + BUTTON;
+                rx -= between + button;
             }
-            rx - reviews.iter().map(|p| GAP + p.width).sum::<f32>() - GAP
+            rx - reviews.iter().map(|p| between + p.width).sum::<f32>() - between
         };
-        let kinds_w = |kinds: &[Pill]| kinds.iter().map(|p| GAP + p.width).sum::<f32>();
+        let kinds_w = |kinds: &[Pill]| kinds.iter().map(|p| between + p.width).sum::<f32>();
         let mut show_counts = counts_pill.is_some();
         while left + min_title + kinds_w(&kinds) > limit(&reviews, show_counts) {
             if kinds.pop().is_some() || reviews.pop().is_some() {
@@ -240,39 +234,40 @@ impl Painter<'_> {
         }
 
         // Right to left: Viewed, the counts, open in editor, review pills.
-        let pill_h = row_h + 2.0;
+        let pill_h = height::SM;
         let pill_y = y + (h - pill_h) / 2.0;
         let mut rx = menu_x;
         if let Some(w) = viewed_w {
-            rx -= GAP + w;
+            rx -= between + w;
             self.viewed_pill(f, flags.viewed, rx, y, h, w, viewed_label);
         }
         if let Some((added, removed, w)) = counts_pill.filter(|_| show_counts) {
-            rx -= GAP + w;
-            self.rounded(
-                HEADERS,
-                (rx, pill_y, w, pill_h),
-                theme.pill_background,
-                None,
-                PILL_RADIUS,
-            );
-            let tx = rx + PILL_PAD;
-            let removed_x = tx + added.shaped.width() + a;
+            rx -= between + w;
+            let capsule = radius::capsule(pill_h);
+            let background = theme.pill_background;
+            self.rounded(HEADERS, (rx, pill_y, w, pill_h), background, None, capsule);
+            let tx = rx + pad::PILL_X;
+            let removed_x = tx + added.shaped.width() + gap::INLINE;
             self.text(HEADERS, tx, ty, added);
             self.text(HEADERS, removed_x, ty, removed);
         }
         if editor {
-            rx -= GAP + BUTTON;
-            let by = y + (h - BUTTON) / 2.0;
-            self.icon(OPEN_IN_EDITOR, rx + 4.0, by + 4.0, ICON, theme.muted);
+            rx -= between + button;
+            self.icon(
+                OPEN_IN_EDITOR,
+                rx + icon_inset,
+                icon_y,
+                size::ICON,
+                theme.muted,
+            );
             let action = ControlAction::OpenInEditor(f);
-            self.control(action, ControlLayer::Header, rx, by, BUTTON, BUTTON);
+            self.control(action, ControlLayer::Header, rx, button_y, button, button);
         }
-        rx -= GAP;
+        rx -= between;
         for p in reviews.iter().rev() {
             rx -= p.width;
             self.paint_pill(p, rx, pill_y, pill_h, ty);
-            rx -= GAP;
+            rx -= between;
         }
 
         // The title, cut to what is left, and the kind pills after it.
@@ -281,7 +276,7 @@ impl Painter<'_> {
         self.text(HEADERS, left, ty, fitted.clone());
         let mut x = left + fitted.shaped.width();
         for p in &kinds {
-            x += GAP;
+            x += between;
             self.paint_pill(p, x, pill_y, pill_h, ty);
             x += p.width;
         }
@@ -337,9 +332,9 @@ impl Painter<'_> {
         (adds + dels > 0).then_some((adds, dels))
     }
 
-    /// The Viewed pill of file `f` at `x`, `w` wide: a rounded, bordered
-    /// pill holding a box (checked: `square-check` in the accent color) and,
-    /// when it is wide enough, "Viewed" in the UI font.
+    /// The Viewed pill of file `f` at `x`, `w` wide: a bordered
+    /// `height::MD` capsule holding a box (checked: `square-check` in the
+    /// accent color) and, when it is wide enough, "Viewed" in the UI font.
     #[allow(clippy::too_many_arguments)]
     fn viewed_pill(
         &mut self,
@@ -352,35 +347,26 @@ impl Painter<'_> {
         label: Rc<ShapedText>,
     ) {
         let theme = self.theme;
-        let pill_h = (self.geometry.row_height + 8.0).min(h);
+        let pill_h = height::MD.min(h);
         let pill_y = y + (h - pill_h) / 2.0;
         let rect = (x, pill_y, w, pill_h);
-        self.rounded(
-            HEADERS,
-            rect,
-            theme.card_background,
-            Some(theme.card_border),
-            PILL_RADIUS,
-        );
+        let capsule = radius::capsule(pill_h);
+        let (background, border) = (theme.card_background, Some(theme.card_border));
+        self.rounded(HEADERS, rect, background, border, capsule);
         let (icon, color) = if checked {
             (VIEWED_CHECKED, theme.accent)
         } else {
             (VIEWED_BOX, theme.line_number)
         };
-        let box_x = x + VIEWED_PAD;
-        self.icon(icon, box_x, y + (h - ICON) / 2.0, ICON, color);
-        if w > VIEWED_PAD + ICON + VIEWED_PAD {
+        let box_x = x + pad::PILL_X;
+        self.icon(icon, box_x, y + (h - size::ICON) / 2.0, size::ICON, color);
+        if w > pad::PILL_X + size::ICON + pad::PILL_X {
             let ty = y + (h - self.geometry.row_height) / 2.0;
-            self.text(HEADERS, box_x + ICON + VIEWED_GAP, ty, label);
+            let label_x = box_x + size::ICON + gap::ICON_LABEL;
+            self.text(HEADERS, label_x, ty, label);
         }
-        self.control(
-            ControlAction::Viewed(f),
-            ControlLayer::Header,
-            x,
-            pill_y,
-            w,
-            pill_h,
-        );
+        let action = ControlAction::Viewed(f);
+        self.rounded_control(action, ControlLayer::Header, rect, capsule);
     }
 
     /// `+n` (added) or `−n` (removed) with its thousands grouped, in its
@@ -404,7 +390,8 @@ impl Painter<'_> {
             })
     }
 
-    /// A pill with `text` in the UI font and `color`, and `icon` before it.
+    /// A pill with `text` in the UI font and `color`, and `icon` before it,
+    /// `pad::PILL_X` inside each end.
     pub(crate) fn pill(
         &mut self,
         text: &str,
@@ -414,11 +401,11 @@ impl Painter<'_> {
     ) -> Pill {
         let text = self.ui_label(text, slot, color);
         let icon_w = if icon.is_some() {
-            SMALL_ICON + ICON_GAP
+            size::ICON_SM + gap::ICON_LABEL
         } else {
             0.0
         };
-        let width = PILL_PAD + icon_w + text.shaped.width() + PILL_PAD;
+        let width = pad::PILL_X + icon_w + text.shaped.width() + pad::PILL_X;
         Pill {
             text,
             icon: icon.map(|i| (i, color)),
@@ -426,13 +413,18 @@ impl Painter<'_> {
         }
     }
 
+    /// Paints `pill` as an `h`-tall capsule at `(x, y)`, its text's top at
+    /// `ty`: `pad::PILL_X` to its first box, a 14 pt icon `gap::ICON_LABEL`
+    /// before the text.
     pub(crate) fn paint_pill(&mut self, pill: &Pill, x: f32, y: f32, h: f32, ty: f32) {
         let rect = (x, y, pill.width, h);
-        self.rounded(HEADERS, rect, self.theme.pill_background, None, PILL_RADIUS);
-        let mut tx = x + PILL_PAD;
+        let background = self.theme.pill_background;
+        self.rounded(HEADERS, rect, background, None, radius::capsule(h));
+        let mut tx = x + pad::PILL_X;
         if let Some((icon, color)) = pill.icon {
-            self.icon(icon, tx, y + (h - SMALL_ICON) / 2.0, SMALL_ICON, color);
-            tx += SMALL_ICON + ICON_GAP;
+            let icon_y = y + (h - size::ICON_SM) / 2.0;
+            self.icon(icon, tx, icon_y, size::ICON_SM, color);
+            tx += size::ICON_SM + gap::ICON_LABEL;
         }
         self.text(HEADERS, tx, ty, pill.text.clone());
     }
@@ -745,7 +737,7 @@ impl DiffViewport {
                 anchored()
                     .position(menu.position)
                     .anchor(Anchor::TopRight)
-                    .snap_to_window_with_margin(px(8.))
+                    .snap_to_window_with_margin(px(edge::OVERLAY))
                     .child(menu.view.clone()),
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)

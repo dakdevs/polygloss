@@ -4,10 +4,14 @@
 //! The host hands the viewport sections (a label, an icon and file indices;
 //! [`DiffViewport::set_sections`]); the [`crate::Document`] lays them out
 //! after the other files ([`crate::document::SectionFiles`]). A band sits on
-//! the canvas above its section's first card, 36 pt tall: left the chevron,
-//! the icon, the label and `+X −Y`; right the changed-since-viewed dot, the
-//! open-thread and agent pills ([`BandFlags`]), Show / Hide and Mark all
-//! viewed (Mark all unviewed once every file is viewed). Its counts and
+//! the canvas above its section's first card, a `height::BAR` tall: left the
+//! chevron, the icon, the label and `+X −Y`; right the changed-since-viewed
+//! dot, the open-thread and agent pills ([`BandFlags`]), Show / Hide and
+//! Mark all viewed (Mark all unviewed once every file is viewed). It lines up
+//! with the file headers (ADR-0031 C2): its chevron's box at
+//! `card::CHEVRON_X` and its label (the icon its leading box) at
+//! `card::PATH_X` from the card column's inner edge, its last link ending
+//! `edge::CARD_TRAILING` from the inner right edge. Its counts and
 //! indicators are cached here: refreshed when counts land and when the host
 //! sets file flags, never per frame.
 //!
@@ -26,11 +30,11 @@ use crate::controls::{ControlAction, ControlLayer};
 use crate::document::SectionFiles;
 use crate::file_flags::FileFlags;
 use crate::header::{
-    CHEVRON_DOWN, CHEVRON_RIGHT, GAP, ICON, SLOT_ACCENT, SLOT_ADDED, SLOT_HEADER, SLOT_MUTED,
-    SLOT_REMOVED,
+    CHEVRON_DOWN, CHEVRON_RIGHT, SLOT_ACCENT, SLOT_ADDED, SLOT_HEADER, SLOT_MUTED, SLOT_REMOVED,
 };
 use crate::numbers::group_digits;
-use crate::paint_rows::{HEADERS, Painter};
+use crate::paint_rows::{HEADERS, Painter, link_width};
+use crate::space::{card, edge, gap, height, radius, size};
 use crate::text_cache::ShapedText;
 use crate::view::{DiffViewport, ViewportEvent};
 
@@ -68,9 +72,6 @@ pub struct SectionCounts {
     pub additions: u64,
     pub deletions: u64,
 }
-
-/// The changed-since-viewed dot's diameter (the tree's, design §11.5).
-const DOT: f32 = 6.0;
 
 /// What the view keeps per section (in the document's order): what its band
 /// shows.
@@ -250,10 +251,9 @@ impl Painter<'_> {
         let (section, band) = (&doc.sections()[s], &bands[s]);
         let h = doc.metrics().band_height;
         let (x0, width) = self.inner_x_w();
-        let a = self.geometry.advance;
         let ty = y + (h - self.geometry.row_height) / 2.0;
-        let icon_y = y + (h - ICON) / 2.0;
-        let pad = BAND_PAD.min(h / 4.0);
+        let icon_y = y + (h - size::ICON) / 2.0;
+        let between = gap::CONTROLS;
         self.frame.rows += 1;
 
         // Right to left: Mark all viewed, Show / Hide.
@@ -264,34 +264,38 @@ impl Painter<'_> {
             "Mark all viewed"
         };
         let mark_action = ControlAction::SectionMarkViewed(section.id);
-        let mut rx = self.band_link(mark_action, mark, x0 + width, y, h);
+        let end = x0 + width - edge::CARD_TRAILING;
+        let mut rx = self.band_link(mark_action, mark, end, y, h);
         let show = if section.open { "Hide" } else { "Show" };
-        rx = self.band_link(toggle, show, rx - GAP, y, h);
+        rx = self.band_link(toggle, show, rx, y, h);
 
         // The chevron, the icon and the label (cut to the room left), one
-        // toggle.
+        // toggle from the chevron's button to the label's end.
         let chevron = if section.open {
             CHEVRON_DOWN
         } else {
             CHEVRON_RIGHT
         };
-        let chevron_x = x0 + (3.0 * a - ICON) / 2.0;
-        self.icon(chevron, chevron_x, icon_y, ICON, theme.muted);
-        let mut x = x0 + 3.0 * a;
+        let chevron_x = x0 + card::CHEVRON_X;
+        self.icon(chevron, chevron_x, icon_y, size::ICON, theme.muted);
+        let mut x = x0 + card::PATH_X;
         if let Some(icon) = &band.icon {
-            self.icon(icon.clone(), x, icon_y, ICON, theme.muted);
-            x += ICON + GAP;
+            self.icon(icon.clone(), x, icon_y, size::ICON, theme.muted);
+            x += size::ICON + gap::ICON_LABEL;
         }
-        let label = self.fitted_ui_label(&band.label, rx - GAP - x);
+        let label = self.fitted_ui_label(&band.label, rx - between - x);
         self.text(HEADERS, x, ty, label.clone());
         x += label.shaped.width();
+        let inset = (height::SM - size::ICON) / 2.0;
+        let (toggle_x, toggle_y) = (chevron_x - inset, y + (h - height::SM) / 2.0);
+        let toggle_w = x + inset - toggle_x;
         self.control(
             toggle,
             ControlLayer::Header,
-            x0,
-            y + pad,
-            x - x0,
-            h - 2.0 * pad,
+            toggle_x,
+            toggle_y,
+            toggle_w,
+            height::SM,
         );
 
         // The counts after the label, while they fit.
@@ -302,9 +306,9 @@ impl Painter<'_> {
             let removed = format!("−{}", group_digits(counts.deletions));
             let added = self.label(&added, SLOT_ADDED, theme.stat_added);
             let removed = self.label(&removed, SLOT_REMOVED, theme.stat_removed);
-            let start = x + 2.0 * GAP;
-            let end = start + added.shaped.width() + a + removed.shaped.width();
-            if end + GAP <= rx {
+            let start = x + gap::GROUP;
+            let end = start + added.shaped.width() + gap::INLINE + removed.shaped.width();
+            if end + between <= rx {
                 self.text(HEADERS, start, ty, added);
                 self.text(HEADERS, end - removed.shaped.width(), ty, removed);
                 shown_counts = Some((counts.additions, counts.deletions));
@@ -332,25 +336,26 @@ impl Painter<'_> {
                 self.pill(&b.text, b.icon, slot, color)
             })
             .collect();
-        let pill_h = self.geometry.row_height + 2.0;
+        let pill_h = height::SM;
         let pill_y = y + (h - pill_h) / 2.0;
         #[cfg(feature = "debug-inspect")]
         let mut badges = Vec::new();
         let mut fits = true;
         for p in pills.iter().rev() {
-            fits &= rx - GAP - p.width >= x + GAP;
+            fits &= rx - between - p.width >= x + between;
             if !fits {
                 break;
             }
-            rx -= GAP + p.width;
+            rx -= between + p.width;
             self.paint_pill(p, rx, pill_y, pill_h, ty);
             #[cfg(feature = "debug-inspect")]
             badges.push(p.text.text().to_owned());
         }
-        let dot = flags.changed_since_viewed && fits && rx - GAP - DOT >= x + GAP;
-        if dot {
-            let rect = (rx - GAP - DOT, y + (h - DOT) / 2.0, DOT, DOT);
-            self.rounded(HEADERS, rect, theme.accent, None, DOT / 2.0);
+        let dot = size::DOT;
+        let dot_shown = flags.changed_since_viewed && fits && rx - between - dot >= x + between;
+        if dot_shown {
+            let rect = (rx - between - dot, y + (h - dot) / 2.0, dot, dot);
+            self.rounded(HEADERS, rect, theme.accent, None, radius::capsule(dot));
         }
 
         #[cfg(feature = "debug-inspect")]
@@ -371,12 +376,12 @@ impl Painter<'_> {
                 label: band.label.to_string(),
                 counts: shown_counts,
                 badges,
-                dot,
+                dot: dot_shown,
                 links: vec![show.to_owned(), mark.to_owned()],
             });
         }
         #[cfg(not(feature = "debug-inspect"))]
-        let _ = (shown_counts, dot);
+        let _ = (shown_counts, dot_shown);
     }
 
     /// `text` in the UI font and the header color, cut with `…` to `room`
@@ -402,27 +407,13 @@ impl Painter<'_> {
         }
     }
 
-    /// A band's text link (`text` in the accent color) ending at `right`,
-    /// centered in the band `y..y + h`; returns its left edge.
+    /// A band's text link (`text` in the UI font and the accent color, a
+    /// [`Painter::link`]) whose box ends at `right`, centered in the band
+    /// `y..y + h`; returns its box's left edge.
     fn band_link(&mut self, action: ControlAction, text: &str, right: f32, y: f32, h: f32) -> f32 {
-        let a = self.geometry.advance;
         let shaped = self.ui_label(text, SLOT_ACCENT, self.theme.accent);
-        let w = shaped.shaped.width() + a;
-        let left = right - w;
-        let ty = y + (h - self.geometry.row_height) / 2.0;
-        self.text(HEADERS, left + 0.5 * a, ty, shaped);
-        let pad = BAND_PAD.min(h / 4.0);
-        self.control(
-            action,
-            ControlLayer::Header,
-            left,
-            y + pad,
-            w,
-            h - 2.0 * pad,
-        );
+        let left = right - link_width(&shaped);
+        self.link(action, ControlLayer::Header, shaped, left, y, h);
         left
     }
 }
-
-/// Space above and below a band's controls.
-const BAND_PAD: f32 = 4.0;

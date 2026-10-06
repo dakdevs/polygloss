@@ -20,6 +20,7 @@ use polygloss_diff::rows::{ExpandBy, LineKind, Row};
 use crate::document::{BodyRow, FileLayout, FileState, RowKey};
 use crate::gap::EXPAND_STEP;
 use crate::paint_rows::Painter;
+use crate::space::stroke;
 use crate::view::{DiffViewport, ViewportEvent};
 
 /// Which way the cursor moves.
@@ -730,10 +731,7 @@ impl Painter<'_> {
         };
         self.quad(layer, x, y, w, h, color);
         if line == c.line {
-            self.quad(layer, x, y, CURSOR_BAR_WIDTH, h, self.theme.accent);
+            self.quad(layer, x, y, stroke::CURSOR_BAR, h, self.theme.accent);
         }
     }
 }
-
-/// Width of the accent bar at the cursor line's left edge.
-const CURSOR_BAR_WIDTH: f32 = 2.0;

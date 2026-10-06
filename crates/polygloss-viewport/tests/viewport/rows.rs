@@ -2,13 +2,17 @@
 //! full-width pane, bars at each pane's left edge, tinted numbers and number
 //! gutters, and the other indicator styles.
 //!
-//! Flat geometry at 7.8 px a column: a number column is 4 columns (31.2 px),
-//! numbers right-aligned half a column before its edge; the bars' indicator
-//! column is half a column (3.9 px). One number column: a 1-digit number at
-//! 31.2 − 3.9 − 7.8 = 19.5, code at 35.1. Unified's two: the new number at
-//! 62.4 − 3.9 − 7.8 = 50.7, code at 66.3.
+//! Geometry at 7.8 pt a digit (ADR-0031 C1), from the rows' left edge (the
+//! viewport's in the flat layout): numbers have at least three digits; the
+//! gutter is the 4 pt bar, 4 pt, the number cells and 8 pt, rounded up to
+//! the 4 pt grid (at least 40); numbers are right-aligned 8 pt before its
+//! end; code starts 10 pt after it. One column: a 40 pt gutter, a 1-digit
+//! number at 32 − 7.8 = 24.2, code at 50. Unified's two (3 × 7.8 apart plus
+//! 8): a 72 pt gutter, the new number at 64 − 7.8 = 56.2, the old one at
+//! 64 − 31.4 − 7.8 = 24.8, code at 82.
 
-use gpui_kit::TestAppContext;
+use gpui_kit::{TestAppContext, px};
+use polygloss_diff::Side;
 use polygloss_diff::rows::Layout;
 use polygloss_viewport::{Indicators, LayoutMode};
 
@@ -23,10 +27,15 @@ fn one_change() -> Spec {
     Spec::modified("src/a.rs", &old.concat(), &new.concat())
 }
 
-const ONE_NUMBER_X: f32 = 19.5;
-const ONE_CODE_X: f32 = 35.1;
-const NEW_NUMBER_X: f32 = 50.7;
-const TWO_CODE_X: f32 = 66.3;
+/// A card's inner left edge in a viewport with the default cards: a 12 pt
+/// margin and a 1 pt border.
+const INNER: f32 = 13.0;
+
+const ONE_NUMBER_X: f32 = 24.2;
+const ONE_CODE_X: f32 = 50.0;
+const OLD_NUMBER_X: f32 = 24.8;
+const NEW_NUMBER_X: f32 = 56.2;
+const TWO_CODE_X: f32 = 82.0;
 
 /// Texts painted in visible row `i` with their colors, left to right.
 fn colors_in_row(d: &polygloss_viewport::ViewportDebug, i: usize) -> Vec<(String, gpui_kit::Hsla)> {
@@ -72,21 +81,19 @@ fn added_file_renders_one_full_width_pane_in_split(cx: &mut TestAppContext) {
             unified(None, Some(2), '+', "beta"),
         ]
     );
-    // The card's inner width is 17..983: one number column, then the code.
+    // The card's inner width is 13..987: one number column, then the code.
     assert_texts(
         &texts_in_row(&d, 1),
-        &[(17.0 + ONE_NUMBER_X, "1"), (17.0 + ONE_CODE_X, "alpha")],
+        &[(INNER + ONE_NUMBER_X, "1"), (INNER + ONE_CODE_X, "alpha")],
     );
     assert_texts(
         &texts_in_row(&d, 2),
-        &[(17.0 + ONE_NUMBER_X, "2"), (17.0 + ONE_CODE_X, "beta")],
+        &[(INNER + ONE_NUMBER_X, "2"), (INNER + ONE_CODE_X, "beta")],
     );
     // Each row's tint spans the whole inner width; no empty half, no
     // divider between halves.
-    assert_rects(
-        &quads_of(cx, theme.added_background),
-        &[(17.0, 45.0, 966.0, 20.0), (17.0, 65.0, 966.0, 20.0)],
-    );
+    let row = |i: f32| (INNER, HEADER_H + i * ROW_H, 974.0, ROW_H);
+    assert_rects(&quads_of(cx, theme.added_background), &[row(0.0), row(1.0)]);
     assert!(quads_of(cx, theme.empty_cell).is_empty());
     assert!(quads_of(cx, theme.border).is_empty());
 }
@@ -115,9 +122,10 @@ fn deleted_file_renders_one_pane_with_old_numbers(cx: &mut TestAppContext) {
         colors_in_row(&d, 1)[0],
         ("1".to_owned(), theme.removed_line_number)
     );
+    let row = |i: f32| (0.0, HEADER_H + i * ROW_H, 1000.0, ROW_H);
     assert_rects(
         &quads_of(cx, theme.removed_background),
-        &[(0.0, 45.0, 1000.0, 20.0), (0.0, 65.0, 1000.0, 20.0)],
+        &[row(0.0), row(1.0)],
     );
     assert!(quads_of(cx, theme.empty_cell).is_empty());
 }
@@ -148,7 +156,7 @@ fn one_sided_file_in_unified_has_one_number_column(cx: &mut TestAppContext) {
     );
     assert_texts(
         &texts_in_row(&d, 3),
-        &[(ONE_NUMBER_X, "1"), (NEW_NUMBER_X, "1"), (TWO_CODE_X, "a")],
+        &[(OLD_NUMBER_X, "1"), (NEW_NUMBER_X, "1"), (TWO_CODE_X, "a")],
     );
     assert_texts(
         &texts_in_row(&d, 4),
@@ -198,26 +206,26 @@ fn bars_sit_at_each_panes_left_edge(cx: &mut TestAppContext) {
     let theme = opts.theme.clone();
     assert_eq!(opts.style.indicators, Indicators::Bars, "bars by default");
     let (view, cx) = open(cx, provider, opts, 1000., 600.);
-    // Header 0..45, the gap row 45..77, three context rows, then the changed
-    // row at 137. The halves start at 17 and 17 + 483 = 500.
-    assert_eq!(debug(&view, cx).row_bounds[5], (137.0, ROW_H));
+    // Header 0..46, the gap row 46..78, three context rows, then the changed
+    // row at 138. The halves start at 13 and 13 + 487 = 500. Bars are 4 pt.
+    assert_eq!(debug(&view, cx).row_bounds[5], (138.0, ROW_H));
     assert_rects(
         &quads_of(cx, theme.removed_accent),
-        &[(17.0, 137.0, 3.0, 20.0)],
+        &[(INNER, 138.0, 4.0, 20.0)],
     );
     assert_rects(
         &quads_of(cx, theme.added_accent),
-        &[(500.0, 137.0, 3.0, 20.0)],
+        &[(500.0, 138.0, 4.0, 20.0)],
     );
     // Unified: both bars at the card's inner left edge, one row each.
     set_options(&view, cx, |o| o.layout = LayoutMode::Unified);
     assert_rects(
         &quads_of(cx, theme.removed_accent),
-        &[(17.0, 137.0, 3.0, 20.0)],
+        &[(INNER, 138.0, 4.0, 20.0)],
     );
     assert_rects(
         &quads_of(cx, theme.added_accent),
-        &[(17.0, 157.0, 3.0, 20.0)],
+        &[(INNER, 158.0, 4.0, 20.0)],
     );
 }
 
@@ -228,10 +236,10 @@ fn bars_draw_no_indicator_glyph(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, provider, options(LayoutMode::Unified), 1000., 600.);
     let d = debug(&view, cx);
     assert_eq!(d.visible_rows[5], unified(Some(5), None, '-', "line 4"));
-    // Numbers, then the code half a column after them: no `-`/`+`.
+    // Numbers, then the code 10 pt after the gutter: no `-`/`+`.
     assert_texts(
         &texts_in_row(&d, 5),
-        &[(ONE_NUMBER_X, "5"), (TWO_CODE_X, "line 4")],
+        &[(OLD_NUMBER_X, "5"), (TWO_CODE_X, "line 4")],
     );
     assert_texts(
         &texts_in_row(&d, 6),
@@ -251,24 +259,24 @@ fn changed_rows_tint_numbers_and_gutter(cx: &mut TestAppContext) {
     assert_eq!(number(4), ("4".to_owned(), theme.line_number));
     assert_eq!(number(5), ("5".to_owned(), theme.removed_line_number));
     assert_eq!(number(6), ("5".to_owned(), theme.added_line_number));
-    // The number gutter (both columns, 17..79.4) of each changed row.
+    // The number gutter (both columns, 13..85) of each changed row.
     assert_rects(
         &quads_of(cx, theme.removed_gutter),
-        &[(17.0, 137.0, 62.4, 20.0)],
+        &[(INNER, 138.0, 72.0, 20.0)],
     );
     assert_rects(
         &quads_of(cx, theme.added_gutter),
-        &[(17.0, 157.0, 62.4, 20.0)],
+        &[(INNER, 158.0, 72.0, 20.0)],
     );
-    // Split: each half's number column.
+    // Split: each half's one-column gutter.
     set_options(&view, cx, |o| o.layout = LayoutMode::Split);
     assert_rects(
         &quads_of(cx, theme.removed_gutter),
-        &[(17.0, 137.0, 31.2, 20.0)],
+        &[(INNER, 138.0, 40.0, 20.0)],
     );
     assert_rects(
         &quads_of(cx, theme.added_gutter),
-        &[(500.0, 137.0, 31.2, 20.0)],
+        &[(500.0, 138.0, 40.0, 20.0)],
     );
 }
 
@@ -280,21 +288,151 @@ fn plus_minus_and_none_still_render(cx: &mut TestAppContext) {
     opts.style.indicators = Indicators::PlusMinus;
     let theme = opts.theme.clone();
     let (view, cx) = open(cx, provider, opts, 1000., 600.);
-    // `+-`: a 2-column indicator column (62.4..78) with the glyph half a
-    // column in, the code after it; no bars.
+    // `+-`: the indicator's 2-advance cell after the gutter (72..87.6)
+    // with the glyph centered in it, the code after it; no bars.
     let d = debug(&view, cx);
     assert_texts(
         &texts_in_row(&d, 5),
-        &[(ONE_NUMBER_X, "5"), (66.3, "-"), (78.0, "line 4")],
+        &[
+            (OLD_NUMBER_X, "5"),
+            (72.0 + 3.9, "-"),
+            (72.0 + 15.6, "line 4"),
+        ],
     );
     assert!(quads_of(cx, theme.removed_accent).is_empty());
-    // `none`: no glyph, no bar, the code half a column after the numbers.
+    // `none`: no glyph, no bar, the code 10 pt after the gutter.
     set_options(&view, cx, |o| o.style.indicators = Indicators::None);
     let d = debug(&view, cx);
     assert_texts(
         &texts_in_row(&d, 5),
-        &[(ONE_NUMBER_X, "5"), (TWO_CODE_X, "line 4")],
+        &[(OLD_NUMBER_X, "5"), (TWO_CODE_X, "line 4")],
     );
     assert!(quads_of(cx, theme.removed_accent).is_empty());
     assert!(quads_of(cx, theme.added_accent).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// the column grid (T7.4, ADR-0031 C1)
+//
+// Hand-computed at 7.8 pt a digit from a card's inner edge, 13 pt into the
+// viewport (a 12 pt margin and a 1 pt border). The gutter holds the 4 pt
+// change bar, 4 pt, the number cells (`digits · 7.8`; unified's two 8 pt
+// apart) and 8 pt, rounded up to the 4 pt grid and at least 40 pt; each
+// number is right-aligned in its cell, and code starts 10 pt after the
+// gutter.
+
+#[gpui_kit::test]
+fn gutter_grows_with_digits(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // 1,200 lines, four digits: 4 + 4 + 4 × 7.8 + 8 = 47.2, so 48; code at
+    // 48 + 10.
+    let provider = MemProvider::new(vec![Spec::added("big.rs", &numbered("x", 1200).concat())]);
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, provider, opts, 1000., 400.);
+    let d = debug(&view, cx);
+    assert_eq!(d.visible_rows[1], unified(None, Some(1), '+', "x 0"));
+    let (top, _) = d.row_bounds[1];
+    assert_rects(
+        &quads_of(cx, theme.added_gutter)[..1],
+        &[(INNER, top, 48.0, ROW_H)],
+    );
+    assert_texts(
+        &texts_in_row(&d, 1),
+        &[(INNER + 48.0 - 8.0 - ADVANCE, "1"), (INNER + 58.0, "x 0")],
+    );
+    assert_eq!(
+        view.read_with(cx, |v, _| v.code_x(0, Side::New)),
+        Some(px(58.0))
+    );
+}
+
+#[gpui_kit::test]
+fn unified_gutter_holds_both_columns(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Three digits in two columns: 4 + 4 + 2 × 23.4 + 8 + 8 = 70.8, so 72;
+    // code at 72 + 10.
+    let provider = MemProvider::new(vec![one_change()]);
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, provider, opts, 1000., 600.);
+    let d = debug(&view, cx);
+    assert_eq!(d.visible_rows[4], unified(Some(4), Some(4), ' ', "line 3"));
+    let texts = texts_in_row(&d, 4);
+    assert_eq!(
+        texts.iter().map(|t| t.1.as_str()).collect::<Vec<_>>(),
+        ["4", "4", "line 3"]
+    );
+    // One-digit numbers: each right edge is its x plus one advance.
+    let (old_right, new_right) = (texts[0].0 + ADVANCE, texts[1].0 + ADVANCE);
+    assert!(
+        near(new_right - old_right, 8.0 + 3.0 * ADVANCE),
+        "{old_right} {new_right}"
+    );
+    assert!(near(texts[2].0, INNER + 82.0), "{texts:?}");
+    let (top, _) = d.row_bounds[5];
+    assert_rects(
+        &quads_of(cx, theme.removed_gutter),
+        &[(INNER, top, 72.0, ROW_H)],
+    );
+    assert_eq!(
+        view.read_with(cx, |v, _| v.code_x(0, Side::Old)),
+        Some(px(82.0))
+    );
+}
+
+#[gpui_kit::test]
+fn plus_minus_code_follows_the_indicator_cell(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // One column of three digits: a 40 pt gutter, then the indicator's cell
+    // of two advances (15.6) instead of the 10 pt pad.
+    let provider = MemProvider::new(vec![Spec::added("new.rs", "alpha\n")]);
+    let mut opts = card_options(LayoutMode::Unified);
+    opts.style.indicators = Indicators::PlusMinus;
+    let (view, cx) = open(cx, provider, opts, 1000., 400.);
+    let d = debug(&view, cx);
+    let code = texts_in_row(&d, 1)
+        .into_iter()
+        .find(|t| t.1 == "alpha")
+        .expect("the code")
+        .0;
+    assert!((code - (INNER + 55.6)).abs() <= 0.1, "{code}");
+}
+
+#[gpui_kit::test]
+fn split_halves_have_their_own_gutter(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // 1400 pt: the inner width (1374) splits at 13 + 687 = 700. Each half
+    // has one 40 pt gutter from its own left edge and code 50 pt in.
+    let provider = MemProvider::new(vec![one_change()]);
+    let opts = card_options(LayoutMode::Split);
+    let theme = opts.theme.clone();
+    let (view, cx) = open(cx, provider, opts, 1400., 600.);
+    let d = debug(&view, cx);
+    assert_eq!(
+        d.visible_rows[5],
+        split(Some((5, '-', "line 4")), Some((5, '+', "LINE 4")))
+    );
+    let (top, _) = d.row_bounds[5];
+    const HALF: f32 = 700.0;
+    assert_rects(
+        &quads_of(cx, theme.removed_gutter),
+        &[(INNER, top, 40.0, ROW_H)],
+    );
+    assert_rects(
+        &quads_of(cx, theme.added_gutter),
+        &[(HALF, top, 40.0, ROW_H)],
+    );
+    assert_texts(
+        &texts_in_row(&d, 5),
+        &[
+            (INNER + 32.0 - ADVANCE, "5"),
+            (INNER + 50.0, "line 4"),
+            (HALF + 32.0 - ADVANCE, "5"),
+            (HALF + 50.0, "LINE 4"),
+        ],
+    );
+    let code_x = |side| view.read_with(cx, |v, _| v.code_x(0, side));
+    assert_eq!(code_x(Side::Old), Some(px(50.0)));
+    assert_eq!(code_x(Side::New), Some(px(HALF - INNER + 50.0)));
 }

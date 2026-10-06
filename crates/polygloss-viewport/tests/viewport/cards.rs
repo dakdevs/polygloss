@@ -22,8 +22,8 @@ use crate::support::*;
 // ---------------------------------------------------------------------------
 // helpers
 
-/// A card's outer edges in a 1000 px viewport: 16 px from each side.
-const CARD: (f32, f32) = (16.0, 968.0);
+/// A card's outer edges in a 1000 pt viewport: 12 pt from each side.
+const CARD: (f32, f32) = (12.0, 976.0);
 
 /// Two added files: `a.rs` (30 lines, a 600 px body) and `b.rs` (`b_lines`
 /// lines).
@@ -305,8 +305,8 @@ fn growing_the_prelude_above_a_line_anchor_keeps_that_line(cx: &mut TestAppConte
         (1000., 400.),
         prelude_box(h.clone()),
     );
-    // Line 3 of a.rs 150 px below the top: its row starts at 82 (lead) +
-    // 45 (header) + 40, so the prelude still shows 53 px of itself.
+    // Line 3 of a.rs 150 pt below the top: its row starts at 82 (lead) +
+    // 46 (header) + 40, so the prelude still shows 52 pt of itself.
     let anchor = ScrollAnchor {
         file_idx: 0,
         row: RowKey::Line {
@@ -323,20 +323,20 @@ fn growing_the_prelude_above_a_line_anchor_keeps_that_line(cx: &mut TestAppConte
         let i = d.visible_rows.iter().position(|r| *r == line).unwrap();
         (d.row_bounds[i].0, d.prelude)
     };
-    assert_eq!(scroll_top(&view, cx), 17.0);
-    assert_eq!(at(cx), (150.0, Some((CARD.0, -17.0, CARD.1, 70.0))));
+    assert_eq!(scroll_top(&view, cx), 18.0);
+    assert_eq!(at(cx), (150.0, Some((CARD.0, -18.0, CARD.1, 70.0))));
     h.set(400.0);
     settle(cx);
     // The line did not move; the prelude grew above it.
-    assert_eq!(scroll_top(&view, cx), 412.0 + 45.0 + 40.0 - 150.0);
-    assert_eq!(at(cx), (150.0, Some((CARD.0, -347.0, CARD.1, 400.0))));
+    assert_eq!(scroll_top(&view, cx), 412.0 + 46.0 + 40.0 - 150.0);
+    assert_eq!(at(cx), (150.0, Some((CARD.0, -348.0, CARD.1, 400.0))));
     assert_eq!(view.read_with(cx, |v, _| v.anchor()), anchor);
 }
 
 #[gpui_kit::test]
 fn prelude_scrolls_with_the_first_card_and_is_measured(cx: &mut TestAppContext) {
     let _sb = sandbox();
-    // Five 200 px boxes wrap at a card's width (968): two rows, 40 px. At
+    // Five 200 px boxes wrap at a card's width (976): two rows, 40 px. At
     // the viewport's width (1000) they would fit in one.
     let prelude: RenderBlock = Rc::new(|_, _| {
         div()
@@ -398,12 +398,12 @@ fn scroll_to_file_puts_the_header_at_the_top_edge(cx: &mut TestAppContext) {
     let h = Rc::new(Cell::new(72.0));
     let opts = card_options(LayoutMode::Unified);
     let (view, cx) = open_with_prelude(cx, two_added(20), opts, (1000., 400.), prelude_box(h));
-    // a.rs: 84 lead + 45 header + 600 body + 8 padding = 737, then 12 px
+    // a.rs: 84 lead + 46 header + 600 body + 8 padding = 738, then 12 pt
     // of canvas above b.rs's card.
     view.update(cx, |v, cx| v.scroll_to(ScrollTarget::File(1), cx));
     settle(cx);
     let d = debug(&view, cx);
-    assert_eq!(scroll_top(&view, cx), 749.0);
+    assert_eq!(scroll_top(&view, cx), 750.0);
     assert_eq!(d.visible_rows[0], "== b.rs");
     assert_eq!(header_at(&d, 1), (0.0, false));
     assert_eq!(d.anchor.row, RowKey::Header);
@@ -420,8 +420,8 @@ fn scroll_to_file_puts_the_header_at_the_top_edge(cx: &mut TestAppContext) {
 fn split_threshold_uses_the_inner_width(cx: &mut TestAppContext) {
     let _sb = sandbox();
     // Split from 160 columns of 7.8 px = 1248 px. A 1270 px viewport has
-    // 162.8 columns, but a card's inner width (1270 − 2 × 17 = 1236) only
-    // 158.5.
+    // 162.8 columns, but a card's inner width (1270 − 2 × 13 = 1244) only
+    // 159.5.
     let (view, vcx) = open(
         cx,
         two_added(5),
@@ -435,7 +435,7 @@ fn split_threshold_uses_the_inner_width(cx: &mut TestAppContext) {
     let (view, vcx) = open(cx, two_added(5), flat, 1270., 400.);
     assert_eq!(debug(&view, vcx).layout, Layout::Split);
 
-    // 1290 px: the inner 1256 px hold 161 columns.
+    // 1290 px: the inner 1264 px hold 162 columns.
     let (view, cx) = open(
         cx,
         two_added(5),
@@ -446,12 +446,12 @@ fn split_threshold_uses_the_inner_width(cx: &mut TestAppContext) {
     assert_eq!(debug(&view, cx).layout, Layout::Split);
 }
 
-/// A header's content spans its card's inner width: the chevron sits 17 px
-/// (a 16 px margin and a 1 px border) right of where it is in the flat
-/// layout, Viewed and ⋯ 17 px left of theirs, and clicks there reach them.
+/// A header's content spans its card's inner width: the chevron sits 13 pt
+/// (a 12 pt margin and a 1 pt border) right of where it is in the flat
+/// layout, Viewed and ⋯ 13 pt left of theirs, and clicks there reach them.
 #[gpui_kit::test]
 fn header_controls_sit_and_take_clicks_inside_the_card(cx: &mut TestAppContext) {
-    const INSET: f32 = 17.0;
+    const INSET: f32 = 13.0;
     let _sb = sandbox();
     let actions = [
         ControlAction::Collapse(0),
@@ -522,17 +522,97 @@ fn card_quads_are_clamped_to_the_viewport(cx: &mut TestAppContext) {
         borders: [1.0; 4],
         border: theme.card_border,
     };
-    // The canvas first, then the card: from its top to 10 px (radius + 2)
-    // past the viewport's bottom edge.
+    // The canvas first, then the card: from its top to 9 pt (its radius
+    // and its border) past the viewport's bottom edge.
     let all = shaped_quads(cx);
     assert_eq!(all[0].bounds, (0.0, 0.0, 1000.0, 400.0));
     assert_eq!(all[0].fill, Some(theme.canvas));
-    assert_eq!(cards(cx), [card((CARD.0, 0.0, CARD.1, 410.0))]);
-    // In the middle of its 10,000 px body: 10 px past both edges.
+    assert_eq!(cards(cx), [card((CARD.0, 0.0, CARD.1, 409.0))]);
+    // In the middle of its 10,000 pt body: 9 pt past both edges.
     wheel(cx, 3000.);
-    assert_eq!(cards(cx), [card((CARD.0, -10.0, CARD.1, 420.0))]);
-    // At the end: its bottom (45 + 10,000 + 8) and 12 px of canvas below.
+    assert_eq!(cards(cx), [card((CARD.0, -9.0, CARD.1, 418.0))]);
+    // At the end: its bottom (46 + 10,000 + 8) and 12 pt of canvas below.
     wheel(cx, 10_000.);
-    assert_eq!(scroll_top(&view, cx), 10_065.0 - 400.0);
-    assert_eq!(cards(cx), [card((CARD.0, -10.0, CARD.1, 388.0 + 10.0))]);
+    assert_eq!(scroll_top(&view, cx), 10_066.0 - 400.0);
+    assert_eq!(cards(cx), [card((CARD.0, -9.0, CARD.1, 388.0 + 9.0))]);
+}
+
+// ---------------------------------------------------------------------------
+// the spacing system (T7.4, ADR-0031)
+
+/// The defaults at 13 pt meet the reference's edges (ADR-0031 R2, R3, R5,
+/// R10): cards 12 pt inside the main column and 12 pt apart, a 4 pt change
+/// bar, and a file header of 46 pt: its 44 pt interior between a 1 pt top
+/// border and a 1 pt separator.
+#[test]
+fn card_style_meets_the_reference() {
+    let card = polygloss_viewport::CardStyle::default();
+    assert_eq!(card.margin_x, 12.0, "R2");
+    assert_eq!(card.gap, 12.0, "R3");
+    assert_eq!(card.bar, 4.0, "R5");
+    assert_eq!(card.border, 1.0);
+    let m = polygloss_viewport::Metrics::default();
+    assert_eq!(m.row_height, 20.0, "a 13 pt code row");
+    assert_eq!(m.header_height, 1.0 + 44.0 + 1.0, "R10");
+}
+
+/// Split from 160 columns of a card's inner width (design §11.6, OQ-15):
+/// at 7.8 pt a column the window needs 160 columns plus a 12 pt margin and
+/// a 1 pt border on each side. Half a point either side of it (7.8 is not
+/// exact in `f32`).
+#[gpui_kit::test]
+fn auto_layout_threshold_follows_the_new_inner_width(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let fits = 160.0 * ADVANCE + 2.0 * (12.0 + 1.0);
+    assert!(near(fits, 1274.0), "{fits}");
+    for (width, layout) in [(fits + 0.5, Layout::Split), (fits - 0.5, Layout::Unified)] {
+        let opts = card_options(LayoutMode::Auto);
+        let (view, vcx) = open(cx, two_added(5), opts, width, 400.);
+        assert_eq!(debug(&view, vcx).layout, layout, "{width} pt");
+    }
+}
+
+/// The debug frame's card bounds, and `card_bounds`, are the outer edges of
+/// the border quads painted for them.
+#[gpui_kit::test]
+fn card_bounds_match_the_painted_border(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let opts = card_options(LayoutMode::Unified);
+    let theme = opts.theme.clone();
+    // Both cards fit in the window, so neither quad is cut.
+    let (view, cx) = open(cx, two_added(5), opts, 1000., 900.);
+    let painted: Vec<(f32, f32, f32, f32)> = shaped_quads(cx)
+        .into_iter()
+        .filter(|q| {
+            q.fill == Some(theme.card_background)
+                && q.border == theme.card_border
+                && q.radii == [8.0; 4]
+        })
+        .map(|q| q.bounds)
+        .collect();
+    let d = debug(&view, cx);
+    let cards: Vec<(f32, f32, f32, f32)> = d.cards.iter().map(|c| c.bounds).collect();
+    assert_eq!(
+        d.cards.iter().map(|c| c.file_idx).collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(painted.len(), 2, "{painted:?}");
+    for (card, quad) in cards.iter().zip(&painted) {
+        assert!(near_painted(*card, *quad), "{card:?} vs {quad:?}");
+    }
+    // The viewport fills the window, so window and viewport coordinates
+    // agree.
+    for (f, card) in cards.iter().enumerate() {
+        let b = view
+            .read_with(cx, |v, _| v.card_bounds(f as u32))
+            .expect("painted");
+        let window = (
+            b.origin.x.as_f32(),
+            b.origin.y.as_f32(),
+            b.size.width.as_f32(),
+            b.size.height.as_f32(),
+        );
+        assert_eq!(window, *card);
+    }
+    assert_eq!(view.read_with(cx, |v, _| v.card_bounds(2)), None);
 }

@@ -35,8 +35,9 @@ pub const FONT_SIZE: f32 = 13.0;
 pub const ADVANCE: f32 = 0.6 * FONT_SIZE;
 /// Row height for `FONT_SIZE` (`round(13 × 1.5)`).
 pub const ROW_H: f32 = 20.0;
-/// A file header: 2.25 rows (`round(2.25 × 20)`, design §11.6).
-pub const HEADER_H: f32 = 45.0;
+/// A file header at 13 pt: a 1 pt top border, its interior (a row plus 24,
+/// ADR-0031 C2) and the 1 pt separator.
+pub const HEADER_H: f32 = 1.0 + 44.0 + 1.0;
 /// A one-label body (`Binary file`, `Large diff`, a load error): 2.4 rows.
 pub const PLACEHOLDER_H: f32 = 48.0;
 
