@@ -2,7 +2,7 @@
 
 Polygloss is a native macOS app for reviewing diffs on your own machine, especially changes written by coding agents. It works like GitHub's "Files changed" tab: split and unified diffs, word highlights, a **Viewed** checkbox per file, threaded comments you draft and then publish in one **Submit review**. Everything stays local: Polygloss reads repositories already on disk, keeps its state in one SQLite file, and never fetches or talks to a forge.
 
-This guide covers the app. For agents (MCP tools, the JSON CLI, the Claude Code plugin) see [agents.md](agents.md). Installation is in the [README](../README.md#install).
+This guide covers the app. For agents (MCP tools, the JSON CLI, the Claude Code plugin) see [agents.md](agents.md). Installation is in the [README](../README.md#installation).
 
 ## Contents
 
@@ -40,7 +40,7 @@ In the app, **⌘O** opens the open flow: pick a repository (recent ones first, 
 
 ### Home
 
-Home (`⌘0`) lists recent reviews across all repositories, most recently active first, in two sections: **Awaiting you** (an agent asked for a re-review, or an agent question is still unanswered) and **Recent**. Each row is a card showing the repository, title, kind, status or last verdict, Viewed progress, open threads and the agent the review is assigned to.
+Home (`⌘0`) lists recent reviews across all repositories, most recently active first, in two sections: **Awaiting you** (an agent asked for a re-review, or an agent question is still unanswered) and **Recent**. Each row is a card showing the repository, title, kind, status or last verdict, Viewed progress, open threads and the agent the review is assigned to. **Open…** at the top right starts the open flow, like `⌘O`.
 
 Select a row with `j`/`k` or the arrows and press `⏎` to open it. The row's ⋯ menu (or a right click) also offers archive (`e`), mute (`m`), "Assign to session…" (`a`) and prune (`⌘⌫`, after a confirmation). Pruning deletes the review and its comments from Polygloss; it never touches your repository. With `storage.prune_reviews_after_days` set, stale reviews are pruned at launch and once a day, except reviews with drafts, reviews awaiting you and reviews whose repository is gone.
 
@@ -70,7 +70,7 @@ Threads anchor to lines of one side of the diff (a line or a range), to a whole 
 
 1. **Comment:** press `c` on the cursor line or selection, click the **+** that appears next to a line number, or drag across line numbers for a range. "Comment on file" is in the file header's ⋯ menu, and "Comment on review" is in the threads panel; both are in the command palette too.
 2. **Write:** comments are markdown, with a Write/Preview toggle. A ` ```suggestion ` block proposes replacement text for the anchored new-side lines; it shows as a small diff, and the agent applies it (there is no Apply button).
-3. **Save a draft:** `⌘⏎`. `Esc` cancels. Text you have not saved yet is kept if you switch tabs or iterations. Your new threads and replies are **drafts** with a Draft badge until you submit: agents cannot see them.
+3. **Save a draft:** `⌘⏎`. `Esc` cancels. Text you have not saved yet is kept if you switch reviews or iterations. Your new threads and replies are **drafts** with a Draft badge until you submit: agents cannot see them.
 4. **Submit review:** `⇧⌘⏎`, or the toolbar button showing the draft count. Add an optional summary and pick a verdict: **Request changes**, **Comment** or **Approve**. Submitting publishes every draft at once and wakes the agent the review is assigned to. You can submit with no drafts, for example just to approve. The dialog says whether the agent is listening right now; if it is not, it sees the review on its next turn.
 
 Threads are **open** or **resolved**; you and agents can both resolve and reopen them, and that takes effect at once (it is not a draft). You can edit and delete your own comments.
@@ -81,7 +81,7 @@ When the code under a thread changes in a later iteration, the thread follows it
 
 ## Viewed
 
-Mark a file **Viewed** with its header checkbox, the circle at the end of its tree row, or `v`. Marking a file viewed collapses it and jumps to the next unviewed file. The toolbar counts the files viewed (`N/M`).
+Mark a file **Viewed** with the **Viewed** button in its header, the circle at the end of its tree row, or `v`. Marking a file viewed collapses it and jumps to the next unviewed file. The toolbar counts the files viewed (`N/M`).
 
 - Viewed belongs to the file's exact change: its path plus the old and new file contents. A file stays viewed across iterations, and even across reviews, for as long as that change is the same.
 - When the file changes again, it unchecks itself and shows **Changed since viewed** (the tree marks it with a dot), like GitHub's dismissed state.
@@ -164,13 +164,13 @@ The iteration picker switches between the review's iterations. **Changes since l
 
 ## Open in editor
 
-`o` (or the file header's ⋯ menu) opens the cursor line in your editor. A new-side line of a file that exists on disk opens the current file at the matching line, even if it has changed since the diff. An old-side line, a deleted file or a file missing on disk opens a read-only temporary copy.
+`o` (or the file header's open-in-editor button or ⋯ menu) opens the cursor line in your editor. A new-side line of a file that exists on disk opens the current file at the matching line, even if it has changed since the diff. An old-side line, a deleted file or a file missing on disk opens a read-only temporary copy.
 
 The editor is `editor.command` when set, a template such as `"zed {path}:{line}"` or `"code -g {path}:{line}"`; otherwise Zed, Cursor or VS Code (the first installed), then `$VISUAL`, then `$EDITOR`. The command runs directly, never through a shell.
 
 ## Notifications and the Dock badge
 
-When an agent asks for a re-review, Polygloss shows a macOS notification if the app is not focused (it starts in the background to deliver it if needed). Clicking the notification brings up the review's tab. The Dock badge counts reviews awaiting you. Mute a review from its Home row (`m`), or turn notifications off everywhere with `notifications.enabled: false`.
+When an agent asks for a re-review, Polygloss shows a macOS notification if the app is not focused (it starts in the background to deliver it if needed). Clicking the notification brings up the review. The Dock badge counts reviews awaiting you. Mute a review from its Home row (`m`), or turn notifications off everywhere with `notifications.enabled: false`.
 
 ## Updates
 

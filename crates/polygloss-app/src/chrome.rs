@@ -249,13 +249,13 @@ pub fn shell(
                 .size(px(SIDEBAR_WIDTH))
                 .size_range(px(SIDEBAR_RANGE.0)..px(max))
                 .flex_none()
+                // No border of its own: the split's handle draws the one
+                // divider line.
                 .child(
                     div()
                         .debug_selector(|| "sidebar".into())
                         .size_full()
                         .bg(theme.sidebar)
-                        .border_r_1()
-                        .border_color(theme.sidebar_border)
                         .child(sidebar),
                 ),
         )
