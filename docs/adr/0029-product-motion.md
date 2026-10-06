@@ -1,8 +1,8 @@
 # ADR-0029: Product motion
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0030](0030-motion-system.md). Its two motions are re-gated and kept there (retuned, with exits); its limits, its Reduce Motion rule and its rejections of panel, section and tree motion are replaced.
 - **Date:** 2026-10-05
-- **Design:** [§11.16 Motion](../design.md#1116-motion-adr-0029)
+- **Design:** [§11.16 Motion](../design.md#1116-motion-adr-0030)
 
 ## Context
 

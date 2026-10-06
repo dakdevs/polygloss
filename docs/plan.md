@@ -35,13 +35,15 @@ If a task seems to need a decision the spec does not make, use the provisional d
 10. [M4 Agent integration](#m4-agent-integration)
 11. [M5 Packaging and polish](#m5-packaging-and-polish)
 12. [M6 Redesign and file categories](#m6-redesign-and-file-categories)
-13. [Manual gate: agent wake-up in real Claude Code](#manual-gate-agent-wake-up-in-real-claude-code)
-14. [Risks and spikes](#risks-and-spikes)
-15. [Definition of done (v1)](#definition-of-done-v1)
-16. [Definition of done (M6)](#definition-of-done-m6)
-17. [Open questions](#open-questions)
-18. [Spec coverage map](#spec-coverage-map)
-19. [Decision log coverage](#decision-log-coverage)
+13. [M7 Motion and spacing systems](#m7-motion-and-spacing-systems)
+14. [Manual gate: agent wake-up in real Claude Code](#manual-gate-agent-wake-up-in-real-claude-code)
+15. [Risks and spikes](#risks-and-spikes)
+16. [Definition of done (v1)](#definition-of-done-v1)
+17. [Definition of done (M6)](#definition-of-done-m6)
+18. [Definition of done (M7)](#definition-of-done-m7)
+19. [Open questions](#open-questions)
+20. [Spec coverage map](#spec-coverage-map)
+21. [Decision log coverage](#decision-log-coverage)
 
 ---
 
@@ -209,15 +211,16 @@ Arrows point from dependency to dependent. `polygloss-diff` is the leaf. `polygl
 
 ## Milestones at a glance
 
-| Milestone                       | Delivers                                                                                                                                         | Tasks      | Exit gate (summary)                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------------------------------------- |
-| M0 Scaffold                     | Workspace, toolchain, profiles, bun scripts, prettier, CI, README                                                                                | T0.1–T0.3  | All scripts green on empty crates; dependency audit passes                             |
-| M1 Core                         | Git layer, sources, ids, snapshots, hunks, word diff, line mapping, rows, store, domain                                                          | T1.1–T1.16 | Unit + integration + git-parity suites pass; store concurrency tests pass              |
-| M2 Viewport gate                | GPUI window rendering real diffs; virtualization, highlighting, sticky headers, gaps; perf harness                                               | T2.1–T2.10 | **All §12.1 budgets met on all four corpora**, or fallbacks approved                   |
-| M3 Review UX                    | Tabs, Home, open flow, tree, Viewed, threads, drafts, submit, live, palette, keymap, themes, find, editor, notifications                         | T3.1–T3.17 | GPUI E2E + screenshot suites pass; keyboard-only review flow passes                    |
-| M4 Agent integration            | Socket IPC, single instance, URL scheme, CLI, MCP tools, wait, plugin, JSON CLI, opt-in `claude/channel`                                         | T4.1–T4.13 | bun MCP/CLI/E2E suites pass; manual wake gate W1–W3 recorded                           |
-| M5 Packaging and polish         | cargo-packager, signing/notarization scripts, Sparkle stub, cask, docs, a11y pass, audits                                                        | T5.1–T5.8  | Full E2E on the bundled app; audits; manual wake gate W1–W8; DoD checklist             |
-| M6 Redesign and file categories | Inset titlebar and sidebar navigation, Polygloss themes, file cards and bars, toolbar and header card, configurable file categories, two motions | T6.1–T6.17 | Full suites; every baseline re-recorded and reviewed; budgets incl. sections; DoD (M6) |
+| Milestone                       | Delivers                                                                                                                                                        | Tasks      | Exit gate (summary)                                                                             |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------- |
+| M0 Scaffold                     | Workspace, toolchain, profiles, bun scripts, prettier, CI, README                                                                                               | T0.1–T0.3  | All scripts green on empty crates; dependency audit passes                                      |
+| M1 Core                         | Git layer, sources, ids, snapshots, hunks, word diff, line mapping, rows, store, domain                                                                         | T1.1–T1.16 | Unit + integration + git-parity suites pass; store concurrency tests pass                       |
+| M2 Viewport gate                | GPUI window rendering real diffs; virtualization, highlighting, sticky headers, gaps; perf harness                                                              | T2.1–T2.10 | **All §12.1 budgets met on all four corpora**, or fallbacks approved                            |
+| M3 Review UX                    | Tabs, Home, open flow, tree, Viewed, threads, drafts, submit, live, palette, keymap, themes, find, editor, notifications                                        | T3.1–T3.17 | GPUI E2E + screenshot suites pass; keyboard-only review flow passes                             |
+| M4 Agent integration            | Socket IPC, single instance, URL scheme, CLI, MCP tools, wait, plugin, JSON CLI, opt-in `claude/channel`                                                        | T4.1–T4.13 | bun MCP/CLI/E2E suites pass; manual wake gate W1–W3 recorded                                    |
+| M5 Packaging and polish         | cargo-packager, signing/notarization scripts, Sparkle stub, cask, docs, a11y pass, audits                                                                       | T5.1–T5.8  | Full E2E on the bundled app; audits; manual wake gate W1–W8; DoD checklist                      |
+| M6 Redesign and file categories | Inset titlebar and sidebar navigation, Polygloss themes, file cards and bars, toolbar and header card, configurable file categories, two motions                | T6.1–T6.17 | Full suites; every baseline re-recorded and reviewed; budgets incl. sections; DoD (M6)          |
+| M7 Motion and spacing systems   | Spacing tokens, the lint and shared edges; the motion system (policy, tokens, sampler), fifteen motions, press ink, instant ⌘K/⌘P/`?`, app-shell motion benches | T7.1–T7.15 | Full suites; lint without debt; every baseline and filmstrip reviewed; motion budgets; DoD (M7) |
 
 ---
 
@@ -3121,6 +3124,750 @@ bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --c
 
 ---
 
+## M7 Motion and spacing systems
+
+**Goal:** the two systems the user asked for on 2026-10-06, after M6: motion that makes the app feel high quality while it runs (panels collapsing, disclosures, notices, press feedback), informed by every animation skill, and one spacing system that says how each dimension is calculated and when it is used ([ADR-0030](adr/0030-motion-system.md), [ADR-0031](adr/0031-spacing-system.md), design §11.16–§11.17, research: [motion audit](research/motion-audit.md), [spacing audit](research/spacing-audit.md)). Nothing about identity, the store, the agent surface or the offline rules changes, and no dependency is added.
+
+**Decisions:** ADR-0030 supersedes ADR-0029: the user lifted the skills' five-to-seven cap, and the gate still keeps 100+/day and keyboard-flow paths instant. ADR-0031 amends ADR-0027's card numbers. Provisional defaults: design OQ-58–OQ-63; OQ-39 (the banner strip) and OQ-43 (the tree's Viewed slot) keep their approved behavior, and their alternatives go to the user at the gate. M7 starts after the M6 exit gate. T6.16 edits the same literals, so every task re-reads what it touches on the merged tree: the research docs' line numbers and counts are from `d5e36ca`.
+
+**App module map additions:** `crates/polygloss-app/src/` → `space.rs` (T7.1), `motion.rs` rewritten with `motion/{exit.rs, wrap.rs, settle.rs}` (T7.2), `segmented.rs` (T7.5), `overlay.rs` (T7.12), `perf/motion/` (T7.3; one driver file per animated surface, added by its task). Viewport: `space.rs` (T7.1), `motion.rs` (T7.2), `reveal.rs` (T7.8). Platform: `reduce_motion.rs` (T7.2). Perf: `scenarios/reveal.rs` (T7.8, extended by T7.11). Tests and tools: `tests/scripts/{spacing-tokens,motion-tokens}.test.ts` and `tests/scripts/spacing-debt.json` (T7.1, T7.2), `crates/polygloss-app/tests/support/{ink.rs (T7.1), motion.rs (T7.2), filmstrip.rs (T7.3)}`, `scripts/record-motion.ts` (T7.3).
+
+**Rules for every M7 task** (on top of [How to execute this plan](#how-to-execute-this-plan)):
+
+| Rule         | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spacing      | No new raw dimension: every value comes from `space` (ADR-0031). A task that migrates a file sets that file's entry in `tests/scripts/spacing-debt.json` to its new count (the lint fails above and below the entry); each file's migration belongs to one task (Spacing ownership, below). Reference tests measure ink on a GPUI screenshot with `support::ink` and assert `                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | measured − reference | ≤ allowed + 0.5`, both numbers written in the test from ADR-0031's reference edges (R1–R25). Every other layout test is relational (two independently measured edges agree) or hand-computed from a formula, never a restated token. |
+| Motion       | Only ADR-0030's motions, each declared as a `motion::Motion` (its animating initiators, its `Reduced` variant), sampled by a `Track` on the executor clock (never `with_animation`, `with_animations`, `with_spring`, `Animation::new`), commit-first, offsets quantized. Tests per motion, in the motion's test module and named after it, step the clock by ADR-0030's **stepping protocol** (`support::motion::step_to`: the commit frame is t = 0; advance exactly `FIRST_STEP`, 16.667 ms, and draw; then advance to the sampled t and draw, so t runs from the commit stamp). **Full**: the commit frame at full travel; at half the duration, strictly between and equal to the test's own evaluation of the curve (a bisection solver for `cubic_bezier(0.16, 1, 0.3, 1)` and the closed form of ease-in-out cubic, written in the test, never the production easing); settled after the duration. **`Reduced::Fade`**: offset, rotation and displacement exactly 0 at t = 0, ¼, ½, ¾ and 1 of the fade; opacity strictly between 0 and 1 at half the fade's duration. **`Reduced::Snap`, Keyboard** (unless listed), **Programmatic** and **Off**: settled on the commit frame, and `simulate_next_frame` reports no frame requested after it. **Interruption**: a re-toggle at ½ continues from the sampled value (never from 0); a pointer move mid-motion leaves it running; a settling input (ADR-0030 rule 4) settles it; where content moves, a click mid-motion hits what is painted there. Durations (in and out, per ADR-0030's How it moves), distances and expected values are written by hand. |
+| Filmstrips   | Each motion task adds an E2E filmstrip, `e2e_motion_<name>` (`support::filmstrip`: Full and Reduced rows at t = 0, ¼, ½, ¾, 1 of the duration, stepped by the protocol; baseline `e2e-motion-<name>.png`), opens it and describes each frame in its report. A filmstrip that shows a pop, a lag or bleed-through is a finding, not a baseline.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Perf         | Tasks marked **perf** run `bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --compare-baseline` and `bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budgets` on a quiet machine: `uptime` (and `sysctl -n vm.loadavg`) shows a one-minute load below 4 at the start and the end of the run; otherwise wait, or report the run as unmeasured. They report the deltas, both scroll p95s (≤ 2.1 ms, as in M6) and every motion metric they add. A motion whose metric misses its budget ships as Snap in every policy, with its numbers in the task's As built; M1 and M2 instead ship their Reduced variant in every policy and go to the M7 gate with a profile, for the user to decide (ADR-0030 rule 12). No task writes `benches/baseline.json`; the gate does.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Timing tests | As M6: a test asserting wall-clock time asserts only below a one-minute load of 4.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Baselines    | As M6 (re-record what the change moves, open and describe each; after every wave merge, re-record and review each baseline that now fails). Spacing tasks compare their baselines against the reference's anatomy and ADR-0031's reference edges. Harnesses run under the policy override (Off) from T7.2 on. A binary conflict in a baseline PNG at a wave merge: take either side, then re-record and review every affected baseline on the merged tree.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Shared files | Append (or own-line) only, and a merge keeps both: module lines in the app's and the viewport's `lib.rs`, the test module lists, `tests/support/mod.rs`, `perf/motion/mod.rs`'s driver table, the lint's allow-list and painter-file list (path + snippet + reason), and `spacing-debt.json`. At each wave merge `UPDATE_SPACING_DEBT=1 bun test tests/scripts/spacing-tokens.test.ts` re-seeds the debt map; the merge fails if an entry rises. `benches/budgets.json` and `run-perf.ts`'s scenario table: T7.3 (app-shell metrics), T7.8 and T7.11 (their viewport metrics). `features.rs`: T7.2 only. `docs/user-guide.md`: T7.15 only. Workspace `Cargo.toml`: none.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Docs         | A task that deviates from ADR-0030, ADR-0031 or design §11.16–§11.17 records it in an **As built** note and updates the design text in the same change; ADRs change only through a new ADR.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+**Waves:** W1 = T7.1 ∥ T7.2. W2 = T7.3 ∥ T7.4 ∥ T7.5. W3 = T7.6 ∥ T7.7 ∥ T7.8. W4 = T7.9 ∥ T7.11 ∥ T7.12. W5 = T7.10 ∥ T7.13 ∥ T7.14. W6 = T7.15. The motion core lands before anything that uses `MotionPolicy` or `Initiator`; spacing lands before the motions that move its surfaces; the panels (T7.10) land after `hold_layout` (T7.8) and after the banner leaves `enter_from` (T7.9).
+
+| Wave | Task  | Owns (beyond its tests and its own lines in shared files)                                                                                                                                                                                                       |
+| ---- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W1   | T7.1  | viewport `space.rs`; app `space.rs`, `theme/zed_to_kit.rs` (radii); `tests/support/ink.rs`; `tests/scripts/spacing-tokens.test.ts`, its fixtures, `spacing-debt.json`                                                                                           |
+| W1   | T7.2  | viewport `motion.rs`; app `motion.rs`, `motion/`, `features.rs`, `theme/mod.rs` (one call); platform `reduce_motion.rs`, its `Cargo.toml` features; the harness sites of `set_reduce_motion`; `tests/support/motion.rs`; `tests/scripts/motion-tokens.test.ts`  |
+| W2   | T7.3  | app `perf/mod.rs`, `perf/motion/`, `tests/support/filmstrip.rs`; `benches/{run-perf.ts, budgets.json}`; `scripts/record-motion.ts`                                                                                                                              |
+| W2   | T7.4  | the viewport crate's geometry (`card.rs`, `layout.rs`, `header.rs`, `gutter.rs`, `numbers.rs`, `section_band.rs`, `gap.rs`, `element.rs`, `cursor.rs`, `paint_rows.rs`, `special.rs`, `document/metrics.rs`, `style.rs`, `debug.rs`); perf geometry sites       |
+| W2   | T7.5  | app `chrome.rs`, `segmented.rs`, `palette/mod.rs`, `review_tab/{toolbar,banners}.rs`, `tree/{mod,row,panels,footer,filters}.rs`, `categories/totals.rs`, `find/view.rs`, `home/nav.rs`, `threads/toolbar.rs`, `viewed/mod.rs`                                   |
+| W3   | T7.6  | app `home/{mod,row,dialogs}.rs`, `palette/{command,cheat_sheet,key_cap}.rs`, `tree/finder.rs`, `live/base_picker.rs`, `open_flow/`, `submit/`, `iterations/picker.rs`, `keyboard/menu.rs`                                                                       |
+| W3   | T7.7  | app `review_tab/{header,panes}.rs`, `threads/{block,panel,mod}.rs`, `composer/`, `markdown/{suggestion,sanitize}.rs`                                                                                                                                            |
+| W3   | T7.8  | viewport `reveal.rs`, `view.rs`, `element.rs`, `paint_rows.rs`, `card.rs`, `header.rs`, `controls.rs`, `cursor.rs`, `debug.rs`; perf `scenarios/{mod,reveal}.rs`; `benches/{run-perf.ts, budgets.json}` (its lines); app `perf/motion/card.rs`                  |
+| W4   | T7.9  | app `segmented.rs`, `tree/row.rs`, `review_tab/banners.rs`, `open_flow/`, `home/{mod,row}.rs`                                                                                                                                                                   |
+| W4   | T7.11 | viewport `reveal.rs`, `section_band.rs`, `gap.rs`, `blocks.rs`, `card.rs`, `document/sections.rs`, `view.rs`; perf `scenarios/reveal.rs`; `benches/{run-perf.ts, budgets.json}` (its lines); app `categories/mod.rs`, `viewed/mod.rs`, `perf/motion/section.rs` |
+| W4   | T7.12 | app `overlay.rs`, `window.rs` (the overlay host), `palette/{command,cheat_sheet}.rs`, `tree/finder.rs`                                                                                                                                                          |
+| W5   | T7.10 | app `chrome.rs`, `window.rs`, `review_tab/{mod,panes,toolbar}.rs`, `tree/mod.rs`, `motion.rs` (retiring `enter_from`), `perf/motion/{sidebar,threads}.rs`                                                                                                       |
+| W5   | T7.13 | app `tree/panels.rs`, `perf/motion/accordion.rs`                                                                                                                                                                                                                |
+| W5   | T7.14 | app `threads/block.rs`, `review_tab/header.rs`                                                                                                                                                                                                                  |
+| W6   | T7.15 | `tests/scripts/spacing-tokens.test.ts` (no debt map); every baseline; `docs/user-guide.md`, `docs/design.md`, ADR-0027's numbers; any file only for a visual fix the recordings or baselines show                                                               |
+
+Files touched by tasks of different waves (for example `segmented.rs`, `tree/row.rs`, `review_tab/header.rs`, `reveal.rs`, `window.rs`) are edited in wave order. No two tasks of one wave share a file, except the append-only lines above.
+
+**Spacing ownership.** Each file with spacing debt at `d5e36ca` is migrated by one task, to zero debt (or allow-list entries with reasons):
+
+| Task  | Files                                                                                                                                                                                                                                                            |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T7.4  | Every viewport `src` file with debt, the painter-file rule's included (`header.rs`, `card.rs`, `element.rs`, `paint_rows.rs`, `gutter.rs`, `section_band.rs`, `gap.rs`, `cursor.rs`, `layout.rs`, `numbers.rs`, `special.rs`, `document/metrics.rs`, `style.rs`) |
+| T7.5  | `chrome.rs`, `find/view.rs`, `tree/{row,panels,mod,footer,filters}.rs`, `review_tab/toolbar.rs`, `review_tab/banners.rs` (all but `ENTER_FROM_ABOVE`), `palette/mod.rs`, `threads/toolbar.rs`, `categories/totals.rs`, `viewed/mod.rs`, `home/nav.rs`            |
+| T7.6  | `open_flow/{mod,repo_step,source_step}.rs`, `home/{mod,row,dialogs}.rs`, `submit/{mod,dialog}.rs`, `live/base_picker.rs`, `tree/finder.rs`, `palette/{command,cheat_sheet,key_cap}.rs`, `iterations/picker.rs`, `keyboard/menu.rs`                               |
+| T7.7  | `review_tab/{header,panes}.rs` (all but `ENTER_FROM_RIGHT`), `threads/{block,panel,mod}.rs`, `composer/{mod,view}.rs`, `markdown/{suggestion,sanitize}.rs`                                                                                                       |
+| T7.9  | `ENTER_FROM_ABOVE` (`review_tab/banners.rs`)                                                                                                                                                                                                                     |
+| T7.10 | `ENTER_FROM_RIGHT` (`review_tab/panes.rs`)                                                                                                                                                                                                                       |
+
+A file with debt on the merged tree that this table does not name (T6.16 may add one) is added to it, under the task whose wave owns the file, before W2 starts. T7.15 only deletes the map; an entry still above 0 there is a finding against its owning task.
+
+### T7.1 Spacing tokens, the lint and kit radii
+
+**Files**
+
+- Create: `crates/polygloss-viewport/src/space.rs`, `crates/polygloss-app/src/space.rs`, `crates/polygloss-app/tests/support/ink.rs`, `tests/scripts/spacing-tokens.test.ts`, `tests/scripts/fixtures/spacing/` (fixtures per rule), `tests/scripts/spacing-debt.json`
+- Modify: `crates/polygloss-viewport/src/lib.rs`, `crates/polygloss-app/src/lib.rs` (one module line each), `crates/polygloss-app/tests/support/mod.rs` (one line), `crates/polygloss-app/src/theme/zed_to_kit.rs` (`radius` and `radius_lg` only)
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, space.rs}` (new module), `crates/polygloss-app/tests/app/{main.rs, space.rs (new module), theme.rs}`; baselines: each one that shows a gpui-kit dialog or popover (`radius_lg` 10 → 12)
+
+**Interfaces**
+
+```rust
+// polygloss_viewport::space: f32 points (call sites write px(space::height::SM), module-qualified); ADR-0031's table, verbatim;
+// every group exposes `pub const ALL: &[(&str, f32)]`
+pub mod scale { pub const S0_5: f32 = 2.0; /* S1 4, S1_5 6, S2 8, S2_5 10, S3 12, S3_5 14, S4 16, S5 20, S6 24, S7 28, S8 32, S9 36, S10 40, S11 44, S13 52 */ }
+pub mod edge { /* CANVAS 12, CARD_X 16, CARD_Y 8, CARD_TRAILING 8, NESTED_X 12, NESTED_Y 8, SIDEBAR 10, OVERLAY 8, PAGE 32 */ }
+pub mod pad { /* ICON_LEAD 6, TEXT 8, PILL_X 8, BADGE_X 6, RIM 2 */ }
+pub mod gap { /* LINES 0, INLINE 4, ICON_LABEL 6, CONTROLS 8, GROUP 12, CARDS 12, SECTION 24 */ }
+pub mod height { /* MINI 16, XS 20, SM 24, MD 28, BAR 36, FOOTER 40, ROW2 44, TOP 52, BANNER_STRIP 32 */ }
+pub mod size { /* ICON 16, ICON_SM 14, DOT 6, AVATAR_SM 20, AVATAR_LG = card::CODE_X − edge::CARD_X − gap::CONTROLS (26), TREE_INDENT 14, STATUS_COL 10 */ }
+pub mod radius { /* XS 4, SM 6, MD 8, LG 12 */ pub const fn for_height(h: f32) -> f32; /* ≤ 20 XS, ≤ 24 SM, else MD */ pub const fn capsule(h: f32) -> f32; pub const fn inner(outer: f32, inset: f32) -> f32; }
+pub mod stroke { /* BORDER 1, FOCUS_RING 2, CURSOR_BAR 2, CHANGE_BAR 3 */ }
+pub mod text { pub type Style = (f32 /* size */, f32 /* line height */); /* CAPTION (11, 14), SMALL (12, 16), BODY (13, 18), UI (14, 20), TITLE (15, 20), HEADING (16, 24), CODE_CHROME (12, 16) */ pub fn code_row(size: f32) -> f32; /* round(1.5 × size) */ }
+pub mod card {
+    /* CHEVRON_X 10, PATH_X 40, GUTTER_MIN 40, NUMBER_PAD_L 4, NUMBER_PAD_R 8, NUMBER_GAP 8, CODE_PAD 10, CODE_X 50 */
+    pub fn gutter(digits: u32, advance: f32, columns: u32) -> f32; // max(GUTTER_MIN, ceil4(CHANGE_BAR + NUMBER_PAD_L + columns · digits · advance + (columns − 1) · NUMBER_GAP + NUMBER_PAD_R))
+    pub fn code_x(gutter: f32, advance: f32, plus_minus: bool) -> f32; // gutter + CODE_PAD; with `+-` indicators gutter + 2 · advance
+    pub fn header(row: f32) -> f32;      // row + 24
+    pub fn gap_row(row: f32) -> f32;     // row + 12
+    pub fn placeholder(row: f32) -> f32; // 2 · row + 8
+}
+// polygloss_app::space
+pub use polygloss_viewport::space::*;
+pub mod layout { /* TRAFFIC_LIGHTS_END 79, TOOLBAR_INSET_HIDDEN 88, SIDEBAR_WIDTH 280, SIDEBAR_RANGE (220, 480), MAIN_MIN_WIDTH 320,
+    THREADS_WIDTH 340, THREADS_RANGE (220, 720), THREADS_MAIN_MIN_WIDTH 480, VIEWPORT_MIN_WIDTH 260, PICKER_W 560, PICKER_TOP 96, DIALOG_TOP 72,
+    OVERLAY_MAX_H 400, OPEN_FLOW (640, 460), CHEAT_SHEET_W 1040, HOME_CARD 60, HOME_MAX_W 1120, HOME_COL_* (68, 96, 104, 112, 72), COMPOSER_MIN_H 64,
+    FIND_NUMBER_COL 40, PILL_TEXT_MAX 64, REPO_NAME_MAX 48, VIEWED_SLOT 20 */ }
+pub trait TextStyleExt: Styled { fn text_style(self, style: text::Style) -> Self; } // size and line height together; the only caller of line_height
+// tests/support/ink.rs (screenshots at 2×; results in pt)
+pub fn first_ink_x(image: &RgbaImage, band: Bounds<u32>, background: Rgba<u8>) -> Option<f32>; // the first column with a pixel more than 24 per channel off the background
+pub fn last_ink_x(image: &RgbaImage, band: Bounds<u32>, background: Rgba<u8>) -> Option<f32>;
+pub fn first_ink_y(image: &RgbaImage, band: Bounds<u32>, background: Rgba<u8>) -> Option<f32>;
+```
+
+- `spacing-tokens.test.ts` implements ADR-0031's scan and its eight rules. Rule 1 in full: a bare number as the whole argument of `px`, `rems` or `relative` (except `px(0.)`), and any literal other than 0, 1, 2 or 0.5 inside one. The token modules are exempt (both `space.rs`; the viewport's `motion.rs`; the app's `motion.rs` and `motion/`), so T7.2's alpha, angle and duration consts never meet rule 4. The allow-list starts with the non-geometry consts `AUTO_LAYOUT_HYSTERESIS_COLUMNS`, `CANCEL_SLACK_SCREENS`, `ESTIMATED_BLOCK_ROWS`, `DEFAULT_WINDOW_SCREENS`, `style.rs` `SHARE` and `MIN_TITLE_COLUMNS`, plus `perf/` and `dump.rs`; the painter-file list starts with T7.4's viewport files (T7.8 appends `reveal.rs`).
+- `spacing-debt.json` is `{ "<path>": <count> }`, seeded from the scanner on the merged tree (about 490 matches in about 47 files at `d5e36ca`, plus the new rules' viewport matches). The test fails when a file's count is above or below its entry, or an entry names a missing file; `UPDATE_SPACING_DEBT=1` rewrites it and fails if any entry rose. T7.15 deletes it.
+- Failure messages: `path:line rule 'snippet' → space::<group> (ADR-0031)`; for the map, `spacing-debt.json[path]: N → M`.
+- `zed_to_kit::kit_theme_config` sets `radius` to `radius::SM` and `radius_lg` to `radius::LG`. Nothing else moves in this task.
+- Consumed by every spacing task. Motion's travel constants are its own (ADR-0030), so T7.2 does not depend on this task.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Both `space` modules with `ALL`; the invariant tests; `support::ink`.
+- [ ] The lint with fixtures; seed the debt map; the kit radii; re-record the baselines they move.
+
+**Tests:** viewport (`space::`) `every_group_lists_all_its_tokens` (each group's `ALL` length equals a count written in the test: scale 16, edge 9, pad 5, gap 7, height 9, size 7, radius 4, stroke 4, card 8), `every_layout_token_is_on_the_grid` (over the `ALL` of edge, pad, gap, height, size and card: multiples of 4, except the half-step names listed in the test, which are multiples of 2; stroke exempt), `heights_are_appkits_ladder` (the probe's 16, 20, 24, 28, 36 written in the test; `MINI` to `BAR` are members), `radius_follows_role_then_height` (hand-written: `for_height` 16 → 4, 20 → 4, 22 → 6, 24 → 6, 28 → 8, 36 → 8, 44 → 8, 52 → 8; `capsule(28)` 14), `segmented_radii_are_concentric` (`inner(radius::MD, pad::RIM)` is 6), `the_title_lands_on_the_minimal_code_column` (`CARD_X + AVATAR_LG + CONTROLS` equals `code_x(gutter(3, 7.8, 1), 7.8, false)`), `gutter_grows_on_the_grid` (advance 7.8, hand-computed: one column, 1–3 digits 40, 4 → 48, 5 → 56, 6 → 64; unified, 3 → 72, 4 → 88), `code_x_follows_the_indicator_mode` (gutter 40, advance 7.8: bars 50, `+-` 55.6), `code_geometry_scales_with_the_row` (row 20: header 44, gap row 32, placeholder 48; row 24: 48, 36, 56), `text_line_heights_are_even_and_cover_the_size` (each even and ≥ 1.2 × its size); app `theme::kit_radii_follow_the_spacing_system` (6 and 12), `theme::kit_rem_is_pinned_at_16` (`Theme.font_size` is 16 after `apply_theme`), `space::traffic_light_inset_clears_the_zoom_button` (19, 14, 9 from the probe, written in the test: the zoom button ends at 79, the inset is 88, the first item 120), `ink::finds_the_first_and_last_ink_columns` (a synthetic 2× image with ink from pt 10 to 14: 10 and 14); bun `spacing-tokens.test.ts`: `each rule accepts and rejects its fixtures` (accepted: `px(0.)`, `px(0.0)`, `.p_0()`, `.w_full()`, `.min_h_0()`, `.size_full()`, `.text_color(…)`, `px(space::edge::CANVAS)`, `px(w / 2.0)`, `hsla(0., 0., 0., 0.06)` in a painter file, `Button::new("x").small()`; rejected: `px(12.)`, `px(1.)`, `px(-1.)`, `px(100_000.)`, `.px_3()`, `.gap_1p5()`, `.size_4()`, `.top_1()`, `.rounded_md()`, `.text_xs()`, `.text_base()`, `.line_height(px(18.))`, `.line_height(relative(1.2))`, `rems(1.2)`, `px((size * 1.54).round())`, `const PAD: f32 = 6.0;`, `margin_x: 16.0,`, `.clamp(0.0, 4.0)` and `style.radius + 2.0` in a painter file, a multi-line `Button::new("x").ghost()` chain, `space::scale::S3`), `failures_name_path_line_rule_and_token_group`, `untracked_files_are_scanned`, `cfg_test_items_are_stripped_by_brace_matching` (a `#[cfg(test)] mod x;` above real code strips only itself), `token_modules_are_exempt`, `an_unlisted_painter_file_fails`, `allow_list_entries_are_not_stale`, `no_file_exceeds_its_debt`, `no_file_is_below_its_debt`, `the_debt_map_names_only_existing_files`, `reseed_fails_when_an_entry_rises`.
+
+**Acceptance:** the tokens exist with their invariant tests; the lint passes on the tree with its debt map; gpui-kit's dialogs and popovers use radius 12; nothing else moves.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport -E 'test(/space::/)'
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/theme::/) | test(/space::/) | test(/ink::/))'
+bun test tests/scripts/spacing-tokens.test.ts tests/scripts/repo-hygiene.test.ts
+```
+
+Then the standard completion block.
+
+### T7.2 Motion core: policy, tokens, `Track`, wrappers, settling, live Reduce Motion
+
+**Files**
+
+- Create: `crates/polygloss-viewport/src/motion.rs`, `crates/polygloss-app/src/motion/{exit.rs, wrap.rs, settle.rs}`, `crates/polygloss-platform/src/reduce_motion.rs`, `crates/polygloss-app/tests/support/motion.rs`, `tests/scripts/motion-tokens.test.ts`
+- Modify: `crates/polygloss-app/src/motion.rs` (rebuilt on `Track`; `enter_from` keeps its two callers and their M6 values until T7.9 and T7.10 move them, and maps Reduced to Snap as in M6), `src/features.rs` (`motion::init` also starts the observer and installs the settle listeners), `src/theme/mod.rs` (one call, `motion::apply_kit_tokens`, after a theme applies), `crates/polygloss-viewport/src/lib.rs` (one module line), `crates/polygloss-app/tests/support/mod.rs` (one line), `crates/polygloss-platform/{Cargo.toml (features `NSNotification`for objc2-foundation and`NSWorkspace` for objc2-app-kit, in this crate's file), src/lib.rs}`; harnesses: `crates/polygloss-app/tests/support/screenshot.rs`, `tests/e2e/{keyboard_only_review.rs, submit.rs, open_flow.rs, palette.rs}`, `tests/app/shell.rs` (each `set_reduce_motion(true)` becomes `motion::set_override(Some(MotionPolicy::Off), cx)`)
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, motion.rs}` (new module), `crates/polygloss-app/tests/app/motion.rs`
+
+**Interfaces**
+
+```rust
+// polygloss_viewport::motion
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)] pub enum MotionPolicy { #[default] Full, Reduced, Off }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum Initiator { Pointer, Keyboard, Programmatic }
+pub struct MotionPolicyOverride(pub Option<MotionPolicy>);    // a Global, for harnesses only
+pub fn policy(cx: &App) -> MotionPolicy;                       // the override, else Reduced while cx.reduce_motion(), else Full; derived each call, never stored
+pub mod tokens {
+    pub const MICRO: Duration; pub const QUICK: Duration; pub const BASE: Duration; pub const PANEL: Duration; // 100, 150, 200, 240 ms
+    pub fn exit(entry: Duration) -> Duration;                  // max(100 ms, 0.75 × entry), rounded half up to 10 ms
+    pub fn reveal(delta_v: f32, viewport_h: f32) -> Duration;  // clamp(150 + 0.1 · min(|Δv|, viewport_h), 150, 200) ms
+    pub fn out(t: f32) -> f32;                                 // cubic_bezier(0.16, 1, 0.3, 1)
+    pub fn in_out(t: f32) -> f32;                              // ADR-0030's MOVE (gpui-base ease_in_out_cubic)
+    pub const NUDGE: f32 = 4.0; pub const SHIFT: f32 = 8.0;    // motion's own; not read from space
+    pub const CHEVRON_CLOSED_DEG: f32 = -90.0;
+    pub const FIRST_STEP: Duration = Duration::from_micros(16_667);
+}
+pub enum Reduced { Snap, Fade }                               // Fade: in over QUICK, out over MICRO; no geometry field
+pub struct Motion { pub enter: Duration, pub exit: Duration, pub easing: fn(f32) -> f32, pub animates: &'static [Initiator], pub reduced: Reduced }
+pub enum Play { Animate, Fade, Snap }
+pub fn play(motion: &Motion, initiator: Initiator, policy: MotionPolicy) -> Play;
+pub struct Sample { pub value: f32, pub opacity: f32, pub settled: bool }
+pub struct Track { /* from, to, start, duration, easing, play */ }
+impl Track {
+    pub fn new(value: f32) -> Self;                                                  // settled
+    pub fn retarget(&mut self, to: f32, motion: &Motion, play: Play, now: Instant);  // from the sampled value; a reversal lasts exit × the share travelled
+    pub fn sample(&mut self, now: Instant) -> Sample;                                // the first step after a retarget is at most FIRST_STEP
+    pub fn settle(&mut self);
+    pub fn is_settled(&self) -> bool;
+}
+pub fn quantize(v: f32, scale_factor: f32) -> f32;                                   // round(v · scale) / scale
+// polygloss_app::motion (re-exports the above)
+pub fn set_override(policy: Option<MotionPolicy>, cx: &mut App); // harnesses only; Some(_) also sets cx.set_reduce_motion(true), so kit motion settles under every override
+pub fn follow_system_reduce_motion(window: &mut Window, cx: &mut App); // kept: runs ReduceMotionSource (gpui-base's apply_system_reduce_motion) and redraws on a change
+pub fn initiator(window: &Window) -> Initiator;                 // inside a user-input handler only
+pub fn track(id: impl Into<ElementId>, initial: f32, trigger: Trigger, window: &mut Window, cx: &mut App) -> Entity<Track>; // window.use_keyed_state; registers with settle while unsettled
+pub fn sample(track: &Entity<Track>, window: &mut Window, cx: &mut App) -> Sample; // the executor's now; requests a frame while unsettled, never after
+// motion/settle.rs: per main window, capture-phase listeners for key down (modifiers alone excluded), mouse down and scroll wheel, and window bounds and fullscreen changes,
+// run every registered settle before the input is handled; a mouse down inside a registration's trigger bounds, or a key down bound to its toggle action
+// (window.bindings_for_action), skips it (the handler retargets). Mouse move, hover, mouse up and modifier changes never settle.
+pub struct Trigger { pub bounds: Vec<Bounds<Pixels>>, pub action: Option<Box<dyn Action>> }
+pub fn register_settle(trigger: Trigger, settle: impl FnOnce(&mut Window, &mut App) + 'static, window: &mut Window); // each frame while a motion is unsettled
+// motion/wrap.rs
+pub fn slide(offset: Point<Pixels>, opacity: f32, child: impl IntoElement) -> AnyElement; // a wrapper element: layout and siblings unchanged; the offset applied with with_element_offset around the child's prepaint (hitboxes follow);
+                                                                                          // opacity through the wrapper div's Styled::opacity (Window::with_element_opacity is crate-private). The viewport multiplies its colors' alpha instead.
+pub fn clip(mask: Bounds<Pixels>, child: impl IntoElement) -> AnyElement;              // content mask, no layout change
+// motion/exit.rs: GPUI frees elements every frame, so an exit keeps data, never an element
+pub enum ExitHitbox { None, Occlude }
+pub struct Exit<S: 'static> { /* snapshot: S, bounds, track, render: fn(&S, &mut Window, &mut App) -> AnyElement, hitbox */ }
+impl<S: 'static> Exit<S> {
+    pub fn start(snapshot: S, bounds: Bounds<Pixels>, render: fn(&S, &mut Window, &mut App) -> AnyElement, hitbox: ExitHitbox,
+                 motion: &Motion, initiator: Initiator, window: &mut Window, cx: &mut App) -> Option<Self>; // None when the motion snaps
+    pub fn render(&mut self, window: &mut Window, cx: &mut App) -> Option<AnyElement>; // the copy at its sampled opacity, absolutely placed at `bounds`; None once settled
+} // `render` builds the copy with no listeners, focus handles, tab stops or tooltips; Occlude adds an occluding hitbox over `bounds`
+pub mod ink { pub const HOVER: f32 = 0.06; pub const PRESSED: f32 = 0.12; pub trait PressInk: Styled + InteractiveElement { fn press_ink(self, cx: &App) -> Self; } }
+pub fn kit_tokens() -> MotionTokens; // gpui-component's theme tokens: ADR-0030's durations, OUT, MOVE, springs at damping 1.0
+pub fn apply_kit_tokens(cx: &mut App);
+pub fn record(sink: Rc<RefCell<Vec<Recorded>>>, cx: &mut App); // test seam replacing record_entrances: (id, offset, opacity, rotation) per sample
+// polygloss_platform::reduce_motion (feature appkit)
+pub fn system_reduce_motion() -> bool;                         // NSWorkspace accessibilityDisplayShouldReduceMotion
+pub struct Observer; pub fn observe(on_change: Box<dyn Fn() + 'static>) -> Observer; // NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification on the workspace's centre; a define_class! observer (no block2); Drop removes it
+// tests/support/motion.rs
+pub fn step_to(cx: &mut VisualTestContext, since_commit: Duration); // the stepping protocol: FIRST_STEP and a draw, then the rest and a draw
+```
+
+- Policy (ADR-0030): one derived source. Production never calls `cx.set_reduce_motion`; the observer's callback reaches the app's foreground executor and runs `follow_system_reduce_motion` for every main window, so gpui-base's `apply_system_reduce_motion` updates the flag and kit dialogs, toasts and popovers follow live too; activation still re-reads.
+- A policy switch mid-motion: to Reduced zeroes travel on that frame and lets opacity finish; to Off settles everything; to Full never restarts a settled track.
+- `motion-tokens.test.ts` rejects `with_animation`, `with_animations`, `with_spring` and `Animation::new` anywhere in app and viewport `src`; `Instant::now` and `SystemTime::now` in `motion.rs`, `motion/` and the viewport's `motion.rs` and `reveal.rs`; and `set_reduce_motion` in production `src` outside `motion::set_override`.
+- Consumed by every motion task (T7.8–T7.14), by T7.3, and by T7.5–T7.7 for `ink`.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Viewport `motion`; the app module on top; `settle`, `slide`, `clip`, `Exit`, `ink`; the kit tokens.
+- [ ] The platform observer and its wiring; move every harness to the override; the hygiene test.
+
+**Tests:** viewport (`motion::`) `exit_durations_match_adr_0030` (240 → 180, 200 → 150, 190 → 140, 180 → 140, 150 → 110, 100 → 100), `reveal_duration_follows_distance` (0 → 150, 100 pt → 160, 400 pt → 190, 900 pt in a 900 pt viewport → 200, Δ 2,000 in a 400 pt viewport → 190), `play_follows_policy_and_initiator` (a hand-written table of initiators × policies × `animates` × `Reduced`), `policy_is_derived_never_stored` (no override and the flag false → Full; the flag true → Reduced; override Full with the flag true → Full), `track_samples_full_travel_then_between_then_settled` (0 → 12 over 240 ms by the stepping protocol: 0 on the commit frame, 12 · OUT(16.667 / 240) after the first step, 12 · OUT(½) at 120 ms by the test's own bisection solver, 12 at 240 ms), `track_clamps_its_first_step` (a 100 ms gap before the first sample reads as 16.667 ms), `retarget_continues_from_the_sampled_value`, `reversal_is_shortened_by_the_share_travelled`, `quantize_rounds_to_device_pixels` (scale 2: 3.3 → 3.5); app (`motion::`) `reduced_fade_has_no_travel` (offset 0 at every quarter, opacity strictly between at 75 ms of QUICK), `off_settles_on_the_first_frame_and_requests_no_frame`, `any_override_settles_kit_motion` (Off, Full and Reduced overrides each leave `cx.reduce_motion()` true), `slide_moves_paint_not_layout` (a sibling's bounds unchanged; the slid element's painted bounds and hitbox shift), `pointer_movement_never_settles` (mouse moves at ¼ and ½ of a probe track: it is still between at ½), `settling_inputs_settle` (a key down, a scroll and a window resize each settle a running probe track on that frame; a modifier press alone does not), `mouse_down_on_the_trigger_retargets_and_elsewhere_settles`, `own_shortcut_retargets_and_other_keys_settle`, `exit_rerenders_its_snapshot_inert` (its render runs once per frame until settled, then `None`; a click on its button's position does nothing; with `Occlude` an element beneath receives nothing, with `None` it receives the click), `reduce_motion_change_is_followed_without_activation` (a fake observer source fires and the installed `ReduceMotionSource` sets the flag: the next frame is Reduced), `switch_to_reduced_mid_motion_zeroes_travel_and_lets_opacity_finish`, `switch_to_full_never_restarts_a_settled_motion`, `kit_tokens_have_no_ease_in_and_no_overshoot` (the exit easing at 0.1 is ≥ 0.3; both spring dampings 1.0), `enter_from_snaps_under_reduced`, and the M6 Full tests of `enter_from` (12 pt / 180 ms and 4 pt / 160 ms) unchanged; bun `motion-tokens.test.ts`: fixtures per rule, `no_gpui_animation_api_in_app_or_viewport_src`, `no_wall_clock_in_motion_modules`, `production_never_writes_reduce_motion`.
+
+**Acceptance:** the motion core exists and is deterministic in tests; every harness runs under the override; Reduce Motion is followed live by app and kit motion; only ADR-0030's settling inputs settle a motion; the Switch no longer overshoots; the two M6 motions look as before.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport -E 'test(/motion::/)'
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/motion::/) | test(/shell::/) | test(/theme::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+scripts/cargo.sh build -p polygloss-platform --features appkit
+bun test tests/scripts/motion-tokens.test.ts
+```
+
+Then the standard completion block, plus a manual check in the dev app: with the app running and focused, toggle Reduce Motion with the Accessibility Shortcuts panel (⌥⌘F5) and in System Settings; record whether each reaches the app (and a kit dialog's entrance) without an activation.
+
+### T7.3 Motion perf scenario, filmstrips and recordings
+
+**Files**
+
+- Create: `crates/polygloss-app/src/perf/motion/{mod.rs, frames.rs}`, `crates/polygloss-app/tests/support/filmstrip.rs`, `scripts/record-motion.ts`, `tests/scripts/record-motion.test.ts`
+- Modify: `crates/polygloss-app/src/perf/mod.rs` (the `motion` scenario), `benches/run-perf.ts` (scenario `motion` on typical and linux), `benches/budgets.json` (the app-shell metrics below), `tests/scripts/run-perf.test.ts`, `crates/polygloss-app/tests/support/mod.rs` (one line)
+- Test: `crates/polygloss-app/tests/app/perf.rs`, `crates/polygloss-app/tests/e2e/{main.rs, filmstrip.rs}` (new module)
+
+**Interfaces**
+
+```rust
+// perf::motion::frames: a zero-dependency sentinel; draw time = render of the window root → paint of a last-child element
+pub struct FrameRecorder; impl FrameRecorder { pub fn start(window: &mut Window, cx: &mut App) -> Self; pub fn frames(&self) -> &[Duration]; }
+// perf::motion: one driver per animated surface (append-only table), run with Initiator::Pointer under the Full override
+pub struct Driver { pub name: &'static str, pub open: fn(&mut Window, &mut App), pub close: fn(&mut Window, &mut App) }
+pub const DRIVERS: &[Driver]; // empty here: card (T7.8), section (T7.11), sidebar and threads (T7.10), accordion (T7.13)
+// support::filmstrip
+pub fn filmstrip(cx: &mut HeadlessAppContext, window: AnyWindowHandle, policy: MotionPolicy, duration: Duration,
+                 start: impl FnOnce(&mut HeadlessAppContext)) -> RgbaImage; // frames at 0, ¼, ½, ¾, 1 side by side, stepped by the protocol
+pub fn assert_filmstrip(name: &str, full: RgbaImage, reduced: RgbaImage); // baseline `e2e-motion-<name>.png`, Full over Reduced
+```
+
+- `filmstrip` opens its setup under the Off override, then switches the app policy under test; `cx.reduce_motion()` stays true, so a kit surface in the frame (M13 inside the ⌘O dialog) is settled and the frames are deterministic.
+- Metrics, registered in `budgets.json` now (null, shown as n/a, until a driver exists): `shell_idle_draw_p95_ms` (a forced refresh every frame for 2 s with nothing changing: the chrome every motion pays; reported, empty budget, target ≤ 2 ms); per driver `<name>_anim_draw_p95_ms` (< 8.3) and `<name>_anim_draw_max_ms` (< 16.7) over the animation frames only, for `sidebar`, `threads`, `card` and `accordion` on typical and linux and `section` on linux; `sidebar_commit_ms` and `threads_commit_ms` (input to the end of the commit frame: < 16.7 typical, < 50 linux); `<name>_late_frames` (presented intervals over 1.5 display periods; reported, empty budget). Each driver runs 20 open-close rounds per layout.
+- `scripts/record-motion.ts <name> [--policy full|reduced] [--out <dir>]` runs `e2e_motion_<name>` with `POLYGLOSS_MOTION_DUMP=<dir>` (a frame every 16.667 ms of executor time, `frame-0000.png` …), encodes `<name>.mp4` when `ffmpeg` is on `PATH`, and prints the ui-recording-timeline commands (`extract`, `candidates`, `sheet`). A review aid, not CI.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] The sentinel and the scenario with the idle metric; the budgets and the runner's scenario.
+- [ ] The filmstrip helper; the recording script.
+
+**Tests:** app (`perf::`) `motion_frames_are_timed_render_to_paint` (a probe whose paint spins 3 ms reads ≥ 3 ms; timing-test rule), `motion_drivers_run_under_full_and_restore_the_policy`, `idle_scenario_requests_only_its_own_frames`; E2E (`filmstrip::`) `filmstrip_captures_five_frames_at_the_quarters` (a probe moving `x = 100 · t` linearly over 240 ms on the executor clock sits at 0, 25, 50, 75 and 100 in the five crops), `filmstrip_keeps_kit_motion_settled` (a kit dialog opened in the setup is fully in on frame 0 under the Full and Reduced rows); bun `run-perf.test.ts`: `motion_scenario_runs_on_typical_and_linux`, `null_motion_metrics_show_as_na_and_do_not_fail`; `record-motion.test.ts`: `names_frames_and_skips_the_mp4_without_ffmpeg` (a `PATH` without ffmpeg).
+
+**Acceptance:** `Polygloss --perf-scenario motion` reports the chrome's idle frame cost; every M7 app-shell metric is registered; the filmstrip helper and the recording script work.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & test(/perf::/)'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/filmstrip/)'
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budgets
+bun test tests/scripts/run-perf.test.ts tests/scripts/record-motion.test.ts
+```
+
+Then the standard completion block.
+
+### T7.4 Viewport spacing: cards, columns, file header, gutter, bands (**perf**)
+
+**Files**
+
+- Modify: `crates/polygloss-viewport/src/{card.rs, layout.rs, header.rs, gutter.rs, numbers.rs, section_band.rs, gap.rs, element.rs (hover radius, the gutter `+`), cursor.rs (cursor bar), paint_rows.rs, special.rs, document/metrics.rs, style.rs}`, `crates/polygloss-viewport/src/debug.rs` (`code_x`); `crates/polygloss-perf/src/scenarios/*` (geometry sites only)
+- Test: `crates/polygloss-viewport/tests/viewport/{cards.rs, file_header.rs, headers_gaps.rs, sections.rs, rows.rs}`, `crates/polygloss-app/tests/e2e/{main.rs, card_geometry.rs}` (new module); baselines: every review page
+
+**Interfaces**
+
+```rust
+// CardStyle::default(): margin_x edge::CANVAS, gap gap::CARDS, radius radius::MD, pad_bottom edge::CARD_Y, border stroke::BORDER
+// Metrics: header_height card::header(row), gap row card::gap_row(row), placeholder card::placeholder(row), band height::BAR
+// Columns per pane: CHANGE_BAR, then the numbers right-aligned in card::gutter(digits, advance, columns) (1 per one-sided card or split half, 2 unified),
+// code at card::code_x(gutter, advance, plus_minus)
+// File header: chevron box at CHEVRON_X, path at PATH_X, pills height::SM with PILL_X at capsule radius, Viewed height::MD at capsule radius,
+// trailing controls end CARD_TRAILING from the inner edge; bands: chevron box at CHEVRON_X, label at PATH_X
+impl DiffViewport { pub fn code_x(&self, file_idx: u32, side: Side) -> Option<Pixels>; } // card-relative; T7.7 aligns the header card's title with it
+```
+
+- Header and band columns leave code-font advances (ADR-0031 C1–C2); only code-holding geometry scales with the code row.
+- The inner width changes, so the automatic split/unified threshold (160 ± 8 columns) is reached at other window widths: rerun the anchor tests and the threshold fixtures.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] `CardStyle`, `Metrics` and the column grid from `space`; the file header, bands, gap rows and painted controls; the painter arithmetic.
+- [ ] Lower this crate's debt entries to zero; re-record baselines; run the benches.
+
+**Tests:** viewport `card_style_meets_the_reference` (`CardStyle::default()` and `Metrics::default()` at 13 pt: side margin 12, gap 12, file header 44, the reference's numbers written in the test), `gutter_grows_with_digits` (a 1,200-line one-sided file at 13 pt: gutter 48, code 58 from the inner edge), `unified_gutter_holds_both_columns` (3-digit numbers: gutter 72, code 82; the old column's right edge 8 + 3 advances left of the new one's), `plus_minus_code_follows_the_indicator_cell` (3 digits: code at 55.6 ± 0.1), `split_halves_have_their_own_gutter`, `file_header_controls_follow_their_rules` (pills 24 tall with radius 12; Viewed 28 tall with radius 14; the last trailing control's right edge 8 from the inner right edge; the path's x equals the one-column gutter's end for ≤ 3 digits), `file_header_is_a_row_plus_24` (13 pt → 44; 16 pt → 48), `bands_align_with_file_headers` (a band's chevron box and label x equal the next card's header chevron box and path x), `bands_and_gap_rows_keep_ui_geometry` (band 36 at 13 and 16 pt; gap row row + 12), `auto_layout_threshold_follows_the_new_inner_width` (the window widths at which 160 columns fit, computed in the test from 12 pt margins, the border and the gutter), existing anchor and section tests green; E2E `e2e_card_edges_meet_the_reference` (ink with `support::ink` on a one-sided 3-digit file at 13 pt; ADR-0031 R1, R2, R4–R10, each `|measured − reference| ≤ allowed + 0.5` with both numbers written in the test).
+
+**Acceptance:** viewport geometry comes from `space`; the crate has no spacing debt; the scroll p95s stay ≤ 2.1 ms.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+bun test tests/scripts/spacing-tokens.test.ts
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --compare-baseline
+```
+
+Then the standard completion block.
+
+### T7.5 Chrome spacing: top rows, toolbar, the segmented control, sidebar, tree, find, Reviews list, banners
+
+**Files**
+
+- Create: `crates/polygloss-app/src/segmented.rs`
+- Modify: `crates/polygloss-app/src/{chrome.rs, lib.rs (one module line)}`, `src/palette/mod.rs` (the layout toggle becomes a `SegmentedControl`), `src/review_tab/{toolbar.rs, banners.rs}`, `src/tree/{mod.rs, row.rs, panels.rs, footer.rs, filters.rs}`, `src/categories/totals.rs` (chips), `src/find/view.rs`, `src/home/nav.rs`, `src/threads/toolbar.rs` (the threads button), `src/viewed/mod.rs` (`N/M`)
+- Test: `crates/polygloss-app/tests/app/{shell.rs, toolbar.rs, tree.rs, find.rs}`, `crates/polygloss-app/tests/e2e/{main.rs, chrome_geometry.rs}` (new module); baselines: every page
+
+**Interfaces**
+
+```rust
+// segmented.rs: the one segmented control (ADR-0031): track height::MD, rim and gap pad::RIM, segments height::SM × 28, radii MD and SM
+pub struct SegmentedControl { /* id, segments (icon, tooltip, enabled), selected, on_select */ }
+pub fn segmented(id: &'static str, segments: Vec<SegmentSpec>, selected: usize,
+                 on_select: impl Fn(usize, &mut Window, &mut App) + 'static) -> SegmentedControl; // T7.9 adds the fill's motion
+// debug selectors kept: segment-files, segment-reviews, layout-toggle, layout-split, layout-unified, layout-selected
+```
+
+- ADR-0031 M1–M3 and S1–S4: the toolbar's first item and last control on the 12 pt edge; the hidden-sidebar inset `TOOLBAR_INSET_HIDDEN` with the show-sidebar button there and the first item at 120; fields, highlights and cards 10 pt from the sidebar's edges, icon boxes at 16, text at 18, trailing icon boxes ending at W − 16, the footer's text at 10; bars on the ladder (accordion headers 28, find header 36, footer 40, notices 24); the banner strip's content on the 12 pt edge; row highlights at radius MD.
+- Press ink (`motion::ink::PressInk`) on every custom control here: segments, the threads button, accordion headers, Reviews rows, the tree's Viewed circle, find results.
+- Changing counts (`N/M`, the threads count, footer totals) use tabular figures (`FontFeatures` `tnum`) or the code font.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] `SegmentedControl` for both toggles; the top rows and toolbar; the sidebar, tree, footer, find and Reviews list; the banner strip.
+- [ ] Press ink; tabular counts; lower the debt entries; re-record baselines.
+
+**Tests:** `top_rows_share_the_main_columns_edges` (relational, both measured: the toolbar's first content box x equals the first card's outer left x, and its last control's right edge equals the card's outer right edge, ± 0.5), `hidden_sidebar_inset_clears_the_traffic_lights` (the show-sidebar button at 88 and the first item at 120, written by hand from the probe's 79 + 9 and 88 + 24 + 8), `both_toggles_are_one_segmented_control` (tracks 28, segments 24 × 28, radii 8 and 6), `sidebar_boxes_share_one_column` (relational: the filter field's, tree highlight's, Reviews highlight's, find input's and accordion header's left edges are one x; the depth-0 chevron box, panel-header chevron box, Reviews icon box and find-header icon box are one x; the toggle's and the Viewed circle's icon boxes end at one x), `bars_follow_the_ladder` (accordion header 28, find header 36, footer 40, notice 24), `changing_counts_keep_their_width` (`N/M` reading 11/12 and 88/88 have one width; the same for the threads count); E2E `e2e_sidebar_and_toolbar_edges_meet_the_reference` (ink with `support::ink`; ADR-0031 R14–R22, R24 and R25, each `|measured − reference| ≤ allowed + 0.5`), `e2e_press_ink` (mouse down on a segment, the threads button, an accordion header and a Reviews row: the sampled fill equals the theme's foreground at α 0.12 over the control's background, composited in the test; after mouse-up, α 0.06 while hovered).
+
+**Acceptance:** the chrome meets ADR-0031's edge and ladder rules and its reference edges; one segmented control; every custom chrome control shows press ink.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/shell::/) | test(/toolbar::/) | test(/tree::/) | test(/find::/) | test(/home::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+bun test tests/scripts/spacing-tokens.test.ts
+```
+
+Then the standard completion block.
+
+### T7.6 Home and overlay spacing: Home, palette, finder, pickers, open flow, Submit, cheat sheet
+
+**Files**
+
+- Modify: `crates/polygloss-app/src/home/{mod.rs, row.rs, dialogs.rs}`, `src/palette/{command.rs, cheat_sheet.rs, key_cap.rs}`, `src/tree/finder.rs`, `src/live/base_picker.rs`, `src/open_flow/{mod.rs, repo_step.rs, source_step.rs}`, `src/submit/{mod.rs, dialog.rs}`, `src/iterations/picker.rs`, `src/keyboard/menu.rs`
+- Test: `crates/polygloss-app/tests/app/{home.rs, palette.rs, open_flow.rs, submit.rs}`, `crates/polygloss-app/tests/e2e/{main.rs, overlay_geometry.rs}` (new module); baselines: Home, the palette, cheat sheet, finder, open flow, Submit, base picker
+
+**Interfaces:** none new; `space::layout`'s overlay and Home tokens. Density (ADR-0031): Home comfortable, overlay lists dense, dialog bodies regular.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Home page and cards; overlays and pickers; the open flow, Submit and cheat sheet; press ink on Home rows.
+- [ ] Lower the debt entries; re-record baselines.
+
+**Tests:** `pickers_share_one_frame` (relational: the palette, finder and base picker have one width, one top and one maximum height), `overlay_rows_follow_the_ladder` (finder 28; base picker, repo and commit rows 44; cheat-sheet rows 24), `overlay_headers_and_rows_share_an_edge` (relational: header text x equals row text x in each overlay), `home_cards_share_the_canvas_gap` (relational: Home cards' gap equals the review canvas's card gap; kind and status badges one shape, 20 tall capsules), `key_caps_use_the_small_radius` (4: `for_height` of a ≤ 20 pt cap, written by hand), `submit_dialog_has_no_off_scale_values` (its gaps 12, the dot 6); E2E `e2e_press_ink_home` in `overlay_geometry.rs` (mouse down on a Home row: foreground at α 0.12 over the row's background, composited in the test; after mouse-up, α 0.06 while hovered).
+
+**Acceptance:** Home and every overlay meet ADR-0031; one overlay frame, one row ladder, one header edge.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/home::/) | test(/palette::/) | test(/open_flow::/) | test(/submit::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+bun test tests/scripts/spacing-tokens.test.ts
+```
+
+Then the standard completion block.
+
+### T7.7 Header card, threads and composer spacing
+
+**Files**
+
+- Modify: `crates/polygloss-app/src/review_tab/{header.rs, panes.rs (widths and minimums from layout; `Pixels::MAX` for the unbounded viewport pane)}`, `src/threads/{block.rs, panel.rs, mod.rs (geometry only)}`, `src/composer/{mod.rs, view.rs}`, `src/markdown/{suggestion.rs, sanitize.rs}`
+- Test: `crates/polygloss-app/tests/app/{header_card.rs, threads.rs, composer.rs, markdown.rs}`, `crates/polygloss-app/tests/e2e/{main.rs, block_geometry.rs}` (new module); baselines: review pages with the header card, threads or the composer
+
+**Interfaces:** none new. The header card reads `DiffViewport::code_x` (T7.4) only in tests; its layout is ADR-0031 C3 (avatar at `CARD_X`, `AVATAR_LG`, gap `CONTROLS`, so the title sits on `card::CODE_X`). Thread blocks and the composer follow C4 (`NESTED_X`, `NESTED_Y`, radius `MD`); snippets and suggestions use `card::gutter` and the code-row rule instead of their own gutter formulas.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] The header card and its commit list; thread blocks, chips and the panel; the composer; snippets and suggestions; the threads pane's widths.
+- [ ] Press ink on thread chips and panel rows; lower the debt entries; re-record baselines.
+
+**Tests:** `header_card_title_lands_on_the_code_column` (relational: title x equals the next card's `code_x` for a one-sided file with 3-digit numbers, ± 0.5), `header_card_is_56_tall` (a commit review; 8 + 20 + 18 + 8 + 2 borders, written by hand), `commit_rows_follow_the_ladder` (28 tall, avatar 20), `thread_blocks_sit_on_the_nested_edge` (12 from the card's inner edge, radius 8, 8 apart), `thread_snippets_align_with_the_diff` (relational: a snippet's code x equals the diff's code x for the same lines, ± 0.5), `composer_bars_follow_the_ladder` (toolbar 36, tabs 24, collapsed input 28; editor text 12 from its frame: no double padding), `threads_panel_header_is_36`, `empty_states_use_24`, `threads_pane_keeps_its_range` (220 and 720 limits, the viewport's 260 minimum); E2E `e2e_header_card_meets_the_reference` (ink with `support::ink`; ADR-0031 R11–R13, each `|measured − reference| ≤ allowed + 0.5`).
+
+**Acceptance:** the header card, threads and the composer meet ADR-0031; one gutter formula.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/header_card::/) | test(/threads::/) | test(/composer::/) | test(/markdown::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+bun test tests/scripts/spacing-tokens.test.ts
+```
+
+Then the standard completion block.
+
+### T7.8 Viewport motion: the reveal, card collapse, chevrons, press ink and `hold_layout` (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-viewport/src/reveal.rs`, `crates/polygloss-perf/src/scenarios/reveal.rs`, `crates/polygloss-app/src/perf/motion/card.rs`
+- Modify: `crates/polygloss-viewport/src/{view.rs, element.rs, paint_rows.rs, card.rs (the frame follows the curtain), header.rs, controls.rs, cursor.rs (settling inputs), lib.rs, debug.rs}`, `crates/polygloss-perf/src/scenarios/mod.rs`, `benches/{run-perf.ts, budgets.json}` (scenario `reveal`; `collapse_anim_p95_ms` and `collapse_commit_ms` on typical, synthetic and linux), `crates/polygloss-app/src/perf/motion/mod.rs` (one driver line), `tests/scripts/spacing-tokens.test.ts` (append `reveal.rs` to the painter-file list)
+- Test: `crates/polygloss-viewport/tests/viewport/{main.rs, reveal.rs}` (new module), `crates/polygloss-app/tests/e2e/{main.rs, motion_viewport.rs}` (new module); baseline `e2e-motion-card-collapse.png`
+
+**Interfaces**
+
+```rust
+impl DiffViewport {
+    pub fn toggle_collapsed_by(&mut self, file_idx: u32, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>); // the painted chevron: Pointer; `z`: Keyboard
+    pub fn hold_layout(&mut self, target_outer_width: Pixels, cx: &mut Context<Self>);
+    // resolves split/unified, wrap, the columns and the measurement width of host blocks and the header-card prelude at the target width now, and keeps them
+    // until release_layout; card frames, right-aligned header controls, the sticky header and the scrollbar follow the live width; content wider than a card
+    // clips at its edge; row tints run to the live card edge
+    pub fn release_layout(&mut self, cx: &mut Context<Self>);
+    pub fn settle_motion(&mut self, cx: &mut Context<Self>); // ends a running reveal at once
+    pub fn running_trigger(&self) -> Option<Bounds<Pixels>>; // the running reveal's chevron hitbox, for the app's settle registration
+}
+// set_collapsed and every existing method keep their meaning: Programmatic, a snap.
+// reveal.rs (crate-private): Reveal { bodies: Vec<(slot, from_h, to_h)>, track: Track }; the curtain clip, the card's frame (bottom border, corners, shadow)
+// at the curtain, the displacement d(t) of every later slot, abs(d) ≤ the viewport height, quantized offsets; T7.11 adds sections, compound reveals, gaps,
+// blocks and the prelude.
+// debug-inspect frames gain: each slot's painted y, the reveal (slot, h, d), chevron angles, the pressed control.
+```
+
+- ADR-0030 M3 and its snap rules (a sticky-pinned header, OQ-63; a body whose data is not loaded; every non-pointer initiator). A loaded body not yet laid out (collapsed before layout: auto-collapsed, Viewed, restored) is laid out and its rows shaped on the commit frame; later frames shape nothing. Frames are requested only while the reveal runs.
+- Settling: the viewport's own input paths settle a running reveal on a key action, a wheel step and a mouse down outside `running_trigger`; mouse move and hover never do. The review tab registers `settle_motion` with the app's settle registry while a reveal runs.
+- Every disclosure chevron the viewport paints rotates through `paint_svg`'s matrix (0° ↔ −90°), sharing its disclosure's track.
+- Press ink: one quad in the hover pass for the control in `pressed` (α 0.12), dropped when the pointer leaves its hitbox.
+- Metrics: `collapse_anim_p95_ms` (polygloss-perf `reveal`: collapse and expand 20 cards by a synthesized pointer per layout; CPU prepaint and paint of the animation frames, as `scroll_p95_ms`); `collapse_commit_ms` (the commit frame of those expands: < 16.7 typical, < 50 linux); `card_anim_draw_p95_ms`, `card_anim_draw_max_ms` (the app-shell driver).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] The reveal and `toggle_collapsed_by`; paint displacement, the curtain and the card frame, chevron rotation; settling.
+- [ ] Press ink; `hold_layout`; the perf scenario and driver; the filmstrip; run the benches.
+
+**Tests:** viewport (`reveal::`), with a 400 pt body in a 900 pt viewport and hand-written durations: `pointer_expand_reveals_over_time` (`reveal` 190 ms: the next header at its old y on the commit frame, at old + 400 · OUT(½) at 95 ms by the test's own solver, at old + 400 after 190 ms), `pointer_collapse_reveals_over_time` (`exit(190)` = 140 ms: at 70 ms the next header at old − 400 · OUT(½); at old − 400 after 140 ms), `card_frame_follows_the_curtain` (at 95 ms of the expand the card's bottom border sits at the curtain and the next card's top 12 below it), `the_model_commits_on_the_first_frame` (total height, the scrollbar and `file_at` are final on frame 1), `hit_testing_follows_the_painted_frame` (at ½ a click on the next header's painted chevron toggles that file), `keyboard_z_and_set_collapsed_snap`, `reduced_expand_fades_rows_without_displacement_and_collapse_snaps`, `off_settles_and_requests_no_frame`, `second_click_reverses_from_the_painted_height`, `pointer_movement_does_not_settle_the_reveal` (the mouse crosses the viewport at ¼: the ½ sample is between), `settling_inputs_settle_the_reveal` (a wheel step, `j`, a jump, a mouse down on another header), `unloaded_body_or_pinned_header_snaps`, `a_body_collapsed_before_layout_animates` (laid out on the commit frame; `FrameStats.shaped_lines` is 0 after it), `displacement_is_clamped_to_the_viewport` (a 5,000 pt body: `abs(d)` on the commit frame is 900; the duration 200 ms), `offsets_are_quantized`, `later_frames_shape_nothing`, `chevron_turns_with_its_body` (on the collapse, −90 · OUT(½) at 70 ms), `pressed_control_paints_pressed_ink` (mouse down on Viewed: the pressed quad at α 0.12; pointer out: gone), `hold_layout_resolves_once_at_the_target` (a relayout counter reads 1 while the live width sweeps across the split/unified threshold), `hold_layout_pins_block_and_prelude_widths` (a thread block's and the prelude's heights unchanged while the live width sweeps 1,200 → 900 pt), `tints_reach_the_live_card_edge` (held at 1,200, live at 900: an added row's tint ends at the live card's inner right edge), `release_layout_resumes_fit_width`; E2E `e2e_motion_card_collapse` (filmstrip).
+
+**Acceptance:** a pointer collapse or expand glides with the card's frame and chevron following, at the budgets; every keyboard and programmatic path snaps; painted controls press; `hold_layout` is ready for T7.10.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/motion_viewport/)'
+bun test tests/scripts/spacing-tokens.test.ts
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --compare-baseline
+bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budgets
+```
+
+Then the standard completion block.
+
+### T7.9 Chrome motions: segmented fill, tree chevrons, banner notices, open-flow step, Home row removal
+
+**Files**
+
+- Modify: `crates/polygloss-app/src/segmented.rs` (M11), `src/tree/row.rs` (M10), `src/review_tab/banners.rs` (M12 on `Track` and `Exit`; no more `enter_from` or `ENTER_FROM_ABOVE` here), `src/open_flow/{mod.rs, repo_step.rs, source_step.rs}` (M13), `src/home/{mod.rs, row.rs}` (M14)
+- Test: `crates/polygloss-app/tests/app/{shell.rs, tree.rs, live.rs, feed.rs, open_flow.rs, home.rs}`, `crates/polygloss-app/tests/e2e/{main.rs, motion_chrome.rs}` (new module); baselines `e2e-motion-{segmented,tree-chevron,banner,open-flow-step,home-row}.png`
+
+**Interfaces:** each surface declares its `motion::Motion` (ADR-0030 M10–M14). `SegmentedControl::select_by(index, initiator, …)`; `BannerStrip` keeps `set`, `clear`, `context`, `set_context`; a notice's exit is an `Exit` of its snapshot (kind, text, button label) with `ExitHitbox::None`, started only when the strip is left empty; `OpenFlow` steps pass `Initiator` (`⏎` and ⌘[ animate); Home's archive and prune take an `Initiator` (`e`, ⌘⌫ and prunes of more than 3 rows snap), and a removed row's exit is an `Exit` of its row data with `ExitHitbox::Occlude` inside `MotionReveal`. Home's list must be a plain `div` (verify; if virtualized, M14 snaps and the task records it).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] M11, then M10, M12, M13 and M14, each with its `Motion`, tests and filmstrip.
+
+**Tests:** per the M7 Motion rule for each, with hand-written values: `segmented_fill_slides_from_the_previous_segment` (QUICK with MOVE: the fill's x at 75 ms is the two segments' midpoint, since `in_out(½)` = ½; labels switch on the commit frame), `segmented_fill_jumps_for_s_palette_and_auto_flips`, `split_unified_fill_starts_after_the_heavy_commit` (a 100 ms commit reads as a 16.667 ms first step), `folder_chevron_turns_on_pointer_only` (MICRO with MOVE: −45° at 50 ms), `banner_enters_from_above` (y −4 · (1 − OUT(½)) at 75 ms), `banner_exits_in_place_only_into_an_empty_strip` (the last notice dismissed: opacity 1 − OUT(½) at 50 ms; a notice replaced by another, or followed by the context line, is gone on the commit frame and only the new one enters), `banner_exit_is_inert` (a click on its button's position does nothing; no replay after a review switch and back), `banner_entrance_keeps_its_strip` (nothing below moves), `open_flow_step_enters_from_its_direction` (x 8 · (1 − OUT(½)) at 75 ms forward, −8 · (1 − OUT(½)) back; text typed on the commit frame lands in the new step), `home_row_removal_closes_its_height` (`exit(BASE)` 150 ms: the row below strictly between at 75 ms; `j`/`k` skip the removed row at once; a click on the leaving row does nothing; `e` and a 4-row prune snap), `home_row_removal_reduced_fades_then_snaps` (opacity strictly between at 50 ms with the height unchanged; the height closed after MICRO); E2E filmstrips.
+
+**Acceptance:** M10–M14 per ADR-0030; the banner exits only into an empty strip; nothing listed as instant moves.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/shell::/) | test(/tree::/) | test(/live::/) | test(/feed::/) | test(/open_flow::/) | test(/home::/) | test(/motion::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+```
+
+Then the standard completion block.
+
+### T7.10 Panels: the sidebar and the threads panel (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-app/src/perf/motion/{sidebar.rs, threads.rs}`
+- Modify: `crates/polygloss-app/src/chrome.rs` (the sidebar frame outside the split while it moves; the toolbar's leading edge and the show-sidebar button), `src/window.rs` (ToggleSidebar's initiator), `src/review_tab/{mod.rs, panes.rs (the threads frame outside the split while it moves), toolbar.rs (give-way held at the narrower width)}`, `src/tree/mod.rs` (the riding content; uncached while it moves), `src/motion.rs` (retire `enter_from`, `ENTER_PANEL`, `ENTER_NOTICE`, `ease_out_quint`, `ease_out_cubic`), `src/perf/motion/mod.rs` (driver lines)
+- Test: `crates/polygloss-app/tests/app/{shell.rs, threads.rs, toolbar.rs, motion.rs}`, `crates/polygloss-app/tests/e2e/{main.rs, motion_panels.rs}` (new module); baselines `e2e-motion-sidebar.png`, `e2e-motion-threads-panel.png`
+
+**Interfaces**
+
+```rust
+impl Chrome { pub fn set_sidebar_visible_by(&mut self, visible: bool, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>); } // set_sidebar_visible stays Programmatic
+impl ReviewTab { pub fn set_threads_shown_by(&mut self, shown: bool, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>); } // toggle_threads_panel passes its initiator
+// A panel track p ∈ [0, 1] (the sidebar's per window, the threads panel's per tab). While it is unsettled the page draws the panel outside gpui-kit's split:
+// a frame p · W wide (W = the stored width, clamped as the split clamps it; the panel's background and 1 pt divider drawn as the split draws them), the content
+// laid out at W, painted at (p − 1) · W (sidebar) or (1 − p) · W (threads panel) and clipped to the frame. ResizableState is never written; at settle the
+// split returns (open) or the panel unmounts (closed). DiffViewport::hold_layout(target) from the commit frame until settle.
+// Toolbar (sidebar only), with f = p · W and I = TOOLBAR_INSET_HIDDEN (CANVAS in fullscreen): the show-sidebar button at window x I, clipped at the main
+// column's leading edge, live wherever painted during a close and inert during an open; the first item at window x max(f + CANVAS, I + SM + CONTROLS); give-way holds the
+// item set that fits the narrower of the start and target widths, and shows the rest at settle.
+```
+
+- ADR-0030 M1 and M2 and its Panels rule, including OQ-58's provisional default (⌃⌘S and the palette animate) and the snaps (show_files from ⌘F, `/`, ⌘P, `⇥`; restore; the composer's and agent replies' automatic opens; URL and `focus`).
+- Closing: the panel's model state (focus, `⇥` stops, the tree's keyboard) is gone at the commit; an occluding layer covers the closing frame. The panel track's `Trigger` holds both toggles' painted bounds and its toggle action (`ToggleSidebar`, `ToggleThreadsPanel`). The traffic lights stay native and fixed; the sidebar's top row slides under them.
+- The tree renders uncached while its frame moves: a cached view's key compares its bounds and content mask (gpui-pre `view.rs:485-487`), and both change every frame. Its cost is part of `sidebar_anim_draw_p95_ms`; record its render count per frame.
+- A window resize, a fullscreen change or a mouse down where the divider will be settles the motion first (the split's handle is absent while it runs).
+- Reduced: an open snaps the width and fades the content in over QUICK inside the opaque frame; a close snaps.
+- If a budget misses: ship the Reduced variant in every policy, record the numbers with a CPU profile (Instruments Time Profiler trace) in As built, and leave the decision to the M7 gate (ADR-0030 rule 12).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] The sidebar frame on its track with `hold_layout`, the toolbar's leading edge and give-way; the threads panel mirrored; retire `enter_from`.
+- [ ] Drivers and metrics; filmstrips; run the benches.
+
+**Tests:** with W 280, a 1,200 pt window, not fullscreen, and hand-written values: `sidebar_slides_from_the_leading_edge` (an open: frame 0 on the commit frame, 280 · OUT(½) at 120 ms by the test's solver, 280 after 240 ms; the main column's x equals the frame width at each sample), `sidebar_close_takes_its_exit_duration` (280 · (1 − OUT(½)) at 90 ms, 0 after 180 ms), `toolbar_leading_edge_follows_the_frame` (at each sample of an open and a close, the first item's window x is max(f + 12, 120) for the sampled f; the show-sidebar button's x is 88 and only its part right of f is painted; never left of 80; in fullscreen the same with 12 and 44), `show_sidebar_button_is_uncovered_not_popped` (close: no button pixels on the commit frame, its right part painted once f < 112, the whole button at settle, and a click on its painted part mid-close reopens from the sampled width; open: the button is inert from the commit and a click on its painted part does nothing), `toolbar_give_way_holds_the_narrower_set` (a window width chosen in the test where the hidden layout shows Find and `N/M` and the visible layout moves them into the menu: during a close the visible set at every sample and the hidden set only after settle; during an open the visible set from the commit frame), `sidebar_commit_is_one_viewport_reflow` (a window width where the target is unified and the start split: one relayout, no flip mid-motion), `sidebar_close_is_inert_and_moves_focus_at_once` (the tree had the keyboard: the diff has it on the first frame; a click in the shrinking frame selects nothing), `stored_width_survives_the_motion` (drag to 320, close, open: 320 at settle; `ResizableState`'s sizes are unchanged on every frame of both motions), `settle_matches_the_split` (the last motion frame's frame width, divider x and main column x equal the settled split's exactly), `retoggle_retargets_from_the_sampled_width` (by the toggle button and by ⌃⌘S at ½), `pointer_movement_does_not_settle_the_slide`, `resize_fullscreen_and_divider_press_settle_the_motion_first`, `ctrl_cmd_s_and_palette_animate_per_oq_56`, `show_files_and_restore_snap`, `reduced_open_fades_the_content_and_close_snaps` (open: frame width 280 on the commit frame, content opacity strictly between at 75 ms, zero travel; close: settled on the commit frame), `off_settles`, `threads_panel_mirrors_the_sidebar` (from the trailing edge; the toolbar does not move), `automatic_threads_opens_snap` (composer, agent replies, URL, `focus`, restore), `tree_renders_uncached_while_moving_and_cached_at_rest` (one tree render per motion frame; none on a settled frame without a change); E2E filmstrips `e2e_motion_sidebar` (the traffic lights, the uncovered show-sidebar button and the toolbar's items in every frame) and `e2e_motion_threads_panel`.
+
+**Acceptance:** both panels slide per ADR-0030 M1–M2 within their budgets, with the toolbar continuous and never under the traffic lights, or the numbers and a profile go to the gate; `enter_from` is gone.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/shell::/) | test(/threads::/) | test(/toolbar::/) | test(/motion::/) | test(/tree::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budgets
+```
+
+Then the standard completion block.
+
+### T7.11 Viewport motion: sections, Mark all viewed, gaps, blocks and the prelude (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-app/src/perf/motion/section.rs`
+- Modify: `crates/polygloss-viewport/src/{reveal.rs, section_band.rs, gap.rs, blocks.rs, card.rs (prelude), document/sections.rs, view.rs}`, `crates/polygloss-perf/src/scenarios/reveal.rs` (the section variant), `benches/{budgets.json, run-perf.ts}` (`section_anim_p95_ms` on synthetic and linux, in the `reveal` scenario's metrics), `crates/polygloss-app/src/categories/mod.rs` (the band's Mark all viewed passes its initiator), `src/viewed/mod.rs` (marking many files collapses them through one compound reveal), `src/perf/motion/mod.rs` (one driver line)
+- Test: `crates/polygloss-viewport/tests/viewport/{reveal.rs, sections.rs, headers_gaps.rs, blocks.rs}`, `crates/polygloss-app/tests/app/categories.rs`, `crates/polygloss-app/tests/e2e/{main.rs, motion_sections.rs}` (new module); baselines `e2e-motion-section.png`, `e2e-motion-gap.png`
+
+**Interfaces**
+
+```rust
+impl DiffViewport {
+    pub fn toggle_section_by(&mut self, section: usize, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>);   // band controls: Pointer
+    pub fn set_collapsed_many_by(&mut self, files: &[u32], collapsed: bool, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>); // one compound reveal over the visible strip
+    pub fn expand_gap_by(&mut self, gap: GapId, amount: Expand, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>);
+    pub fn reveal_block(&mut self, block: BlockId, from_h: Pixels, initiator: Initiator, cx: &mut Context<Self>);  // a host block's height changed by a user action (T7.14)
+    pub fn reveal_prelude(&mut self, from_h: Pixels, initiator: Initiator, cx: &mut Context<Self>);                // the header card's commit list (T7.14)
+}
+// The palette's section actions, explicit targets and Find keep the existing methods: Programmatic, a snap.
+```
+
+- ADR-0030 M4–M6 and the block and prelude reveals that M7 and M8 use; their snap rules (a band off screen, a close that moves the anchor, rows not yet shaped, an insert over one viewport or 200 rows). The commit frame stays the existing section toggle (`section_toggle_ms` < 50).
+- Metrics: `section_anim_p95_ms` (viewport) and `section_anim_draw_p95_ms`, `section_anim_draw_max_ms` (app shell, linux).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] Sections; compound reveals for Mark all viewed; gaps; the block and prelude reveals.
+- [ ] The perf variant and driver; filmstrips; run the benches.
+
+**Tests:** per the M7 Motion rule for M4–M6, with hand-written values: `section_open_reveals_over_time` (600 pt revealed in a 900 pt viewport: 200 ms; the next band at old + 600 · OUT(½) at 100 ms), `section_close_takes_its_exit_duration` (the same section: 150 ms), `section_open_commit_stays_under_budget` (timing-test rule), `band_off_screen_or_anchor_move_snaps`, `explicit_targets_open_sections_without_motion` (tree row, ⌘P, Find, a thread, a URL), `mark_all_viewed_reveals_only_the_visible_strip` (files off screen commit still; the displacement on the commit frame equals the visible collapsed height), `gap_reveal_takes_quick` (↓20 with 20 pt rows: 400 pt over 150 ms, 400 · OUT(½) at 75 ms), `gap_clicks_in_a_burst_each_land_first` (three clicks 50 ms apart: each one's rows are fully in at the next click), `large_gap_expand_snaps` (300 rows), `block_reveal_measures_the_block_once` (the host element is laid out once during the reveal), `prelude_reveal_waits_for_the_measured_height`; E2E filmstrips.
+
+**Acceptance:** M4–M6 per ADR-0030 within budget; the reveal API for blocks and the prelude is ready for T7.14.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-viewport
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/categories::/) | test(/viewed::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/motion_sections/)'
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --compare-baseline
+bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budgets
+```
+
+Then the standard completion block.
+
+### T7.12 Instant overlays: ⌘K, ⌘P and `?` (OQ-49)
+
+**Files**
+
+- Create: `crates/polygloss-app/src/overlay.rs`
+- Modify: `crates/polygloss-app/src/{lib.rs (one module line), window.rs (the overlay host), palette/command.rs, palette/cheat_sheet.rs, tree/finder.rs}`
+- Test: `crates/polygloss-app/tests/app/{palette.rs, tree.rs, a11y_keyboard.rs}`; baselines `e2e-palette-command-palette.png`, `e2e-palette-cheat-sheet.png` and the finder's, if their pixels move
+
+**Interfaces**
+
+```rust
+// overlay.rs: an app-owned modal surface in gpui-kit's dialog look (radius LG, elevated background, the kit's shadow, a backdrop),
+// anchored at PICKER_TOP, PICKER_W wide (the cheat sheet CHEAT_SHEET_W); focus trapped; Esc and a click outside close it; one at a time
+pub struct OverlayHandle; pub fn open_overlay(window: &mut Window, cx: &mut App, render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> OverlayHandle;
+pub fn close_overlay(window: &mut Window, cx: &mut App);
+// window.rs: MainWindow::render draws the open overlay above the page (Home or a review), under gpui-kit's Root layer (its dialogs and toasts)
+```
+
+- Open and close on one frame for every initiator, on Home and in a review; focus moves into the input on the first frame and back to the previous pane on close. The palette's, finder's and cheat sheet's content and actions are unchanged.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] `overlay.rs` and its host in `MainWindow`; move the three surfaces onto it.
+
+**Tests:** `palette_opens_and_closes_on_one_frame` (bounds final on the first frame, no frame requested after; after Esc gone on the first frame and the previous pane focused), the same for the finder and the cheat sheet, `palette_opens_on_home`, `overlays_trap_focus_and_close_on_outside_click`, and every existing palette, finder and keyboard-only test unchanged.
+
+**Acceptance:** ⌘K, ⌘P and `?` appear and vanish at once, on Home and in reviews; nothing else about them changes.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/palette::/) | test(/tree::/) | test(/a11y_keyboard::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)'
+```
+
+Then the standard completion block.
+
+### T7.13 Accordion panel switch (**perf**)
+
+**Files**
+
+- Create: `crates/polygloss-app/src/perf/motion/accordion.rs`
+- Modify: `crates/polygloss-app/src/tree/panels.rs`, `src/perf/motion/mod.rs` (one driver line)
+- Test: `crates/polygloss-app/tests/app/tree/panels.rs`, `crates/polygloss-app/tests/e2e/{main.rs, motion_accordion.rs}` (new module); baseline `e2e-motion-accordion.png`
+
+**Interfaces:** `FilesPanel::open_by(key, initiator, window, cx)` for header clicks (Pointer); the follow rule, jumps, repartition and the filter keep `set_open` (Programmatic). ADR-0030 M9: both bodies laid out at the full height H and clipped from their headers' bottom edges on one track (their clips sum to H); the headers between translate; both chevrons rotate; the closing body is inert under an occluding layer.
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] M9 on one track; the driver; the filmstrip; run the benches. If `accordion_anim_draw_p95_ms` misses, ship emil's fallback (chevrons turn, the incoming body fades over QUICK) and record the numbers.
+
+**Tests:** per the M7 Motion rule, with H 400 (`reveal` 190 ms): `header_click_trades_heights` (the two clips sum to 400 at every sample; the opening clip 400 · OUT(½) at 95 ms; the headers between at their interpolated y), `the_closing_body_is_inert` (a click on a row in the shrinking body selects nothing), `follow_and_jumps_switch_instantly`, `a_third_click_settles_the_swap`, `the_opened_list_takes_the_keyboard_at_the_commit`; E2E filmstrip.
+
+**Acceptance:** a header click glides the panels per ADR-0030 M9 within budget, or the fallback ships with its numbers.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & test(/tree::/)'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/motion_accordion/)'
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budgets
+```
+
+Then the standard completion block.
+
+### T7.14 Thread chip, commit list and Snapshot confirmation
+
+**Files**
+
+- Modify: `crates/polygloss-app/src/threads/block.rs` (M7 through `reveal_block`), `src/review_tab/header.rs` (M8 through `reveal_prelude`; M15)
+- Test: `crates/polygloss-app/tests/app/{threads.rs, header_card.rs, live.rs}`, `crates/polygloss-app/tests/e2e/{main.rs, motion_blocks.rs}` (new module); baselines `e2e-motion-{thread-chip,commits,snapshot}.png`
+
+**Interfaces:** each surface's `motion::Motion` (ADR-0030 M7, M8, M15). M7: the chip or the Collapse button passes Pointer; `x` and the composer's Resolve keep snapping. M15: the camera icon becomes `circle-check` (already in `AppAssets`), scaled 0.9 → 1 through the icon transform with its opacity; back to the camera (the button re-enabled) snaps; the label, the disabled state and its tooltip are unchanged (OQ-61).
+
+**Steps**
+
+- [ ] Write the failing tests below.
+- [ ] M7, M8 and M15 with their filmstrips. If M7's filmstrip shows a pop at the chip swap, drop M7 (snap) and record why.
+
+**Tests:** per the M7 Motion rule, with hand-written values: `chip_click_reveals_the_card` (a card 100 pt taller than its chip: 160 ms; the block below at old + 100 · OUT(½) at 80 ms), `collapse_swaps_to_the_chip_at_once_then_closes_the_height` (`exit(160)` = 120 ms), `resolve_by_x_and_the_composer_snap`, `show_commits_reveals_from_the_measured_height`, `hide_commits_takes_its_exit_duration`, `snapshot_icon_scales_into_a_check` (scale 0.9 + 0.1 · OUT(½) at 75 ms; Reduced: scale 1 at every sample, opacity strictly between at 75 ms), `snapshot_icon_snaps_back_when_reenabled`, `snapshot_label_is_unchanged`; E2E filmstrips.
+
+**Acceptance:** M7, M8 and M15 per ADR-0030, or M7 recorded as dropped.
+
+**Verify**
+
+```bash
+scripts/cargo.sh nextest run -p polygloss-app -E 'binary(app) & (test(/threads::/) | test(/header_card::/) | test(/live::/))'
+scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e) & test(/motion_blocks/)'
+```
+
+Then the standard completion block.
+
+### T7.15 Closeout: the debt map, values, baselines and docs
+
+**Files**
+
+- Modify: `tests/scripts/spacing-tokens.test.ts` (no debt map), delete `tests/scripts/spacing-debt.json`; `crates/polygloss-viewport/src/motion.rs` (only a value the recordings change); a file under `crates/polygloss-app/src/` or `crates/polygloss-viewport/src/` only for a visual fix a recording or baseline shows; every PNG in `crates/polygloss-app/tests/baselines/`; `docs/design.md` (§11.1–§11.7 numbers M7 changed, §11.16–§11.17, §26), `docs/adr/0027-polygloss-themes-and-card-layout.md` (its numbers, pointing at ADR-0031), `docs/user-guide.md` (the window, panels and Reduce Motion), `README.md` (any UI description)
+- Test: every E2E screenshot and filmstrip; the full suites
+
+**Interfaces:** none new.
+
+**Steps**
+
+- [ ] Confirm every debt entry is 0 (an entry above 0 goes back to its owning task in Spacing ownership); delete the map and its ratchet.
+- [ ] For every motion, `bun scripts/record-motion.ts <name>` in Full and Reduced, then scrub each with ui-recording-timeline: frame by frame, no pop, no lag behind the content, no bleed-through, the right origin. Record Finder's and Mail's ⌃⌘S sidebar (`screencapture -v`), scrub them and calibrate PANEL (OQ-59); record ⌘O, Submit and a toast from the real app. Change a value only with the recording that justifies it, and note it in design §11.16.
+- [ ] Manual, in the dev app (`tmux` session `polygloss-m7-preview`, sandboxed `HOME`): every motion by pointer, then its keyboard path (snaps, or animates where ADR-0030 lists it); rapid toggles (no jump); moving the pointer during a motion (it keeps running); the sidebar in and out of fullscreen (the toolbar never under the traffic lights); Reduce Motion switched in System Settings and with ⌥⌘F5 while the app runs (fades from the next frame); light and dark. Record each result.
+- [ ] Re-record every baseline, light and dark; open each against the reference's anatomy and ADR-0031's reference edges; update the docs.
+
+**Tests:** every E2E screenshot and filmstrip re-recorded and reviewed; `spacing-tokens.test.ts` without a debt map; the full suites.
+
+**Acceptance:** no spacing debt; every motion's values backed by a scrubbed recording; docs match the build; the manual checks recorded.
+
+**Verify:** the standard completion block.
+
+### M7 exit gate
+
+```bash
+bun install --frozen-lockfile
+bun run format:check && bun run lint
+bun run test:unit && bun test && bun run test:e2e
+scripts/check-deps.sh
+scripts/cargo.sh deny check licenses bans sources advisories
+UPDATE_BASELINE=1 scripts/cargo.sh nextest run -p polygloss-app --features e2e -E 'binary(e2e)' && bun run test:e2e
+uptime   # one-minute load average below 4 before the perf runs (other projects' simulators skew perf); rerun when it was not
+scripts/cargo.sh build --profile perf -p polygloss-perf -p polygloss-app
+bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --compare-baseline
+bun benches/run-perf.ts --scenarios motion --corpus typical,linux --check-budgets
+uptime   # still below 4 after the runs; otherwise the numbers do not count
+```
+
+- [ ] Every §12.1 budget passes on every corpus and layout it is defined for, including the motion budgets: each `*_anim_draw_p95_ms` < 8.3 and `*_anim_draw_max_ms` < 16.7, `collapse_anim_p95_ms` and `section_anim_p95_ms` < 8.3, `sidebar_commit_ms`, `threads_commit_ms` and `collapse_commit_ms` < 16.7 typical and < 50 linux, and the existing `section_toggle_ms`. A motion that shipped as Snap is listed with its numbers. `shell_idle_draw_p95_ms` is recorded (target ≤ 2 ms).
+- [ ] If M1 or M2 missed its budget, the numbers and profile are shown to the user with both choices (the slide as built, or the Reduced variant in every policy); the user's decision is recorded.
+- [ ] `scroll_p95_ms` and `sections_scroll_p95_ms` are ≤ 2.1 ms in every corpus and layout, read from the results; record the before and after numbers and the cause of any rise, then commit `--write-baseline`.
+- [ ] Both `uptime` readings recorded.
+- [ ] `spacing-tokens.test.ts` passes with no debt map; `motion-tokens.test.ts` passes.
+- [ ] Every baseline re-recorded and reviewed, light and dark, against the reference and ADR-0031's reference edges; every filmstrip (Full and Reduced) reviewed; differences listed.
+- [ ] T7.15's recordings, the PANEL calibration and the manual checks recorded (Reduce Motion live, ⌥⌘F5, keyboard paths, pointer movement mid-motion, fullscreen, kit dialogs and toasts).
+- [ ] [Definition of done (M7)](#definition-of-done-m7) ticked.
+- [ ] Design OQ-58–OQ-63 presented to the user with their provisional defaults (OQ-58 with ADR-0030's reading of emil's keyboard rule stated as an interpretation); for OQ-39 (the banner strip) and OQ-43 (the tree's Viewed slot), a gate screenshot of today's choice and of ADR-0031's alternative shown beside the reference (the reference stays out of the repo).
+
+---
+
 ## Manual gate: agent wake-up in real Claude Code
 
 The build cannot automate this: it needs a real, idle Claude Code session and a human pressing Submit. The design makes it a **release gate** (§16.4, ADR-0013). T4.12 copies this section into `docs/testing/agent-wake-gate.md`; the **user** runs it and records results. W1–W3 gate M4; W1–W8 gate M5.
@@ -3172,30 +3919,37 @@ Results table columns: case, date, Claude Code version, macOS version, result (p
 
 ## Risks and spikes
 
-| ID  | Risk                                                                                                                                                                                                              | Where handled                     | Spike or mitigation                                                                                                                                                                                                                                                                                    |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| S1  | Cost of painting shaped text in a custom GPUI element is unmeasured                                                                                                                                               | T2.4 (first half-day)             | Throwaway element with 10k lines; stop and report if p95 > 4 ms for 80 visible rows                                                                                                                                                                                                                    |
-| S2  | Viewport misses §12.1 budgets (Zed spike: 4.3 GB, 23 ms frames at 3k files split + syntax)                                                                                                                        | T2.10, M2 gate                    | File-level windowing from day one (§12.4), perf harness, [fallback ladder](#perf-gate-fallback-ladder); visible fallbacks need approval                                                                                                                                                                |
-| S3  | Snapshot cost on large dirty worktrees; LFS/clean filters run during `add -A`                                                                                                                                     | T1.5                              | `snapshot_cost_large_dirty_worktree` numbers; follow-up before T3.11 if p50 > 1 s                                                                                                                                                                                                                      |
-| S4  | asyncRewake wake path: enforced timeout, no re-arm while idle, session-id drift                                                                                                                                   | T4.8, T4.10, manual gate          | W1–W8 procedure above; `wait_for_review` fallback; waiter state in the Submit dialog                                                                                                                                                                                                                   |
-| S5  | cargo-packager may not re-sign Sparkle's nested `Updater.app` / `Autoupdate` (library-choices L6)                                                                                                                 | T5.2                              | `codesign --verify --deep --strict`, `spctl -a -vv`; fallback `scripts/sign-sparkle.sh` with Sparkle's documented sequence                                                                                                                                                                             |
-| S6  | gpui-kit / gpui-pre break weekly                                                                                                                                                                                  | all GUI tasks                     | Pin `=0.7.0` for all of v1; upgrade only for a blocking bug, as its own task gated by screenshot tests                                                                                                                                                                                                 |
-| S7  | `tree-sitter` `links` conflict between lumis and gpui-kit                                                                                                                                                         | T0.1, T2.2                        | gpui-kit `tree-sitter*` features off; `check-deps.sh` asserts a single `tree-sitter` in `cargo tree -d`                                                                                                                                                                                                |
-| S8  | Disk: 30 GB free, gpui-kit target dirs ~8 GB                                                                                                                                                                      | every task                        | Shared `target-shared` build dir, serialized and member-cleaned across worktrees by `scripts/cargo.sh` (per-worktree `target/` for binaries only), `line-tables-only` debug info, ≤ 3 building agents, stop below 15 GB free                                                                           |
-| S9  | rmcp ships minor versions weekly                                                                                                                                                                                  | T4.4                              | `~3.5.0`; a minor bump is its own task gated by the bun MCP suites                                                                                                                                                                                                                                     |
-| S10 | `show_system_notification` aborts outside an app bundle                                                                                                                                                           | T3.17                             | Gate on `is_bundled()`; notification tests use an injected `Notifier`                                                                                                                                                                                                                                  |
-| S11 | `polygloss mcp` cold start (spawned every Claude Code session)                                                                                                                                                    | T4.4                              | Measure initialize-ready; keep the CLI graph slim (`check-deps.sh`)                                                                                                                                                                                                                                    |
-| S12 | GitHub macOS VMs may render or time GPUI differently                                                                                                                                                              | T0.3, T2.9                        | Screenshot tolerance; budgets gated on the developer's Apple Silicon machine; CI perf compares against a CI baseline (OQ-P9)                                                                                                                                                                           |
-| S13 | Git floor 2.39 is not what CI runs                                                                                                                                                                                | T1.2                              | `POLYGLOSS_GIT_BIN` lets the core suite run against Xcode CLT git (`/Library/Developer/CommandLineTools/usr/bin/git`) where installed                                                                                                                                                                  |
-| S14 | Hunk parity below 99.9% on some seeded repos: imara Myers pre-prunes lines of git's reduced input that git keeps (T1.16)                                                                                          | T1.16 follow-up                   | **Resolved.** `myers_core.rs` (imara's Myers core without its preprocessing, on the lines `git_myers.rs` keeps, with three heuristic fixes) plus git's slider order (T1.16 "S14 fix"). Was: seeds 2 and 4 at 99.76%, Linux 98.503% (174 of 11,626). Now: seeds 1–5 100%, Linux 100% (11,626 of 11,626) |
-| S15 | Viewport geometry: about 12 sites add `header_height` to `file_top`; with a zero card gap they pass tests while wrong                                                                                             | T6.5                              | Helpers in `Document` (`header_top`, `body_top`, `top_line`); every new test uses a non-zero gap and padding                                                                                                                                                                                           |
-| S16 | Cards, SVG icons and a second font raise frame cost, and `--compare-baseline` flags a frame-bound metric only when it is 10% **and** 8.3 ms worse, so a 0.7 → 2 ms scroll p95 passes it                           | T6.5, T6.7, T6.10, T6.17, M6 gate | Perf tasks report both scroll p95s; the gate requires them ≤ 2.1 ms (a quarter of the budget) from the results and re-baselines once with the numbers recorded                                                                                                                                         |
-| S17 | Thousands of zero-height hidden files pulled into every frame or the materialization window                                                                                                                       | T6.10, T6.17                      | `SlotRange` is not an iterator; `shown_files` steps by offset through the height index; `overlapping()` clamped; perf scenario `sections` (with a prelude)                                                                                                                                             |
-| S18 | Traffic lights, window drag and a live Reduce Motion change are invisible to headless tests                                                                                                                       | T6.3, T6.16                       | Bounds tests for the rows; recorded manual checks in the dev app                                                                                                                                                                                                                                       |
-| S19 | gpui-component `PopupMenu` paints its own shadow, which shows through a fading menu                                                                                                                               | —                                 | **Resolved at design time:** the toolbar menu motion was dropped (ADR-0029)                                                                                                                                                                                                                            |
-| S20 | Motion tests sampled on the wall clock pass with no motion or flake under load                                                                                                                                    | T6.8, T6.12, T6.13                | `motion::enter_from` runs on gpui-base's executor clock; tests step it with `advance_clock` (M6 Motion rule)                                                                                                                                                                                           |
-| S21 | No frame metric covers the app chrome (sidebar tree, toolbar)                                                                                                                                                     | T6.11, T6.15                      | `tree_does_not_rerender_on_scroll_frames`; the tree listens to `CountsUpdated`, not frames. Recorded gap: chrome cost is not measured                                                                                                                                                                  |
-| S22 | `DiffViewport::set_provider` resets every per-file state (rows, flags, blocks, collapse, cursor) and the sections; any path that swaps providers to change a flag or misses a re-partition loses the user's place | T6.14, T6.17                      | Generated verdicts computed before a provider is built; `set_generated` relabels in place; `set_provider` clears sections and `DiffRefreshed` re-partitions before the next frame; tests for each path                                                                                                 |
+| ID  | Risk                                                                                                                                                                                                                                                                                    | Where handled                     | Spike or mitigation                                                                                                                                                                                                                                                                                    |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| S1  | Cost of painting shaped text in a custom GPUI element is unmeasured                                                                                                                                                                                                                     | T2.4 (first half-day)             | Throwaway element with 10k lines; stop and report if p95 > 4 ms for 80 visible rows                                                                                                                                                                                                                    |
+| S2  | Viewport misses §12.1 budgets (Zed spike: 4.3 GB, 23 ms frames at 3k files split + syntax)                                                                                                                                                                                              | T2.10, M2 gate                    | File-level windowing from day one (§12.4), perf harness, [fallback ladder](#perf-gate-fallback-ladder); visible fallbacks need approval                                                                                                                                                                |
+| S3  | Snapshot cost on large dirty worktrees; LFS/clean filters run during `add -A`                                                                                                                                                                                                           | T1.5                              | `snapshot_cost_large_dirty_worktree` numbers; follow-up before T3.11 if p50 > 1 s                                                                                                                                                                                                                      |
+| S4  | asyncRewake wake path: enforced timeout, no re-arm while idle, session-id drift                                                                                                                                                                                                         | T4.8, T4.10, manual gate          | W1–W8 procedure above; `wait_for_review` fallback; waiter state in the Submit dialog                                                                                                                                                                                                                   |
+| S5  | cargo-packager may not re-sign Sparkle's nested `Updater.app` / `Autoupdate` (library-choices L6)                                                                                                                                                                                       | T5.2                              | `codesign --verify --deep --strict`, `spctl -a -vv`; fallback `scripts/sign-sparkle.sh` with Sparkle's documented sequence                                                                                                                                                                             |
+| S6  | gpui-kit / gpui-pre break weekly                                                                                                                                                                                                                                                        | all GUI tasks                     | Pin `=0.7.0` for all of v1; upgrade only for a blocking bug, as its own task gated by screenshot tests                                                                                                                                                                                                 |
+| S7  | `tree-sitter` `links` conflict between lumis and gpui-kit                                                                                                                                                                                                                               | T0.1, T2.2                        | gpui-kit `tree-sitter*` features off; `check-deps.sh` asserts a single `tree-sitter` in `cargo tree -d`                                                                                                                                                                                                |
+| S8  | Disk: 30 GB free, gpui-kit target dirs ~8 GB                                                                                                                                                                                                                                            | every task                        | Shared `target-shared` build dir, serialized and member-cleaned across worktrees by `scripts/cargo.sh` (per-worktree `target/` for binaries only), `line-tables-only` debug info, ≤ 3 building agents, stop below 15 GB free                                                                           |
+| S9  | rmcp ships minor versions weekly                                                                                                                                                                                                                                                        | T4.4                              | `~3.5.0`; a minor bump is its own task gated by the bun MCP suites                                                                                                                                                                                                                                     |
+| S10 | `show_system_notification` aborts outside an app bundle                                                                                                                                                                                                                                 | T3.17                             | Gate on `is_bundled()`; notification tests use an injected `Notifier`                                                                                                                                                                                                                                  |
+| S11 | `polygloss mcp` cold start (spawned every Claude Code session)                                                                                                                                                                                                                          | T4.4                              | Measure initialize-ready; keep the CLI graph slim (`check-deps.sh`)                                                                                                                                                                                                                                    |
+| S12 | GitHub macOS VMs may render or time GPUI differently                                                                                                                                                                                                                                    | T0.3, T2.9                        | Screenshot tolerance; budgets gated on the developer's Apple Silicon machine; CI perf compares against a CI baseline (OQ-P9)                                                                                                                                                                           |
+| S13 | Git floor 2.39 is not what CI runs                                                                                                                                                                                                                                                      | T1.2                              | `POLYGLOSS_GIT_BIN` lets the core suite run against Xcode CLT git (`/Library/Developer/CommandLineTools/usr/bin/git`) where installed                                                                                                                                                                  |
+| S14 | Hunk parity below 99.9% on some seeded repos: imara Myers pre-prunes lines of git's reduced input that git keeps (T1.16)                                                                                                                                                                | T1.16 follow-up                   | **Resolved.** `myers_core.rs` (imara's Myers core without its preprocessing, on the lines `git_myers.rs` keeps, with three heuristic fixes) plus git's slider order (T1.16 "S14 fix"). Was: seeds 2 and 4 at 99.76%, Linux 98.503% (174 of 11,626). Now: seeds 1–5 100%, Linux 100% (11,626 of 11,626) |
+| S15 | Viewport geometry: about 12 sites add `header_height` to `file_top`; with a zero card gap they pass tests while wrong                                                                                                                                                                   | T6.5                              | Helpers in `Document` (`header_top`, `body_top`, `top_line`); every new test uses a non-zero gap and padding                                                                                                                                                                                           |
+| S16 | Cards, SVG icons and a second font raise frame cost, and `--compare-baseline` flags a frame-bound metric only when it is 10% **and** 8.3 ms worse, so a 0.7 → 2 ms scroll p95 passes it                                                                                                 | T6.5, T6.7, T6.10, T6.17, M6 gate | Perf tasks report both scroll p95s; the gate requires them ≤ 2.1 ms (a quarter of the budget) from the results and re-baselines once with the numbers recorded                                                                                                                                         |
+| S17 | Thousands of zero-height hidden files pulled into every frame or the materialization window                                                                                                                                                                                             | T6.10, T6.17                      | `SlotRange` is not an iterator; `shown_files` steps by offset through the height index; `overlapping()` clamped; perf scenario `sections` (with a prelude)                                                                                                                                             |
+| S18 | Traffic lights, window drag and a live Reduce Motion change are invisible to headless tests                                                                                                                                                                                             | T6.3, T6.16                       | Bounds tests for the rows; recorded manual checks in the dev app                                                                                                                                                                                                                                       |
+| S19 | gpui-component `PopupMenu` paints its own shadow, which shows through a fading menu                                                                                                                                                                                                     | —                                 | **Resolved at design time:** the toolbar menu motion was dropped (ADR-0029)                                                                                                                                                                                                                            |
+| S20 | Motion tests sampled on the wall clock pass with no motion or flake under load                                                                                                                                                                                                          | T6.8, T6.12, T6.13, T7.2          | `motion::enter_from` runs on gpui-base's executor clock; tests step it with `advance_clock` (M6 Motion rule); M7: every motion on `motion::Track`, `motion-tokens.test.ts` bans the wall-clock APIs                                                                                                    |
+| S21 | No frame metric covers the app chrome (sidebar tree, toolbar)                                                                                                                                                                                                                           | T6.11, T6.15, T7.3                | `tree_does_not_rerender_on_scroll_frames`; the tree listens to `CountsUpdated`, not frames. Recorded gap: chrome cost is not measured. M7: T7.3's app-shell scenario measures it (`shell_idle_draw_p95_ms`, `*_anim_draw_p95_ms`)                                                                      |
+| S22 | `DiffViewport::set_provider` resets every per-file state (rows, flags, blocks, collapse, cursor) and the sections; any path that swaps providers to change a flag or misses a re-partition loses the user's place                                                                       | T6.14, T6.17                      | Generated verdicts computed before a provider is built; `set_generated` relabels in place; `set_provider` clears sections and `DiffRefreshed` re-partitions before the next frame; tests for each path                                                                                                 |
+| S23 | Frozen-layout panel resize: the riding tree misses `.cached()` every frame (its bounds and content mask move); `hold_layout` must keep header controls, the sticky header and the scrollbar right at the live width; the panel must leave gpui-kit's split without losing stored widths | T7.8, T7.10                       | The tree budgeted uncached for the motion (`sidebar_anim_draw_p95_ms`); tests for one reflow per toggle, stored widths and an exact settle frame; a miss goes to the user at the gate with a profile (ADR-0030 rule 12)                                                                                |
+| S24 | Every animation frame re-renders the uncached chrome, so a cheap property can still miss 8.3 ms at 120 Hz                                                                                                                                                                               | T7.3, every motion task           | App-shell metrics per motion; the chrome tax reported (target ≤ 2 ms; above it, cache the main column under overlays); a motion that misses ships as Snap                                                                                                                                              |
+| S25 | A viewport reveal must keep hit-testing, the cursor, the sticky header and find highlights consistent mid-motion; an estimated height would jump when wrap corrections land                                                                                                             | T7.8, T7.11                       | Commit-first model; hitboxes from the shifted frame; snap rules (estimated bodies, pinned headers, anchor moves); tests at the midpoint                                                                                                                                                                |
+| S26 | Reduce Motion now means fades, so harnesses left on it would capture mid-fade frames                                                                                                                                                                                                    | T7.2                              | The Off policy override; every `set_reduce_motion(true)` site migrated in T7.2; `motion-tokens.test.ts` forbids production writes                                                                                                                                                                      |
+| S27 | gpui-kit dialogs, toasts and tooltips run on the wall clock: no stepping, no filmstrips                                                                                                                                                                                                 | T7.12, T7.15                      | ⌘K, ⌘P and `?` become app-owned and instant; the rest recorded from the real app and scrubbed                                                                                                                                                                                                          |
+| S28 | The spacing migration moves the split/unified threshold, anchors, title truncation and every baseline at once                                                                                                                                                                           | T7.4–T7.7                         | Batches by surface in waves; threshold and anchor tests; per-wave baseline review; the debt ratchet                                                                                                                                                                                                    |
+| S29 | The spacing lint flags non-geometry numbers (alphas, ratios, color math), tempting broad allow-lists; kit sizing (`.small()`, `.xsmall()`) is allowed, other kit sizes are not                                                                                                          | T7.1                              | Token modules exempt; the float rule limited to the viewport's painter files and blind to color constructors; a narrow path-and-snippet allow-list that fails when stale; fixtures per rule                                                                                                            |
 
 ---
 
@@ -3260,9 +4014,23 @@ Each line needs evidence, as for v1. This list is kept apart from the v1 list, w
 
 ---
 
+## Definition of done (M7)
+
+Each line needs evidence, as for v1.
+
+- [ ] Spacing: every layout dimension in the app and the viewport comes from `space` and the lint passes with no debt; ADR-0031's reference edges are asserted on screenshots; one segmented control; changing counts keep their width (ADR-0031).
+- [ ] Motion: ADR-0030's fifteen motions on the executor clock, each tested in Full, Reduced, its snapping initiators and Off, with a reviewed filmstrip, or recorded as shipped Snap with its numbers (M1 and M2: the user's decision at the gate); pointer movement never settles a motion and the settling inputs do; while the sidebar moves the toolbar stays continuous and clear of the traffic lights; press ink on every custom and painted control.
+- [ ] Reduce Motion is followed live and gives fades without travel; every harness runs under the Off policy.
+- [ ] ⌘K, ⌘P and `?` open and close on one frame; the rest of gpui-kit's motion follows ADR-0030's table; the Switch no longer overshoots.
+- [ ] Every §12.1 budget holds, including the motion budgets; the perf baseline is rewritten only with the numbers recorded in the M7 gate.
+- [ ] Every baseline and filmstrip re-recorded and reviewed; the recordings, the PANEL calibration and the manual checks recorded.
+- [ ] Docs: design §11.16–§11.17, ADR-0030, ADR-0031, the research audits and the user guide match the build; the docs tests pass.
+
+---
+
 ## Open questions
 
-M6's provisional defaults are design §26 OQ-35–OQ-57; builders use them until the user decides.
+M6's provisional defaults are design §26 OQ-35–OQ-57, M7's OQ-58–OQ-63; builders use them until the user decides.
 
 ### Orchestrator decisions after M2 (provisional — pending user confirmation)
 
@@ -3302,38 +4070,39 @@ Design §26 OQ-1…OQ-34 stay in force with their provisional defaults. These ar
 
 ## Spec coverage map
 
-| Design section                               | Tasks                                                                                          |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| §3 Sources                                   | T1.2, T1.12, T3.5, T4.3                                                                        |
-| §4 Identity                                  | T1.1, T1.12                                                                                    |
-| §5 Snapshots                                 | T1.5, T3.11                                                                                    |
-| §6 Git and diff engine                       | T1.2–T1.4, T1.6–T1.8, T1.16, T6.1, T6.4                                                        |
-| §7 Data model                                | T1.10, T1.11, T1.12–T1.14, T3.4 (auto-prune), T6.1, T6.12, T6.14                               |
-| §8 Comments                                  | T1.13, T1.15, T3.9, T3.10, T4.6 (agent edit/delete)                                            |
-| §9 Viewed                                    | T1.14, T3.7, T6.11, T6.14, T6.15                                                               |
-| §10 Live mode                                | T3.11                                                                                          |
-| §11.1–11.5 Window, Home, open, toolbar, tree | T3.1, T3.4 (incl. reassign), T3.5, T3.6, T3.7, T3.12, T6.3, T6.6, T6.8, T6.11, T6.12, T6.15    |
-| §11.6 Viewport                               | T1.9, T2.3–T2.7, T3.8, T3.9, T6.5, T6.7, T6.10, T6.17, T6.13                                   |
-| §11.7 Banners                                | T3.1, T3.11, T3.13, T6.13                                                                      |
-| §11.8–11.9 Palette, keymap                   | T3.2 (declares), T3.6–T3.11, T3.16 (handlers), T5.6, T6.6, T6.8, T6.14                         |
-| §11.10–11.11 Themes, highlighting            | T2.2, T2.6, T3.3, T6.2                                                                         |
-| §11.12 View state                            | T1.14, T3.14, T6.5, T6.12, T6.14, T6.17                                                        |
-| §11.13 Open in editor                        | T3.16, T6.7                                                                                    |
-| §11.14 Find                                  | T3.15, T6.15                                                                                   |
-| §11.15 File categories                       | T6.1, T6.4, T6.9, T6.17, T6.14, T6.15                                                          |
-| §11.16 Motion                                | T6.8 (module), T6.12, T6.13                                                                    |
-| §12 Performance                              | T2.1, T2.3, T2.6, T2.9, T2.10, T3.10, T3.11, M3 gate, T6.5, T6.7, T6.10, T6.17, T6.13, M6 gate |
-| §13 Processes and IPC                        | T4.1, T4.2                                                                                     |
-| §14 CLI                                      | T4.3, T4.8, T4.9, T6.9                                                                         |
-| §15 MCP                                      | T4.4–T4.7, T4.13, T6.9                                                                         |
-| §16 Plugin and wake-up                       | T4.7, T4.8, T4.10, T4.12, T4.13, manual gate                                                   |
-| §17 Notifications and badge                  | T3.17, T4.6                                                                                    |
-| §18 Settings and keymap files                | T3.1, T3.2, T3.3, T6.2, T6.7, T6.14                                                            |
-| §19 Security and privacy                     | T0.1, T1.2, T3.9, T4.1, T5.7                                                                   |
-| §20 Testing                                  | T0.2, T0.3, every task                                                                         |
-| §21 Packaging                                | T5.1–T5.4, T5.7, T6.4 (`NOTICE`)                                                               |
-| §22 Platform scope                           | T0.1, T3.16, T3.17                                                                             |
-| §24 Layout                                   | T0.1, [Workspace layout](#workspace-layout-and-crate-ownership)                                |
+| Design section                               | Tasks                                                                                                                                          |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| §3 Sources                                   | T1.2, T1.12, T3.5, T4.3                                                                                                                        |
+| §4 Identity                                  | T1.1, T1.12                                                                                                                                    |
+| §5 Snapshots                                 | T1.5, T3.11                                                                                                                                    |
+| §6 Git and diff engine                       | T1.2–T1.4, T1.6–T1.8, T1.16, T6.1, T6.4                                                                                                        |
+| §7 Data model                                | T1.10, T1.11, T1.12–T1.14, T3.4 (auto-prune), T6.1, T6.12, T6.14                                                                               |
+| §8 Comments                                  | T1.13, T1.15, T3.9, T3.10, T4.6 (agent edit/delete)                                                                                            |
+| §9 Viewed                                    | T1.14, T3.7, T6.11, T6.14, T6.15                                                                                                               |
+| §10 Live mode                                | T3.11                                                                                                                                          |
+| §11.1–11.5 Window, Home, open, toolbar, tree | T3.1, T3.4 (incl. reassign), T3.5, T3.6, T3.7, T3.12, T6.3, T6.6, T6.8, T6.11, T6.12, T6.15, T7.5, T7.6, T7.9, T7.10, T7.13                    |
+| §11.6 Viewport                               | T1.9, T2.3–T2.7, T3.8, T3.9, T6.5, T6.7, T6.10, T6.17, T6.13, T7.4, T7.7, T7.8, T7.11, T7.14                                                   |
+| §11.7 Banners                                | T3.1, T3.11, T3.13, T6.13, T7.5, T7.9                                                                                                          |
+| §11.8–11.9 Palette, keymap                   | T3.2 (declares), T3.6–T3.11, T3.16 (handlers), T5.6, T6.6, T6.8, T6.14, T7.6, T7.12                                                            |
+| §11.10–11.11 Themes, highlighting            | T2.2, T2.6, T3.3, T6.2                                                                                                                         |
+| §11.12 View state                            | T1.14, T3.14, T6.5, T6.12, T6.14, T6.17                                                                                                        |
+| §11.13 Open in editor                        | T3.16, T6.7                                                                                                                                    |
+| §11.14 Find                                  | T3.15, T6.15                                                                                                                                   |
+| §11.15 File categories                       | T6.1, T6.4, T6.9, T6.17, T6.14, T6.15                                                                                                          |
+| §11.16 Motion                                | T6.8 (module), T6.12, T6.13, T7.2, T7.3, T7.8–T7.14, T7.15                                                                                     |
+| §11.17 Spacing and layout                    | T7.1, T7.4–T7.7, T7.15                                                                                                                         |
+| §12 Performance                              | T2.1, T2.3, T2.6, T2.9, T2.10, T3.10, T3.11, M3 gate, T6.5, T6.7, T6.10, T6.17, T6.13, M6 gate, T7.3, T7.4, T7.8, T7.10, T7.11, T7.13, M7 gate |
+| §13 Processes and IPC                        | T4.1, T4.2                                                                                                                                     |
+| §14 CLI                                      | T4.3, T4.8, T4.9, T6.9                                                                                                                         |
+| §15 MCP                                      | T4.4–T4.7, T4.13, T6.9                                                                                                                         |
+| §16 Plugin and wake-up                       | T4.7, T4.8, T4.10, T4.12, T4.13, manual gate                                                                                                   |
+| §17 Notifications and badge                  | T3.17, T4.6                                                                                                                                    |
+| §18 Settings and keymap files                | T3.1, T3.2, T3.3, T6.2, T6.7, T6.14                                                                                                            |
+| §19 Security and privacy                     | T0.1, T1.2, T3.9, T4.1, T5.7                                                                                                                   |
+| §20 Testing                                  | T0.2, T0.3, every task                                                                                                                         |
+| §21 Packaging                                | T5.1–T5.4, T5.7, T6.4 (`NOTICE`)                                                                                                               |
+| §22 Platform scope                           | T0.1, T3.16, T3.17                                                                                                                             |
+| §24 Layout                                   | T0.1, [Workspace layout](#workspace-layout-and-crate-ownership)                                                                                |
 
 ## Decision log coverage
 
@@ -3379,3 +4148,4 @@ Every bullet of the decision log, mapped to the tasks that implement it. Superse
 | Diff id over tree OIDs                                                                                                                                                         | T1.1                                                                                    |
 | Known risks: asyncRewake timeout, re-arm, session drift                                                                                                                        | T1.14, T4.8, T4.12, manual gate                                                         |
 | Redesign after v1 (2026-10-05): the reference layout, geld-style configurable categories, motion per the design-engineering skills (orchestrator decisions D1–D13)             | T6.1–T6.17, M6 gate                                                                     |
+| Motion and spacing systems after M6 (2026-10-06): every animation skill applied, panels that collapse, one spacing system with rules for when each value is used               | T7.1–T7.15, M7 gate                                                                     |
