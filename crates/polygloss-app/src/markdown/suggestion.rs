@@ -300,21 +300,20 @@ fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> imp
                 MiniRow::Removed { line, text } => (line, text, true),
                 MiniRow::Added { line, text } => (line, text, false),
             };
-            let selector = if removed {
+            let (kind, ix) = if removed {
                 removed_ix += 1;
-                format!("suggestion-removed-{}", removed_ix - 1)
+                ("removed", removed_ix - 1)
             } else {
                 added_ix += 1;
-                format!("suggestion-added-{}", added_ix - 1)
+                ("added", added_ix - 1)
             };
-            let code_selector = selector.replacen("suggestion-", "suggestion-code-", 1);
             let (bg, accent) = if removed {
                 (diff.removed_background, diff.removed_accent)
             } else {
                 (diff.added_background, diff.added_accent)
             };
             h_flex()
-                .debug_selector(move || selector.clone())
+                .debug_selector(move || format!("suggestion-{kind}-{ix}"))
                 .w_full()
                 .items_start()
                 .bg(bg)
@@ -333,7 +332,7 @@ fn render_mini_diff(ctx: &SuggestionContext, replacement: &str, cx: &App) -> imp
                 )
                 .child(
                     div()
-                        .debug_selector(move || code_selector.clone())
+                        .debug_selector(move || format!("suggestion-code-{kind}-{ix}"))
                         .flex_1()
                         .min_w_0()
                         .pr(px(card::CODE_PAD))

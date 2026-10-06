@@ -784,18 +784,13 @@ fn push_blocks(tab: &ReviewTab, cx: &mut Context<ReviewTab>) {
                 BlockSpec {
                     id: o.key.block_id(),
                     anchor,
-                    render: Rc::new(move |_, _| composer_block(&view)),
+                    // A nested card, inset like a thread block.
+                    render: Rc::new(move |_, _| threads::block::nested(view.clone())),
                 },
             ))
         })
         .collect();
     model.update(cx, |m, cx| m.set_extra_blocks(blocks, cx));
-}
-
-/// A line or file composer as a viewport block: a nested card, inset like
-/// a thread block (clicks stay in it; the wheel still scrolls the diff).
-fn composer_block(view: &Entity<Composer>) -> AnyElement {
-    threads::block::nested(view.clone())
 }
 
 /// A reply or edit composer opened or closed inside a thread card: the
