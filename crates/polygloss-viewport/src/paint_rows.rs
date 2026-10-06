@@ -89,6 +89,10 @@ pub(crate) struct Frame {
     /// Every painted header strip: it takes the clicks over the rows it
     /// covers.
     pub header_areas: Vec<Bounds<Pixels>>,
+    /// A closing body's band ([`crate::reveal`]): it takes the pointer from
+    /// the host blocks still painted in it (ADR-0030 rule 9: what leaves is
+    /// inert, its live content under an occluding layer).
+    pub occluded: Option<Bounds<Pixels>>,
     /// Every painted card's whole outer bounds, borders included (its quad
     /// is cut near the viewport's edges), top to bottom.
     pub card_bounds: Vec<(u32, Bounds<Pixels>)>,
@@ -178,6 +182,7 @@ impl Frame {
         }
         self.controls.clear();
         self.header_areas.clear();
+        self.occluded = None;
         self.card_bounds.clear();
         self.blocks.clear();
         self.prelude = None;
@@ -446,7 +451,8 @@ impl Painter<'_> {
     /// before the commit, cut at the curtain into the [`REVEAL`] layers (and
     /// its hit targets with them), and a Reduced fade's veil over them. A
     /// closing body is closed in the model from the commit, so its rows take
-    /// no clicks or hover (rule 9: what leaves is inert).
+    /// no clicks or hover, and its band occludes its host blocks (rule 9:
+    /// what leaves is inert).
     fn reveal_body(&mut self, reveal: RevealGeom, height: f32) {
         let f = reveal.file;
         let (lo, hi) = (reveal.body_top.max(0.0), reveal.curtain.min(height));
@@ -494,6 +500,7 @@ impl Painter<'_> {
         if closing {
             self.frame.cells.truncate(cells);
             self.frame.controls.truncate(controls);
+            self.frame.occluded = Some(shown);
         } else {
             // What is cut away takes no clicks.
             for c in &mut self.frame.cells[cells..] {

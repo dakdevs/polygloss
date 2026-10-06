@@ -266,11 +266,13 @@ impl DiffViewport {
     /// the height measured for their id; new ones start estimated and are
     /// measured on the next frame when near the viewport. When a block's
     /// content changes, call [`DiffViewport::invalidate_block`]. Duplicate ids
-    /// keep the first. Nothing on screen moves above the new blocks.
+    /// keep the first. Nothing on screen moves above the new blocks. It
+    /// settles a running reveal (ADR-0030 rule 4: a change of the layout).
     pub fn set_blocks(&mut self, file_idx: u32, blocks: Vec<BlockSpec>, cx: &mut Context<Self>) {
         if file_idx >= self.doc.len() {
             return;
         }
+        self.reveal = None;
         let keep: HashSet<BlockId> = blocks.iter().map(|b| b.id).collect();
         for old in self.doc.blocks(file_idx) {
             if !keep.contains(&old.id) {
@@ -324,9 +326,11 @@ impl DiffViewport {
 
     /// Block `id`'s content changed: it is measured again on the next frame
     /// if it is visible or near the viewport (otherwise when it gets there).
+    /// Its height may change, so it settles a running reveal.
     pub fn invalidate_block(&mut self, id: BlockId, cx: &mut Context<Self>) {
         self.blocks.measured.remove(&id);
         if self.blocks.specs.contains_key(&id) {
+            self.reveal = None;
             cx.notify();
         }
     }

@@ -111,6 +111,9 @@ pub(crate) fn insert_hitboxes(frame: &Frame, window: &mut Window) -> Rc<[Target]
         }
     };
     insert(ControlLayer::Body, window);
+    if let Some(band) = frame.occluded {
+        window.insert_hitbox(band, HitboxBehavior::BlockMouseExceptScroll);
+    }
     for area in &frame.header_areas {
         window.insert_hitbox(*area, HitboxBehavior::BlockMouseExceptScroll);
     }

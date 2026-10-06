@@ -14,6 +14,8 @@
 //! `c.rs` (30) and `d.rs` (10), in a 1280 × 800 window under the header
 //! card. Durations are written here from ADR-0030's tokens.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -520,12 +522,36 @@ fn a_key_down_with_the_sidebar_focused_settles_the_reveal() {
     assert!(app.running());
     let viewport = app.viewport.clone();
     let cursor = app.cx.update(|cx| viewport.read(cx).cursor());
+    let selected = app.cx.update(|cx| tree.read(cx).selected_file());
+    // Whether the reveal still ran when the key's bindings started:
+    // interceptors run in the order they were added, so this one runs
+    // after `motion::settle`'s and before any binding.
+    let running_at_bindings = Rc::new(Cell::new(None));
+    let record = running_at_bindings.clone();
+    let weak = viewport.downgrade();
+    let probe = app.cx.update(|cx| {
+        cx.intercept_keystrokes(move |_, _, cx| {
+            record.set(weak.upgrade().map(|v| v.read(cx).motion_running()));
+        })
+    });
+    // `down`, which the tree binds (it has no `j`): it selects the next row.
     app.cx
         .update_window(app.window, |_, w, cx| {
-            w.dispatch_keystroke(Keystroke::parse("j").expect("a keystroke"), cx);
+            w.dispatch_keystroke(Keystroke::parse("down").expect("a keystroke"), cx);
         })
         .expect("the window is open");
+    drop(probe);
+    assert_eq!(
+        running_at_bindings.get(),
+        Some(false),
+        "the key down settled the reveal before the tree handled it"
+    );
     assert!(!app.running(), "the key down settled the reveal");
+    let now_selected = app.cx.update(|cx| tree.read(cx).selected_file());
+    assert!(
+        now_selected.is_some() && now_selected != selected,
+        "the tree handled `down`: {selected:?} → {now_selected:?}"
+    );
     let in_tree = app
         .cx
         .update_window(app.window, |_, w, cx| tree.read(cx).contains_focus(w, cx))
@@ -534,7 +560,7 @@ fn a_key_down_with_the_sidebar_focused_settles_the_reveal() {
     assert_eq!(
         app.cx.update(|cx| viewport.read(cx).cursor()),
         cursor,
-        "`j` went to the tree, not the diff"
+        "`down` went to the tree, not the diff"
     );
 }
 
@@ -546,12 +572,22 @@ fn a_scroll_settles_the_reveal() {
     app.click_chevron(b);
     app.step_to(ms(60.0));
     assert!(app.running());
+    let viewport = app.viewport.clone();
+    let scroll_top = |app: &mut App| {
+        app.cx
+            .update(|cx| viewport.read(cx).document().scroll_top())
+    };
+    let before = scroll_top(&mut app);
+    // Over the sidebar: the viewport's own wheel handler never sees it, so
+    // only the review tab's registration with `motion::settle` settles.
     let o = app.origin();
+    assert!(o.0 > 200.0, "the sidebar is left of the viewport: {o:?}");
     app.dispatch(PlatformInput::ScrollWheel(ScrollWheelEvent {
-        position: point(px(o.0 + 300.0), px(o.1 + 300.0)),
+        position: point(px(o.0 / 2.0), px(o.1 + 300.0)),
         delta: ScrollDelta::Pixels(point(px(0.), px(-10.))),
         modifiers: Modifiers::default(),
         ..Default::default()
     }));
     assert!(!app.running(), "the scroll settled the reveal");
+    assert_eq!(scroll_top(&mut app), before, "the diff did not scroll");
 }

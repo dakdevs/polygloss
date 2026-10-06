@@ -11,12 +11,13 @@
 //! `round(v · 2) / 2`. Tests step the clock by ADR-0030's stepping protocol:
 //! the commit frame is t = 0, the first step is exactly 16.667 ms.
 
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::{
-    IntoElement as _, Modifiers, ParentElement as _, Styled as _, TestAppContext,
-    VisualTestContext, div, point, px, size,
+    InteractiveElement as _, IntoElement as _, Modifiers, MouseButton, ParentElement as _,
+    Styled as _, TestAppContext, VisualTestContext, div, point, px, size,
 };
 use polygloss_diff::Side;
 use polygloss_viewport::motion::{Initiator, MotionPolicy, MotionPolicyOverride, Settle};
@@ -891,6 +892,195 @@ fn chevron_turns_with_its_body(cx: &mut TestAppContext) {
     assert_eq!(chevron_angle(&d, 0), -90.0);
     // Settled, the closed chevron is drawn as before.
     assert_eq!(icons_named(&d, "chevron-right").len(), 1);
+}
+
+/// A block `height` pt tall hung from `a.rs`'s first row after its gap
+/// (new line 27), so it sits 32 + 20 pt into the body; `on_press` runs on
+/// a mouse down on it.
+fn block_in_a(id: u64, height: f32, on_press: Rc<dyn Fn()>) -> BlockSpec {
+    BlockSpec {
+        id: BlockId(id),
+        anchor: BlockAnchor::Line {
+            side: Side::New,
+            line: 27,
+        },
+        render: Rc::new(move |_, _| {
+            let on_press = on_press.clone();
+            div()
+                .w_full()
+                .h(px(height))
+                .on_mouse_down(MouseButton::Left, move |_, _, _| on_press())
+                .into_any_element()
+        }),
+    }
+}
+
+/// Opens `a.rs` by its painted chevron's path (a pointer toggle) and
+/// returns what `read` finds in the viewport before the commit frame is
+/// drawn (the heights the commit leaves).
+fn pointer_toggle_a<T>(
+    view: &gpui_kit::Entity<DiffViewport>,
+    cx: &mut VisualTestContext,
+    read: impl FnOnce(&DiffViewport) -> T,
+) -> T {
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.toggle_collapsed_by(0, Initiator::Pointer, window, cx);
+            read(v)
+        })
+    })
+}
+
+/// Draws the commit frame, then display frames 16.667 ms apart until the
+/// reveal settles: the last frame it painted and the settled one.
+fn run_to_rest(
+    view: &gpui_kit::Entity<DiffViewport>,
+    cx: &mut VisualTestContext,
+) -> (ViewportDebug, ViewportDebug) {
+    frame(cx);
+    let mut last = None;
+    for _ in 0..30 {
+        assert!(running(view, cx), "the reveal runs");
+        last = Some(debug(view, cx));
+        advance(cx, FIRST_STEP);
+        if !running(view, cx) {
+            break;
+        }
+    }
+    assert!(!running(view, cx), "the reveal settles");
+    (last.expect("a motion frame"), debug(view, cx))
+}
+
+/// File `f`'s card bottom as painted.
+fn card_bottom(d: &ViewportDebug, f: u32) -> f32 {
+    let (_, y, _, h) = card(d, f);
+    y + h
+}
+
+/// ADR-0030's settle-matches-rest check for the opening card: its last
+/// motion frame is the settled frame (within the last step's SLIDE,
+/// which quantizes away).
+fn assert_ends_at_rest(last: &ViewportDebug, rest: &ViewportDebug) {
+    assert_y(
+        card_bottom(last, 0),
+        card_bottom(rest, 0),
+        "a's card bottom",
+    );
+    assert_y(slot_y(last, 1), slot_y(rest, 1), "the next card");
+    assert_y(header_y(last, 1), header_y(rest, 1), "the next header");
+}
+
+#[gpui_kit::test]
+fn a_block_measured_on_the_commit_frame_ends_at_rest(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = collapsed_a(cx, MotionPolicy::Full);
+    // A 150 pt thread card added while a.rs is closed (a Viewed file with
+    // comments): it keeps its 3-row estimate until a.rs opens.
+    view.update(cx, |v, cx| {
+        v.set_blocks(0, vec![block_in_a(1, 150.0, Rc::new(|| {}))], cx)
+    });
+    frame(cx);
+    let height = |v: &DiffViewport| v.document().blocks(0)[0].height;
+    let estimated = pointer_toggle_a(&view, cx, height);
+    assert_eq!(estimated, 60.0, "estimated at the commit");
+    let (last, rest) = run_to_rest(&view, cx);
+    assert_eq!(view.read_with(cx, |v, _| height(v)), 150.0, "measured");
+    // At rest the card holds the block: b.rs sits 150 pt lower.
+    assert_y(header_y(&rest, 1), B_OPEN + 150.0, "settled");
+    assert_ends_at_rest(&last, &rest);
+}
+
+#[gpui_kit::test]
+fn rows_rewrapped_on_the_commit_frame_end_at_rest(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Four lines of ten 40-character words: at the card's code width (100
+    // to 118 columns) word boundaries need 5 rows a line where the
+    // estimate (400 characters) says 4.
+    let line = format!("{} ", "w".repeat(39)).repeat(10);
+    let provider = MemProvider::new(vec![
+        Spec::added("a.txt", &format!("{line}\n").repeat(4)),
+        Spec::added("b.rs", &numbered("b", 10).concat()),
+    ]);
+    let (view, cx) = open_cards(cx, provider, 1000.);
+    view.update(cx, |v, cx| v.set_collapsed(0, true, cx));
+    settle(cx);
+    // Closed, a.txt is laid out for wrapping by estimate, never shaped.
+    set_options(&view, cx, |o| o.style.wrap = true);
+    set_policy(cx, MotionPolicy::Full);
+    let row_h = |v: &DiffViewport| v.document().file_layout(0).expect("laid out").row_height(0);
+    let estimated = pointer_toggle_a(&view, cx, row_h);
+    assert_eq!(estimated, 4.0 * 20.0, "estimated at the commit");
+    let (last, rest) = run_to_rest(&view, cx);
+    assert_eq!(view.read_with(cx, |v, _| row_h(v)), 5.0 * 20.0, "measured");
+    assert_ends_at_rest(&last, &rest);
+}
+
+#[gpui_kit::test]
+fn host_blocks_in_a_closing_body_are_inert(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = open_cards(cx, fixture(10), 1000.);
+    let presses = Rc::new(Cell::new(0));
+    let count = presses.clone();
+    let on_press: Rc<dyn Fn()> = Rc::new(move || count.set(count.get() + 1));
+    view.update(cx, |v, cx| {
+        v.set_blocks(0, vec![block_in_a(1, 100.0, on_press)], cx)
+    });
+    settle(cx);
+    let block = |d: &ViewportDebug| {
+        d.visible_rows
+            .iter()
+            .zip(&d.row_bounds)
+            .find(|(t, _)| *t == "[block 1]")
+            .map(|(_, b)| *b)
+    };
+    let (y, h) = block(&debug(&view, cx)).expect("the block is painted");
+    assert_eq!((y, h), (46.0 + 32.0 + 20.0, 100.0));
+    let at = (300.0, y + h / 2.0);
+    // Open, it takes the press.
+    click(cx, at);
+    assert_eq!(presses.get(), 1);
+    set_policy(cx, MotionPolicy::Full);
+    click_chevron(&view, cx, 0);
+    step_to(cx, FIRST_STEP);
+    let d = debug(&view, cx);
+    assert_eq!(block(&d), Some((y, h)), "the block shows where it was");
+    assert!(at.1 < d.reveal.expect("revealing").curtain);
+    // Closing, it is under an occluding layer: the press reaches nothing.
+    click(cx, at);
+    assert_eq!(presses.get(), 1, "a closing body's block took a press");
+    assert!(running(&view, cx));
+}
+
+#[gpui_kit::test]
+fn block_changes_settle_the_reveal(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = collapsed_a(cx, MotionPolicy::Full);
+    let start = |view: &gpui_kit::Entity<DiffViewport>, cx: &mut VisualTestContext| {
+        set_policy(cx, MotionPolicy::Off);
+        view.update(cx, |v, cx| v.set_collapsed(0, true, cx));
+        frame(cx);
+        set_policy(cx, MotionPolicy::Full);
+        click_chevron(view, cx, 0);
+        step_to(cx, ms(60.0));
+        assert!(running(view, cx));
+    };
+    // New blocks: c.rs's layout changes.
+    start(&view, cx);
+    let block = BlockSpec {
+        id: BlockId(7),
+        anchor: BlockAnchor::FileTop,
+        render: Rc::new(|_, _| div().h(px(40.)).into_any_element()),
+    };
+    view.update(cx, |v, cx| v.set_blocks(2, vec![block], cx));
+    assert!(!running(&view, cx), "set_blocks settles");
+    // A block's content changes: it is measured again.
+    start(&view, cx);
+    view.update(cx, |v, cx| v.invalidate_block(BlockId(7), cx));
+    assert!(!running(&view, cx), "invalidate_block settles");
+    // A block the viewport does not have changes nothing.
+    start(&view, cx);
+    view.update(cx, |v, cx| v.invalidate_block(BlockId(99), cx));
+    assert!(running(&view, cx), "an unknown block changes nothing");
 }
 
 /// A flex-wrap of 50 × 10 boxes: its height depends on its width.

@@ -6,7 +6,9 @@
 //! end state at once); the reveal only displaces paint. A body changes from
 //! `h0` to `h1` on the commit frame, where `h` is the card below its header
 //! as painted (the rows and the card's bottom padding, which a collapsed
-//! card does not have). With the travel clamped to the viewport, `D =
+//! card does not have); `h1` is read from the live document every frame,
+//! so a host block measured or a wrapped row corrected after the commit
+//! moves where the motion ends. With the travel clamped to the viewport, `D =
 //! min(|h1 − h0|, viewport height)`, and the track's openness `v` (0
 //! closed, 1 open, eased by SLIDE), the body's painted height is `h = min(h0,
 //! h1) + D · v`: `h0 + D · s` opening and `h1 + D · (1 − s)` closing. The
@@ -31,11 +33,13 @@
 //! data is not loaded, snap.
 //!
 //! The viewport settles a running reveal before any change to its layout,
-//! scroll or size ([`DiffViewport::after_scroll`], a resize); the host
-//! freezes and settles it for key downs and mouse downs
+//! scroll or size ([`DiffViewport::after_scroll`], a resize,
+//! [`DiffViewport::set_blocks`], [`DiffViewport::invalidate_block`]); the
+//! host freezes and settles it for key downs and mouse downs
 //! ([`DiffViewport::freeze_motion`], [`DiffViewport::settle_motion`]). A
 //! closing body is closed in the model from the commit, so its rows take no
-//! clicks. One reveal runs at a time.
+//! clicks, and an occluding hitbox over its band takes the pointer from the
+//! host blocks still painted there (rule 9). One reveal runs at a time.
 
 use std::time::{Duration, Instant};
 
@@ -68,6 +72,10 @@ pub(crate) struct RevealBody {
     /// The file's display slot.
     pub slot: u32,
     /// The card below its header as painted before the commit and after it.
+    /// `h1` follows the live document on every frame not frozen: a host
+    /// block measured or a wrapped row corrected after the commit (the
+    /// commit frame lays out and measures what the motion uncovers) moves
+    /// where the motion ends, so its last frame is the settled one.
     pub h0: f32,
     pub h1: f32,
     /// Screen y of the body's first row on the frame before the commit (its
@@ -82,7 +90,8 @@ impl RevealBody {
         self.h0.min(self.h1) + travel * v
     }
 
-    /// ADR-0030 M3: `reveal(Δv)` in, `exit(reveal(Δv))` out.
+    /// ADR-0030 M3: `reveal(Δv)` in, `exit(reveal(Δv))` out, by the heights
+    /// the commit knows (the duration does not follow a later `h1`).
     fn motion(&self, viewport_h: f32) -> Motion {
         let enter = tokens::reveal(self.h1 - self.h0, viewport_h);
         Motion {
@@ -268,7 +277,8 @@ impl DiffViewport {
     }
 
     /// Samples the running reveal for a frame at `scroll_top` (`None` once
-    /// it has settled, which ends it) and places it.
+    /// it has settled, which ends it) and places it, its end height read
+    /// from the live document.
     pub(crate) fn reveal_geometry(
         &mut self,
         scale: f32,
@@ -285,9 +295,16 @@ impl DiffViewport {
             self.reveal = None;
             return None;
         }
+        let frozen = reveal.track.is_frozen();
+        let file = self.doc.file_at(reveal.bodies[0].slot);
+        // A frozen reveal holds the frame it painted.
+        let live_h1 = (!frozen).then(|| self.revealed_height(file, scroll_top));
+        let reveal = self.reveal.as_mut()?;
+        if let Some(h1) = live_h1 {
+            reveal.bodies[0].h1 = h1;
+        }
         let body = reveal.bodies[0];
         let doc = &self.doc;
-        let file = doc.file_at(body.slot);
         let h = quantize(body.height(sample.value, doc.viewport_height()), scale);
         let header = painted_header_y(doc, file, scroll_top);
         let body_top = header + doc.metrics().header_height;
@@ -311,7 +328,7 @@ impl DiffViewport {
             opacity: sample.opacity,
             angle: tokens::CHEVRON_CLOSED_DEG * (1.0 - open),
             #[cfg(feature = "debug-inspect")]
-            frozen: reveal.track.is_frozen(),
+            frozen,
         })
     }
 

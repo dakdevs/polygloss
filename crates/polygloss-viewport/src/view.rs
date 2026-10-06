@@ -43,7 +43,7 @@ use crate::paint_rows::DebugRow;
 use crate::paint_rows::{Frame, Marks, Painter, failed_label};
 use crate::pipeline::{Applied, Done, FileCounts, Pipeline, PipelineStats};
 use crate::provider::DiffProvider;
-use crate::reveal::{Reveal, RevealGeom};
+use crate::reveal::Reveal;
 use crate::section_band::Band;
 use crate::selection::{Drag, TextSelection};
 use crate::special::{BodyLabel, Specials, large_label, needs_blobs};
@@ -944,12 +944,11 @@ impl DiffViewport {
         let scale = window.scale_factor().max(1.0);
         let mut frame = self.frame_pool.take().unwrap_or_default();
         let misses = self.text_cache.misses;
-        let reveal = self.reveal_geometry(scale, self.snapped_scroll(scale), cx);
-        if reveal.is_some() && self.take_reveal_commit() {
+        if self.reveal.is_some() && self.take_reveal_commit() {
             let mut settled = Frame::default();
-            self.build_frame(&mut settled, bounds, marks, scale, None, window, cx);
+            self.build_frame(&mut settled, bounds, marks, scale, false, window, cx);
         }
-        self.build_frame(&mut frame, bounds, marks, scale, reveal, window, cx);
+        self.build_frame(&mut frame, bounds, marks, scale, true, window, cx);
         // Every pass's cache misses: lines shaped by a pass that was then
         // rebuilt were still shaped this frame.
         frame.shaped = (self.text_cache.misses - misses) as u32;
@@ -957,9 +956,10 @@ impl DiffViewport {
         frame
     }
 
-    /// Fills `frame` with the rows intersecting the viewport (and `reveal`'s
-    /// motion), laying it out again while wrapped rows measure other heights
-    /// than estimated.
+    /// Fills `frame` with the rows intersecting the viewport (and, when
+    /// `moving`, the running reveal's motion), laying it out again while
+    /// wrapped rows measure other heights than estimated. Each pass places
+    /// the reveal by the heights the last one corrected.
     #[allow(clippy::too_many_arguments)]
     fn build_frame(
         &mut self,
@@ -967,13 +967,18 @@ impl DiffViewport {
         bounds: Bounds<Pixels>,
         marks: Marks,
         scale: f32,
-        reveal: Option<RevealGeom>,
+        moving: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let prelude_width = self.prelude_width();
-        let scroll_top = self.snapped_scroll(scale);
         for pass in 0..WRAP_PASSES {
+            let scroll_top = self.snapped_scroll(scale);
+            let reveal = if moving {
+                self.reveal_geometry(scale, scroll_top, cx)
+            } else {
+                None
+            };
             frame.clear();
             #[cfg(feature = "debug-inspect")]
             {
