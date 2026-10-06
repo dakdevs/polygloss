@@ -16,7 +16,7 @@ use polygloss_core::store::events::Actor;
 use polygloss_diff::ObjectFormat;
 use polygloss_highlight::Appearance;
 
-use crate::shell::{Shell, bounds, click, commit_req, draw, painted, start};
+use crate::shell::{Shell, bounds, click, commit_req, compare_req, draw, painted, start};
 use crate::support::{FixtureRepo, Sandbox};
 use crate::toolbar::shows;
 
@@ -180,6 +180,12 @@ fn header_stats_sit_before_the_sha(cx: &mut TestAppContext) {
     assert!(
         bounds(shell.cx, "header-title").right() <= stats.left(),
         "the right cluster"
+    );
+    // Nothing categorized: no breakdown to point at.
+    let line = "Without categorized files: 2 files · +120 −1";
+    assert_eq!(
+        crate::categories::tooltip_lines(&mut shell, "header-stats: 2 files · +120 −1", &[line]),
+        [false]
     );
 }
 
@@ -539,4 +545,38 @@ fn an_open_commit_list_goes_with_the_last_commit(cx: &mut TestAppContext) {
         painted(shell.cx, "header-commits").is_none(),
         "no empty list left open"
     );
+}
+
+/// T6.15: the header card's stats and the tree's footer count the
+/// uncategorized files only; categorized ones go to the chips.
+#[gpui_kit::test]
+fn footer_and_header_exclude_categorized_files(cx: &mut TestAppContext) {
+    use crate::categories::{TOTALS_CATEGORIZED, numstat, totals_repo};
+    let _sb = Sandbox::isolate();
+    let repo = totals_repo(None);
+    let (files, added, removed) = numstat(&repo, |p| !TOTALS_CATEGORIZED.contains(&p));
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    crate::tree::settle_counts(&mut shell, &tab, 5);
+    draw(shell.cx);
+    assert_eq!(files, 2);
+    assert!(added < 1000 && removed < 1000, "the oracle does not group");
+    assert!(shows(
+        shell.cx,
+        "tree-footer",
+        &format!("Total: +{added} −{removed}")
+    ));
+    assert!(shows(
+        shell.cx,
+        "header-stats",
+        &format!("{files} files · +{added} −{removed}")
+    ));
+    // The chips sit after the stats, before the trailing item (none for a
+    // compare).
+    let stats = bounds(
+        shell.cx,
+        &format!("header-stats: {files} files · +{added} −{removed}"),
+    );
+    let chips = bounds(shell.cx, "header-chips: 1 test · 2 generated");
+    assert!(stats.right() <= chips.left());
 }

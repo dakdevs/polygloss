@@ -19,24 +19,26 @@ use super::filters::Fuzzy;
 use super::row::status_badge;
 use crate::review_tab::ReviewTab;
 
-/// The files matching `query`, best first (ties in diff order); every file
-/// in diff order for a blank query.
-pub fn rank(files: &[FileChange], query: &str) -> Vec<u32> {
+/// The files of `order` (display order) matching `query`, best first, ties
+/// in display order; all of them for a blank query.
+pub fn rank(files: &[FileChange], order: &[u32], query: &str) -> Vec<u32> {
     let Some(mut fuzzy) = Fuzzy::new(query) else {
-        return (0..files.len() as u32).collect();
+        return order.to_vec();
     };
-    let mut scored: Vec<(u32, u32)> = files
+    let mut scored: Vec<(u32, u32)> = order
         .iter()
-        .enumerate()
-        .filter_map(|(i, f)| fuzzy.score(f.display_path()).map(|s| (s, i as u32)))
+        .filter_map(|&i| Some((fuzzy.score(files.get(i as usize)?.display_path())?, i)))
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    // Stable: equal scores keep display order.
+    scored.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
     scored.into_iter().map(|(_, i)| i).collect()
 }
 
 /// The finder's list: the ranked files of one tab.
 pub struct FinderDelegate {
     files: Arc<Vec<FileChange>>,
+    /// The files in display order.
+    order: Vec<u32>,
     matches: Vec<u32>,
     selected: Option<usize>,
     tab: WeakEntity<ReviewTab>,
@@ -71,8 +73,10 @@ pub fn current(cx: &App) -> Option<Finder> {
 /// Opens the finder over `tab`'s files, its search field focused.
 pub fn open(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) -> Finder {
     let files = tab.opened.files.clone();
+    let order = tab.viewport.read(cx).display_order().to_vec();
     let delegate = FinderDelegate {
-        matches: (0..files.len() as u32).collect(),
+        matches: order.clone(),
+        order,
         files,
         selected: None,
         tab: cx.entity().downgrade(),
@@ -131,7 +135,7 @@ impl ListDelegate for FinderDelegate {
         window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Task<()> {
-        self.matches = rank(&self.files, query);
+        self.matches = rank(&self.files, &self.order, query);
         // `ListState::start_search` picks the selection from its row cache,
         // which still describes the previous query (it is rebuilt at
         // render): after a query that matched nothing it clears the

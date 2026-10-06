@@ -144,8 +144,8 @@ pub fn search_file(
 /// in order. Stops early once `cancel` is set (a new query) or `limit`
 /// matches are kept, so a query that matches nearly every line holds at
 /// most `limit` matches (and their previews) per job.
-pub fn search_chunk(
-    files: &[FileChange],
+pub fn search_chunk<'a>(
+    files: impl IntoIterator<Item = &'a FileChange>,
     provider: &dyn DiffProvider,
     re: &Regex,
     diff: &DiffOptions,

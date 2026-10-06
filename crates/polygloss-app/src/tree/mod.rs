@@ -1,14 +1,24 @@
 //! File tree and file finder (⌘P) (design §11.5, §11.8).
 //!
 //! - [`FileTree`]: the sidebar's Files segment: the rounded filter field
-//!   holding the filter menu, a gpui-kit `Tree` (virtualized, key context
-//!   `Tree`) over the diff's files with directory chains compacted
-//!   ([`model`]), and the [`footer`] totals. Rows ([`row`]) carry the
-//!   outline icon, open-thread and agent badges, the "changed since viewed"
-//!   dot, `+a −d`, the status letter and the Viewed slot at their end;
-//!   [`filters`] hide files (unviewed, has comments, status, extension,
-//!   fuzzy text). Selecting a file scrolls the viewport to it; the
-//!   viewport's top file is highlighted in the tree.
+//!   holding the filter menu, the accordion of [`panels`] (Changes, then one
+//!   per non-empty category; each a gpui-kit `Tree`, virtualized, key
+//!   context `Tree`, over its files with directory chains compacted,
+//!   [`model`]), and the [`footer`] totals and chips. Rows ([`row`]) carry
+//!   the outline icon, open-thread and agent badges, the "changed since
+//!   viewed" dot, `+a −d`, the status letter and the Viewed slot at their
+//!   end; the one [`filters::TreeFilter`] hides files in every panel
+//!   (unviewed, has comments, status, extension, fuzzy text). Selecting a
+//!   file scrolls the viewport to it (opening its section); the viewport's
+//!   top file is highlighted in the tree.
+//! - **Panels follow the viewport** (OQ-44): when its top file moves into
+//!   another panel's files (a jump, a scroll across a section's edge, the
+//!   first partition or one moving the top file), that panel opens, and
+//!   takes the keyboard from the list that had it; a panel the user opens
+//!   stays open until the next such crossing. The panels are rebuilt from
+//!   the tab's partition on [`Repartitioned`] (once per partition: attach,
+//!   a settings reload, a palette toggle, a refresh or an iteration
+//!   switch).
 //! - The pane is a cached view: the diff's scroll frames do not render it.
 //!   It renders again when notified: its own changes, new line counts
 //!   (`ViewportEvent::CountsUpdated`, `BinaryDetected`) and a new top file.
@@ -21,22 +31,24 @@
 //! The Viewed state is T3.7's: it pushes [`FileFlags`] with
 //! [`FileTree::set_file_flags`] and handles the slots' [`FileTreeEvent`]s
 //! and `tree::ToggleViewed` (with [`FileTree::selected_file`] /
-//! [`FileTree::selected_dir`]). View-state (T3.14) reads and restores the
-//! expansion with [`FileTree::expanded_dirs`] / [`FileTree::set_expanded_dirs`].
+//! [`FileTree::selected_dir`], of the open panel). View-state (T3.14) reads
+//! and restores every panel's expansion with [`FileTree::expanded_dirs`] /
+//! [`FileTree::set_expanded_dirs`].
 
 pub mod filters;
 pub mod finder;
 pub mod footer;
 pub mod model;
+pub mod panels;
 pub mod row;
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
-use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
+use gpui_kit::component::tree::{TreeEvent, TreeState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, v_flex,
 };
@@ -48,16 +60,17 @@ use gpui_kit::{
     div, px,
 };
 use polygloss_diff::FileChange;
-use polygloss_viewport::{DiffViewport, FileFlags, ScrollTarget, ViewportEvent};
+use polygloss_viewport::{DiffProvider, DiffViewport, FileFlags, ScrollTarget, ViewportEvent};
 
+use crate::categories::{Partition, Repartitioned};
 use crate::keyboard::menu::KeyMenu;
 use crate::keymap::actions::{tree as tree_actions, window as window_actions};
 use crate::keymap::handlers;
-use crate::live::DiffRefreshed;
 use crate::review_tab::ReviewTab;
 use crate::window::MenuKind;
-use filters::{StatusFilter, TreeFilters};
+use filters::{StatusFilter, TreeFilter};
 use model::{ItemId, TreeModel};
+use panels::{FilesPanel, PanelKey, PanelSpec, PanelTree};
 
 /// Registers the tree's and the finder's actions and menu items.
 pub fn init(cx: &mut App) {
@@ -116,20 +129,21 @@ pub fn file_tree(tab: &ReviewTab) -> Option<&Entity<FileTree>> {
     tab.extension::<TreePane>().map(|p| &p.0)
 }
 
-/// Creates the tab's [`FileTree`]; a refresh (T3.11) gives it the new
-/// files.
+/// Creates the tab's [`FileTree`], empty: its panels come with the tab's
+/// first partition ([`Repartitioned`], before the first frame), and again
+/// with every later one.
 pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
-    let files = tab.opened.files.clone();
     let viewport = tab.viewport.clone();
-    let tree = cx.new(|cx| FileTree::new(files, viewport, window, cx));
+    let tree = cx.new(|cx| FileTree::new(Arc::default(), viewport, window, cx));
     tab.insert_extension(TreePane(tree));
-    cx.subscribe_self(|tab: &mut ReviewTab, _: &DiffRefreshed, cx| {
+    cx.subscribe_self(|tab: &mut ReviewTab, _: &Repartitioned, cx| {
         let Some(tree) = file_tree(tab).cloned() else {
             return;
         };
         let files = tab.opened.files.clone();
+        let partition = crate::categories::partition(tab);
         let flags = tab.viewport.read(cx).file_flags().to_vec();
-        tree.update(cx, |t, cx| t.set_files(files, flags, cx));
+        tree.update(cx, |t, cx| t.set_partition(files, partition, flags, cx));
     })
     .detach();
 }
@@ -153,12 +167,12 @@ pub fn render_pane(
 pub enum FileTreeEvent {
     /// A file's Viewed slot was clicked.
     ToggleViewed(u32),
-    /// A directory's Viewed slot was clicked: every file below it (as the
-    /// tree shows them).
+    /// A directory's Viewed slot was clicked: every file below it (as its
+    /// panel's tree shows them).
     ToggleFolderViewed { dir: String, files: Vec<u32> },
 }
 
-/// One visible row of the tree (tests and the view-state).
+/// One visible row of the open panel's tree (tests and the view-state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeRow {
     pub id: ItemId,
@@ -171,68 +185,62 @@ pub struct TreeRow {
 pub struct FileTree {
     files: Arc<Vec<FileChange>>,
     viewport: Entity<DiffViewport>,
-    state: Entity<TreeState>,
     filter_input: Entity<InputState>,
-    /// Every file's tree.
-    full: Arc<TreeModel>,
-    /// The tree of the files the filters keep, while any filter is on.
-    filtered: Option<Arc<TreeModel>>,
+    /// The accordion: every panel and the open one.
+    panels: FilesPanel,
+    /// The partition the panels were built from (`None`: every file in
+    /// Changes).
+    partition: Option<Arc<Partition>>,
     flags: Arc<Vec<FileFlags>>,
-    filters: TreeFilters,
-    /// Viewed files and all files per directory of the shown tree.
-    dir_viewed: Arc<HashMap<String, (u32, u32)>>,
-    /// Directories collapsed in the unfiltered tree (all start expanded).
-    collapsed: HashSet<String>,
-    /// Directories collapsed while filtering (reset by each filter change).
-    filter_collapsed: HashSet<String>,
-    /// The selection as last seen, to tell the user's changes from ours.
+    filter: TreeFilter,
+    /// The open panel's selection as last seen, to tell the user's changes
+    /// from ours.
     selected: Option<ItemId>,
     /// The file the tree marks as current.
     current: Option<u32>,
     /// The file last jumped to from the tree, while the viewport shows it.
     jumped: Option<u32>,
+    /// The panel of the viewport's top file, as last seen (OQ-44: a new one
+    /// is a crossing, which opens it).
+    followed: Option<PanelKey>,
+    /// The diff the panels were built for (the viewport's provider then).
+    diff: Arc<dyn DiffProvider>,
+    /// An expansion restored before the panels were first built (view state
+    /// restores before the tab's first partition reaches the tree).
+    restored: Option<HashSet<String>>,
+    /// The open panel as last rendered: when another one opens, the
+    /// keyboard in the old list moves to the new one.
+    rendered_open: Option<PanelKey>,
     /// The filter menu, when opened from the keyboard (`f`).
     key_menu: Option<KeyMenu>,
     /// Times [`Render::render`] ran ([`FileTree::render_count`]).
     renders: u64,
+    /// Partitions applied ([`FileTree::panel_builds`]).
+    builds: u64,
     _subscriptions: Vec<Subscription>,
 }
 
-/// The file tree's own key context, around its list, filter box and
+/// The file tree's own key context, around its lists, filter box and
 /// filter menu (no bindings use it: [`FileTree::contains_focus`] does).
 pub const KEY_CONTEXT: &str = "FileTree";
 
 impl EventEmitter<FileTreeEvent> for FileTree {}
 
+/// The tree shown when no panel is open (no files).
+static EMPTY: LazyLock<TreeModel> = LazyLock::new(TreeModel::default);
+
 impl FileTree {
-    /// The tree of `files`, scrolling `viewport`.
+    /// The tree of `files`, all in one Changes panel, scrolling `viewport`
+    /// ([`FileTree::set_partition`] splits them).
     pub fn new(
         files: Arc<Vec<FileChange>>,
         viewport: Entity<DiffViewport>,
         window: &mut Window,
         cx: &mut Context<FileTree>,
     ) -> FileTree {
-        let full = Arc::new(TreeModel::build(
-            files
-                .iter()
-                .enumerate()
-                .map(|(i, f)| (i as u32, f.display_path())),
-        ));
-        // The tree walks files depth-first, the viewport in diff order;
-        // `n`/`p` and the "file above/below" checks rely on them agreeing,
-        // which holds while git lists each directory's files together
-        // (`tree_order_matches_diff_order`).
-        debug_assert!(
-            full.file_order().windows(2).all(|w| w[0] < w[1]),
-            "tree order differs from diff order"
-        );
-        let state = cx.new(|cx| TreeState::new(cx).items(tree_items(&full, &HashSet::new())));
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let diff = viewport.read(cx).provider().clone();
         let subscriptions = vec![
-            cx.observe(&state, |t: &mut FileTree, _, cx| t.selection_changed(cx)),
-            cx.subscribe(&state, |t: &mut FileTree, _, event: &TreeEvent, cx| {
-                t.expansion_changed(event, cx)
-            }),
             cx.subscribe(
                 &viewport,
                 |t: &mut FileTree, _, event: &ViewportEvent, cx| match *event {
@@ -252,31 +260,27 @@ impl FileTree {
                 },
             ),
         ];
-        let flags = Arc::new(vec![FileFlags::default(); files.len()]);
         let mut tree = FileTree {
-            files,
+            files: Arc::default(),
             viewport,
-            state,
             filter_input,
-            key_menu: None,
-            renders: 0,
-            full,
-            filtered: None,
-            flags,
-            filters: TreeFilters::default(),
-            dir_viewed: Arc::default(),
-            collapsed: HashSet::new(),
-            filter_collapsed: HashSet::new(),
+            panels: FilesPanel::default(),
+            partition: None,
+            flags: Arc::default(),
+            filter: TreeFilter::default(),
             selected: None,
             current: None,
             jumped: None,
+            followed: None,
+            diff,
+            restored: None,
+            rendered_open: None,
+            key_menu: None,
+            renders: 0,
+            builds: 0,
             _subscriptions: subscriptions,
         };
-        tree.dir_viewed = Arc::new(tree.count_viewed());
-        let top = tree.viewport.read(cx).anchor().file_idx;
-        if !tree.files.is_empty() {
-            tree.highlight(top, cx);
-        }
+        tree.build(files, None, Vec::new(), cx);
         tree
     }
 
@@ -286,14 +290,24 @@ impl FileTree {
         self.renders
     }
 
-    /// The tree shown (filtered or not).
-    pub fn model(&self) -> &TreeModel {
-        self.filtered.as_deref().unwrap_or(&self.full)
+    /// How many partitions rebuilt the panels.
+    pub fn panel_builds(&self) -> u64 {
+        self.builds
     }
 
-    /// The gpui-kit tree state (selection, focus, scroll).
-    pub fn tree_state(&self) -> &Entity<TreeState> {
-        &self.state
+    /// The accordion's panels.
+    pub fn panels(&self) -> &FilesPanel {
+        &self.panels
+    }
+
+    /// The open panel's tree shown (filtered or not).
+    pub fn model(&self) -> &TreeModel {
+        self.panels.open().map_or(&EMPTY, PanelTree::model)
+    }
+
+    /// The open panel's gpui-kit tree state (selection, focus, scroll).
+    pub fn tree_state(&self) -> Option<&Entity<TreeState>> {
+        self.panels.open().map(PanelTree::tree_state)
     }
 
     /// The fuzzy filter box.
@@ -324,7 +338,7 @@ impl FileTree {
     pub fn open_filter_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tree = cx.entity().downgrade();
         // Counted when the menu opens, not on every render.
-        let (f, extensions) = (self.filters.clone(), filters::extensions(&self.files));
+        let (f, extensions) = (self.filter.clone(), filters::extensions(&self.files));
         let menu = KeyMenu::open(
             |t: &mut FileTree| Some(&mut t.key_menu),
             self.key_menu.take(),
@@ -336,9 +350,12 @@ impl FileTree {
         cx.notify();
     }
 
-    /// The visible rows, top to bottom.
+    /// The open panel's visible rows, top to bottom.
     pub fn rows(&self, cx: &App) -> Vec<TreeRow> {
-        let state = self.state.read(cx);
+        let Some(state) = self.tree_state() else {
+            return Vec::new();
+        };
+        let state = state.read(cx);
         (0..)
             .map_while(|ix| state.entry(ix))
             .filter_map(|e| {
@@ -352,34 +369,91 @@ impl FileTree {
             .collect()
     }
 
-    /// Shows another file list (the diff was refreshed, T3.11) with its
-    /// files' review state: the same filters, the same collapsed
-    /// directories (by path) and a selected folder that still exists; the
-    /// viewport's top file is marked.
-    pub fn set_files(
+    /// Shows `files` split by `partition` (one panel per non-empty
+    /// category after Changes) with their review state `flags`: the same
+    /// filter, each panel's collapsed folders (by path), the open panel
+    /// while it still shows (else the viewport's top file's) and a selected
+    /// folder that still exists there.
+    pub fn set_partition(
         &mut self,
         files: Arc<Vec<FileChange>>,
+        partition: Option<Arc<Partition>>,
+        flags: Vec<FileFlags>,
+        cx: &mut Context<Self>,
+    ) {
+        self.builds += 1;
+        self.build(files, partition, flags, cx);
+        cx.notify();
+    }
+
+    fn build(
+        &mut self,
+        files: Arc<Vec<FileChange>>,
+        partition: Option<Arc<Partition>>,
         mut flags: Vec<FileFlags>,
         cx: &mut Context<Self>,
     ) {
-        self.full = Arc::new(TreeModel::build(
-            files
-                .iter()
-                .enumerate()
-                .map(|(i, f)| (i as u32, f.display_path())),
-        ));
+        flags.resize(files.len(), FileFlags::default());
         self.files = files;
-        flags.resize(self.files.len(), FileFlags::default());
+        self.diff = self.viewport.read(cx).provider().clone();
         self.flags = Arc::new(flags);
-        let dirs: HashSet<String> = self.full.dir_paths().into_iter().collect();
-        self.collapsed.retain(|d| dirs.contains(d));
-        if !matches!(self.selected, Some(ItemId::Dir(_))) {
-            self.selected = None;
+        self.partition = partition;
+        let was_open = self.panels.open_key().cloned();
+        let mut old: Vec<Option<PanelTree>> = self.panels.take().into_iter().map(Some).collect();
+        let specs = PanelSpec::of(self.partition.as_deref(), self.files.len());
+        let mut built = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let reused = old
+                .iter_mut()
+                .find(|p| p.as_ref().is_some_and(|p| *p.key() == spec.key))
+                .and_then(Option::take);
+            let panel = match reused {
+                Some(mut panel) => {
+                    panel.reset(spec, &self.files);
+                    panel
+                }
+                None => PanelTree::new(spec, &self.files, cx),
+            };
+            built.push(panel);
+        }
+        if let Some(expanded) = self.restored.take() {
+            for panel in &mut built {
+                panel.set_expanded(&expanded);
+            }
         }
         self.jumped = None;
         self.current = (!self.files.is_empty()).then(|| self.viewport.read(cx).anchor().file_idx);
+        self.panels.replace(built, self.files.len());
+        // A crossing (the top file in another panel than last seen: the
+        // first partition, a restored position, a repartition moving it)
+        // opens the top file's panel. Otherwise the open panel stays, else
+        // the top file's opens, else the first ([`FilesPanel::ensure_open_shown`]).
+        let followed = self.current.and_then(|f| self.key_of(f));
+        let mut keys = [&followed, &was_open];
+        if followed == self.followed {
+            keys.reverse();
+        }
+        if let Some(ix) = keys
+            .into_iter()
+            .flatten()
+            .find_map(|k| self.panels.index_of(k))
+        {
+            self.panels.set_open(ix);
+        }
+        self.followed = followed;
+        // A selected folder stays only in the panel it was selected in.
+        if !matches!(self.selected, Some(ItemId::Dir(_)))
+            || self.panels.open_key() != was_open.as_ref()
+        {
+            self.selected = None;
+        }
         self.rebuild(cx);
-        cx.notify();
+    }
+
+    /// The key of the panel holding file `idx`.
+    fn key_of(&self, idx: u32) -> Option<PanelKey> {
+        let ix = self.panels.panel_of(idx)?;
+        Some(self.panels.panels()[ix].key().clone())
     }
 
     /// Every file's review state, as last pushed.
@@ -395,59 +469,53 @@ impl FileTree {
             return;
         }
         self.flags = Arc::new(flags);
-        if self.filters.unviewed || self.filters.has_comments {
+        if self.filter.unviewed || self.filter.has_comments {
             self.rebuild(cx);
         } else {
-            self.dir_viewed = Arc::new(self.count_viewed());
+            for panel in self.panels.panels_mut() {
+                panel.recount(&self.flags);
+            }
         }
         cx.notify();
     }
 
-    /// Directory `dir`'s tri-state Viewed slot (of the tree shown): on when
-    /// every file below it is viewed, mixed when some are.
+    /// Directory `dir`'s tri-state Viewed slot in the open panel's tree:
+    /// on when every file below it is viewed, mixed when some are.
     pub fn folder_check(&self, dir: &str) -> Option<row::Check> {
-        self.dir_viewed
-            .get(dir)
-            .map(|&(viewed, total)| row::Check::of(viewed, total))
+        self.panels.open()?.folder_check(dir)
     }
 
-    pub fn filters(&self) -> &TreeFilters {
-        &self.filters
+    pub fn filters(&self) -> &TreeFilter {
+        &self.filter
     }
 
-    /// Applies `filters` (the text box shows `filters.query`).
-    pub fn set_filters(
-        &mut self,
-        filters: TreeFilters,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let query = filters.query.clone();
+    /// Applies `filter` to every panel (the text box shows `filter.query`).
+    pub fn set_filters(&mut self, filter: TreeFilter, window: &mut Window, cx: &mut Context<Self>) {
+        let query = filter.query.clone();
         if self.filter_input.read(cx).value() != query.as_str() {
             self.filter_input
                 .update(cx, |input, cx| input.set_value(query, window, cx));
         }
-        self.update_filters(|f| *f = filters, cx);
+        self.update_filters(|f| *f = filter, cx);
     }
 
     /// Sets the fuzzy filter's text (and the box's).
     pub fn set_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let mut filters = self.filters.clone();
-        filters.query = query.to_owned();
-        self.set_filters(filters, window, cx);
+        let mut filter = self.filter.clone();
+        filter.query = query.to_owned();
+        self.set_filters(filter, window, cx);
     }
 
     fn set_query_text(&mut self, query: String, cx: &mut Context<Self>) {
-        if self.filters.query != query {
+        if self.filter.query != query {
             self.update_filters(|f| f.query = query, cx);
         }
     }
 
-    fn update_filters(&mut self, change: impl FnOnce(&mut TreeFilters), cx: &mut Context<Self>) {
-        let before = self.filters.clone();
-        change(&mut self.filters);
-        if self.filters != before {
-            self.filter_collapsed.clear();
+    fn update_filters(&mut self, change: impl FnOnce(&mut TreeFilter), cx: &mut Context<Self>) {
+        let before = self.filter.clone();
+        change(&mut self.filter);
+        if self.filter != before {
             self.rebuild(cx);
             cx.notify();
         }
@@ -485,44 +553,51 @@ impl FileTree {
         );
     }
 
-    /// Clears every filter, the text box included.
+    /// Clears the filter, the text box included; the open panel stays.
     pub fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_filters(TreeFilters::default(), window, cx);
+        self.set_filters(TreeFilter::default(), window, cx);
     }
 
-    /// The expanded directories of the unfiltered tree (compacted chains by
-    /// their deepest path), in tree order.
+    /// Every panel's expanded directories of its unfiltered tree
+    /// (compacted chains by their deepest path; a category panel's
+    /// `/<category>`, then its folders as `/<category>/<path>`), panel by
+    /// panel in tree order.
     pub fn expanded_dirs(&self) -> Vec<String> {
-        self.full
-            .dir_paths()
-            .into_iter()
-            .filter(|d| !self.collapsed.contains(d))
+        self.panels
+            .panels()
+            .iter()
+            .flat_map(PanelTree::expanded_dirs)
             .collect()
     }
 
-    /// Whether every directory of the unfiltered tree is expanded (the
-    /// default; view state saves no expansion then).
+    /// Whether every directory of every panel is expanded (the default;
+    /// view state saves no expansion then).
     pub fn all_dirs_expanded(&self) -> bool {
-        self.collapsed.is_empty()
+        self.panels.panels().iter().all(PanelTree::all_expanded)
     }
 
-    /// Expands exactly `dirs` of the unfiltered tree (view-state restore).
+    /// Expands exactly `dirs` ([`FileTree::expanded_dirs`]'s names) of the
+    /// unfiltered trees (view-state restore); a category panel without its
+    /// `/<category>` in them expands every folder. Before the first
+    /// partition, it also waits for the panels it builds.
     pub fn set_expanded_dirs(
         &mut self,
         dirs: impl IntoIterator<Item = String>,
         cx: &mut Context<Self>,
     ) {
         let expanded: HashSet<String> = dirs.into_iter().collect();
-        self.collapsed = self
-            .full
-            .dir_paths()
-            .into_iter()
-            .filter(|d| !expanded.contains(d))
-            .collect();
-        if self.filtered.is_none() {
-            self.rebuild(cx);
+        for panel in self.panels.panels_mut() {
+            panel.set_expanded(&expanded);
         }
-        cx.notify();
+        if self.builds == 0 {
+            self.restored = Some(expanded);
+        }
+        if self.filter.is_active() {
+            cx.notify();
+        } else {
+            self.rebuild(cx);
+            cx.notify();
+        }
     }
 
     /// The file the tree marks as current (the viewport's top file, or the
@@ -539,7 +614,8 @@ impl FileTree {
         }
     }
 
-    /// The selected directory row's path and the files below it (as shown).
+    /// The selected directory row's path and the files below it (as its
+    /// panel shows them).
     pub fn selected_dir(&self) -> Option<(String, Vec<u32>)> {
         match &self.selected {
             Some(ItemId::Dir(path)) => {
@@ -550,27 +626,45 @@ impl FileTree {
         }
     }
 
-    /// Selects file `idx` in the tree (expanding its directories) and
-    /// scrolls the viewport to it.
+    /// Opens panel `key` (a click on its header): the diff does not move,
+    /// and the panel's list keeps its scroll position (the current file's
+    /// row is marked when the panel holds it).
+    pub fn open_panel(&mut self, key: &PanelKey, cx: &mut Context<Self>) {
+        let Some(ix) = self.panels.index_of(key) else {
+            return;
+        };
+        if self.panels.open_key() == Some(key) || !self.panels.set_open(ix) {
+            return;
+        }
+        self.selected = None;
+        self.mark_current(false, cx);
+        cx.notify();
+    }
+
+    /// Selects file `idx` in the tree (opening its panel, expanding its
+    /// directories) and scrolls the viewport to it.
     pub fn select_file(&mut self, idx: u32, cx: &mut Context<Self>) {
         if idx as usize >= self.files.len() {
             return;
+        }
+        if let Some(ix) = self.panels.panel_of(idx) {
+            self.panels.set_open(ix);
         }
         self.reveal(idx, cx);
         self.jump(idx, cx);
     }
 
-    /// `n` in the tree: the next file (tree order), wrapping.
+    /// `n` in the tree: the next file of the open panel, wrapping.
     pub fn next_file(&mut self, cx: &mut Context<Self>) {
         self.step(1, cx);
     }
 
-    /// `p` in the tree: the previous file (tree order), wrapping.
+    /// `p` in the tree: the previous file of the open panel, wrapping.
     pub fn prev_file(&mut self, cx: &mut Context<Self>) {
         self.step(-1, cx);
     }
 
-    /// Whether the keyboard is in the tree: its list, its filter box or its
+    /// Whether the keyboard is in the tree: a list, its filter box or its
     /// filter menu. gpui-kit's `TreeState` does not expose its focus handle,
     /// so the list is found by this widget's own key context
     /// ([`KEY_CONTEXT`]), not gpui-kit's `Tree` (any tree widget has that).
@@ -586,9 +680,11 @@ impl FileTree {
                 .is_some_and(|m| m.view().focus_handle(cx).contains_focused(window, cx))
     }
 
-    /// Focuses the tree (its keys: arrows, `n`/`p`, `v`).
+    /// Focuses the open panel's tree (its keys: arrows, `n`/`p`, `v`).
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        self.state.update(cx, |s, cx| s.focus(window, cx));
+        if let Some(state) = self.tree_state() {
+            state.update(cx, |s, cx| s.focus(window, cx));
+        }
     }
 
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -608,10 +704,11 @@ impl FileTree {
         self.select_file(idx, cx);
     }
 
-    /// Scrolls the viewport to file `idx` and marks it current. When the
-    /// viewport cannot bring its header to the top (near the end of the
-    /// diff), the tree keeps marking it while it stays on screen
-    /// (`jumped`); when it can, the viewport's top file rules again.
+    /// Scrolls the viewport to file `idx` (opening its section) and marks
+    /// it current. When the viewport cannot bring its header to the top
+    /// (near the end of the diff), the tree keeps marking it while it stays
+    /// on screen (`jumped`); when it can, the viewport's top file rules
+    /// again.
     fn jump(&mut self, idx: u32, cx: &mut Context<Self>) {
         self.current = Some(idx);
         let landed = self.viewport.update(cx, |v, cx| {
@@ -623,75 +720,76 @@ impl FileTree {
         cx.notify();
     }
 
-    /// Selects file `idx`'s row, expanding its directories.
+    /// Selects file `idx`'s row in the open panel, expanding its
+    /// directories.
     fn reveal(&mut self, idx: u32, cx: &mut Context<Self>) {
+        let Some(state) = self.tree_state().cloned() else {
+            return;
+        };
         let id = ItemId::File(idx);
         let key: SharedString = id.to_string().into();
         self.selected = Some(id);
-        self.state.update(cx, |s, cx| {
+        state.update(cx, |s, cx| {
             s.reveal_item(&key, ScrollStrategy::Nearest, cx);
             let ix = s.index_of(&key);
             s.set_selected_index(ix, cx);
         });
     }
 
-    /// Marks file `idx` current without moving the viewport: selects its
-    /// row, or the collapsed directory hiding it.
+    /// Marks file `idx` current without moving the viewport.
     fn highlight(&mut self, idx: u32, cx: &mut Context<Self>) {
         self.current = Some(idx);
-        let mut candidates: Vec<ItemId> = self
-            .model()
-            .ancestors_of_file(idx)
-            .into_iter()
-            .map(ItemId::Dir)
-            .collect();
-        candidates.push(ItemId::File(idx));
-        let found = self.state.update(cx, |s, cx| {
-            // The deepest row shown: the file, else the collapsed directory.
-            let hit = candidates.iter().rev().find_map(|id| {
+        self.mark_current(true, cx);
+        cx.notify();
+    }
+
+    /// Selects the current file's row in the open panel, or the collapsed
+    /// directory hiding it (scrolled into view when `reveal`); nothing when
+    /// the panel does not hold it.
+    fn mark_current(&mut self, reveal: bool, cx: &mut Context<Self>) {
+        let Some(state) = self.tree_state().cloned() else {
+            return;
+        };
+        let mut candidates: Vec<ItemId> = match self.current {
+            Some(idx) => self
+                .model()
+                .ancestors_of_file(idx)
+                .into_iter()
+                .map(ItemId::Dir)
+                .chain([ItemId::File(idx)])
+                .collect(),
+            None => Vec::new(),
+        };
+        // The deepest row shown: the file, else the collapsed directory.
+        candidates.reverse();
+        let found = state.update(cx, |s, cx| {
+            let hit = candidates.iter().find_map(|id| {
                 let key: SharedString = id.to_string().into();
                 s.index_of(&key).map(|ix| (id.clone(), ix))
             });
             match &hit {
                 Some((_, ix)) => {
                     s.set_selected_index(Some(*ix), cx);
-                    s.scroll_to_item(*ix, ScrollStrategy::Nearest);
+                    if reveal {
+                        s.scroll_to_item(*ix, ScrollStrategy::Nearest);
+                    }
                 }
                 None => s.set_selected_index(None, cx),
             }
             hit.map(|(id, _)| id)
         });
         self.selected = found;
-        cx.notify();
     }
 
-    /// The viewport's top file changed.
-    fn visible_file_changed(&mut self, idx: u32, cx: &mut Context<Self>) {
-        if let Some(target) = self.jumped {
-            // Near the end of the diff the viewport cannot bring the chosen
-            // file to its top; keep it marked while it is on screen.
-            if target > idx && self.on_screen(target, cx) {
-                return;
-            }
-            self.jumped = None;
+    /// A panel's selection changed (a click or the arrow keys): in the open
+    /// panel, a file row scrolls the viewport to its file.
+    fn selection_changed(&mut self, panel: &PanelKey, cx: &mut Context<Self>) {
+        if self.panels.open_key() != Some(panel) {
+            return;
         }
-        if self.current != Some(idx) || self.selected != Some(ItemId::File(idx)) {
-            self.highlight(idx, cx);
-        }
-    }
-
-    fn on_screen(&self, idx: u32, cx: &App) -> bool {
-        let doc = self.viewport.read(cx).document();
-        doc.header_top(idx) < doc.scroll_top() + f64::from(doc.viewport_height())
-    }
-
-    /// The tree's selection changed (a click or the arrow keys): a file row
-    /// scrolls the viewport to its file.
-    fn selection_changed(&mut self, cx: &mut Context<Self>) {
         let now = self
-            .state
-            .read(cx)
-            .selected_item()
+            .tree_state()
+            .and_then(|s| s.read(cx).selected_item())
             .and_then(|item| ItemId::parse(&item.id));
         if now == self.selected {
             return;
@@ -702,19 +800,17 @@ impl FileTree {
         }
     }
 
-    fn expansion_changed(&mut self, event: &TreeEvent, cx: &mut Context<Self>) {
+    fn expansion_changed(&mut self, panel: &PanelKey, event: &TreeEvent, cx: &mut Context<Self>) {
         let (id, expanded) = match event {
             TreeEvent::Expanded(id) => (id, true),
             TreeEvent::Collapsed(id) => (id, false),
         };
-        let Some(ItemId::Dir(path)) = ItemId::parse(id) else {
+        let (Some(ItemId::Dir(path)), Some(panel)) =
+            (ItemId::parse(id), self.panels.get_mut(panel))
+        else {
             return;
         };
-        let set = if self.filtered.is_some() {
-            &mut self.filter_collapsed
-        } else {
-            &mut self.collapsed
-        };
+        let set = panel.collapsed_mut();
         if expanded {
             set.remove(&path);
         } else {
@@ -723,78 +819,44 @@ impl FileTree {
         cx.notify();
     }
 
-    /// Rebuilds the shown tree from the files, the filters and the
-    /// expansion, keeping the current file marked.
+    /// Applies the filter, counts and expansion to every panel; when the
+    /// open panel has no match, the first one with a match opens. A folder
+    /// the user selected stays selected while the open panel still has it
+    /// (`MarkFolderViewed` acts on it); otherwise the current file is
+    /// marked.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.filtered = self.filters.is_active().then(|| {
-            let keep = self.filters.apply(&self.files, &self.flags);
-            Arc::new(TreeModel::build(
-                keep.iter()
-                    .map(|&i| (i, self.files[i as usize].display_path())),
-            ))
-        });
-        let collapsed = if self.filtered.is_some() {
-            &self.filter_collapsed
-        } else {
-            &self.collapsed
-        };
-        let items = tree_items(self.model(), collapsed);
-        self.dir_viewed = Arc::new(self.count_viewed());
-        // A folder the user selected stays selected while the new tree has
-        // it (`MarkFolderViewed` acts on it); otherwise mark the current file.
+        for panel in self.panels.panels_mut() {
+            panel.filter(&self.filter, &self.files, &self.flags);
+            panel.recount(&self.flags);
+            panel.push_items(cx);
+        }
+        let before = self.panels.open_key().cloned();
+        self.panels.ensure_open_shown();
         let dir = match self.selected.take() {
-            Some(id @ ItemId::Dir(_)) => Some(SharedString::from(id.to_string())),
+            Some(id @ ItemId::Dir(_)) if self.panels.open_key() == before.as_ref() => {
+                Some(SharedString::from(id.to_string()))
+            }
             _ => None,
         };
-        let kept = self.state.update(cx, |s, cx| {
-            s.set_items(items, cx);
-            let ix = dir.as_ref().and_then(|key| s.index_of(key))?;
-            s.set_selected_index(Some(ix), cx);
-            Some(ix)
-        });
+        let kept = match (dir.as_ref(), self.tree_state().cloned()) {
+            (Some(key), Some(state)) => state.update(cx, |s, cx| {
+                let ix = s.index_of(key)?;
+                s.set_selected_index(Some(ix), cx);
+                Some(ix)
+            }),
+            _ => None,
+        };
         if kept.is_some() {
             self.selected = dir.as_deref().and_then(ItemId::parse);
-        } else if let Some(current) = self.current {
-            self.highlight(current, cx);
-        }
-    }
-
-    /// Viewed and total files per directory of the shown tree.
-    fn count_viewed(&self) -> HashMap<String, (u32, u32)> {
-        self.model()
-            .nodes()
-            .iter()
-            .filter(|n| n.is_dir())
-            .map(|n| {
-                let viewed = n
-                    .files
-                    .iter()
-                    .filter(|&&f| self.flags.get(f as usize).is_some_and(|x| x.viewed))
-                    .count() as u32;
-                (n.path.clone(), (viewed, n.files.len() as u32))
-            })
-            .collect()
-    }
-
-    fn row_ctx(&self, cx: &Context<Self>) -> row::RowCtx {
-        let colors = crate::theme::viewport_theme(cx);
-        row::RowCtx {
-            files: self.files.clone(),
-            flags: self.flags.clone(),
-            dir_viewed: self.dir_viewed.clone(),
-            model: self.filtered.clone().unwrap_or_else(|| self.full.clone()),
-            viewport: self.viewport.clone(),
-            tree: cx.entity().downgrade(),
-            status: row::StatusColors::of(cx),
-            stat_added: colors.stat_added,
-            stat_removed: colors.stat_removed,
+        } else {
+            self.mark_current(true, cx);
         }
     }
 
     /// The filter menu (funnel button).
     fn filter_menu(&self, cx: &Context<Self>) -> impl IntoElement {
         let this: WeakEntity<FileTree> = cx.entity().downgrade();
-        let active = self.filters.menu_active();
+        let active = self.filter.menu_active();
         Button::new("tree-filters")
             // gpui-kit bundles only its default icons (no funnel): the
             // three-line glyph reads as a list filter.
@@ -810,86 +872,48 @@ impl FileTree {
                 };
                 let t = tree.read(cx);
                 // Counted when the menu opens, not on every render.
-                let (f, extensions) = (t.filters.clone(), filters::extensions(&t.files));
+                let (f, extensions) = (t.filter.clone(), filters::extensions(&t.files));
                 filters::menu(&this, f, extensions, menu)
             })
     }
 }
 
-/// gpui-kit tree items for `model`, directories expanded unless in
-/// `collapsed`.
-fn tree_items(model: &TreeModel, collapsed: &HashSet<String>) -> Vec<TreeItem> {
-    fn build_item(model: &TreeModel, id: model::NodeId, collapsed: &HashSet<String>) -> TreeItem {
-        let node = model.node(id);
-        let item = TreeItem::new(node.item_id(), node.name.clone());
-        if node.is_dir() {
-            item.expanded(!collapsed.contains(&node.path)).children(
-                node.children
-                    .iter()
-                    .map(|&c| build_item(model, c, collapsed)),
-            )
-        } else {
-            item
-        }
-    }
-    model
-        .roots()
-        .iter()
-        .map(|&r| build_item(model, r, collapsed))
-        .collect()
-}
-
 impl Render for FileTree {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
         let theme = cx.theme().clone();
-        let total = self.files.len();
-        let shown = self.model().file_order().len();
-        let ctx = row::RowCtx::shared(self.row_ctx(cx));
-        let body: AnyElement = if shown == 0 {
-            let this = cx.entity().downgrade();
-            v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(if total == 0 {
-                    "No files changed"
-                } else {
-                    "No files match the filters"
-                })
-                .when(total > 0, |el| {
-                    el.child(
-                        Button::new("tree-clear-filters")
-                            .debug_selector(|| "tree-clear-filters".into())
-                            .label("Clear filters")
-                            .xsmall()
-                            .outline()
-                            .on_click(move |_, window, cx| {
-                                if let Some(t) = this.upgrade() {
-                                    t.update(cx, |t, cx| t.clear_filters(window, cx));
-                                }
-                            }),
-                    )
-                })
-                .into_any_element()
-        } else {
-            div()
-                .flex_1()
-                .min_h_0()
-                .px_1p5()
-                .child(
-                    tree(&self.state, move |ix, entry, selected, window, cx| {
-                        row::render(&ctx, ix, entry, selected, window, cx)
-                    })
-                    .size_full(),
-                )
-                .into_any_element()
+        let filtering = self.filter.is_active();
+        self.follow_focus(window, cx);
+        let open = self.panels.open_key().cloned();
+        let headers = self.panels.has_headers();
+        let this = cx.entity().downgrade();
+        // Panels with a match, their headers, the open one's tree after its
+        // header.
+        let mut accordion: Vec<AnyElement> = Vec::new();
+        let mut first = true;
+        for panel in self.panels.panels().iter().filter(|p| p.is_shown()) {
+            let is_open = open.as_ref() == Some(panel.key());
+            if headers {
+                accordion.push(
+                    panels::header(panel, is_open, filtering, this.clone(), first, cx)
+                        .into_any_element(),
+                );
+                first = false;
+            }
+            if is_open {
+                accordion.push(self.body(cx));
+            }
+        }
+        if !self.panels.open().is_some_and(PanelTree::is_shown) {
+            accordion.push(self.body(cx));
+        }
+        // The footer counts the Changes panel's files whatever the filter
+        // shows; none when every file is categorized.
+        let changes: Option<&[u32]> = match self.panels.panels().first() {
+            Some(p) if *p.key() == PanelKey::Changes => Some(p.files()),
+            Some(_) => None,
+            None => Some(&[]),
         };
-        // The footer counts every file, whatever the filters show.
-        let all: Vec<u32> = (0..total as u32).collect();
         v_flex()
             .key_context(KEY_CONTEXT)
             .size_full()
@@ -928,7 +952,12 @@ impl Render for FileTree {
                         ),
                     ),
             )
-            .child(body)
-            .child(footer::footer(&all, &self.viewport, cx))
+            .children(accordion)
+            .child(footer::footer(
+                changes,
+                self.partition.as_ref(),
+                &self.viewport,
+                cx,
+            ))
     }
 }

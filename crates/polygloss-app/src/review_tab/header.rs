@@ -10,8 +10,11 @@
 //! - **Live:** "Changes on <branch>" ("Uncommitted changes on <branch>" when
 //!   the base is HEAD), "vs <base>", and Snapshot (disabled once pinned).
 //!
-//! Every kind shows "N files · +X −Y" in its right cluster, before the SHA or
-//! Snapshot. Times are relative to the app clock ([`set_clock`]).
+//! Every kind shows "N files · +X −Y" over the uncategorized files, then one
+//! chip per category section ("1 test"), in its right cluster before the SHA
+//! or Snapshot; with every file categorized, the chips only. Their tooltip is
+//! the categories' breakdown (design §11.15). Times are relative to the app
+//! clock ([`set_clock`]).
 //!
 //! The card's facts come from git on the background executor ([`reload`]);
 //! the card then becomes the prelude. Whatever changes its height (the commit
@@ -20,7 +23,8 @@
 //! the card while it lands or grows.
 //!
 //! Debug selectors: `header-card`, `header-avatar`, `header-title`,
-//! `header-byline`, `header-stats`, `header-sha`, `header-commits-toggle`,
+//! `header-byline`, `header-stats`, `header-chips`, `header-sha`,
+//! `header-commits-toggle`,
 //! `header-commits` (the list), `header-commit-<i>`, `header-commits-more`
 //! and `live-snapshot`; the texts as `"<name>: <text>"`.
 
@@ -36,8 +40,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Global, Hsla, InteractiveElement as _,
-    IntoElement as _, ParentElement as _, SharedString, Styled as _, Task, WeakEntity, Window, div,
-    px,
+    IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Task, WeakEntity, Window, div, px,
 };
 use polygloss_core::git::listing::{CommitDetails, commit_details, range_commits};
 use polygloss_core::git::{Git, ReviewKind, Since};
@@ -47,6 +51,7 @@ use polygloss_highlight::{Appearance, Rgba};
 use polygloss_viewport::{RenderBlock, group_digits};
 
 use crate::app_state::AppState;
+use crate::categories;
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::review_tab::toolbar::text;
 use crate::review_tab::{ReviewTab, compare_sides, live_branch, short_ref};
@@ -349,7 +354,7 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
                 .flex_none()
                 .gap_4()
                 .text_size(px(13.))
-                .child(labeled("header-stats", stats(t, cx)).text_color(theme.muted_foreground))
+                .child(totals(t, cx))
                 .children(parts.trailing),
         );
     v_flex()
@@ -403,20 +408,34 @@ fn plural(n: u64, noun: &str) -> String {
     format!("{} {noun}{s}", group_digits(n))
 }
 
-/// "N files · +X −Y" over every file of the diff, "N files · …" until each
-/// is counted. (T6.15 narrows it to the uncategorized files.)
-fn stats(tab: &ReviewTab, cx: &App) -> String {
+/// "N files · +X −Y" over the uncategorized files ("N files · …" until each
+/// is counted), then the category chips; the chips alone when every file is
+/// categorized. With categorized files, the categories' breakdown is the
+/// tooltip.
+fn totals(tab: &ReviewTab, cx: &App) -> AnyElement {
+    let theme = cx.theme();
     let viewport = tab.viewport.read(cx);
-    let n = viewport.document().files().len() as u32;
-    let files = plural(u64::from(n), "file");
-    match crate::tree::footer::totals(0..n, viewport) {
-        Some((added, removed)) => format!(
-            "{files} · +{} −{}",
-            group_digits(added),
-            group_digits(removed)
-        ),
-        None => format!("{files} · …"),
-    }
+    let partition = categories::partition(tab);
+    let chips = partition
+        .as_deref()
+        .map(categories::chips)
+        .unwrap_or_default();
+    let totals = match &partition {
+        Some(p) => categories::Totals::of(p.main.iter().copied(), viewport),
+        None => categories::Totals::of(0..viewport.document().files().len() as u32, viewport),
+    };
+    let stats = (totals.files > 0 || chips.is_empty())
+        .then(|| labeled("header-stats", totals.summary()).text_color(theme.muted_foreground));
+    h_flex()
+        .id("header-totals")
+        .gap_2()
+        .children(stats)
+        .children(categories::chips_element("header-chips", &chips, cx))
+        .when_some(
+            partition.and_then(|p| categories::breakdown_tooltip(&p, &tab.viewport)),
+            |el, tooltip| el.tooltip(tooltip),
+        )
+        .into_any_element()
 }
 
 /// A live card's Snapshot: pins the state shown as an iteration (design

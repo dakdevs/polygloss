@@ -24,6 +24,10 @@
 //! - **Palette** (namespace `categories`): Toggle Tests and the other
 //!   built-ins (a tab's own on/off, winning over `settings.json`), Show Next
 //!   Section, Hide Section, Mark Section Viewed and Explain file category.
+//! - **Totals** (T6.15, [`totals`]): the tree's footer and the header card
+//!   count the main list's files ([`Totals`]) and add one [`Chip`] per
+//!   section ("6 tests"); their tooltip is the [`Breakdown`]
+//!   ([`breakdown_lines`]).
 //!
 //! [`DiffViewport::set_sections`]: polygloss_viewport::DiffViewport::set_sections
 //! [`DiffViewport::set_generated`]: polygloss_viewport::DiffViewport::set_generated
@@ -43,6 +47,11 @@ use polygloss_core::review::ViewedState;
 use polygloss_diff::FileChange;
 use polygloss_viewport::{DiffViewport, Section, ViewportEvent};
 use serde_json::{Value, json};
+
+mod totals;
+
+pub use totals::{Breakdown, Chip, Totals, breakdown, breakdown_lines, chips};
+pub(crate) use totals::{breakdown_tooltip, chips_element, chips_text};
 
 use crate::keymap::actions::categories as actions;
 use crate::keymap::handlers;
