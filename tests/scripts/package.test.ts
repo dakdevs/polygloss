@@ -434,6 +434,28 @@ describe("scripts/smoke-bundle.sh --static", () => {
     expect(noScheme.output).toContain("does not register the polygloss scheme");
   });
 
+  test("a release version passes when both version keys carry it", () => {
+    const calver = { CFBundleShortVersionString: "20261005.3" };
+    const ok = smokeStatic(
+      makeBundle(scratch("calver"), {
+        plist: packagerInfoPlist({ ...calver, CFBundleVersion: "20261005.3" }),
+      }),
+    );
+    expect(ok.output).toContain("dev.dak.polygloss 20261005.3");
+    expect(ok.exitCode).toBe(0);
+    for (const CFBundleVersion of ["20261005.4", workspaceVersion]) {
+      const r = smokeStatic(
+        makeBundle(scratch("calver"), {
+          plist: packagerInfoPlist({ ...calver, CFBundleVersion }),
+        }),
+      );
+      expect({ CFBundleVersion, exitCode: r.exitCode }).toEqual({
+        CFBundleVersion,
+        exitCode: 1,
+      });
+    }
+  });
+
   test("a bundle without its licenses or third-party notices fails", () => {
     for (const [name] of bundledLicenses) {
       const r = smokeStatic(
@@ -508,6 +530,9 @@ const fakeCargo = `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >>"$FAKE_CARGO_LOG"
 case "$*" in *"$FAKE_CARGO_FAIL"*) echo "fake failure: $*" >&2; exit 101 ;; esac
+if [ "$1" = build ]; then
+  printf 'version-at-build:%s\\n' "\${POLYGLOSS_VERSION-}" >>"$FAKE_CARGO_LOG.env"
+fi
 if [ "$1" = build ] && [ -n "\${FAKE_CARGO_PAUSE-}" ] && [ ! -e "$FAKE_CARGO_PAUSE" ]; then
   : >"$FAKE_CARGO_PAUSE"
   sleep 1
@@ -546,7 +571,13 @@ describe("scripts/package-release.sh", () => {
   function packageRun(
     args: string[] = [],
     env: Env = {},
-  ): { exitCode: number; output: string; log: string[]; dist: string } {
+  ): {
+    exitCode: number;
+    output: string;
+    log: string[];
+    envLog: string[];
+    dist: string;
+  } {
     const dist = join(scratch("dist"), "dist");
     const log = join(scratch("log"), "cargo.log");
     const r = run([packageRelease, ...args], {
@@ -561,12 +592,15 @@ describe("scripts/package-release.sh", () => {
         ...env,
       },
     });
+    const lines = (path: string) =>
+      existsSync(path)
+        ? readFileSync(path, "utf8").split("\n").filter(Boolean)
+        : [];
     return {
       exitCode: r.exitCode,
       output: r.output,
-      log: existsSync(log)
-        ? readFileSync(log, "utf8").split("\n").filter(Boolean)
-        : [],
+      log: lines(log),
+      envLog: lines(`${log}.env`),
       dist,
     };
   }
@@ -601,6 +635,47 @@ describe("scripts/package-release.sh", () => {
       expect(info).toContain(`Identifier=${identifier}`);
       expect(info).toContain("Signature=adhoc");
       expect(info).toMatch(/flags=0x[0-9a-f]+\([^)]*runtime[^)]*\)/);
+    }
+  });
+
+  test("a release version (POLYGLOSS_VERSION) reaches both builds, both plist keys and the DMG name", () => {
+    const r = packageRun([], { POLYGLOSS_VERSION: "20261005.12" });
+    expect(r.output).toContain("package-release: done");
+    expect(r.exitCode).toBe(0);
+    const plist = readPlist(
+      join(r.dist, "Polygloss.app", "Contents", "Info.plist"),
+    );
+    expect(plist.CFBundleShortVersionString).toBe("20261005.12");
+    expect(plist.CFBundleVersion).toBe("20261005.12");
+    expect(readdirSync(r.dist).filter((f) => f.endsWith(".dmg"))).toEqual([
+      "Polygloss_20261005.12_aarch64.dmg",
+    ]);
+    // Both executables are compiled with it (polygloss_core::VERSION).
+    expect(r.envLog).toEqual([
+      "version-at-build:20261005.12",
+      "version-at-build:20261005.12",
+    ]);
+  });
+
+  test("a POLYGLOSS_VERSION that is not YYYYMMDD.N is refused before anything is built", () => {
+    for (const version of [
+      "0.1.0",
+      "20261005",
+      "20261005.0",
+      "20261005.01",
+      "v20261005.1",
+      "2026105.1",
+      "20261005.1-rc.1",
+    ]) {
+      const r = packageRun([], { POLYGLOSS_VERSION: version });
+      expect({ version, exitCode: r.exitCode }).toEqual({
+        version,
+        exitCode: 1,
+      });
+      expect(r.output).toContain(
+        `POLYGLOSS_VERSION '${version}' is not a release version (YYYYMMDD.N)`,
+      );
+      expect(r.log).toEqual([]);
     }
   });
 

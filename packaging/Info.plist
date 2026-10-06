@@ -2,10 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Merged last over the Info.plist cargo-packager generates (library-choices §13),
-  so these keys win. The versions are not here: CFBundleShortVersionString is the
-  crate version (cargo-packager), and scripts/package-release.sh stamps
-  CFBundleVersion from it (cargo-packager's default is a timestamp, and Sparkle
-  compares CFBundleVersion).
+  so these keys win. The versions are not here: scripts/package-release.sh
+  stamps CFBundleShortVersionString and CFBundleVersion with the release
+  version POLYGLOSS_VERSION (CalVer YYYYMMDD.N, ADR-0019), or without it the
+  crate version cargo-packager writes (its CFBundleVersion is a timestamp, and
+  Sparkle compares CFBundleVersion).
   Sparkle's keys are not here either (plan T5.3): package-release.sh adds
   SUFeedURL and SUPublicEDKey from POLYGLOSS_APPCAST_URL and
   SPARKLE_PUBLIC_ED_KEY when both are set. SUEnableAutomaticChecks stays unset

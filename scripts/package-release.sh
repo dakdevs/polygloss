@@ -8,8 +8,11 @@
 #      polygloss-platform's `appkit` into the CLI);
 #   2. `cargo packager --release --formats app` lays out Polygloss.app from them
 #      (config: crates/polygloss-app/Cargo.toml, [package.metadata.packager]);
-#   3. stamps CFBundleVersion with the crate version (cargo-packager writes a
-#      timestamp; Sparkle compares CFBundleVersion); with an appcast configured
+#   3. stamps the version into CFBundleShortVersionString and CFBundleVersion
+#      (cargo-packager writes a timestamp there; Sparkle compares it): the
+#      release version POLYGLOSS_VERSION (CalVer YYYYMMDD.N, ADR-0019), which
+#      step 1 also compiles into both executables (polygloss_core::VERSION),
+#      or without it the crate version; with an appcast configured
 #      (POLYGLOSS_APPCAST_URL and SPARKLE_PUBLIC_ED_KEY, both or neither, plan
 #      T5.3) it also writes SUFeedURL and SUPublicEDKey and copies
 #      vendor/Sparkle.framework (scripts/fetch-sparkle.sh) into
@@ -64,6 +67,11 @@ if [ "${POLYGLOSS_PACKAGE_RELEASE_LOCKED-}" != 1 ]; then
   POLYGLOSS_PACKAGE_RELEASE_LOCKED=1 exec scripts/cargo.sh with-lock "$repo_root/scripts/package-release.sh" "$@"
 fi
 
+release_version="${POLYGLOSS_VERSION-}"
+if [ -n "$release_version" ] && ! [[ "$release_version" =~ ^[0-9]{8}\.[1-9][0-9]*$ ]]; then
+  die "POLYGLOSS_VERSION '$release_version' is not a release version (YYYYMMDD.N)"
+fi
+
 # Sparkle (T5.3): both appcast values or neither; checked before building.
 appcast_url="${POLYGLOSS_APPCAST_URL-}"
 public_ed_key="${SPARKLE_PUBLIC_ED_KEY-}"
@@ -116,6 +124,10 @@ plist="$app/Contents/Info.plist"
 version="$(plutil -extract CFBundleShortVersionString raw -o - "$plist")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]] ||
   die "CFBundleShortVersionString '$version' is not a crate version"
+if [ -n "$release_version" ]; then
+  version="$release_version"
+  plutil -replace CFBundleShortVersionString -string "$version" "$plist"
+fi
 # Dot-separated integers only (LaunchServices, Sparkle): drop any pre-release.
 plutil -replace CFBundleVersion -string "${version%%[-+]*}" "$plist"
 

@@ -550,7 +550,7 @@ impl ServerHandler for PolyglossServer {
             .build();
         crate::channel::declare(&self.state.opts, &mut caps);
         let mut info = InitializeResult::new(caps).with_instructions(INSTRUCTIONS.trim_end());
-        info.server_info = Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION"));
+        info.server_info = Implementation::new(SERVER_NAME, polygloss_core::VERSION);
         info
     }
 
