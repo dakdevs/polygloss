@@ -113,9 +113,12 @@ fn app(
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
     // gpui-component's dialog entrance animation runs on wall-clock time
     // (`dialog::ANIMATION_DURATION`), so a capture a few frames after
-    // opening catches it mid-slide at a different offset every run. With
-    // reduced motion it draws in place on its first frame.
-    cx.update(|cx| cx.set_reduce_motion(true));
+    // opening catches it mid-slide at a different offset every run. Under
+    // the harnesses' motion override (Off, which also sets the kit's reduce
+    // motion flag) it draws in place on its first frame.
+    cx.update(|cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
     let (handle, main) = cx.update(|cx| {
         startup::init(core, cx);
         window::open_main_window_sized(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx)

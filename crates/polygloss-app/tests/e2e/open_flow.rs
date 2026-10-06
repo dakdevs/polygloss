@@ -160,7 +160,9 @@ fn add_repo_row(core: &Core, worktree: &Path, at_s: i64) {
 fn app_with_flow(cx: &mut HeadlessAppContext, home: &Path) -> (AnyWindowHandle, Entity<OpenFlow>) {
     // The dialog's entrance animation settles on its first frame, so every
     // capture shows it in place.
-    cx.update(|cx| cx.set_reduce_motion(true));
+    cx.update(|cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
     let core = Core::open_default().expect("open the sandbox store");
     make_repo(&home.join("src/polygloss"));
     add_repo_row(

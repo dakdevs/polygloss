@@ -24,6 +24,7 @@ mod ligatures;
 mod live;
 mod open_flow;
 mod palette;
+mod press_ink;
 mod shell;
 mod submit;
 mod theme;
@@ -65,5 +66,6 @@ fn main() -> std::process::ExitCode {
         keyboard_only_review::TESTS,
         header_card::TESTS,
         categories::TESTS,
+        press_ink::TESTS,
     ])
 }

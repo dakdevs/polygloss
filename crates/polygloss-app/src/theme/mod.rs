@@ -194,6 +194,7 @@ fn apply(theme: Arc<ZedTheme>, force: bool, cx: &mut App) {
     let config = zed_to_kit::kit_theme_config(&theme);
     let viewport = viewport_theme::resolve(&theme);
     Theme::update(cx, |kit| kit.apply_config(&config));
+    crate::motion::apply_kit_tokens(cx);
     let active = cx.global_mut::<ActiveTheme>();
     active.zed = theme;
     active.viewport = viewport.clone();

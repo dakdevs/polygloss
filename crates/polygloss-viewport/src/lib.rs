@@ -22,6 +22,8 @@
 //! - [`blocks`]: host elements (threads, composers, notes) below their
 //!   anchored line, measured near the viewport, with split spacers.
 //! - [`find`]: the host's find matches marked in the code (⌘F).
+//! - [`motion`]: the motion core the app shares (ADR-0030): the policy,
+//!   the tokens and [`motion::Track`], the sampler every motion runs on.
 //! - Category sections ([`Section`], [`DiffViewport::set_sections`]): the
 //!   host's sections after the other files, each behind a band on the
 //!   canvas that opens or closes it; closed sections cost nothing per
@@ -49,6 +51,7 @@ mod header;
 pub mod kit;
 pub mod layout;
 pub mod materialize;
+pub mod motion;
 pub mod numbers;
 mod paint_rows;
 pub mod pipeline;

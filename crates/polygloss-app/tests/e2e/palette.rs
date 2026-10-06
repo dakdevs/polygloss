@@ -29,7 +29,9 @@ fn review_window(
     // The dialogs' entrance animation settles on its first frame, so the
     // capture never catches them mid-slide (a machine under load drew the
     // four frames of `open` before the animation ended).
-    cx.update(|cx| cx.set_reduce_motion(true));
+    cx.update(|cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
     let repo = code_change_repo();
     crate::support::home_above(repo.path());
     let core = Core::open_default().expect("open the sandbox store");

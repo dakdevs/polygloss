@@ -6,7 +6,8 @@
 //! app), [`app_state`], [`settings`], [`window`] (the one main window and
 //! the menu bar), [`chrome`] (window options, the sidebar and the top rows
 //! every page renders, T6.3), [`assets`] (the icons, T6.3), [`motion`]
-//! (the two entrances and Reduce Motion, T6.8), [`tabs`],
+//! (the motion core on the viewport's `Track`: the policy override,
+//! settling, wrappers, exits, press ink and Reduce Motion, T7.2), [`tabs`],
 //! [`review_tab`] (toolbar, banner strip, panes),
 //! [`provider`] ([`CoreDiffProvider`]), [`logging`], [`perf`] (test-only
 //! `--perf-scenario`), [`dump`] (the hidden `--dump-keymap`/`--dump-settings`)

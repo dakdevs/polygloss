@@ -14,6 +14,7 @@
 #![allow(dead_code)]
 
 pub mod harness;
+pub mod motion;
 pub mod screenshot;
 
 use std::os::unix::fs::PermissionsExt;
