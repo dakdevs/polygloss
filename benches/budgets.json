@@ -1,5 +1,5 @@
 {
-  "$comment": "Design §12.1 perf budgets per corpus (plan T2.9 metric definitions). A value passes only when it is strictly below its budget; a metric reported as null (not measured yet) is shown as n/a and does not fail. Checked by `bun benches/run-perf.ts --check-budgets`.",
+  "$comment": "Design §12.1 perf budgets per corpus (plan T2.9 metric definitions). A value passes only when it is strictly below its budget; a metric reported as null (not measured yet) is shown as n/a and does not fail. Checked by `bun benches/run-perf.ts --check-budgets`. Metrics with an empty budget are reported only (T7.3: the idle chrome and late frames).",
   "metrics": {
     "first_paint_ms": {
       "label": "first paint",
@@ -67,6 +67,130 @@
         "synthetic": 50,
         "linux": 50
       }
+    },
+    "shell_idle_draw_p95_ms": {
+      "label": "idle chrome p95",
+      "unit": "ms",
+      "budget": {}
+    },
+    "sidebar_anim_draw_p95_ms": {
+      "label": "sidebar motion p95",
+      "unit": "ms",
+      "budget": {
+        "typical": 8.3,
+        "linux": 8.3
+      }
+    },
+    "sidebar_anim_draw_max_ms": {
+      "label": "sidebar motion max",
+      "unit": "ms",
+      "budget": {
+        "typical": 16.7,
+        "linux": 16.7
+      }
+    },
+    "sidebar_commit_ms": {
+      "label": "sidebar commit",
+      "unit": "ms",
+      "budget": {
+        "typical": 16.7,
+        "linux": 50
+      }
+    },
+    "sidebar_late_frames": {
+      "label": "sidebar late frames",
+      "unit": "frames",
+      "budget": {}
+    },
+    "threads_anim_draw_p95_ms": {
+      "label": "threads panel motion p95",
+      "unit": "ms",
+      "budget": {
+        "typical": 8.3,
+        "linux": 8.3
+      }
+    },
+    "threads_anim_draw_max_ms": {
+      "label": "threads panel motion max",
+      "unit": "ms",
+      "budget": {
+        "typical": 16.7,
+        "linux": 16.7
+      }
+    },
+    "threads_commit_ms": {
+      "label": "threads panel commit",
+      "unit": "ms",
+      "budget": {
+        "typical": 16.7,
+        "linux": 50
+      }
+    },
+    "threads_late_frames": {
+      "label": "threads panel late frames",
+      "unit": "frames",
+      "budget": {}
+    },
+    "card_anim_draw_p95_ms": {
+      "label": "card motion p95",
+      "unit": "ms",
+      "budget": {
+        "typical": 8.3,
+        "linux": 8.3
+      }
+    },
+    "card_anim_draw_max_ms": {
+      "label": "card motion max",
+      "unit": "ms",
+      "budget": {
+        "typical": 16.7,
+        "linux": 16.7
+      }
+    },
+    "card_late_frames": {
+      "label": "card late frames",
+      "unit": "frames",
+      "budget": {}
+    },
+    "accordion_anim_draw_p95_ms": {
+      "label": "accordion motion p95",
+      "unit": "ms",
+      "budget": {
+        "typical": 8.3,
+        "linux": 8.3
+      }
+    },
+    "accordion_anim_draw_max_ms": {
+      "label": "accordion motion max",
+      "unit": "ms",
+      "budget": {
+        "typical": 16.7,
+        "linux": 16.7
+      }
+    },
+    "accordion_late_frames": {
+      "label": "accordion late frames",
+      "unit": "frames",
+      "budget": {}
+    },
+    "section_anim_draw_p95_ms": {
+      "label": "section motion p95",
+      "unit": "ms",
+      "budget": {
+        "linux": 8.3
+      }
+    },
+    "section_anim_draw_max_ms": {
+      "label": "section motion max",
+      "unit": "ms",
+      "budget": {
+        "linux": 16.7
+      }
+    },
+    "section_late_frames": {
+      "label": "section late frames",
+      "unit": "frames",
+      "budget": {}
     },
     "peak_rss_mb": {
       "label": "peak RSS",

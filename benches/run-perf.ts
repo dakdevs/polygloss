@@ -12,10 +12,11 @@
 // process start): `polygloss-perf` for the viewport scenarios, the app itself
 // (`Polygloss --perf-scenario <name>`, with POLYGLOSS_TEST=1, OQ-P4; `--app-bin`,
 // default target/perf/Polygloss) for the app's (`app-open`: the app's own
-// first paint, T3.1), each with a fresh sandboxed HOME, data, config and
-// cache dir and an empty git config, on the corpora its metrics are budgeted
-// for (budgets.json). Corpus paths and revisions come from
-// benches/corpora/lib.ts `corpusEntry`, passed to the binary as flags.
+// first paint, T3.1; `motion`: the app shell while it animates, T7.3), each
+// with a fresh sandboxed HOME, data, config and cache dir and an empty git
+// config, on the corpora its metrics are budgeted for (budgets.json). Corpus
+// paths and revisions come from benches/corpora/lib.ts `corpusEntry`, passed
+// to the binary as flags.
 // Each binary is launched once (`--version`) before the matrix, so macOS's
 // first-launch assessment of a fresh build is not measured, and then runs one
 // unmeasured `open` window (its runner's first planned corpus and layout), so
@@ -55,6 +56,33 @@ const repoRoot = resolve(benchesDir, "..");
 export const layoutNames = ["split", "unified"] as const;
 export type LayoutName = (typeof layoutNames)[number];
 
+/**
+ * The app shell's motion metrics (plan T7.3), measured by the app's `motion`
+ * scenario: the idle chrome, then per animated surface its animation frames'
+ * draw p95 and max, its late frames and, for the panels, the commit frame.
+ * A surface reports null until its driver exists.
+ */
+export const motionMetricNames = [
+  "shell_idle_draw_p95_ms",
+  "sidebar_anim_draw_p95_ms",
+  "sidebar_anim_draw_max_ms",
+  "sidebar_commit_ms",
+  "sidebar_late_frames",
+  "threads_anim_draw_p95_ms",
+  "threads_anim_draw_max_ms",
+  "threads_commit_ms",
+  "threads_late_frames",
+  "card_anim_draw_p95_ms",
+  "card_anim_draw_max_ms",
+  "card_late_frames",
+  "accordion_anim_draw_p95_ms",
+  "accordion_anim_draw_max_ms",
+  "accordion_late_frames",
+  "section_anim_draw_p95_ms",
+  "section_anim_draw_max_ms",
+  "section_late_frames",
+] as const;
+
 export const metricNames = [
   "first_paint_ms",
   "scroll_p95_ms",
@@ -64,6 +92,7 @@ export const metricNames = [
   "app_first_paint_ms",
   "sections_scroll_p95_ms",
   "section_toggle_ms",
+  ...motionMetricNames,
   "peak_rss_mb",
 ] as const;
 export type MetricName = (typeof metricNames)[number];
@@ -315,6 +344,16 @@ export const scenarios: Scenario[] = [
     metrics: ["comment_repaint_ms"],
     enabled: true,
   },
+  // T7.3: the app shell while it animates (`Polygloss --perf-scenario
+  // motion`): the idle chrome, then each animated surface's driver, 20
+  // open-close rounds per layout. It runs where its surfaces are budgeted
+  // (typical and linux).
+  {
+    name: "motion",
+    runner: "app",
+    metrics: [...motionMetricNames],
+    enabled: true,
+  },
 ];
 
 export type PlannedRun = {
@@ -403,20 +442,25 @@ function fmt(value: number): string {
 }
 
 /**
- * One line per corpus and layout, one column per budgeted metric: the value
- * with ✓ or ✗ where it has a budget, `n/a` when not measured, `—` when not
- * run. Frame-to-frame interval p95 / max sit next to the scroll p95.
+ * One line per corpus and layout, one column per metric any row has: the
+ * value with ✓ or ✗ where it has a budget, `n/a` when not measured, `—` when
+ * not run. Frame-to-frame interval p95 / max sit next to the scroll p95.
  */
 export function formatTable(rows: Row[], checks: BudgetCheck[]): string {
+  // Only the metrics some row has: a run of a few scenarios is not a
+  // table of dashes.
+  const shown = metricNames.filter((m) =>
+    rows.some((r) => r.metrics[m] !== undefined),
+  );
   const header: string[] = ["corpus", "layout"];
-  for (const m of metricNames) {
+  for (const m of shown) {
     header.push(m);
     if (m === "scroll_p95_ms") header.push("interval p95 / max");
   }
   const lines = [header];
   for (const row of rows) {
     const cells: string[] = [row.corpus, row.layout];
-    for (const m of metricNames) {
+    for (const m of shown) {
       const value = row.metrics[m];
       const check = checks.find(
         (c) =>

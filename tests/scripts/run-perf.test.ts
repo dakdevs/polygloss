@@ -15,6 +15,7 @@ import {
   type Baseline,
   type Row,
   aggregate,
+  binScenario,
   budgetsPassed,
   checkBudgets,
   compareBaseline,
@@ -37,6 +38,21 @@ afterAll(() => sandbox.cleanup());
 
 const budgets = loadBudgets();
 const machine = { cpu: "Apple M3 Max", macos: "26.0" };
+
+// The app shell's motion metrics (plan T7.3), written out here: the idle
+// chrome, then per animated surface its animation frames, its late frames
+// and, for the two panels, the commit frame.
+const surfaces = ["sidebar", "threads", "card", "accordion", "section"];
+const motionMetricNames = [
+  "shell_idle_draw_p95_ms",
+  ...surfaces.flatMap((s) => [
+    `${s}_anim_draw_p95_ms`,
+    `${s}_anim_draw_max_ms`,
+    `${s}_late_frames`,
+  ]),
+  "sidebar_commit_ms",
+  "threads_commit_ms",
+];
 
 function row(
   corpus: Row["corpus"],
@@ -112,6 +128,28 @@ describe("budgets", () => {
       synthetic: 50,
       linux: 50,
     });
+    // T7.3: animation frames of the full app (< 8.3 p95, < 16.7 max) on
+    // typical and linux (sections only exist on linux there), the panels'
+    // commit frames (< 16.7 typical, < 50 linux); the idle chrome and late
+    // frames are reported, with no budget.
+    const metric = (name: string) =>
+      (budgets.metrics as Record<string, { budget: object }>)[name]?.budget;
+    for (const s of ["sidebar", "threads", "card", "accordion"]) {
+      expect(metric(`${s}_anim_draw_p95_ms`)).toEqual({
+        typical: 8.3,
+        linux: 8.3,
+      });
+      expect(metric(`${s}_anim_draw_max_ms`)).toEqual({
+        typical: 16.7,
+        linux: 16.7,
+      });
+    }
+    expect(metric("section_anim_draw_p95_ms")).toEqual({ linux: 8.3 });
+    expect(metric("section_anim_draw_max_ms")).toEqual({ linux: 16.7 });
+    for (const s of ["sidebar", "threads"])
+      expect(metric(`${s}_commit_ms`)).toEqual({ typical: 16.7, linux: 50 });
+    expect(metric("shell_idle_draw_p95_ms")).toEqual({});
+    for (const s of surfaces) expect(metric(`${s}_late_frames`)).toEqual({});
   });
 
   test("budget check flags a miss", () => {
@@ -178,6 +216,17 @@ describe("budgets", () => {
     expect(table).toContain("9.1 ✗");
     // Frame intervals are reported next to the scroll p95.
     expect(table).toContain("8.4 / 33.3");
+  });
+
+  test("the table leaves out the metrics no row has", () => {
+    const rows = [row("typical", "split", { scroll_p95_ms: 2.1 })];
+    const header = formatTable(rows, checkBudgets(rows, budgets)).split(
+      "\n",
+    )[0]!;
+    expect(header).toContain("scroll_p95_ms");
+    expect(header).toContain("interval p95 / max");
+    for (const absent of ["first_paint_ms", "sidebar_anim_draw_p95_ms"])
+      expect(header).not.toContain(absent);
   });
 });
 
@@ -387,6 +436,38 @@ describe("plan", () => {
     ]);
   });
 
+  test("motion_scenario_runs_on_typical_and_linux", () => {
+    const runs = planRuns({
+      corpora: ["typical", "synthetic", "huge-file", "linux"],
+      layouts: ["split", "unified"],
+      budgets,
+    });
+    const motion = runs.filter((r) => r.scenario === "motion");
+    expect(motion.map((r) => `${r.corpus}/${r.layout}`)).toEqual([
+      "typical/split",
+      "typical/unified",
+      "linux/split",
+      "linux/unified",
+    ]);
+    // In the app (`Polygloss --perf-scenario motion`), measuring every
+    // registered motion metric.
+    for (const r of motion) {
+      expect(r.runner).toBe("app");
+      expect(r.enabled).toBe(true);
+      const measured: string[] = [...r.metrics].sort();
+      expect(measured).toEqual([...motionMetricNames].sort());
+    }
+    expect(binScenario("motion")).toBe("motion");
+    // The gate's command plans exactly these.
+    const gate = planRuns({
+      corpora: ["typical", "linux"],
+      layouts: ["split", "unified"],
+      scenarios: ["motion"],
+      budgets,
+    });
+    expect(gate).toEqual(motion);
+  });
+
   test("the warm-up opens the first planned corpus in the first planned layout", () => {
     const plan = planRuns({
       corpora: ["huge-file", "linux"],
@@ -547,6 +628,14 @@ chmodSync(fakeHarness, 0o755);
 // The app's side (`Polygloss --perf-scenario <name> …`, T3.1): it needs
 // POLYGLOSS_TEST=1 like the real app and echoes what it was given.
 const fakeApp = join(sandbox.home, "fake-app");
+// Its motion scenario reports the idle chrome and, by default, null for
+// every surface (no driver yet); SIDEBAR_ANIM_P95 gives one a value.
+const motionNulls = motionMetricNames
+  .filter(
+    (m) => m !== "shell_idle_draw_p95_ms" && m !== "sidebar_anim_draw_p95_ms",
+  )
+  .map((m) => `\\"${m}\\": null`)
+  .join(", ");
 const appLaunches = join(sandbox.home, "fake-app.log");
 writeFileSync(
   fakeApp,
@@ -576,6 +665,7 @@ case "$scenario" in
   open) metrics="\\"app_first_paint_ms\\": \${APP_FIRST_PAINT:-150}" ;;
   watcher-banner) metrics="\\"watcher_banner_ms\\": \${WATCHER_BANNER:-260}" ;;
   comment-roundtrip) metrics='"comment_repaint_ms": 12' ;;
+  motion) metrics="\\"shell_idle_draw_p95_ms\\": \${SHELL_IDLE:-1.4}, \\"sidebar_anim_draw_p95_ms\\": \${SIDEBAR_ANIM_P95:-null}, ${motionNulls}" ;;
   *) echo "fake-app: unknown scenario $scenario" >&2; exit 2 ;;
 esac
 printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"repo":"%s","base":"%s","head":"%s","mode":"%s","polygloss_test":"%s"}}\\n' \\
@@ -1170,6 +1260,52 @@ describe("run-perf CLI", () => {
       );
       expect(slow.code).toBe(1);
       expect(slow.stderr).toContain("app_first_paint_ms");
+    },
+    cliTimeout,
+  );
+
+  test(
+    "null_motion_metrics_show_as_na_and_do_not_fail",
+    () => {
+      const out = join(sandbox.home, "results", "motion.json");
+      const args = [
+        "--corpus",
+        "typical,linux",
+        "--layouts",
+        "split",
+        "--scenarios",
+        "motion",
+        "--check-budgets",
+      ];
+      const r = runPerf([...args, "--out", out]);
+      expect({ code: r.code, stderr: r.stderr }).toMatchObject({ code: 0 });
+      const results = JSON.parse(readFileSync(out, "utf8")) as Results;
+      expect(results.rows.map((x) => `${x.corpus}/${x.layout}`)).toEqual([
+        "typical/split",
+        "linux/split",
+      ]);
+      const typical = results.rows[0]!.metrics;
+      expect(typical.shell_idle_draw_p95_ms).toBe(1.4);
+      for (const m of motionMetricNames.slice(1)) expect(typical[m]).toBeNull();
+      // Budgeted nulls are `missing`, never a miss; the idle chrome has no
+      // budget, so it has no verdict.
+      const motionChecks = results.budgets!.filter((c) =>
+        motionMetricNames.includes(c.metric),
+      );
+      expect(motionChecks.length).toBeGreaterThan(0);
+      expect(motionChecks.every((c) => c.status === "missing")).toBe(true);
+      expect(r.stdout).toContain("n/a");
+      expect(r.stdout).toContain("1.4");
+      expect(r.stdout).not.toContain("✗");
+      // Once a driver reports, its budget applies (< 8.3 ms).
+      const slow = runPerf(
+        [...args, "--out", join(sandbox.home, "results", "motion-slow.json")],
+        { SIDEBAR_ANIM_P95: "9.1" },
+      );
+      expect(slow.code).toBe(1);
+      expect(slow.stderr).toContain(
+        "budget missed: sidebar_anim_draw_p95_ms typical split = 9.1",
+      );
     },
     cliTimeout,
   );

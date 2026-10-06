@@ -21,8 +21,10 @@ use crate::chrome::{self, Chrome, Segment, ShowFiles, ShowReviews, ToggleSidebar
 use crate::home::HomeView;
 use crate::keyboard::{self, Pane};
 use crate::keymap::handlers;
+use crate::perf::motion::frames;
 use crate::review_tab::{ReviewTab, panes::ToggleThreadsPanel};
 use crate::settings::SettingsStore;
+use crate::space::layout;
 use crate::tabs::{CloseTab, NextTab, PrevTab, TabItem, Tabs};
 
 gpui_kit::actions!(
@@ -56,9 +58,6 @@ gpui_kit::actions!(
         ActivateTab9,
     ]
 );
-
-/// The window's size the first time it opens, in points.
-const WINDOW_SIZE: (f32, f32) = (1440.0, 900.0);
 
 /// The main window and its root view (a GPUI global while it is open).
 struct MainWindowHandle {
@@ -257,9 +256,10 @@ pub fn main_window(cx: &App) -> Option<(AnyWindowHandle, Entity<MainWindow>)> {
         .then_some((handle.window, view))
 }
 
-/// Opens the main window with its Home tab.
+/// Opens the main window with its Home tab, [`layout::WINDOW`] the first
+/// time.
 pub fn open_main_window(cx: &mut App) -> anyhow::Result<(AnyWindowHandle, Entity<MainWindow>)> {
-    open_main_window_sized(size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1)), cx)
+    open_main_window_sized(size(px(layout::WINDOW.0), px(layout::WINDOW.1)), cx)
 }
 
 /// [`open_main_window`] at `window_size` (points; screenshots pin it).
@@ -523,6 +523,8 @@ impl Focusable for MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The perf scenario's frame timing (a no-op unless recording; T7.3).
+        frames::render_started(window, cx);
         let title = self.tabs.active_item().title(cx);
         if title != self.window_title {
             window.set_window_title(&title);
@@ -547,5 +549,7 @@ impl Render for MainWindow {
             // First, so its mouse listeners are registered first every frame.
             .child(crate::motion::settle::root())
             .child(div().flex_1().min_h_0().child(active))
+            // Last, so its paint ends the frame's timing (T7.3).
+            .child(frames::sentinel())
     }
 }
