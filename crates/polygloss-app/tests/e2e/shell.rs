@@ -81,5 +81,25 @@ fn e2e_shell_review_tab() {
     });
     assert_eq!((tabs, active), (2, 1));
     let image = screenshot::capture(&mut cx, handle);
+    assert_sidebar_divider_is_one_point(&image);
     assert_screenshot(&image);
+}
+
+/// The sidebar is 280 pt of its color and the divider to the main column one
+/// point of the border color, as in the reference (a 2 px line at 2×):
+/// across the top rows, at 2×, x 0–559 are the sidebar, 560–561 the divider,
+/// 562 the toolbar (Polygloss Light's palette, by hand).
+fn assert_sidebar_divider_is_one_point(image: &image::RgbaImage) {
+    let y = 26 * screenshot::SCALE;
+    let at = |x: u32| image.get_pixel(x, y).0;
+    let (sidebar, border, toolbar) = (
+        [0xeb, 0xeb, 0xea, 0xff],
+        [0xe7, 0xe7, 0xe7, 0xff],
+        [0xfc, 0xfc, 0xfb, 0xff],
+    );
+    let row: Vec<_> = (540..580).map(at).collect();
+    assert_eq!(at(10), sidebar, "the sidebar's top row");
+    assert_eq!(at(559), sidebar, "the sidebar is 280 pt: {row:x?}");
+    assert_eq!((at(560), at(561)), (border, border), "{row:x?}");
+    assert_eq!(at(562), toolbar, "a one-point divider: {row:x?}");
 }

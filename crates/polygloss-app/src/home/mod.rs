@@ -1,7 +1,8 @@
 //! Home: recent reviews across repos (design §11.2), the main window's first
 //! tab. It renders the window's shell ([`crate::chrome::shell`]): the
 //! sidebar on its Reviews segment ([`nav`]; Files is disabled here) and the
-//! main column, a toolbar row ("Reviews", the count) over the list.
+//! main column, a toolbar row ("Reviews", the count, Open… for ⌘O's open
+//! flow) over the list.
 //!
 //! [`HomeView`] lists `Core::review_summaries` in two sections, **Awaiting
 //! you** (re-review requested, or an open agent question without a human
@@ -698,10 +699,21 @@ impl Render for HomeView {
             .text_color(theme.foreground)
             .child("Reviews")
             .into_any_element();
+        let open = Button::new("home-open")
+            .debug_selector(|| "home-open".into())
+            .icon(IconName::Plus)
+            .label("Open…")
+            .outline()
+            .small()
+            .tooltip("Open a review (⌘O)")
+            .on_click(|_, window, cx| {
+                crate::open_flow::open(window, cx);
+            })
+            .into_any_element();
         let toolbar = crate::chrome::toolbar_row(
             "home-toolbar",
             std::iter::once(title).chain(count).collect(),
-            Vec::new(),
+            vec![open],
             window,
             cx,
         );

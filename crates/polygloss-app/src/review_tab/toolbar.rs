@@ -295,13 +295,15 @@ pub fn tooltip(
 }
 
 /// A capsule (design §11.4): a muted `icon`, then `label` when there is
-/// one. A gpui-kit `Button`, so a press on it never moves the window.
+/// one, in a one-point border as in the reference. A gpui-kit `Button`, so a
+/// press on it never moves the window.
 pub fn pill(id: &'static str, icon: Lucide, label: Option<Div>, cx: &App) -> Button {
     Button::new(id)
         .debug_selector(move || id.into())
         .secondary()
         .small()
         .rounded(px(12.))
+        .border_1()
         .icon(Icon::new(icon).text_color(cx.theme().muted_foreground))
         .when_some(label, |pill, label| pill.child(label))
 }

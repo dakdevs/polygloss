@@ -271,6 +271,31 @@ fn polygloss_themes_meet_contrast() {
     }
 }
 
+#[test]
+fn polygloss_selected_segment_is_raised_over_its_track() {
+    // The segmented controls (the sidebar's Files | Reviews, the toolbar's
+    // split | unified) paint the selected segment in `tab.active.background`
+    // on a `tab_bar.segmented.background` track. As in macOS, the selected
+    // segment is the raised one, lighter than its track in both appearances,
+    // and as distinct in dark as in light (white on #dcdcdb is 1.36:1).
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        let t = default_theme(appearance);
+        let colors = kit_colors(t);
+        let kit = |key: &str| Rgba::parse(colors[key].as_str().unwrap()).unwrap();
+        let (selected, track) = (
+            kit("tab.active.background"),
+            kit("tab_bar.segmented.background"),
+        );
+        assert!(
+            luminance(selected) > luminance(track),
+            "{}: the selected segment is darker than its track",
+            t.name
+        );
+        let ratio = contrast(selected, track);
+        assert!(ratio >= 1.3, "{}: segment on track {ratio:.2}", t.name);
+    }
+}
+
 #[gpui_kit::test]
 fn system_appearance_switch_changes_theme(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();

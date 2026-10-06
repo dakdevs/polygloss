@@ -84,6 +84,31 @@ function section(md: string, heading: string): string {
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n");
 }
 
+/**
+ * The anchors GitHub gives the headings of `md` (code fences skipped): the
+ * text lowercased, code ticks and punctuation other than `-` and `_`
+ * dropped, spaces turned into `-`, a repeated anchor numbered `-1`, `-2`, ….
+ */
+function headingAnchors(md: string): Set<string> {
+  const anchors = new Set<string>();
+  const seen = new Map<string, number>();
+  let fenced = false;
+  for (const line of md.split("\n")) {
+    if (line.startsWith("```")) fenced = !fenced;
+    const heading = fenced ? null : line.match(/^#+ (.*)$/);
+    if (!heading) continue;
+    const slug = heading[1]!
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+      .replace(/\s/g, "-");
+    const n = seen.get(slug) ?? 0;
+    seen.set(slug, n + 1);
+    anchors.add(n ? `${slug}-${n}` : slug);
+  }
+  return anchors;
+}
+
 /** The body rows of the first markdown table in `text`, as trimmed cells (`\|` unescaped). */
 function tableRows(text: string): string[][] {
   const lines = text.split("\n");
@@ -187,18 +212,49 @@ describe("docs/user-guide.md", () => {
       "docs/user-guide.md",
       "docs/agents.md",
       "CONTRIBUTING.md",
+      "README.md",
     ]) {
       const text = read(doc);
-      for (const [, target] of text.matchAll(/\]\(([^)#]+)(#[^)]*)?\)/g)) {
+      for (const [, target, fragment] of text.matchAll(
+        /\]\(([^)#]*)(#[^)]*)?\)/g,
+      )) {
         if (/^[a-z]+:/.test(target!)) continue; // external
-        const path = join(repoRoot, dirname(doc), target!);
-        expect({ doc, target, exists: existsSync(path) }).toEqual({
-          doc,
-          target,
-          exists: true,
-        });
+        const file = target ? join(dirname(doc), target) : doc;
+        const exists = existsSync(join(repoRoot, file));
+        expect({ doc, target, exists }).toEqual({ doc, target, exists: true });
+        // A heading anchor into a markdown file names one of its headings.
+        if (fragment && file.endsWith(".md")) {
+          const anchor = fragment.slice(1);
+          const found = headingAnchors(read(file)).has(anchor);
+          expect({ doc, target, anchor, found }).toEqual({
+            doc,
+            target,
+            anchor,
+            found: true,
+          });
+        }
       }
     }
+  });
+
+  test("heading anchors follow GitHub's rules", () => {
+    const md = [
+      "# Polygloss user guide",
+      "## Iterations and re-reviews",
+      "```md",
+      "## Not a heading",
+      "```",
+      "### 11.1 Window and navigation (ADR-0023, ADR-0026)",
+      "## Usage",
+      "## Usage",
+    ].join("\n");
+    expect([...headingAnchors(md)]).toEqual([
+      "polygloss-user-guide",
+      "iterations-and-re-reviews",
+      "111-window-and-navigation-adr-0023-adr-0026",
+      "usage",
+      "usage-1",
+    ]);
   });
 });
 

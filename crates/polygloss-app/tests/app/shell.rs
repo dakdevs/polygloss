@@ -839,12 +839,12 @@ fn top_rows_move_the_window_except_on_controls(cx: &mut TestAppContext) {
     assert!(on >= 5, "show-sidebar is among {on} controls");
     click(shell.cx, "show-sidebar");
 
-    // Home: its title and count drag too.
+    // Home: its title and count drag too; its Open… button never.
     shell.cx.simulate_keystrokes("cmd-{");
     draw(shell.cx);
     assert_eq!(shell.tabs(), (2, 0));
-    let (on, off) = sweep_top_row(shell.cx, &log, "home-toolbar", &[]);
-    assert!(on == 0 && off >= 10, "{on} on controls, {off} off");
+    let (on, off) = sweep_top_row(shell.cx, &log, "home-toolbar", &["home-open"]);
+    assert!(on >= 1 && off >= 10, "{on} on controls, {off} off");
     sweep_top_row(shell.cx, &log, "sidebar-top-row", &segments);
 }
 

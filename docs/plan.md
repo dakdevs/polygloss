@@ -3089,6 +3089,14 @@ Then the standard completion block.
 
 **Verify:** the standard completion block.
 
+**As built (T6.16):** measured on the 2× captures and against the reference at the same scale (a crop of each, side by side; the reference stays out of the repo).
+
+- **Checklist:** passes, light and dark, with the exceptions below. Top rows 52 pt (51 + a 1 pt rule), aligned on one centre line. Sidebar 280 pt, opaque, filter field and segmented track `#dcdcdb`. Tree rows 28 pt, `folder`/`file` outline icons at rest, monospace counts and status letters right-aligned. Toolbar repo block over its parent path, then pills. Canvas: the 32 pt strip, then the header card with no lead (reference ≈ 13 pt, OQ-39). Header card: stats before the SHA, 57 pt tall (reference ≈ 55). Cards: radius 8, 1 pt border, 12 pt apart, 16 pt from the main column's sides. File header 45 pt: dim directory and bold name, kind and review-state pills, the open-in-editor icon, the `+a −d` pill and the Viewed pill. Bars 3 pt at each pane's left edge, tinted numbers and gutter (`#3f9a45` on `#d9f2e0`, `#c4433c` on `#fbe1df`), no glyphs. Added and deleted files are one full-width pane with one number column, in split too. Counts of 1,000 or more grouped (dev app: `+1,200`, `Total: +1,202 −2`). Gap rows on the canvas. Syntax colors per the palette (keyword `#342dda` sampled). Section bands with their indicators, accordion panel headers, threads panel cards, banner notices and Home cards are as designed. The five dark baselines keep the light structure.
+- **Fixed:** (1) the divider between the sidebar and the main column was 2 pt: the sidebar's own right border beside the split handle's hairline. The sidebar lost its border, so it is 280 pt of its color and the divider is one point (`e2e_shell_review_tab` checks the pixels). (2) Polygloss Dark's selected segment (`tab.active_background` `#18181b` on the `#2a2a2e` track) was darker than its track, the faint segment T6.3 noted. It is now `#3f3f46`: raised, and as distinct as light's white on `#dcdcdb` (1.37:1 and 1.36:1; `polygloss_selected_segment_is_raised_over_its_track`). This also fixes the toolbar's split | unified toggle. (3) Home's toolbar row lacked design §11.2's Open… (⌘O). `home-open`, an outlined button at the row's right end, now opens the open flow (`home_toolbar_open_button_opens_the_open_flow`; `top_rows_move_the_window_except_on_controls` treats it as a control). (4) The toolbar pills gain the reference's 1 pt border (`border`; reference `#e4e4e3` around `#f2f2f1`). (5) The user guide's link to the README's installation section had a stale anchor; the docs test now also checks heading anchors.
+- **Open questions:** OQ-56 (the viewport's code, number and header insets are tighter than the reference's) and OQ-57 (the reference's tree counts are dim, not green and red; the research record said green/red and is corrected). Known and unchanged: OQ-39 (the strip), OQ-40 (the code font: the reference's is SF Mono-like), OQ-50 (opaque sidebar) and OQ-55 (folders first).
+- **Manual (2026-10-05):** dev app in `tmux` session `polygloss-m6-preview` (sandboxed `HOME`, data and config dirs under `/tmp/t616-preview`), a 1440×901 window, captured with `screencapture -l`. Traffic lights: the close button spans 19–33 pt in both axes, so its centre (26, 26) is the 52 pt row's middle. The lights end at 78.5 pt, inside the 80 pt inset; `TRAFFIC_LIGHT_POSITION` is unchanged. Light and dark (`theme.mode` in the sandbox's `settings.json`, hot-reloaded) render the same structure. A theme switch kept the view at the top of the header card in three fresh diffs; once, in the session's first review, the view sat at the diff's end after the switch, which did not reproduce (the window was on the user's screen, so a stray scroll is not ruled out). Not done: drag and double-click zoom on both rows, fullscreen, the hidden sidebar in a real window, and Reduce Motion switched live. Each needs the user's pointer and keyboard, or a change to the user's System Settings, so they are left to the user in that session.
+- **Baselines:** 31 re-recorded and reviewed. The divider, the sidebar's 1 pt shift (its right-aligned controls), the pill borders and dark's raised segment move every shell capture, and Home and the open flow captures gain Open…. Five are unchanged because they show only the viewport: `e2e-{cursor-range-and-plus, cursor-text-selection, viewport-special-files, viewport-split-pierre-light, viewport-unified-pierre-dark}`.
+
 ### M6 exit gate
 
 ```bash
@@ -3109,7 +3117,7 @@ bun benches/run-perf.ts --corpus all --layouts split,unified --check-budgets --c
 - [ ] For OQ-41 (Submit's color), OQ-39 (the strip) and OQ-40 (the code font: one review rendered with Lilex and with the system mono), a gate screenshot is shown to the user beside the reference (the reference stays out of the repo).
 - [ ] Manual checks of T6.16 recorded (traffic lights, drag, zoom, fullscreen, Reduce Motion live).
 - [ ] [Definition of done (M6)](#definition-of-done-m6) ticked.
-- [ ] Design OQ-35–OQ-55 presented to the user with their provisional defaults, including OQ-43's separate Viewed circle at the row's end (the orchestrator's choice over the icon slot) and OQ-45's deviation from geld (a trailing slash matches directories only, so files named `test` stay uncategorized).
+- [ ] Design OQ-35–OQ-57 presented to the user with their provisional defaults (OQ-56 and OQ-57 come from T6.16's parity pass), including OQ-43's separate Viewed circle at the row's end (the orchestrator's choice over the icon slot) and OQ-45's deviation from geld (a trailing slash matches directories only, so files named `test` stay uncategorized).
 
 ---
 
@@ -3254,7 +3262,7 @@ Each line needs evidence, as for v1. This list is kept apart from the v1 list, w
 
 ## Open questions
 
-M6's provisional defaults are design §26 OQ-35–OQ-55; builders use them until the user decides.
+M6's provisional defaults are design §26 OQ-35–OQ-57; builders use them until the user decides.
 
 ### Orchestrator decisions after M2 (provisional — pending user confirmation)
 

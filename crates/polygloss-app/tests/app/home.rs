@@ -932,6 +932,25 @@ fn nav_open_button_opens_the_open_flow(cx: &mut TestAppContext) {
     assert!(flow_open(&mut shell));
 }
 
+#[gpui_kit::test]
+fn home_toolbar_open_button_opens_the_open_flow(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let shell = start(cx);
+    // Design §11.2: Home's toolbar row holds "Reviews", the count and
+    // Open… (⌘O); the button sits in the row's right half.
+    let toolbar = bounds(shell.cx, "home-toolbar");
+    let open = bounds(shell.cx, "home-open");
+    assert!(toolbar.contains(&open.center()), "{open:?} in {toolbar:?}");
+    assert!(
+        open.center().x > toolbar.center().x,
+        "{open:?} on the right"
+    );
+    click(shell.cx, "home-open");
+    assert!(shell.cx.update(|window, cx| {
+        polygloss_app::open_flow::current(cx).is_some() && window.has_active_dialog(cx)
+    }));
+}
+
 /// Opens `review_id`'s ⋯ menu in the Reviews segment (it shows on hover).
 fn open_nav_row_menu(shell: &mut Shell, review_id: &str) {
     hover(shell.cx, &format!("nav-row-{review_id}"));
