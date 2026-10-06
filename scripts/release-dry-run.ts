@@ -11,7 +11,8 @@
 // filled in (every secret and `github.token` empty, `vars.*` from --var,
 // else empty; `inputs.*` from --input, else the default of the trigger's
 // input: workflow_dispatch's, or for `push` (ci.yml calling it on main)
-// workflow_call's), `$GITHUB_ENV` lines carry over to later steps, and each
+// workflow_call's; `env.*` from the workflow's and job's `env:` and
+// `$GITHUB_ENV`), `$GITHUB_ENV` lines carry over to later steps, and each
 // `run` goes through `bash --noprofile --norc -eo pipefail` with `RUNNER_TEMP`
 // a fresh temp dir and `GITHUB_SHA` the checkout's HEAD. The environment starts clean apart from PATH, HOME, USER,
 // LOGNAME, SHELL, TMPDIR, LANG, TERM, CARGO_HOME, RUSTUP_HOME and each --env,
@@ -50,6 +51,8 @@ type Ctx = {
   runnerTemp: string;
   vars: Record<string, string>;
   inputs: Record<string, string>;
+  /** The `env` context: workflow and job `env:`, then `$GITHUB_ENV`. */
+  env: Record<string, string>;
 };
 
 type Step = {
@@ -103,6 +106,8 @@ function contextValue(path: string, ctx: Ctx): string {
   if (v) return ctx.vars[v[1]!] ?? "";
   const i = path.match(/^inputs\.(\w+)$/);
   if (i) return ctx.inputs[i[1]!] ?? "";
+  const e = path.match(/^env\.(\w+)$/);
+  if (e) return ctx.env[e[1]!] ?? "";
   switch (path) {
     case "github.token":
       return "";
@@ -138,7 +143,7 @@ export function expandExpressions(text: string, ctx: Ctx): string {
 /**
  * A status-free condition: `startsWith(a, b)`, `a == b`, `a != b`, or a
  * context value, maybe negated (`!inputs.dry_run`); a value is false when
- * empty or `false`.
+ * empty or `false`. evaluateCondition joins them with `&&`.
  */
 function evaluateExpr(expr: string, ctx: Ctx): boolean {
   const sw = expr.match(/^startsWith\(\s*(.+?)\s*,\s*(.+?)\s*\)$/);
@@ -180,11 +185,11 @@ export function evaluateCondition(
     case "cancelled()":
       return false;
   }
-  if (/&&|\|\|/.test(expr))
-    throw new Error(`unsupported condition \`${expr}\``);
-  // Evaluated even after a failure, so an unsupported condition always fails loudly.
-  const value = evaluateExpr(expr, ctx);
-  return !failed && value;
+  if (/\|\|/.test(expr)) throw new Error(`unsupported condition \`${expr}\``);
+  // Every part is evaluated, even after a failure, so an unsupported
+  // condition always fails loudly.
+  const values = expr.split("&&").map((part) => evaluateExpr(part.trim(), ctx));
+  return !failed && values.every(Boolean);
 }
 
 export function stepName(step: Step): string {
@@ -340,6 +345,7 @@ async function main(argv: string[]): Promise<number> {
     runnerTemp,
     vars: opts.vars,
     inputs: opts.inputs,
+    env: {},
   };
   const githubEnvFile = join(runnerTemp, "github-env");
   writeFileSync(githubEnvFile, "");
@@ -374,6 +380,11 @@ async function main(argv: string[]): Promise<number> {
         record("skipped");
         continue;
       }
+      ctx.env = {
+        ...workflowEnv,
+        ...expandEnv(jobEnv, ctx),
+        ...readGithubEnv(githubEnvFile),
+      };
       if (!evaluateCondition(step.if, ctx, failed)) {
         record("skip-if");
         continue;

@@ -5,6 +5,10 @@
 # scripts/release-version.ts computes the CalVer version YYYYMMDD.N from the
 # tags on GitHub, so two releases never share a version, and names the last
 # release tag, from which scripts/release-notes.ts writes the release notes.
+# A commit that is not newer than that tag (a later push released first, or a
+# re-run of a released or superseded commit) is skipped with a notice: it is
+# already in the latest release, and Sparkle would offer an older build under
+# a higher version. Every later step is then skipped.
 # The job builds the bundle with POLYGLOSS_VERSION (scripts/package-release.sh
 # --sign: signed as team 5U7E4UQ5M3 from a temporary keychain, notarized and
 # stapled by scripts/sign-and-notarize.sh), smoke-tests it, signs the Sparkle
@@ -19,9 +23,10 @@
 # dry run (dry_run: true, the default): the same build, ad-hoc signed, the DMG
 # and the notes kept as a run artifact, nothing tagged or published.
 #
-# Secrets reach the scripts only through step `env:` (pinned by
-# tests/scripts/sign.test.ts): APPLE_CERTIFICATE (base64 .p12),
-# APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY,
+# Every action is pinned to a commit: whatever runs before the signing steps
+# could rewrite the scripts they run. Secrets reach the scripts only through
+# step `env:` (pinned by tests/scripts/sign.test.ts): APPLE_CERTIFICATE
+# (base64 .p12), APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY,
 # APPLE_API_ISSUER, APPLE_API_PRIVATE_KEY (the notarytool .p8 contents),
 # SPARKLE_PRIVATE_ED_KEY, and the optional HOMEBREW_TAP_TOKEN. Repository
 # variables: SPARKLE_PUBLIC_ED_KEY (required), POLYGLOSS_APPCAST_URL (default
@@ -64,7 +69,7 @@ jobs:
     steps:
       # The whole history and every tag: the release notes span the commits
       # since the last release.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -98,21 +103,16 @@ jobs:
             exit 1
           fi
 
-      # rustup >= 1.28 no longer installs the toolchain on `rustup show`; with no
-      # argument, `toolchain install` installs the one rust-toolchain.toml pins.
-      - run: rustup toolchain install
-      - run: rustup show
-      # scripts/cargo.sh keeps build intermediates in target-shared (build.build-dir)
-      # and only final artifacts in target/, so cache the former.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target-shared"
-      - uses: oven-sh/setup-bun@v2
+      # The release scripts use only Bun's built-ins: no `bun install`, whose
+      # package scripts would run before the signing steps.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.14"
-      - run: bun install --frozen-lockfile
 
-      # From origin's tags, read now: inside the concurrency group.
+      # From origin's tags, read now: inside the concurrency group. A release
+      # needs the previous release tag to be a strict ancestor of this commit;
+      # otherwise SKIP_RELEASE=true skips every later step. A dry run builds
+      # whatever it is given.
       - name: Compute the version
         run: |
           version="$(bun scripts/release-version.ts)"
@@ -120,10 +120,34 @@ jobs:
           echo "POLYGLOSS_VERSION=$version" >>"$GITHUB_ENV"
           echo "POLYGLOSS_PREVIOUS_TAG=$previous" >>"$GITHUB_ENV"
           echo "release version $version, previous release ${previous:-none}"
+          if [ "$DRY_RUN" != true ] && [ -n "$previous" ]; then
+            tagged="$(git rev-parse --verify "$previous^{commit}")"
+            status=0
+            git merge-base --is-ancestor "$previous" "$GITHUB_SHA" || status=$?
+            [ "$status" -le 1 ] || exit "$status"
+            if [ "$status" = 1 ] || [ "$tagged" = "$GITHUB_SHA" ]; then
+              echo "::notice title=Release skipped::$GITHUB_SHA is not newer than the latest release $previous (${tagged:0:7}): nothing is built or published"
+              echo "SKIP_RELEASE=true" >>"$GITHUB_ENV"
+            fi
+          fi
+
+      # rustup >= 1.28 no longer installs the toolchain on `rustup show`; with no
+      # argument, `toolchain install` installs the one rust-toolchain.toml pins.
+      - if: ${{ env.SKIP_RELEASE != 'true' }}
+        run: rustup toolchain install
+      - if: ${{ env.SKIP_RELEASE != 'true' }}
+        run: rustup show
+      # scripts/cargo.sh keeps build intermediates in target-shared (build.build-dir)
+      # and only final artifacts in target/, so cache the former.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ env.SKIP_RELEASE != 'true' }}
+        with:
+          workspaces: ". -> target-shared"
 
       # From the commits since the previous release tag (none: the first
       # release). Sparkle's copy has no <details> block, which it would print.
       - name: Write the release notes
+        if: ${{ env.SKIP_RELEASE != 'true' }}
         run: |
           mkdir -p dist
           for flavor in github sparkle; do
@@ -135,16 +159,18 @@ jobs:
           cat dist/release-notes-github.md
 
       - name: Install cargo-packager
+        if: ${{ env.SKIP_RELEASE != 'true' }}
         run: scripts/cargo.sh install cargo-packager --version =0.11.8 --locked
 
       # The job's own token only lifts the API rate limit (not a secret).
       - name: Fetch Sparkle
+        if: ${{ env.SKIP_RELEASE != 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: scripts/fetch-sparkle.sh
 
       - name: Write the notarytool API key
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}
         env:
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
@@ -156,6 +182,7 @@ jobs:
       # notarytool credentials fail it. A dry run stays ad-hoc signed. With
       # SPARKLE_PUBLIC_ED_KEY the bundle embeds Sparkle and its feed URL.
       - name: Build, sign and notarize the bundle and DMG
+        if: ${{ env.SKIP_RELEASE != 'true' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -183,11 +210,13 @@ jobs:
       # app's socket report POLYGLOSS_VERSION, the URL scheme opens a review,
       # and Sparkle (when embedded) loads.
       - name: Smoke-test the bundle
+        if: ${{ env.SKIP_RELEASE != 'true' }}
         run: |
           scripts/smoke-bundle.sh dist/Polygloss.app
           [ -f "dist/Polygloss_${POLYGLOSS_VERSION}_aarch64.dmg" ]
 
-      - uses: actions/upload-artifact@v7
+      # A dry run is never skipped.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ inputs.dry_run }}
         with:
           name: polygloss-dmg
@@ -197,7 +226,7 @@ jobs:
           if-no-files-found: error
 
       - name: Make the appcast and checksums
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}
         env:
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
         run: |
@@ -209,7 +238,7 @@ jobs:
 
       # Creates the tag v<version> on this commit.
       - name: Publish the GitHub release
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -218,7 +247,7 @@ jobs:
             "dist/Polygloss_${POLYGLOSS_VERSION}_aarch64.dmg" dist/appcast.xml dist/SHA256SUMS
 
       - name: Bump the Homebrew tap
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}

@@ -531,7 +531,9 @@ describe("release workflow (Sparkle)", () => {
 
   test("makes the appcast with the release's download prefix and publishes it", () => {
     const appcast = running("scripts/make-appcast.sh dist");
-    expect(appcast.if).toBe("${{ !inputs.dry_run }}");
+    expect(appcast.if).toBe(
+      "${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}",
+    );
     expect(appcast.run).toContain(
       'SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/$GITHUB_REPOSITORY/releases/download/v$POLYGLOSS_VERSION/"',
     );

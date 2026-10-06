@@ -45,6 +45,11 @@ function dryRun(
   };
 }
 
+// release.yml's actions, pinned to commits.
+const CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+const UPLOAD =
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
+
 /** `--plan --json` decisions as `{name: decision}`. */
 function plan(args: string[]): Record<string, string> {
   const r = dryRun(["--plan", "--json", ...args]);
@@ -65,6 +70,7 @@ describe("expressions", () => {
     runnerTemp: "/tmp/rt",
     vars: { HOMEBREW_TAP_REPO: "owner/homebrew-tap" },
     inputs: { dry_run: "true" },
+    env: { SKIP_RELEASE: "true" },
   };
 
   test("conditions github would evaluate for the release workflow", () => {
@@ -95,6 +101,19 @@ describe("expressions", () => {
     );
     expect(evaluateCondition("inputs.dry_run", release, false)).toBe(false);
     expect(evaluateCondition("!inputs.unset", ctx, false)).toBe(true);
+    // The env context, and conditions joined with &&.
+    const skip = "${{ env.SKIP_RELEASE != 'true' }}";
+    expect(evaluateCondition(skip, ctx, false)).toBe(false);
+    expect(evaluateCondition(skip, { ...ctx, env: {} }, false)).toBe(true);
+    const publish = "${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}";
+    expect(evaluateCondition(publish, { ...release, env: {} }, false)).toBe(
+      true,
+    );
+    expect(evaluateCondition(publish, release, false)).toBe(false);
+    expect(evaluateCondition(publish, { ...ctx, env: {} }, false)).toBe(false);
+    expect(evaluateCondition(publish, { ...release, env: {} }, true)).toBe(
+      false,
+    );
     // A tag condition never runs after a failure (an implicit success()).
     expect(
       evaluateCondition(
@@ -126,13 +145,24 @@ describe("expressions", () => {
     expect(() =>
       evaluateCondition("contains(github.ref, 'x')", ctx, false),
     ).toThrow(/contains/);
+    // Every part of an && is evaluated, even after a false one.
+    expect(() =>
+      evaluateCondition(
+        "inputs.unset && contains(github.ref, 'x')",
+        ctx,
+        false,
+      ),
+    ).toThrow(/contains/);
+    expect(() =>
+      evaluateCondition("inputs.dry_run || env.SKIP_RELEASE", ctx, false),
+    ).toThrow(/unsupported condition/);
   });
 });
 
 describe("--plan on the real release.yml", () => {
   test("workflow_dispatch is a dry run by default: it builds and keeps the DMG, publishes nothing", () => {
     const p = plan(["--event", "workflow_dispatch"]);
-    expect(p["actions/checkout@v7"]).toBe("action");
+    expect(p[CHECKOUT]).toBe("action");
     for (const step of [
       "Check the release secrets",
       "Compute the version",
@@ -143,7 +173,7 @@ describe("--plan on the real release.yml", () => {
       "Smoke-test the bundle",
     ])
       expect({ step, decision: p[step] }).toEqual({ step, decision: "run" });
-    expect(p["actions/upload-artifact@v7"]).toBe("artifact-check");
+    expect(p[UPLOAD]).toBe("artifact-check");
     for (const step of [
       "Write the notarytool API key",
       "Make the appcast and checksums",
@@ -164,7 +194,7 @@ describe("--plan on the real release.yml", () => {
       const p = plan(args);
       expect(p["Write the notarytool API key"]).toBe("run");
       expect(p["Make the appcast and checksums"]).toBe("run");
-      expect(p["actions/upload-artifact@v7"]).toBe("skip-if");
+      expect(p[UPLOAD]).toBe("skip-if");
       expect(p["Publish the GitHub release"]).toBe("refuse-publish");
       expect(p["Bump the Homebrew tap"]).toBe("refuse-publish");
     }
@@ -242,6 +272,34 @@ jobs:
     expect(r.stdout).toContain("first seeded=yes over=seed");
     expect(r.stdout).toContain("second over=from-github-env");
     expect(dryRun(["--env", "NOEQUALS", "--plan"]).code).toBe(2);
+  });
+
+  test("a condition reads the env context: job env and what an earlier step wrote to GITHUB_ENV", () => {
+    const wf = workflow(`
+on: workflow_dispatch
+jobs:
+  release:
+    env:
+      MODE: build
+    steps:
+      - name: before
+        if: \${{ env.SKIP_RELEASE != 'true' && env.MODE == 'build' }}
+        run: echo "SKIP_RELEASE=true" >>"$GITHUB_ENV"
+      - name: gated
+        if: \${{ env.SKIP_RELEASE != 'true' }}
+        run: echo gated ran
+      - name: ungated
+        run: echo "ungated skip=$SKIP_RELEASE"
+`);
+    const r = dryRun(["--workflow", wf.path, "--json"], wf.dir);
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toContain("gated ran");
+    expect(r.stdout).toContain("ungated skip=true");
+    expect(JSON.parse(r.stdout.trim().split("\n").at(-1)!).steps).toEqual([
+      { name: "before", decision: "ok" },
+      { name: "gated", decision: "skip-if" },
+      { name: "ungated", decision: "ok" },
+    ]);
   });
 
   test("GITHUB_SHA is the checkout's HEAD, empty outside a git repo", () => {

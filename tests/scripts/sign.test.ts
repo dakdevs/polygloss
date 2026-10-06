@@ -861,6 +861,10 @@ const REQUIRED = [
   "SPARKLE_PUBLIC_ED_KEY",
 ];
 
+/** The conditions of the steps after the version step: a build, and a publish. */
+const BUILD = "${{ env.SKIP_RELEASE != 'true' }}";
+const PUBLISH = "${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}";
+
 describe("release workflow", () => {
   test("release workflow reads secrets only from env", () => {
     const { wf, text } = loadRelease();
@@ -975,7 +979,7 @@ describe("release workflow", () => {
     const steps = releaseJob().steps ?? [];
     // The notes need the whole history and every tag.
     expect(steps[0]).toEqual({
-      uses: "actions/checkout@v7",
+      uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
       with: { "fetch-depth": 0 },
     });
     const version = stepRunning("scripts/release-version.ts");
@@ -986,7 +990,7 @@ describe("release workflow", () => {
       'echo "POLYGLOSS_PREVIOUS_TAG=$previous" >>"$GITHUB_ENV"',
     );
     const notes = stepRunning("scripts/release-notes.ts");
-    expect(notes.if).toBeUndefined();
+    expect(notes.if).toBe(BUILD);
     expect(steps.indexOf(stepRunning("missing+="))).toBeLessThan(
       steps.indexOf(version),
     );
@@ -1007,6 +1011,47 @@ describe("release workflow", () => {
     ]);
   });
 
+  test("a release the version step skips runs nothing after it; a dry run is never skipped", () => {
+    const steps = releaseJob().steps ?? [];
+    const version = steps.indexOf(stepRunning("scripts/release-version.ts"));
+    // Before it: the checkout, the secrets check and Bun, nothing that builds.
+    expect(steps.slice(0, version).map((s) => s.uses ?? s.name)).toEqual([
+      steps[0]!.uses,
+      "Check the release secrets",
+      steps[2]!.uses,
+    ]);
+    expect(steps[2]!.uses).toStartWith("oven-sh/setup-bun@");
+    // After it, every step is gated on SKIP_RELEASE but the key removal
+    // (a no-op then) and the dry run's artifact.
+    const removal = stepRunning('rm -f "$RUNNER_TEMP/notarytool-api-key.p8"');
+    const artifact = steps.find((s) =>
+      s.uses?.startsWith("actions/upload-artifact@"),
+    );
+    expect(removal.if).toBe("always()");
+    expect(artifact?.if).toBe("${{ inputs.dry_run }}");
+    for (const step of steps.slice(version + 1)) {
+      if (step === removal || step === artifact) continue;
+      const name = step.name ?? step.uses ?? step.run;
+      expect({ name, gated: [BUILD, PUBLISH].includes(step.if ?? "") }).toEqual(
+        { name, gated: true },
+      );
+    }
+  });
+
+  test("every action is pinned to a commit and no package is installed", () => {
+    for (const step of releaseJob().steps ?? []) {
+      if (step.uses)
+        expect(step.uses).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/);
+      expect(step.run ?? "").not.toMatch(
+        /\b(?:bun|npm|yarn|pnpm) (?:i|install|add)\b/,
+      );
+    }
+    // The comment after each pin names its release.
+    for (const line of loadRelease().text.split("\n"))
+      if (/^\s*- uses: /.test(line))
+        expect(line).toMatch(/@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+  });
+
   test("builds, signs and notarizes through package-release.sh --sign; a dry run stays ad-hoc", () => {
     const pkg = stepRunning("scripts/package-release.sh");
     for (const key of [
@@ -1020,7 +1065,7 @@ describe("release workflow", () => {
     expect(pkg.env?.POLYGLOSS_REQUIRE_NOTARIZATION).toBe("1");
     // The .p8 key is a secret written to a runner temp file first.
     const key = stepRunning("APPLE_API_KEY_PATH=");
-    expect(key.if).toBe("${{ !inputs.dry_run }}");
+    expect(key.if).toBe(PUBLISH);
     expect(key.env?.APPLE_API_PRIVATE_KEY).toBe(
       "${{ secrets.APPLE_API_PRIVATE_KEY }}",
     );
@@ -1064,7 +1109,7 @@ describe("release workflow", () => {
   test("smoke-tests the bundle, then a dry run keeps the DMG as an artifact", () => {
     const steps = releaseJob().steps ?? [];
     const smoke = stepRunning("scripts/smoke-bundle.sh dist/Polygloss.app");
-    expect(smoke.if).toBeUndefined();
+    expect(smoke.if).toBe(BUILD);
     expect(
       steps.indexOf(stepRunning("scripts/package-release.sh")),
     ).toBeLessThan(steps.indexOf(smoke));
@@ -1083,7 +1128,7 @@ describe("release workflow", () => {
     for (const s of [publish, appcast, tap])
       expect({ step: s.name, if: s.if }).toEqual({
         step: s.name,
-        if: "${{ !inputs.dry_run }}",
+        if: PUBLISH,
       });
     expect(publish.env?.GH_TOKEN).toBe("${{ github.token }}");
     expect(appcast.env?.SPARKLE_PRIVATE_ED_KEY).toBe(

@@ -9,24 +9,29 @@
 //
 // First a summary line: the commits (merges aside), files changed and lines
 // added and removed from --previous (the last release tag; none or empty for
-// the first release) to --commit (default HEAD). Then the commits' subjects,
-// newest first, grouped by conventional-commit type: Features (feat), Fixes
-// (fix), Performance (perf), Changes (refactor and every other type or
-// subject), Documentation (docs) and Maintenance (test, ci, build, chore,
-// style), folded in a <details> block. --sparkle leaves Maintenance unfolded:
-// Sparkle's Markdown renderer prints HTML tags as text. An entry is the
-// subject with its scope in bold, linked to its commit; merge, wip,
-// checkpoint and fixup!/squash!/amend! commits are left out, and repeated
-// subjects in a section share one entry. A section lists at most 20 entries
-// (10 for a first release), then links the rest. The last line links the
-// compare view <previous>...v<version>, or for a first release the commit
-// list of v<version>. --repo (default dakdevs/polygloss) builds the links.
-// Exit codes: 0 written, 1 git failed, 2 usage.
+// the first release) to --commit (default HEAD), which must contain it. Then
+// the commits' subjects, newest first, grouped by conventional-commit type:
+// Breaking changes (`type!:`), Features (feat), Fixes (fix), Performance
+// (perf), Changes (refactor and every other type or subject), Documentation
+// (docs) and Maintenance (test, ci, build, chore, style, and any type with an
+// internal scope such as ci, release, plan or a milestone M6), folded in a
+// <details> block. --sparkle leaves Maintenance unfolded: Sparkle's Markdown
+// renderer prints HTML tags as text. An entry is the description with its
+// scope in bold, linked to its commit, without a leading plan id (T6.15, S14,
+// M5) or a first word that repeats the scope; merge, wip, checkpoint and
+// fixup!/squash!/amend! commits are left out, and repeated entries in a
+// section share one. A section lists at most 20 entries (10 for a first
+// release), then links the rest. The last line links the compare view
+// <previous>...v<version>, or for a first release the commit list of
+// v<version>. --repo (default dakdevs/polygloss) builds the links.
+// Exit codes: 0 written, 1 git failed, 2 usage (and a --previous that
+// --commit does not contain: its notes would run backwards).
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { RELEASE_VERSION } from "./release-version";
 
 const SECTIONS = [
+  "Breaking changes",
   "Features",
   "Fixes",
   "Performance",
@@ -46,9 +51,14 @@ const SECTION_OF: Record<string, string> = {
   style: "Maintenance",
 };
 /** `type(scope)!: description`; the scope and `!` are optional. */
-const CONVENTIONAL = /^([A-Za-z]+)(?:\(([^()]*)\))?!?: +(\S.*)$/;
+const CONVENTIONAL = /^([A-Za-z]+)(?:\(([^()]*)\))?(!?): +(\S.*)$/;
 /** Not a change of its own. */
 const SKIPPED = /^(?:(?:wip|checkpoint|merge)\b|(?:fixup|squash|amend)!)/i;
+/** Scopes of the repo's own machinery and bookkeeping: Maintenance, whatever the type. */
+const INTERNAL =
+  /^(?:benches|bun|ci|e2e|parity|perf|plan|release|repo|scripts|workspace|M\d+)$/i;
+/** A leading plan id: `T6.15 `, `S14 `, `M5: `. */
+const PLAN_ID = /^[TSM]\d+(?:\.\d+)*:? +(?=\S)/;
 
 /** `<` outside code spans as `&lt;`, so GitHub shows `<rev>` instead of dropping it. */
 function escape(text: string): string {
@@ -89,11 +99,17 @@ export function renderNotes({
   const groups = new Map<string, Map<string, string[]>>();
   for (const { sha, subject } of commits) {
     if (SKIPPED.test(subject)) continue;
-    const m = CONVENTIONAL.exec(subject);
-    const section = (m && SECTION_OF[m[1]!.toLowerCase()]) ?? "Changes";
-    const text = m
-      ? `${m[2] ? `**${escape(m[2])}:** ` : ""}${escape(m[3]!)}`
-      : escape(subject);
+    const [, type = "", scope = "", breaking, description = subject] =
+      CONVENTIONAL.exec(subject) ?? [];
+    const section = INTERNAL.test(scope)
+      ? "Maintenance"
+      : breaking
+        ? "Breaking changes"
+        : (SECTION_OF[type.toLowerCase()] ?? "Changes");
+    let text = description.replace(PLAN_ID, "");
+    if (scope && text.toLowerCase().startsWith(`${scope.toLowerCase()} `))
+      text = text.slice(scope.length).trimStart();
+    text = `${scope ? `**${escape(scope)}:** ` : ""}${escape(text)}`;
     const entries = groups.get(section) ?? new Map<string, string[]>();
     groups.set(section, entries);
     entries.set(text, [...(entries.get(text) ?? []), sha]);
@@ -204,6 +220,23 @@ function main(argv: string[]): number {
     const from = opts.previous
       ? commitOf(opts.previous)
       : git(["hash-object", "-t", "tree", "/dev/null"]).trim(); // the empty tree
+    if (opts.previous) {
+      // A newer release's tag (a release that ran first) would make notes
+      // from a reversed diff.
+      const r = Bun.spawnSync([
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        from,
+        commit,
+      ]);
+      if (r.exitCode === 1)
+        throw new UsageError(
+          `${opts.commit} does not contain ${opts.previous}: no notes since a release that is not its ancestor`,
+        );
+      if (r.exitCode !== 0)
+        throw new Error(`git merge-base failed: ${r.stderr.toString().trim()}`);
+    }
     const log = git([
       "log",
       "--no-merges",
