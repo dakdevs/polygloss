@@ -5,8 +5,9 @@
 #
 # Static checks (all that --static runs): both executables are Mach-O in
 # Contents/MacOS; Info.plist has the bundle id, main executable, URL scheme,
-# minimum macOS and an explicit CFBundleVersion equal to the crate version
-# (never cargo-packager's timestamp); the licenses and third-party notices
+# minimum macOS, a version that is the crate version or a release version
+# (YYYYMMDD.N, ADR-0019) and an explicit CFBundleVersion equal to it (never
+# cargo-packager's timestamp); the licenses and third-party notices
 # are in Contents/Resources (plan T5.7); the signature (ad-hoc or Developer ID)
 # seals the bundle; Sparkle (T5.3) is embedded exactly when SUFeedURL and
 # SUPublicEDKey are set, without its XPC services; library validation is
@@ -67,8 +68,15 @@ for exe in Polygloss polygloss-cli; do
 done
 ok "Contents/MacOS has Polygloss and polygloss-cli"
 
-# One Info.plist value (raw), or empty when the key is missing.
-plist_get() { plutil -extract "$1" raw -o - "$plist" 2>/dev/null || true; }
+# One Info.plist value (raw), or empty when the key is missing. Only plutil's
+# exit status tells: on macOS 15 it prints its "Could not extract value" error
+# to stdout, which, taken for a value, sent the URL scheme loop below past the
+# end of the array forever (CI's bun job hung for an hour).
+plist_get() {
+  local value
+  value="$(plutil -extract "$1" raw -o - "$plist" 2>/dev/null)" && printf '%s' "$value"
+  return 0
+}
 
 expect_key() { # <key> <expected>
   local got
@@ -81,10 +89,10 @@ expect_key CFBundlePackageType APPL
 expect_key LSMinimumSystemVersion 14.0
 
 short_version="$(plist_get CFBundleShortVersionString)"
-[[ "$short_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]] ||
-  fail "Info.plist CFBundleShortVersionString '$short_version' is not the crate version"
-# CFBundleVersion: the crate version without pre-release or build metadata
-# (Sparkle compares it; LaunchServices wants dot-separated integers).
+[[ "$short_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ || "$short_version" =~ ^[0-9]{8}\.[1-9][0-9]*$ ]] ||
+  fail "Info.plist CFBundleShortVersionString '$short_version' is neither a crate version nor a release version (YYYYMMDD.N)"
+# CFBundleVersion: the version without pre-release or build metadata (Sparkle
+# compares it; LaunchServices wants dot-separated integers).
 expect_key CFBundleVersion "${short_version%%[-+]*}"
 
 schemes=""

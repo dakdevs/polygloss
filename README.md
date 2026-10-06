@@ -10,8 +10,9 @@ Agents change a lot of code quickly. Reading those changes in a terminal is pain
 
 ## Installation
 
-> [!NOTE]
-> There is no signed release yet, so build Polygloss from source. You need macOS 14 or later on Apple Silicon, git 2.39 or later, [rustup](https://rustup.rs), Bun 1.3 and cargo-packager 0.11.8 ([details](CONTRIBUTING.md#setup)).
+Download `Polygloss_<version>_aarch64.dmg` from the [latest release](https://github.com/dakdevs/polygloss/releases/latest), open it and drag Polygloss to Applications, then run "Install CLI" from ⌘K. You need macOS 14 or later on Apple Silicon and git 2.39 or later. Releases are signed and notarized, and update in place.
+
+Or build from source with [rustup](https://rustup.rs), Bun 1.3 and cargo-packager 0.11.8 ([details](CONTRIBUTING.md#setup)):
 
 ```bash
 git clone https://github.com/dakdevs/polygloss && cd polygloss
@@ -41,7 +42,7 @@ Or ask Claude to "open this in Polygloss for review". In the app, `⌘K` lists e
 
 ## Some notes
 
-Polygloss is early. It works end to end, but it hasn't shipped yet. Expect rough edges.
+Polygloss is early. It works end to end, but expect rough edges.
 
 ## Documentation
 

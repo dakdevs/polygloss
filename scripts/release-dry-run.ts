@@ -2,25 +2,33 @@
 //
 //   bun scripts/release-dry-run.ts [--workflow .github/workflows/release.yml]
 //     [--event workflow_dispatch|push] [--ref <git ref>] [--repository owner/name]
-//     [--var NAME=value]… [--skip <step>]… [--only <step>] [--plan] [--json]
+//     [--var NAME=value]… [--input NAME=value]… [--env NAME=value]…
+//     [--skip <step>]… [--only <step>] [--plan] [--json]
 //
 // Runs the workflow's steps on this machine in order, the way GitHub Actions
 // would for one event: `if:` conditions are evaluated (a failed step skips
 // the rest except `always()`/`failure()` steps), `${{ … }}` expressions are
 // filled in (every secret and `github.token` empty, `vars.*` from --var,
-// else empty), `$GITHUB_ENV` lines carry over to later steps, and each `run`
-// goes through `bash --noprofile --norc -eo pipefail` with `RUNNER_TEMP` a
-// fresh temp dir. The environment starts clean apart from PATH, HOME, USER,
-// LOGNAME, SHELL, TMPDIR, LANG, TERM, CARGO_HOME and RUSTUP_HOME, so the
-// caller's own APPLE_*/POLYGLOSS_* values never reach a step. Steps that `uses:`
+// else empty; `inputs.*` from --input, else the default of the trigger's
+// input: workflow_dispatch's, or for `push` (ci.yml calling it on main)
+// workflow_call's; `env.*` from the workflow's and job's `env:` and
+// `$GITHUB_ENV`), `$GITHUB_ENV` lines carry over to later steps, and each
+// `run` goes through `bash --noprofile --norc -eo pipefail` with `RUNNER_TEMP`
+// a fresh temp dir and `GITHUB_SHA` the checkout's HEAD. The environment starts clean apart from PATH, HOME, USER,
+// LOGNAME, SHELL, TMPDIR, LANG, TERM, CARGO_HOME, RUSTUP_HOME and each --env,
+// so the caller's own APPLE_*/POLYGLOSS_* values never reach a step
+// unannounced. Steps that `uses:`
 // an action are not run (`action`), except actions/upload-artifact, whose
 // path is checked against the files on disk (`if-no-files-found: error`
 // fails when nothing matches). A step whose script calls `gh` or `git … push`
 // is never run (`refuse-publish`): a local dry run publishes nothing.
 //
-// The release check before the first tag (plan T5.8, no GitHub remote yet):
-// `bun scripts/release-dry-run.ts --event workflow_dispatch` (the workflow's
-// dry-run path, unsigned without secrets). `--plan` prints each step's
+// The release check: `bun scripts/release-dry-run.ts --event
+// workflow_dispatch` (the workflow's dry-run path, ad-hoc signed), e.g. with
+// `--skip "Compute the version" --env POLYGLOSS_VERSION=20261005.1` to build
+// a given version without asking origin for its tags (add `--env
+// POLYGLOSS_PREVIOUS_TAG=v…` for release notes since that tag; without it they
+// are a first release's). `--plan` prints each step's
 // decision without running anything (`--json` for a machine-readable plan).
 // Steps run in the current directory (the checkout).
 //
@@ -42,6 +50,9 @@ type Ctx = {
   repository: string;
   runnerTemp: string;
   vars: Record<string, string>;
+  inputs: Record<string, string>;
+  /** The `env` context: workflow and job `env:`, then `$GITHUB_ENV`. */
+  env: Record<string, string>;
 };
 
 type Step = {
@@ -53,7 +64,10 @@ type Step = {
   with?: Record<string, unknown>;
 };
 
+type Trigger = { inputs?: Record<string, { default?: unknown }> } | null;
+
 type Workflow = {
+  on?: string | Record<string, Trigger>;
   env?: Record<string, string>;
   jobs?: Record<string, { env?: Record<string, string>; steps?: Step[] }>;
 };
@@ -90,6 +104,10 @@ function contextValue(path: string, ctx: Ctx): string {
   if (/^secrets\.\w+$/.test(path)) return "";
   const v = path.match(/^vars\.(\w+)$/);
   if (v) return ctx.vars[v[1]!] ?? "";
+  const i = path.match(/^inputs\.(\w+)$/);
+  if (i) return ctx.inputs[i[1]!] ?? "";
+  const e = path.match(/^env\.(\w+)$/);
+  if (e) return ctx.env[e[1]!] ?? "";
   switch (path) {
     case "github.token":
       return "";
@@ -122,7 +140,11 @@ export function expandExpressions(text: string, ctx: Ctx): string {
   );
 }
 
-/** A status-free condition: `startsWith(a, b)`, `a == b`, `a != b`. */
+/**
+ * A status-free condition: `startsWith(a, b)`, `a == b`, `a != b`, or a
+ * context value, maybe negated (`!inputs.dry_run`); a value is false when
+ * empty or `false`. evaluateCondition joins them with `&&`.
+ */
 function evaluateExpr(expr: string, ctx: Ctx): boolean {
   const sw = expr.match(/^startsWith\(\s*(.+?)\s*,\s*(.+?)\s*\)$/);
   if (sw) return operand(sw[1]!, ctx).startsWith(operand(sw[2]!, ctx));
@@ -130,6 +152,11 @@ function evaluateExpr(expr: string, ctx: Ctx): boolean {
   if (cmp) {
     const eq = operand(cmp[1]!, ctx) === operand(cmp[3]!, ctx);
     return cmp[2] === "==" ? eq : !eq;
+  }
+  const value = expr.match(/^(!?)\s*([\w.]+)$/);
+  if (value) {
+    const v = contextValue(value[2]!, ctx);
+    return (v !== "" && v !== "false") !== (value[1] === "!");
   }
   throw new Error(`unsupported condition \`${expr}\``);
 }
@@ -158,11 +185,11 @@ export function evaluateCondition(
     case "cancelled()":
       return false;
   }
-  if (/&&|\|\|/.test(expr))
-    throw new Error(`unsupported condition \`${expr}\``);
-  // Evaluated even after a failure, so an unsupported condition always fails loudly.
-  const value = evaluateExpr(expr, ctx);
-  return !failed && value;
+  if (/\|\|/.test(expr)) throw new Error(`unsupported condition \`${expr}\``);
+  // Every part is evaluated, even after a failure, so an unsupported
+  // condition always fails loudly.
+  const values = expr.split("&&").map((part) => evaluateExpr(part.trim(), ctx));
+  return !failed && values.every(Boolean);
 }
 
 export function stepName(step: Step): string {
@@ -234,6 +261,8 @@ async function main(argv: string[]): Promise<number> {
     ref: string;
     repository: string;
     vars: Record<string, string>;
+    inputs: Record<string, string>;
+    env: Record<string, string>;
     skip: string[];
     only?: string;
     plan: boolean;
@@ -249,6 +278,8 @@ async function main(argv: string[]): Promise<number> {
         ref: { type: "string" },
         repository: { type: "string", default: "owner/polygloss" },
         var: { type: "string", multiple: true, default: [] },
+        input: { type: "string", multiple: true, default: [] },
+        env: { type: "string", multiple: true, default: [] },
         skip: { type: "string", multiple: true, default: [] },
         only: { type: "string" },
         plan: { type: "boolean", default: false },
@@ -261,15 +292,26 @@ async function main(argv: string[]): Promise<number> {
       values.ref ?? (values.event === "push" ? undefined : "refs/heads/main");
     if (!ref || !ref.startsWith("refs/"))
       throw new UsageError("--ref refs/… is required for push");
-    const vars: Record<string, string> = {};
-    for (const kv of values.var) {
-      const eq = kv.indexOf("=");
-      if (eq <= 0) throw new UsageError(`--var wants NAME=value, not ${kv}`);
-      vars[kv.slice(0, eq)] = kv.slice(eq + 1);
-    }
+    const pairs = (flag: string, list: string[]) => {
+      const out: Record<string, string> = {};
+      for (const kv of list) {
+        const eq = kv.indexOf("=");
+        if (eq <= 0)
+          throw new UsageError(`--${flag} wants NAME=value, not ${kv}`);
+        out[kv.slice(0, eq)] = kv.slice(eq + 1);
+      }
+      return out;
+    };
     if (!existsSync(values.workflow))
       throw new UsageError(`no workflow at ${values.workflow}`);
     wf = Bun.YAML.parse(readFileSync(values.workflow, "utf8")) as Workflow;
+    const trigger =
+      typeof wf.on === "object"
+        ? wf.on[values.event === "push" ? "workflow_call" : "workflow_dispatch"]
+        : undefined;
+    const inputs: Record<string, string> = {};
+    for (const [name, input] of Object.entries(trigger?.inputs ?? {}))
+      if (input.default !== undefined) inputs[name] = String(input.default);
     const names = stepsOf(wf).map(({ step }) => stepName(step));
     for (const n of [...values.skip, ...(values.only ? [values.only] : [])])
       if (!names.includes(n))
@@ -279,7 +321,9 @@ async function main(argv: string[]): Promise<number> {
       event: values.event,
       ref,
       repository: values.repository,
-      vars,
+      vars: pairs("var", values.var),
+      inputs: { ...inputs, ...pairs("input", values.input) },
+      env: pairs("env", values.env),
       skip: values.skip,
       only: values.only,
       plan: values.plan,
@@ -287,7 +331,7 @@ async function main(argv: string[]): Promise<number> {
     };
   } catch (e) {
     console.error(
-      `release-dry-run: ${(e as Error).message}\nusage: bun scripts/release-dry-run.ts [--workflow <path>] [--event workflow_dispatch|push] [--ref <ref>] [--var NAME=value]… [--skip <step>]… [--only <step>] [--plan] [--json]`,
+      `release-dry-run: ${(e as Error).message}\nusage: bun scripts/release-dry-run.ts [--workflow <path>] [--event workflow_dispatch|push] [--ref <ref>] [--var NAME=value]… [--input NAME=value]… [--env NAME=value]… [--skip <step>]… [--only <step>] [--plan] [--json]`,
     );
     return 2;
   }
@@ -300,13 +344,17 @@ async function main(argv: string[]): Promise<number> {
     repository: opts.repository,
     runnerTemp,
     vars: opts.vars,
+    inputs: opts.inputs,
+    env: {},
   };
   const githubEnvFile = join(runnerTemp, "github-env");
   writeFileSync(githubEnvFile, "");
   const base: Record<string, string> = {};
   for (const k of INHERITED)
     if (process.env[k] !== undefined) base[k] = process.env[k]!;
-  Object.assign(base, {
+  const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd });
+  Object.assign(base, opts.env, {
+    GITHUB_SHA: head.exitCode === 0 ? head.stdout.toString().trim() : "",
     GITHUB_REF: ctx.ref,
     GITHUB_REF_NAME: refName(ctx.ref),
     GITHUB_EVENT_NAME: ctx.event,
@@ -332,6 +380,11 @@ async function main(argv: string[]): Promise<number> {
         record("skipped");
         continue;
       }
+      ctx.env = {
+        ...workflowEnv,
+        ...expandEnv(jobEnv, ctx),
+        ...readGithubEnv(githubEnvFile),
+      };
       if (!evaluateCondition(step.if, ctx, failed)) {
         record("skip-if");
         continue;

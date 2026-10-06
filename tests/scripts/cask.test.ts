@@ -17,7 +17,7 @@ const sandbox = makeSandbox();
 afterAll(() => sandbox.cleanup());
 
 const SHA = "0123456789abcdef".repeat(4);
-const good = { version: "1.2.3", sha256: SHA, repo: "dakdevs/polygloss" };
+const good = { version: "20261005.1", sha256: SHA, repo: "dakdevs/polygloss" };
 
 /** Every stanza the cask calls, in order, as Ruby evaluated it. */
 type Stanza = { name: string; args: unknown[] };
@@ -98,11 +98,11 @@ describe("cask template", () => {
     expect(token).toBe("polygloss");
     const args = (name: string) =>
       calls.filter((c) => c.name === name).map((c) => c.args);
-    expect(args("version")).toEqual([["1.2.3"]]);
+    expect(args("version")).toEqual([["20261005.1"]]);
     expect(args("sha256")).toEqual([[SHA]]);
     expect(args("url")).toEqual([
       [
-        "https://github.com/dakdevs/polygloss/releases/download/v1.2.3/Polygloss_1.2.3_aarch64.dmg",
+        "https://github.com/dakdevs/polygloss/releases/download/v20261005.1/Polygloss_20261005.1_aarch64.dmg",
       ],
     ]);
     expect(args("homepage")).toEqual([
@@ -151,14 +151,18 @@ describe("cask template", () => {
     const out = renderCask(good);
     expect(out).not.toMatch(/\{\{|\}\}/);
     expect(out).toContain(`sha256 "${SHA}"`);
-    expect(out).toContain('version "1.2.3"');
+    expect(out).toContain('version "20261005.1"');
   });
 
   test("render refuses values that are not a version, a sha256 or owner/name", () => {
     expect(() => renderCask({ ...good, version: "" })).toThrow(/version/);
-    expect(() => renderCask({ ...good, version: "v1.2.3" })).toThrow(/version/);
+    expect(() => renderCask({ ...good, version: "v20261005.1" })).toThrow(
+      /version/,
+    );
+    // Releases are CalVer (ADR-0019), never the crate's semver.
+    expect(() => renderCask({ ...good, version: "1.2.3" })).toThrow(/version/);
     expect(() =>
-      renderCask({ ...good, version: '1.2.3" ; system "x' }),
+      renderCask({ ...good, version: '20261005.1" ; system "x' }),
     ).toThrow(/version/);
     expect(() => renderCask({ ...good, sha256: "abc" })).toThrow(/sha256/);
     expect(() => renderCask({ ...good, sha256: SHA.toUpperCase() })).toThrow(
@@ -169,13 +173,11 @@ describe("cask template", () => {
     expect(() => renderCask({ ...good, repo: 'a/b"#{x}' })).toThrow(/repo/);
   });
 
-  test("a pre-release version renders", () => {
-    const { calls } = evalCask(
-      renderCask({ ...good, version: "1.3.0-beta.2" }),
-    );
+  test("a later release of the day renders", () => {
+    const { calls } = evalCask(renderCask({ ...good, version: "20261005.12" }));
     const url = calls.find((c) => c.name === "url")!.args[0];
     expect(url).toBe(
-      "https://github.com/dakdevs/polygloss/releases/download/v1.3.0-beta.2/Polygloss_1.3.0-beta.2_aarch64.dmg",
+      "https://github.com/dakdevs/polygloss/releases/download/v20261005.12/Polygloss_20261005.12_aarch64.dmg",
     );
   });
 });
@@ -185,7 +187,7 @@ describe("bump-tap.ts", () => {
     const out = tapDir();
     const r = bump([
       "--version",
-      "1.2.3",
+      "20261005.1",
       "--repo",
       "dakdevs/polygloss",
       "--out",
@@ -199,7 +201,7 @@ describe("bump-tap.ts", () => {
   test("bump-tap refuses every other missing or empty value", () => {
     const out = tapDir();
     const all: Record<string, string> = {
-      "--version": "1.2.3",
+      "--version": "20261005.1",
       "--sha256": SHA,
       "--repo": "dakdevs/polygloss",
       "--out": out,
@@ -224,7 +226,7 @@ describe("bump-tap.ts", () => {
   test("bump-tap refuses a malformed sha and a missing tap checkout", () => {
     const bad = bump([
       "--version",
-      "1.2.3",
+      "20261005.1",
       "--sha256",
       "not-a-sha",
       "--repo",
@@ -236,7 +238,7 @@ describe("bump-tap.ts", () => {
     expect(bad.stderr).toContain("sha256");
     const gone = bump([
       "--version",
-      "1.2.3",
+      "20261005.1",
       "--sha256",
       SHA,
       "--repo",
@@ -255,7 +257,7 @@ describe("bump-tap.ts", () => {
     writeFileSync(join(out, "Casks/polygloss.rb"), "old\n");
     const r = bump([
       "--version",
-      "1.2.3",
+      "20261005.1",
       "--sha256",
       SHA,
       "--repo",
@@ -271,7 +273,7 @@ describe("bump-tap.ts", () => {
   });
 
   test("usage error on unknown flags", () => {
-    const r = bump(["--version", "1.2.3", "--nope"]);
+    const r = bump(["--version", "20261005.1", "--nope"]);
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toMatch(/usage/i);
   });
@@ -292,7 +294,7 @@ describe("release.yml tap bump", () => {
 
   test("the cask downloads the DMG name the workflow uploads", () => {
     expect(release).toContain(
-      '"dist/Polygloss_${GITHUB_REF_NAME#v}_aarch64.dmg"',
+      '"dist/Polygloss_${POLYGLOSS_VERSION}_aarch64.dmg"',
     );
     expect(renderCask(good)).toContain("Polygloss_#{version}_aarch64.dmg");
   });

@@ -6,13 +6,15 @@
 //
 //   bun scripts/bump-tap.ts --version <v> --sha256 <sha> --repo <owner/name> --out <tap checkout>
 //
-// --version is the release version without the `v` (the tag is `v<version>`),
+// --version is the release version (CalVer YYYYMMDD.N, ADR-0019) without the
+// `v` (the tag is `v<version>`),
 // --sha256 the DMG's SHA-256 (lowercase hex), --repo the app's GitHub repo
 // (the DMG's GitHub Releases home). Any missing or malformed value is refused
 // with exit 2 before anything is written.
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { RELEASE_VERSION } from "./release-version";
 
 const templatePath = resolve(
   import.meta.dir,
@@ -24,7 +26,6 @@ const USAGE =
 
 // Every value lands inside a Ruby string literal, so each pattern also keeps
 // out quotes, `#{…}` and backslashes.
-const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const REPO = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+$/;
 
@@ -38,9 +39,9 @@ export function renderCask({
   sha256: string;
   repo: string;
 }): string {
-  if (!VERSION.test(version))
+  if (!RELEASE_VERSION.test(version))
     throw new Error(
-      `version must look like 1.2.3 or 1.2.3-beta.1 (no v): ${JSON.stringify(version)}`,
+      `version must look like 20261005.1 (no v): ${JSON.stringify(version)}`,
     );
   if (!SHA256.test(sha256))
     throw new Error(

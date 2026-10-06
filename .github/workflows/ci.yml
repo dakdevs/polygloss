@@ -93,6 +93,11 @@ jobs:
     name: End-to-end
     runs-on: macos-15
     timeout-minutes: 90
+    # Built with a release version, as release.yml builds: the E2E suites
+    # then check that it reaches both executables and the app's socket
+    # (tests/e2e/version.test.ts; ADR-0019).
+    env:
+      POLYGLOSS_VERSION: "20261005.1"
     steps:
       - uses: actions/checkout@v7
       # rustup >= 1.28 no longer installs the toolchain on `rustup show`; with no
@@ -138,3 +143,14 @@ jobs:
       # Crate rules (check-deps), licenses and advisories (cargo-deny), and the
       # bundled third-party notices match the dependency graph (plan T5.7).
       - run: scripts/check-deps.sh && scripts/cargo.sh deny check licenses bans sources advisories && bun scripts/third-party-notices.ts --check
+
+  # Every push to main whose jobs all pass is released (ADR-0019,
+  # .github/workflows/release.yml). The only job with write access.
+  release:
+    name: Release
+    needs: [lint, unit, bun, e2e, audit]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    secrets: inherit

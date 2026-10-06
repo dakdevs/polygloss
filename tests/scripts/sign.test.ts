@@ -50,10 +50,11 @@ function scratch(name: string): string {
 function run(
   argv: string[],
   env: Env = {},
+  cwd: string = sandbox.home,
 ): { exitCode: number; output: string } {
   const r = Bun.spawnSync(argv, {
     env: { ...sandbox.env, ...env },
-    cwd: sandbox.home,
+    cwd,
   });
   return {
     exitCode: r.exitCode ?? -1,
@@ -781,6 +782,7 @@ type Job = {
   if?: string;
   env?: Record<string, string>;
   permissions?: Record<string, string>;
+  concurrency?: Record<string, unknown>;
   steps?: Step[];
 };
 type Workflow = {
@@ -812,6 +814,57 @@ function stepRunning(needle: string): Step {
   return step;
 }
 
+/**
+ * Runs a release.yml step's script the way GitHub's default shell does
+ * (`bash -e`), with only `env` (plus the sandbox), `bin` first on PATH.
+ */
+function runStep(
+  step: Step,
+  env: Env,
+  bin?: string,
+): { exitCode: number; output: string } {
+  return run(["bash", "-e", "-c", step.run ?? ""], {
+    ...env,
+    PATH: `${bin ? `${bin}:` : ""}${process.env.PATH}`,
+  });
+}
+
+/** A directory holding executable `name` scripts that log `name argv` to `log`. */
+function loggingTools(names: string[]): { bin: string; log: () => string[] } {
+  const bin = scratch("bin");
+  const logFile = join(bin, "calls.log");
+  for (const name of names) {
+    writeFileSync(
+      join(bin, name),
+      `#!/bin/bash\nprintf '%s' "${name}" >>"${logFile}"\nprintf ' [%s]' "$@" >>"${logFile}"\nprintf '\\n' >>"${logFile}"\n`,
+    );
+    chmodSync(join(bin, name), 0o755);
+  }
+  return {
+    bin,
+    log: () =>
+      existsSync(logFile)
+        ? readFileSync(logFile, "utf8").split("\n").filter(Boolean)
+        : [],
+  };
+}
+
+/** What the secrets check requires: every secret but the optional tap token, and the public key. */
+const REQUIRED = [
+  "APPLE_CERTIFICATE",
+  "APPLE_CERTIFICATE_PASSWORD",
+  "APPLE_SIGNING_IDENTITY",
+  "APPLE_API_KEY",
+  "APPLE_API_ISSUER",
+  "APPLE_API_PRIVATE_KEY",
+  "SPARKLE_PRIVATE_ED_KEY",
+  "SPARKLE_PUBLIC_ED_KEY",
+];
+
+/** The conditions of the steps after the version step: a build, and a publish. */
+const BUILD = "${{ env.SKIP_RELEASE != 'true' }}";
+const PUBLISH = "${{ !inputs.dry_run && env.SKIP_RELEASE != 'true' }}";
+
 describe("release workflow", () => {
   test("release workflow reads secrets only from env", () => {
     const { wf, text } = loadRelease();
@@ -826,7 +879,7 @@ describe("release workflow", () => {
           const text = JSON.stringify(field ?? "");
           expect({
             step: step.name,
-            secret: text.includes("secrets."),
+            secret: /\$\{\{\s*secrets\./.test(text),
           }).toEqual({ step: step.name, secret: false });
         }
       }
@@ -844,24 +897,163 @@ describe("release workflow", () => {
       }
     }
     expect(fromEnv).toBeGreaterThan(0);
-    // …and nothing else in the file mentions a secret.
-    expect(text.match(/secrets\./g)?.length).toBe(fromEnv);
+    // …and nothing else in the file reads a secret.
+    expect(text.match(/\$\{\{\s*secrets\./g)?.length).toBe(fromEnv);
   });
 
-  test("runs on v* tags and on demand, on macOS arm64", () => {
+  test("runs when ci.yml calls it and on demand, one release at a time, on macOS arm64", () => {
     const { wf } = loadRelease();
-    expect(wf.on?.push?.tags).toEqual(["v*"]);
-    expect(wf.on?.push?.branches).toBeUndefined();
-    expect(Object.keys(wf.on ?? {})).toContain("workflow_dispatch");
+    expect(Object.keys(wf.on ?? {}).sort()).toEqual([
+      "workflow_call",
+      "workflow_dispatch",
+    ]);
+    // ci.yml's call releases; a manual run is a dry run unless asked otherwise.
+    expect(wf.on?.workflow_call?.inputs?.dry_run).toEqual({
+      type: "boolean",
+      default: false,
+    });
+    expect(wf.on?.workflow_dispatch?.inputs?.dry_run?.type).toBe("boolean");
+    expect(wf.on?.workflow_dispatch?.inputs?.dry_run?.default).toBe(true);
     expect(wf.permissions).toEqual({ contents: "read" });
     const job = releaseJob();
     expect(job["runs-on"]).toBe("macos-15");
     expect(job.permissions).toEqual({ contents: "write" });
+    expect(job.concurrency).toEqual({
+      group: "polygloss-release",
+      "cancel-in-progress": false,
+    });
+    expect(job.env?.DRY_RUN).toBe("${{ inputs.dry_run }}");
   });
 
-  test("builds, signs and notarizes through package-release.sh --sign", () => {
+  test("the secrets check runs before anything is built and names every missing secret", () => {
+    const steps = releaseJob().steps ?? [];
+    const check = stepRunning("missing+=");
+    expect(steps.indexOf(check)).toBe(1); // right after the checkout
+    // It sees every secret the workflow reads but the optional tap token.
+    const secrets = new Set(
+      [...loadRelease().text.matchAll(/\$\{\{\s*secrets\.(\w+)/g)].map(
+        (m) => m[1],
+      ),
+    );
+    secrets.delete("HOMEBREW_TAP_TOKEN");
+    expect([...secrets, "SPARKLE_PUBLIC_ED_KEY"].sort()).toEqual(
+      [...REQUIRED].sort(),
+    );
+    for (const name of REQUIRED)
+      expect(check.env?.[name]).toBe(
+        name === "SPARKLE_PUBLIC_ED_KEY"
+          ? `\${{ vars.${name} }}`
+          : `\${{ secrets.${name} }}`,
+      );
+
+    const all = Object.fromEntries(REQUIRED.map((n) => [n, "set"]));
+    const main = { DRY_RUN: "false", GITHUB_REF: "refs/heads/main" };
+    const none = runStep(check, main);
+    expect(none.exitCode).toBe(1);
+    expect(none.output).toContain(`missing ${REQUIRED.join(" ")} (`);
+    expect(none.output).toContain("scripts/setup-release-secrets.sh");
+    expect(none.output).toContain("Nothing was built or published.");
+    const two = runStep(check, {
+      ...main,
+      ...all,
+      APPLE_API_ISSUER: "",
+      SPARKLE_PUBLIC_ED_KEY: "",
+    });
+    expect(two.exitCode).toBe(1);
+    expect(two.output).toContain(
+      "missing APPLE_API_ISSUER SPARKLE_PUBLIC_ED_KEY (",
+    );
+    expect(runStep(check, { ...main, ...all }).exitCode).toBe(0);
+    // A dry run needs none of them; a release needs main.
+    expect(runStep(check, { DRY_RUN: "true" }).exitCode).toBe(0);
+    const branch = runStep(check, {
+      ...all,
+      DRY_RUN: "false",
+      GITHUB_REF: "refs/heads/task/release",
+    });
+    expect(branch.exitCode).toBe(1);
+    expect(branch.output).toContain("only from main");
+  });
+
+  test("computes the version and the notes from origin's tags before building", () => {
+    const steps = releaseJob().steps ?? [];
+    // The notes need the whole history and every tag.
+    expect(steps[0]).toEqual({
+      uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      with: { "fetch-depth": 0 },
+    });
+    const version = stepRunning("scripts/release-version.ts");
+    expect(version.run).toContain(
+      'echo "POLYGLOSS_VERSION=$version" >>"$GITHUB_ENV"',
+    );
+    expect(version.run).toContain(
+      'echo "POLYGLOSS_PREVIOUS_TAG=$previous" >>"$GITHUB_ENV"',
+    );
+    const notes = stepRunning("scripts/release-notes.ts");
+    expect(notes.if).toBe(BUILD);
+    expect(steps.indexOf(stepRunning("missing+="))).toBeLessThan(
+      steps.indexOf(version),
+    );
+    expect(steps.indexOf(version)).toBeLessThan(steps.indexOf(notes));
+    expect(steps.indexOf(notes)).toBeLessThan(
+      steps.indexOf(stepRunning("scripts/package-release.sh")),
+    );
+    expect(steps.indexOf(notes)).toBeLessThan(
+      steps.indexOf(stepRunning("gh release create")),
+    );
+    // A dry run keeps the notes with the DMG.
+    const artifact = steps.find((s) =>
+      s.uses?.startsWith("actions/upload-artifact@"),
+    );
+    expect(String(artifact?.with?.path).split("\n").filter(Boolean)).toEqual([
+      "dist/*.dmg",
+      "dist/release-notes-*.md",
+    ]);
+  });
+
+  test("a release the version step skips runs nothing after it; a dry run is never skipped", () => {
+    const steps = releaseJob().steps ?? [];
+    const version = steps.indexOf(stepRunning("scripts/release-version.ts"));
+    // Before it: the checkout, the secrets check and Bun, nothing that builds.
+    expect(steps.slice(0, version).map((s) => s.uses ?? s.name)).toEqual([
+      steps[0]!.uses,
+      "Check the release secrets",
+      steps[2]!.uses,
+    ]);
+    expect(steps[2]!.uses).toStartWith("oven-sh/setup-bun@");
+    // After it, every step is gated on SKIP_RELEASE but the key removal
+    // (a no-op then) and the dry run's artifact.
+    const removal = stepRunning('rm -f "$RUNNER_TEMP/notarytool-api-key.p8"');
+    const artifact = steps.find((s) =>
+      s.uses?.startsWith("actions/upload-artifact@"),
+    );
+    expect(removal.if).toBe("always()");
+    expect(artifact?.if).toBe("${{ inputs.dry_run }}");
+    for (const step of steps.slice(version + 1)) {
+      if (step === removal || step === artifact) continue;
+      const name = step.name ?? step.uses ?? step.run;
+      expect({ name, gated: [BUILD, PUBLISH].includes(step.if ?? "") }).toEqual(
+        { name, gated: true },
+      );
+    }
+  });
+
+  test("every action is pinned to a commit and no package is installed", () => {
+    for (const step of releaseJob().steps ?? []) {
+      if (step.uses)
+        expect(step.uses).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/);
+      expect(step.run ?? "").not.toMatch(
+        /\b(?:bun|npm|yarn|pnpm) (?:i|install|add)\b/,
+      );
+    }
+    // The comment after each pin names its release.
+    for (const line of loadRelease().text.split("\n"))
+      if (/^\s*- uses: /.test(line))
+        expect(line).toMatch(/@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+  });
+
+  test("builds, signs and notarizes through package-release.sh --sign; a dry run stays ad-hoc", () => {
     const pkg = stepRunning("scripts/package-release.sh");
-    expect(pkg.run).toContain("scripts/package-release.sh --sign");
     for (const key of [
       "APPLE_CERTIFICATE",
       "APPLE_CERTIFICATE_PASSWORD",
@@ -873,6 +1065,7 @@ describe("release workflow", () => {
     expect(pkg.env?.POLYGLOSS_REQUIRE_NOTARIZATION).toBe("1");
     // The .p8 key is a secret written to a runner temp file first.
     const key = stepRunning("APPLE_API_KEY_PATH=");
+    expect(key.if).toBe(PUBLISH);
     expect(key.env?.APPLE_API_PRIVATE_KEY).toBe(
       "${{ secrets.APPLE_API_PRIVATE_KEY }}",
     );
@@ -884,37 +1077,81 @@ describe("release workflow", () => {
     expect(stepRunning("cargo-packager").run).toContain(
       "scripts/cargo.sh install cargo-packager --version =0.11.8 --locked",
     );
+
+    // The step against a stand-in package-release.sh that logs its argv and
+    // the appcast URL it gets.
+    const cwd = scratch("checkout");
+    mkdirSync(join(cwd, "scripts"));
+    writeFileSync(
+      join(cwd, "scripts", "package-release.sh"),
+      '#!/bin/bash\necho "package-release [$*] url=[${POLYGLOSS_APPCAST_URL-}]"\n',
+    );
+    chmodSync(join(cwd, "scripts", "package-release.sh"), 0o755);
+    const repo = { GITHUB_REPOSITORY: "dakdevs/polygloss" };
+    const step = (env: Env) =>
+      run(["bash", "-e", "-c", pkg.run ?? ""], { ...repo, ...env }, cwd);
+    expect(step({ DRY_RUN: "false", SPARKLE_PUBLIC_ED_KEY: "k" }).output).toBe(
+      "package-release [--sign] url=[https://github.com/dakdevs/polygloss/releases/latest/download/appcast.xml]\n",
+    );
+    expect(
+      step({
+        DRY_RUN: "true",
+        SPARKLE_PUBLIC_ED_KEY: "k",
+        POLYGLOSS_APPCAST_URL: "https://example.invalid/appcast.xml",
+      }).output,
+    ).toBe("package-release [] url=[https://example.invalid/appcast.xml]\n");
+    // Without the public key the bundle has no updater, so no feed URL.
+    expect(step({ DRY_RUN: "true" }).output).toBe(
+      "package-release [] url=[]\n",
+    );
   });
 
-  test("uploads with gh release upload only for a tag, then the appcast and tap", () => {
+  test("smoke-tests the bundle, then a dry run keeps the DMG as an artifact", () => {
     const steps = releaseJob().steps ?? [];
-    const upload = stepRunning("gh release upload");
-    expect(upload.if).toContain("startsWith(github.ref, 'refs/tags/v')");
-    expect(upload.env?.GH_TOKEN).toBe("${{ github.token }}");
+    const smoke = stepRunning("scripts/smoke-bundle.sh dist/Polygloss.app");
+    expect(smoke.if).toBe(BUILD);
+    expect(
+      steps.indexOf(stepRunning("scripts/package-release.sh")),
+    ).toBeLessThan(steps.indexOf(smoke));
+    const artifact = steps.find((s) =>
+      s.uses?.startsWith("actions/upload-artifact@"),
+    );
+    expect(artifact?.if).toBe("${{ inputs.dry_run }}");
+    expect(steps.indexOf(smoke)).toBeLessThan(steps.indexOf(artifact!));
+  });
+
+  test("publishes v<version> on this commit with the DMG, appcast and checksums as the latest release", () => {
+    const steps = releaseJob().steps ?? [];
+    const publish = stepRunning("gh release create");
     const appcast = stepRunning("make-appcast.sh");
     const tap = stepRunning("bump-tap.ts");
+    for (const s of [publish, appcast, tap])
+      expect({ step: s.name, if: s.if }).toEqual({
+        step: s.name,
+        if: PUBLISH,
+      });
+    expect(publish.env?.GH_TOKEN).toBe("${{ github.token }}");
     expect(appcast.env?.SPARKLE_PRIVATE_ED_KEY).toBe(
       "${{ secrets.SPARKLE_PRIVATE_ED_KEY }}",
     );
     expect(tap.env?.HOMEBREW_TAP_TOKEN).toBe(
       "${{ secrets.HOMEBREW_TAP_TOKEN }}",
     );
-    for (const s of [appcast, tap])
-      expect(s.if).toContain("startsWith(github.ref, 'refs/tags/v')");
-    const pkg = stepRunning("scripts/package-release.sh");
-    expect(steps.indexOf(pkg)).toBeLessThan(steps.indexOf(upload));
-    expect(steps.indexOf(upload)).toBeLessThan(steps.indexOf(appcast));
-    expect(steps.indexOf(appcast)).toBeLessThan(steps.indexOf(tap));
-    // A dry run (workflow_dispatch) keeps the DMG as a run artifact instead.
-    expect(
-      steps.some((s) => s.uses?.startsWith("actions/upload-artifact@")),
-    ).toBe(true);
-  });
+    const smoke = stepRunning("scripts/smoke-bundle.sh");
+    expect(steps.indexOf(smoke)).toBeLessThan(steps.indexOf(appcast));
+    expect(steps.indexOf(appcast)).toBeLessThan(steps.indexOf(publish));
+    expect(steps.indexOf(publish)).toBeLessThan(steps.indexOf(tap));
 
-  test("checks the tag against the crate version", () => {
-    const check = stepRunning("GITHUB_REF_NAME");
-    expect(check.if).toContain("startsWith(github.ref, 'refs/tags/v')");
-    expect(check.run).toContain("Cargo.toml");
+    const gh = loggingTools(["gh"]);
+    const r = runStep(
+      publish,
+      { POLYGLOSS_VERSION: "20261005.3", GITHUB_SHA: "abc123", GH_TOKEN: "t" },
+      gh.bin,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(gh.log()).toEqual([
+      "gh [release] [create] [v20261005.3] [--target] [abc123] [--latest] [--title] [20261005.3] [--notes-file] [dist/release-notes-github.md] [dist/Polygloss_20261005.3_aarch64.dmg] [dist/appcast.xml] [dist/SHA256SUMS]",
+    ]);
   });
 
   test("never calls bare cargo or names team FCSF68W94H", () => {

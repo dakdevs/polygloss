@@ -52,6 +52,8 @@ function buildApp(): void {
     env: process.env,
     stdout: "inherit",
     stderr: "inherit",
+    // A full app build, maybe after waiting for another checkout's cargo.sh.
+    timeout: 30 * 60_000,
   });
   if (r.exitCode !== 0)
     throw new Error(`\`${argv.join(" ")}\` failed with ${r.exitCode}`);

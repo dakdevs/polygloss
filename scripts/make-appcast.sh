@@ -13,6 +13,9 @@
 # sparkle:version must equal the bundle's CFBundleVersion; the result is
 # <dist dir>/appcast.xml, which release.yml uploads to the release, where
 # POLYGLOSS_APPCAST_URL (…/releases/latest/download/appcast.xml) finds it.
+# With SPARKLE_RELEASE_NOTES (a Markdown file, scripts/release-notes.ts
+# --sparkle) the notes go next to the DMG under its name and are embedded in
+# the appcast's <description>, which Sparkle's update dialog shows.
 #
 # Skips (exit 0) without SPARKLE_PRIVATE_ED_KEY, or when <dist
 # dir>/Polygloss.app was built without an appcast (no SUFeedURL).
@@ -69,17 +72,26 @@ staging="$(mktemp -d "${TMPDIR:-/tmp}/make-appcast.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 mkdir "$staging/archives"
 cp "${dmgs[0]}" "$staging/archives/"
+notes=()
+if [ -n "${SPARKLE_RELEASE_NOTES-}" ]; then
+  [ -s "$SPARKLE_RELEASE_NOTES" ] || die "no release notes at SPARKLE_RELEASE_NOTES=$SPARKLE_RELEASE_NOTES"
+  cp "$SPARKLE_RELEASE_NOTES" "$staging/archives/$(basename "${dmgs[0]}" .dmg).md"
+  notes=(--embed-release-notes)
+fi
 
 say "generating the appcast for $(basename "${dmgs[0]}")"
 printf '%s' "$SPARKLE_PRIVATE_ED_KEY" |
   "$bin/generate_appcast" --ed-key-file - --download-url-prefix "$prefix" \
-    -o "$staging/appcast.xml" "$staging/archives" ||
+    ${notes[@]+"${notes[@]}"} -o "$staging/appcast.xml" "$staging/archives" ||
   die "generate_appcast failed"
 [ -s "$staging/appcast.xml" ] || die "generate_appcast wrote no appcast"
 
 if [ -n "$bundle_version" ] &&
   ! grep -q "<sparkle:version>$bundle_version</sparkle:version>" "$staging/appcast.xml"; then
   die "the appcast's sparkle:version is not the bundle's CFBundleVersion $bundle_version"
+fi
+if [ ${#notes[@]} -gt 0 ] && ! grep -q '<description' "$staging/appcast.xml"; then
+  die "generate_appcast did not embed the release notes"
 fi
 cp "$staging/appcast.xml" "$dist/appcast.xml"
 say "wrote $dist/appcast.xml"

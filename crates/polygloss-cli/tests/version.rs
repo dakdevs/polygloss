@@ -18,6 +18,14 @@ fn sandboxed(bin: &str, root: &Path) -> Command {
     cmd
 }
 
+/// The version the build injected (`POLYGLOSS_VERSION`, a release's CalVer;
+/// cargo rebuilds when it changes), else the crate version (ADR-0019).
+fn built_version() -> &'static str {
+    option_env!("POLYGLOSS_VERSION")
+        .filter(|v| !v.is_empty())
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 #[test]
 fn cli_prints_version() {
     let root = tempfile::tempdir().expect("temp dir");
@@ -28,6 +36,6 @@ fn cli_prints_version() {
     assert!(out.status.success(), "exit status {:?}", out.status);
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        format!("polygloss {}\n", env!("CARGO_PKG_VERSION"))
+        format!("polygloss {}\n", built_version())
     );
 }

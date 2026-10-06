@@ -78,4 +78,40 @@ describe("tests/support/preload.ts", () => {
     expect(r.exitCode).toBe(0);
     expect(logLines()).toEqual([]);
   });
+
+  test("a Bun.spawnSync without a timeout fails its test when the child hangs", () => {
+    // Each child waits 30 s on a grandchild that holds its pipes; uncapped,
+    // the run would take a minute.
+    const suite = join(sandbox.home, "hang.test.ts");
+    writeFileSync(
+      suite,
+      `import { expect, test } from "bun:test";
+const hang = ["bash", "-c", "sleep 30; echo done"];
+test("hangs in argv form", () => {
+  expect(Bun.spawnSync(hang).exitCode).toBe(0);
+}, 120_000);
+test("hangs in options form", () => {
+  expect(Bun.spawnSync({ cmd: hang }).exitCode).toBe(0);
+}, 120_000);
+`,
+    );
+    const started = Date.now();
+    const r = Bun.spawnSync(
+      [process.execPath, "test", "--preload", preload, suite],
+      {
+        cwd: sandbox.home,
+        env: {
+          ...sandbox.env,
+          POLYGLOSS_SKIP_BUILD: "1",
+          POLYGLOSS_TEST_SPAWN_TIMEOUT_MS: "1000",
+        },
+        timeout: 50_000,
+      },
+    );
+    const output = r.stdout.toString() + r.stderr.toString();
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(r.exitCode).toBe(1);
+    expect(output).toContain("(fail) hangs in argv form");
+    expect(output).toContain("(fail) hangs in options form");
+  }, 60_000);
 });

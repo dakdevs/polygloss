@@ -6,11 +6,31 @@ const repoRoot = resolve(import.meta.dir, "../..");
 const workflowPath = join(repoRoot, ".github", "workflows", "ci.yml");
 
 type Step = { uses?: string; run?: string; with?: Record<string, unknown> };
-type Job = { "runs-on"?: string; steps?: Step[] };
-type Workflow = { on?: Record<string, unknown>; jobs?: Record<string, Job> };
+type Job = {
+  "runs-on"?: string;
+  env?: Record<string, string>;
+  steps?: Step[];
+  needs?: string[];
+  if?: string;
+  permissions?: Record<string, string>;
+  uses?: string;
+  secrets?: string;
+};
+type Workflow = {
+  on?: Record<string, unknown>;
+  permissions?: Record<string, string>;
+  jobs?: Record<string, Job>;
+};
 
 function loadWorkflow(): Workflow {
   return Bun.YAML.parse(readFileSync(workflowPath, "utf8")) as Workflow;
+}
+
+/** Every job but `release`, which calls release.yml. */
+function ciJobs(): [string, Job][] {
+  return Object.entries(loadWorkflow().jobs ?? {}).filter(
+    ([name]) => name !== "release",
+  );
 }
 
 function runs(job: Job): string[] {
@@ -38,10 +58,12 @@ describe("ci workflow", () => {
     expect(Object.keys(wf.on ?? {}).sort()).toEqual(["pull_request", "push"]);
   });
 
-  test("has exactly the lint, unit, bun, e2e and audit jobs on macos-15", () => {
+  test("has exactly the lint, unit, bun, e2e and audit jobs on macos-15, then release", () => {
     const jobs = loadWorkflow().jobs ?? {};
-    expect(Object.keys(jobs).sort()).toEqual(Object.keys(jobCommands).sort());
-    for (const [name, job] of Object.entries(jobs)) {
+    expect(Object.keys(jobs).sort()).toEqual(
+      [...Object.keys(jobCommands), "release"].sort(),
+    );
+    for (const [name, job] of ciJobs()) {
       expect({ name, runner: job["runs-on"] }).toEqual({
         name,
         runner: "macos-15",
@@ -50,7 +72,7 @@ describe("ci workflow", () => {
   });
 
   test("every job sets up the pinned toolchains before its command", () => {
-    for (const [name, job] of Object.entries(loadWorkflow().jobs ?? {})) {
+    for (const [name, job] of ciJobs()) {
       const steps = job.steps ?? [];
       expect({ name, first: steps[0]?.uses }).toEqual({
         name,
@@ -74,6 +96,41 @@ describe("ci workflow", () => {
         last: jobCommands[name],
       });
     }
+  });
+
+  test("release runs release.yml after every other job passes, only for pushes to main", () => {
+    const wf = loadWorkflow();
+    const release = wf.jobs?.release;
+    expect(release?.needs?.slice().sort()).toEqual(
+      Object.keys(jobCommands).sort(),
+    );
+    expect(release?.if).toBe(
+      "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    );
+    expect(release?.uses).toBe("./.github/workflows/release.yml");
+    expect(release?.secrets).toBe("inherit");
+    // Write access is this job's alone; pull requests and branches only get
+    // the CI jobs (macOS minutes, ADR-0019).
+    expect(wf.permissions).toEqual({ contents: "read" });
+    expect(release?.permissions).toEqual({ contents: "write" });
+    for (const [name, job] of ciJobs()) {
+      expect({ name, permissions: job.permissions }).toEqual({
+        name,
+        permissions: undefined,
+      });
+      expect({ name, if: job.if }).toEqual({ name, if: undefined });
+    }
+  });
+
+  test("only End-to-end builds with a release version, which its suites then expect", () => {
+    for (const [name, job] of ciJobs())
+      expect({ name, version: job.env?.POLYGLOSS_VERSION }).toEqual({
+        name,
+        version: name === "e2e" ? "20261005.1" : undefined,
+      });
+    expect(existsSync(join(repoRoot, "tests", "e2e", "version.test.ts"))).toBe(
+      true,
+    );
   });
 
   test("never calls Homebrew cargo directly", () => {
