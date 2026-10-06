@@ -11,10 +11,11 @@
 //! when its content changes.
 //!
 //! Geometry (ADR-0031 C4): a block is a nested card, [`nested`] in its file
-//! card (`NESTED_X`, `NESTED_Y`), radius `MD`; its header row and its chip
-//! are list rows (`MD`), and its comments put their content `COMPACT_X` /
-//! `COMPACT_Y` in, the body after the `AVATAR_SM` avatar and its `CONTROLS`
-//! gap. The outdated snippet uses the card's columns ([`Columns`]).
+//! card (`NESTED_X`, `NESTED_Y`; stacked cards `NESTED_Y` apart), radius
+//! `MD`; its header row and its chip are list rows (`MD`), and its comments
+//! put their content `COMPACT_X` / `COMPACT_Y` in, the body after the
+//! `AVATAR_SM` avatar and its `CONTROLS` gap. The outdated snippet uses the
+//! card's columns ([`Columns`]).
 //!
 //! Debug selectors (`thread-<id>`, `thread-chip-<id>`, `thread-header-<id>`,
 //! `thread-comment-<comment>`, `thread-avatar-<comment>`,
@@ -44,7 +45,8 @@ use crate::markdown::suggestion::{self, Columns};
 use crate::motion::ink::PressInk as _;
 use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, stroke, text};
 
-/// Thread `id`'s block: its card, or its chip while collapsed.
+/// Thread `id`'s block content: its card, or its chip while collapsed
+/// ([`ReviewThreads`] insets it with [`nested`]).
 pub fn render(
     model: &Entity<ReviewThreads>,
     id: &str,
@@ -59,23 +61,25 @@ pub fn render(
         let collapsed = m.collapsed(&thread);
         (thread, collapsed, m.position(id).cloned())
     };
-    let inner = if collapsed {
+    if collapsed {
         chip(model, &thread, cx).into_any_element()
     } else {
         card(model, &thread, position.as_ref(), window, cx)
-    };
-    nested(inner)
+    }
 }
 
 /// A card inside a file card (a thread block, a composer) as a viewport
-/// block: `NESTED_X` from the file card's inner edges and `NESTED_Y` from
-/// the rows around it (ADR-0031 C4). Opaque to clicks (the diff under it
-/// does not see them), but the wheel still scrolls the diff.
-pub(crate) fn nested(card: impl IntoElement) -> AnyElement {
+/// block: `NESTED_X` from the file card's inner edges, `NESTED_Y` above it
+/// and, with `gap_below`, below it (ADR-0031 C4). A block stacked on
+/// another at its anchor goes without it, so the two cards sit `NESTED_Y`
+/// apart. Opaque to clicks (the diff under it does not see them), but the
+/// wheel still scrolls the diff.
+pub(crate) fn nested(card: AnyElement, gap_below: bool) -> AnyElement {
     div()
         .w_full()
         .px(px(edge::NESTED_X))
-        .py(px(edge::NESTED_Y))
+        .pt(px(edge::NESTED_Y))
+        .when(gap_below, |el| el.pb(px(edge::NESTED_Y)))
         .block_mouse_except_scroll()
         .child(card)
         .into_any_element()

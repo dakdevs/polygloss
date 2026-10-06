@@ -364,15 +364,15 @@ fn row(
                         .press_ink(cx),
                 )
                 .when(selected, |el| {
-                    // A rail inside the left edge, clear of the corners; the
-                    // focus changes its color only.
+                    // A rail inside the left edge along the content box, clear
+                    // of the corners; the focus changes its color only.
                     el.child(
                         div()
                             .debug_selector(move || format!("threads-panel-selected-{mark_sel}"))
                             .absolute()
                             .left(px(pad::RIM))
-                            .top(px(gap::CONTROLS))
-                            .bottom(px(gap::CONTROLS))
+                            .top(px(edge::COMPACT_Y))
+                            .bottom(px(edge::COMPACT_Y))
                             .w(px(stroke::CURSOR_BAR))
                             .rounded_full()
                             .bg(if focused {

@@ -5,6 +5,7 @@
 //! selectors, the viewport's `card_bounds` and debug frame).
 
 use gpui_kit::{Bounds, Entity, Hsla, Pixels, Point, VisualTestContext, px};
+use polygloss_app::composer::{self, ComposerKey};
 use polygloss_app::keymap::actions::viewport as viewport_actions;
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::threads::placement::{self, ThreadPlace};
@@ -32,6 +33,27 @@ fn viewport_origin(shell: &mut Shell, tab: &Entity<ReviewTab>) -> (f32, f32) {
             card.top().as_f32() - at.bounds.1,
         )
     })
+}
+
+/// The window top and bottom of block `id`'s row in the viewport's last
+/// frame.
+fn block_row(
+    shell: &mut Shell,
+    tab: &Entity<ReviewTab>,
+    id: polygloss_viewport::BlockId,
+) -> (f32, f32) {
+    let block = format!("[block {}]", id.0);
+    let origin = viewport_origin(shell, tab);
+    let (top, height) = tab.read_with(shell.cx, |t, cx| {
+        let d = t.viewport.read(cx).debug();
+        let i = d
+            .visible_rows
+            .iter()
+            .position(|r| *r == block)
+            .unwrap_or_else(|| panic!("{block} not in {:#?}", d.visible_rows));
+        d.row_bounds[i]
+    });
+    (origin.1 + top, origin.1 + top + height)
 }
 
 /// The corner radius of the bordered quad painted at `at` (window points).
@@ -90,20 +112,9 @@ fn thread_blocks_sit_on_the_nested_edge(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(thread.left() - (card.left() + px(1.)), px(12.));
     assert_eq!((card.right() - px(1.)) - thread.right(), px(12.));
     // 8 below its line and 8 above the next one: inside its block row.
-    let block = format!("[block {}]", placement::block_id(&id).0);
-    let origin = viewport_origin(&mut shell, &tab);
-    let (top, height) = tab.read_with(shell.cx, |t, cx| {
-        let d = t.viewport.read(cx).debug();
-        let i = d
-            .visible_rows
-            .iter()
-            .position(|r| *r == block)
-            .unwrap_or_else(|| panic!("{block} not in {:#?}", d.visible_rows));
-        d.row_bounds[i]
-    });
-    let row_top = origin.1 + top;
+    let (row_top, row_bottom) = block_row(&mut shell, &tab, placement::block_id(&id));
     assert_eq!(thread.top().as_f32() - row_top, 8.0);
-    assert_eq!(row_top + height - thread.bottom().as_f32(), 8.0);
+    assert_eq!(row_bottom - thread.bottom().as_f32(), 8.0);
     // A card: radius 8.
     assert_eq!(border_radius(shell.cx, thread), 8.0);
 
@@ -121,6 +132,117 @@ fn thread_blocks_sit_on_the_nested_edge(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(avatar.size.width, px(20.));
     let body = bounds(shell.cx, format!("thread-body-{comment}"));
     assert_eq!(body.left() - inner_left, px(40.));
+
+    // Stacked on the same line, nested cards sit 8 apart, not 8 + 8: a
+    // second thread, then a line composer (after the threads at its
+    // anchor). The group keeps 8 below its line and 8 above the next one.
+    let second = create(
+        &mut shell,
+        &tab,
+        line("src/config.rs", Side::New, 5, 5),
+        ThreadKind::Comment,
+        "Ordered output.",
+        human(),
+    );
+    reload(&mut shell, &tab);
+    tab.update_in(shell.cx, |t, window, cx| {
+        composer::open_line(t, file_idx, Side::New, 4, 4, window, cx)
+    });
+    draw(shell.cx);
+    let key = ComposerKey::line("src/config.rs", Side::New, 4, 4);
+    let mut cards = [
+        (
+            placement::block_id(&id),
+            bounds(shell.cx, format!("thread-{id}")),
+        ),
+        (
+            placement::block_id(&second),
+            bounds(shell.cx, format!("thread-{second}")),
+        ),
+        (key.block_id(), bounds(shell.cx, format!("composer-{key}"))),
+    ];
+    // The threads in their place's order, then the composer.
+    cards[..2].sort_by(|a, b| a.1.top().as_f32().total_cmp(&b.1.top().as_f32()));
+    for pair in cards.windows(2) {
+        assert_eq!(pair[1].1.top() - pair[0].1.bottom(), px(8.), "{pair:?}");
+    }
+    let (first_top, _) = block_row(&mut shell, &tab, cards[0].0);
+    assert_eq!(cards[0].1.top().as_f32() - first_top, 8.0);
+    let (_, last_bottom) = block_row(&mut shell, &tab, cards[2].0);
+    assert_eq!(last_bottom - cards[2].1.bottom().as_f32(), 8.0);
+}
+
+/// A block that gains a block stacked under it while off screen (but near
+/// enough to be measured) is measured again then, without its gap below:
+/// scrolling it into view does not change its height.
+#[gpui_kit::test]
+fn a_restacked_block_is_measured_again_off_screen(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    resize_window(&mut shell, 1_440., 900.);
+    // `topic` adds `long.txt`: its line 80 is past the first screen.
+    let repo = FixtureRepo::init(ObjectFormat::Sha1);
+    repo.write("README", b"readme\n");
+    repo.commit("base");
+    repo.git(&["tag", "base"]);
+    repo.git(&["checkout", "-q", "-b", "topic"]);
+    let text: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+    repo.write("long.txt", text.as_bytes());
+    repo.commit("add");
+    let tab = shell.open(base_to_topic(&repo)).unwrap();
+    shell.cx.dispatch_action(viewport_actions::LayoutUnified);
+    draw(shell.cx);
+    let at = line("long.txt", Side::New, 80, 80);
+    let first = create(
+        &mut shell,
+        &tab,
+        at.clone(),
+        ThreadKind::Comment,
+        "One.",
+        human(),
+    );
+    reload(&mut shell, &tab);
+    assert!(!painted(shell.cx, format!("thread-{first}")), "off screen");
+    let second = create(&mut shell, &tab, at, ThreadKind::Comment, "Two.", human());
+    reload(&mut shell, &tab);
+    let block = placement::block_id(&first);
+    let height = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            let doc = t.viewport.read(cx).document();
+            (0..doc.len())
+                .find_map(|f| doc.blocks(f).iter().find(|b| b.id == block))
+                .map(|b| b.height)
+                .expect("the block is placed")
+        })
+    };
+    let off_screen = height(&mut shell);
+    tab.update(shell.cx, |t, cx| {
+        t.viewport
+            .update(cx, |v, cx| v.scroll_to(ScrollTarget::Block(block), cx))
+    });
+    draw(shell.cx);
+    assert_eq!(height(&mut shell), off_screen);
+    let mut cards = [
+        bounds(shell.cx, format!("thread-{first}")),
+        bounds(shell.cx, format!("thread-{second}")),
+    ];
+    cards.sort_by(|a, b| a.top().as_f32().total_cmp(&b.top().as_f32()));
+    assert_eq!(cards[1].top() - cards[0].bottom(), px(8.));
+}
+
+/// `refs/tags/base..refs/heads/topic` of `repo`.
+fn base_to_topic(repo: &FixtureRepo) -> OpenRequest {
+    OpenRequest {
+        worktree: repo.path().to_path_buf(),
+        source: Source::Compare {
+            base: "refs/tags/base".into(),
+            head: "refs/heads/topic".into(),
+            mode: CompareMode::Direct,
+        },
+        label: None,
+        pin: None,
+        actor: Actor::human(),
+    }
 }
 
 /// `base`: `long.txt` with `n` lines. `topic` (checked out) changes line
@@ -146,17 +268,7 @@ fn outdated_at(shell: &mut Shell, n: u32, at: u32) -> (FixtureRepo, Entity<Revie
     repo.git(&["checkout", "-q", "-b", "topic"]);
     repo.write("long.txt", text("first").as_bytes());
     repo.commit("first");
-    let req = OpenRequest {
-        worktree: repo.path().to_path_buf(),
-        source: Source::Compare {
-            base: "refs/tags/base".into(),
-            head: "refs/heads/topic".into(),
-            mode: CompareMode::Direct,
-        },
-        label: None,
-        pin: None,
-        actor: Actor::human(),
-    };
+    let req = base_to_topic(&repo);
     let first = shell.core.open(&req).unwrap();
     let blobs = BlobReader::open(&first.repo).unwrap();
     let id = shell
@@ -273,6 +385,8 @@ fn threads_panel_header_is_36(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(header.top(), panel.top());
 }
 
+/// `SECTION` 24 above an empty state. The threads panel's is the only empty
+/// state in T7.7's files; the overlays' and Home's are their own cards'.
 #[gpui_kit::test]
 fn empty_states_use_24(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();

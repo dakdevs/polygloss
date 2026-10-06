@@ -784,8 +784,8 @@ fn push_blocks(tab: &ReviewTab, cx: &mut Context<ReviewTab>) {
                 BlockSpec {
                     id: o.key.block_id(),
                     anchor,
-                    // A nested card, inset like a thread block.
-                    render: Rc::new(move |_, _| threads::block::nested(view.clone())),
+                    // The threads model insets it like a thread block.
+                    render: Rc::new(move |_, _| view.clone().into_any_element()),
                 },
             ))
         })
