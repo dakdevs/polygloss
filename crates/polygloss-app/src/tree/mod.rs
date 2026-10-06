@@ -60,7 +60,7 @@ use gpui_kit::{
     div, px,
 };
 use polygloss_diff::FileChange;
-use polygloss_viewport::{DiffViewport, FileFlags, ScrollTarget, ViewportEvent};
+use polygloss_viewport::{DiffProvider, DiffViewport, FileFlags, ScrollTarget, ViewportEvent};
 
 use crate::categories::{Partition, Repartitioned};
 use crate::keyboard::menu::KeyMenu;
@@ -203,6 +203,8 @@ pub struct FileTree {
     /// The panel of the viewport's top file, as last seen (OQ-44: a new one
     /// is a crossing, which opens it).
     followed: Option<PanelKey>,
+    /// The diff the panels were built for (the viewport's provider then).
+    diff: Arc<dyn DiffProvider>,
     /// An expansion restored before the panels were first built (view state
     /// restores before the tab's first partition reaches the tree).
     restored: Option<HashSet<String>>,
@@ -237,6 +239,7 @@ impl FileTree {
         cx: &mut Context<FileTree>,
     ) -> FileTree {
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let diff = viewport.read(cx).provider().clone();
         let subscriptions = vec![
             cx.subscribe(
                 &viewport,
@@ -269,6 +272,7 @@ impl FileTree {
             current: None,
             jumped: None,
             followed: None,
+            diff,
             restored: None,
             rendered_open: None,
             key_menu: None,
@@ -391,6 +395,7 @@ impl FileTree {
     ) {
         flags.resize(files.len(), FileFlags::default());
         self.files = files;
+        self.diff = self.viewport.read(cx).provider().clone();
         self.flags = Arc::new(flags);
         self.partition = partition;
         let was_open = self.panels.open_key().cloned();
@@ -774,38 +779,6 @@ impl FileTree {
             hit.map(|(id, _)| id)
         });
         self.selected = found;
-    }
-
-    /// The viewport's top file changed: a new panel's file opens that panel
-    /// (a crossing, OQ-44), and the file is marked.
-    fn visible_file_changed(&mut self, idx: u32, cx: &mut Context<Self>) {
-        if let Some(target) = self.jumped {
-            // Near the end of the diff the viewport cannot bring the chosen
-            // file to its top; keep it marked while it is on screen.
-            let v = self.viewport.read(cx);
-            if v.display_rank(target) > v.display_rank(idx) && self.on_screen(target, cx) {
-                return;
-            }
-            self.jumped = None;
-        }
-        let key = self.key_of(idx);
-        if key != self.followed {
-            self.followed = key;
-            if let Some(ix) = self.followed.as_ref().and_then(|k| self.panels.index_of(k))
-                && self.panels.open_key() != self.followed.as_ref()
-                && self.panels.set_open(ix)
-            {
-                self.selected = None;
-            }
-        }
-        if self.current != Some(idx) || self.selected != Some(ItemId::File(idx)) {
-            self.highlight(idx, cx);
-        }
-    }
-
-    fn on_screen(&self, idx: u32, cx: &App) -> bool {
-        let doc = self.viewport.read(cx).document();
-        doc.header_top(idx) < doc.scroll_top() + f64::from(doc.viewport_height())
     }
 
     /// A panel's selection changed (a click or the arrow keys): in the open

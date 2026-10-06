@@ -767,7 +767,7 @@ When the row narrows, in order: the parent path hides; ref, branch and SHA pills
 | Folder, some viewed | `circle-minus` (muted)  | `circle-minus` (muted)  | Marks all viewed   |
 | Folder, all viewed  | `circle-check` (accent) | `circle-check` (accent) | Marks all unviewed |
 
-- Selecting a row scrolls the viewport to it, opening its section. The open panel follows the viewport: a jump or a scroll into another section opens that section's panel and highlights the row; a panel the user opens stays open until the next such crossing (**Provisional**, OQ-44). A review opens on its top file's panel (a restored position included), and a settings change or palette toggle that moves the top file into another panel is a crossing too. When a panel's list has the keyboard, the list of the panel a crossing opens takes it.
+- Selecting a row scrolls the viewport to it, opening its section. The open panel follows the viewport: a jump or a scroll into another section opens that section's panel and highlights the row; a panel the user opens stays open until the next such crossing (**Provisional**, OQ-44). A review opens on its top file's panel (a restored position included), and a settings change, palette toggle, refresh or iteration switch that moves the top file into another panel is a crossing too; one that leaves it in its panel keeps the open panel. When a panel's list has the keyboard, the list of the panel a crossing opens takes it.
 - ⌘F replaces the accordion with the find pane while it is open (§11.14).
 
 ### 11.6 Diff viewport (ADR-0003)

@@ -15,6 +15,10 @@
 //!   click opens the panel and gives its list the keyboard; the list keeps
 //!   its scroll position. A lone Changes panel (nothing categorized) shows
 //!   no header: it is the plain tree of the reference.
+//! - **Follow** (OQ-44): the viewport's top file crossing into another
+//!   panel's files opens that panel (`FileTree::visible_file_changed`,
+//!   then `FileTree::follow_focus` for the keyboard; a partition decides in
+//!   `FileTree::build`).
 //! - **Filter:** the segment's one [`TreeFilter`] applies to every panel;
 //!   each reports `(matches, total)`; a panel without a match is hidden.
 //! - **Folders** cover their own panel's files only (a `src/` in Changes
@@ -45,7 +49,7 @@ use polygloss_diff::FileChange;
 use polygloss_viewport::{BandFlags, FileFlags, group_digits};
 
 use super::filters::TreeFilter;
-use super::model::{NodeId, TreeModel};
+use super::model::{ItemId, NodeId, TreeModel};
 use super::row::Check;
 use super::{FileTree, KEY_CONTEXT, row};
 use crate::categories::Partition;
@@ -615,11 +619,51 @@ impl FileTree {
         }
     }
 
+    /// The viewport's top file changed: a new panel's file opens that panel
+    /// (a crossing, OQ-44), and the file is marked.
+    pub(super) fn visible_file_changed(&mut self, idx: u32, cx: &mut Context<Self>) {
+        // A refresh or an iteration switch: `idx` is a file of the new diff,
+        // which the panels do not hold yet. Its partition decides
+        // (`FileTree::build`).
+        if !Arc::ptr_eq(&self.diff, self.viewport.read(cx).provider()) {
+            return;
+        }
+        if let Some(target) = self.jumped {
+            // Near the end of the diff the viewport cannot bring the chosen
+            // file to its top; keep it marked while it is on screen.
+            let v = self.viewport.read(cx);
+            if v.display_rank(target) > v.display_rank(idx) && self.on_screen(target, cx) {
+                return;
+            }
+            self.jumped = None;
+        }
+        let key = self.key_of(idx);
+        if key != self.followed {
+            self.followed = key;
+            if let Some(ix) = self.followed.as_ref().and_then(|k| self.panels.index_of(k))
+                && self.panels.open_key() != self.followed.as_ref()
+                && self.panels.set_open(ix)
+            {
+                self.selected = None;
+            }
+        }
+        if self.current != Some(idx) || self.selected != Some(ItemId::File(idx)) {
+            self.highlight(idx, cx);
+        }
+    }
+
+    fn on_screen(&self, idx: u32, cx: &App) -> bool {
+        let doc = self.viewport.read(cx).document();
+        doc.header_top(idx) < doc.scroll_top() + f64::from(doc.viewport_height())
+    }
+
     /// When another panel opened since the last frame (a crossing, a
     /// repartition), its list takes the keyboard from the list that had it,
     /// which is no longer rendered: gpui-kit's `Tree` key context inside
     /// [`KEY_CONTEXT`] in that frame (only the active tab renders, and
-    /// activating a tab moves the keyboard into it).
+    /// activating a tab moves the keyboard into it). The filter box is
+    /// inside [`KEY_CONTEXT`] but not `Tree`, so typing there keeps the
+    /// keyboard.
     pub(super) fn follow_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let open = self.panels.open_key();
         if open == self.rendered_open.as_ref() {
@@ -628,6 +672,9 @@ impl FileTree {
         // Before a list was rendered, none had the keyboard.
         if self.rendered_open.is_some() {
             let stack = window.context_stack();
+            // "Tree" is gpui-base's `tree::CONTEXT` (its `key_context()` is
+            // `#[doc(hidden)]`), the context the keymap's `Tree` bindings
+            // name: check it when bumping gpui-kit.
             if [KEY_CONTEXT, "Tree"]
                 .iter()
                 .all(|name| stack.iter().any(|c| c.contains(name)))

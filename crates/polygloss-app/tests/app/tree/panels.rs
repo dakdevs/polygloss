@@ -455,6 +455,34 @@ fn following_a_crossing_keeps_the_keyboard_in_the_tree(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn a_filter_opening_another_panel_leaves_the_keyboard_in_the_filter_box(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = config_repo();
+    let mut o = open(cx, &repo);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("changes"));
+    let tree = o.tree.clone();
+    o.shell
+        .cx
+        .update(|window, cx| tree.update(cx, |t, cx| t.focus_filter(window, cx)));
+    draw(o.shell.cx);
+    let filter = o.tree.read_with(o.shell.cx, |t, cx| t.filter_focus(cx));
+    let in_box = |o: &mut Opened| o.shell.cx.update(|window, _| filter.is_focused(window));
+    assert!(in_box(&mut o));
+    // No Changes or Generated path holds a `t`: the first letter typed
+    // leaves only Tests matching, and its panel opens.
+    o.shell.cx.simulate_input("t");
+    draw(o.shell.cx);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    assert!(in_box(&mut o), "the panel switch took the keyboard");
+    o.shell.cx.simulate_input("est");
+    draw(o.shell.cx);
+    let query = o
+        .tree
+        .read_with(o.shell.cx, |t, _| t.filters().query.clone());
+    assert_eq!(query, "test");
+}
+
+#[gpui_kit::test]
 fn file_finder_lists_files_in_display_order(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     // Git order: 0 `Cargo.lock` (Generated), 1 `tests/x.rs` (Tests), 2
@@ -632,6 +660,44 @@ fn panels_rebuild_once_per_refresh(cx: &mut TestAppContext) {
             p("generated", &[0])
         ]
     );
+}
+
+#[gpui_kit::test]
+fn a_refresh_keeps_a_user_opened_panel_while_the_top_file_stays_in_its_panel(
+    cx: &mut TestAppContext,
+) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let mut o = open(cx, &repo);
+    // Reading `src/b.rs` (Changes) with Tests opened by hand.
+    go_to_file(&mut o.shell, &o.tab, 4);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("changes"));
+    click(&mut o, "tree-panel-tests");
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    let refresh = |o: &mut Opened, path: &str| {
+        repo.write(path, b"new\n");
+        repo.commit(path);
+        repo.git(&["tag", "-f", "head"]);
+        o.tab.update_in(o.shell.cx, live::refresh_tab);
+        draw(o.shell.cx);
+    };
+    // A file after `src/b.rs`: it stays file 4 of Changes.
+    refresh(&mut o, "src/c.test.rs");
+    assert_eq!(top_file(&mut o), 4);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    // A file before it: `src/b.rs` is file 5 of Changes now (file 5 was
+    // `src/c.test.rs`, in Tests).
+    refresh(&mut o, "src/a2.rs");
+    assert_eq!(
+        panels(&mut o),
+        [
+            p("changes", &[1, 2, 4, 5]),
+            p("tests", &[3, 6, 7]),
+            p("generated", &[0])
+        ]
+    );
+    assert_eq!(top_file(&mut o), 5);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
 }
 
 #[gpui_kit::test]
