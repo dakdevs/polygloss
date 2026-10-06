@@ -96,7 +96,7 @@ fn pierre_light_maps_every_required_kit_token(cx: &mut TestAppContext) {
         );
     }
     assert!(config.font_family.is_none() && config.mono_font_family.is_none());
-    assert_eq!((config.radius, config.radius_lg), (Some(6), Some(10)));
+    assert_eq!((config.radius, config.radius_lg), (Some(6), Some(12)));
 
     // Applied in the app by name: gpui-kit's theme holds Pierre's colors,
     // and the fonts init_kit named stay (no font scan).
@@ -142,7 +142,7 @@ fn assert_kit_colors(t: &ZedTheme, expected: &[(&str, &str)]) {
         assert_eq!(colors[*kit], *hex, "{}: {kit}", t.name);
     }
     let config = kit_theme_config(t);
-    assert_eq!((config.radius, config.radius_lg), (Some(6), Some(10)));
+    assert_eq!((config.radius, config.radius_lg), (Some(6), Some(12)));
 }
 
 #[gpui_kit::test]
@@ -181,7 +181,7 @@ fn polygloss_light_maps_every_required_kit_token(cx: &mut TestAppContext) {
         assert_eq!(kit.tab_bar_segmented, color("#dcdcdb"));
         assert_eq!(
             (kit.radius, kit.radius_lg),
-            (gpui_kit::px(6.), gpui_kit::px(10.))
+            (gpui_kit::px(6.), gpui_kit::px(12.))
         );
         assert_eq!(kit.mono_font_family, LILEX_FAMILY);
     });
@@ -224,7 +224,7 @@ fn polygloss_dark_maps_every_required_kit_token(cx: &mut TestAppContext) {
         assert_eq!(kit.sidebar, color("#1c1c1f"));
         assert_eq!(
             (kit.radius, kit.radius_lg),
-            (gpui_kit::px(6.), gpui_kit::px(10.))
+            (gpui_kit::px(6.), gpui_kit::px(12.))
         );
     });
 }
@@ -639,4 +639,56 @@ fn lilex_is_default_code_font(cx: &mut TestAppContext) {
     assert_eq!(drawn, SYSTEM_MONO_FONT);
     let snippets = shell.cx.update(|_, cx| markdown::code_font(cx).0);
     assert_eq!(snippets, SYSTEM_MONO_FONT);
+}
+
+/// The built-in themes, by name.
+const BUILT_IN: [&str; 4] = [
+    "Polygloss Light",
+    "Polygloss Dark",
+    "Pierre Light",
+    "Pierre Dark",
+];
+
+#[gpui_kit::test]
+fn kit_radii_follow_the_spacing_system(cx: &mut TestAppContext) {
+    // ADR-0031: the kit's controls (and its popovers and menus, which
+    // round at `radius`) at SM (6); its dialogs and notifications, floating
+    // surfaces, at LG (12), one step above the cards' 8.
+    let _sb = Sandbox::isolate();
+    for t in [
+        default_theme(Appearance::Light),
+        default_theme(Appearance::Dark),
+        pierre_theme(Appearance::Light),
+        pierre_theme(Appearance::Dark),
+    ] {
+        let config = kit_theme_config(t);
+        assert_eq!((config.radius, config.radius_lg), (Some(6), Some(12)));
+    }
+    let shell = start(cx);
+    for name in BUILT_IN {
+        shell.cx.update(|_, cx| {
+            assert!(theme::apply_theme(name, cx), "{name}");
+            let kit = Theme::global(cx);
+            assert_eq!(
+                (kit.radius, kit.radius_lg),
+                (gpui_kit::px(6.), gpui_kit::px(12.)),
+                "{name}"
+            );
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn kit_rem_is_pinned_at_16(cx: &mut TestAppContext) {
+    // gpui's rem helpers and the kit's own metrics resolve against
+    // `Theme.font_size`; ADR-0031's tokens are absolute points, so applying a
+    // theme must leave it at gpui-component's 16.
+    let _sb = Sandbox::isolate();
+    let shell = start(cx);
+    for name in BUILT_IN {
+        shell.cx.update(|_, cx| {
+            assert!(theme::apply_theme(name, cx), "{name}");
+            assert_eq!(Theme::global(cx).font_size, gpui_kit::px(16.), "{name}");
+        });
+    }
 }

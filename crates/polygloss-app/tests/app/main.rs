@@ -30,6 +30,7 @@ mod provider;
 mod screenshot;
 mod settings;
 mod shell;
+mod space;
 mod submit;
 mod theme;
 mod threads;

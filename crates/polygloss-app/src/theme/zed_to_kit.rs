@@ -17,6 +17,8 @@ use gpui_kit::component::theme::{ThemeConfig, ThemeConfigColors, ThemeMode};
 use polygloss_highlight::{Appearance, Rgba, ZedTheme};
 use serde_json::{Map, Value};
 
+use crate::space::radius;
+
 /// A kit key and the Zed keys it takes its color from, in order.
 pub const MAPPING: &[(&str, &[&str])] = &[
     ("background", &["editor.background", "background"]),
@@ -269,8 +271,9 @@ pub fn contrasting(fill: Rgba) -> Rgba {
 }
 
 /// gpui-kit's theme for `t`: its name, mode, [`kit_colors`] and the corner
-/// radii every theme shares (controls 6, dialogs and notifications 10); no
-/// fonts or syntax (the viewport paints the code).
+/// radii every theme shares (ADR-0031: controls at `radius::SM`, dialogs,
+/// popovers and notifications, floating surfaces, at `radius::LG`); no fonts
+/// or syntax (the viewport paints the code).
 pub fn kit_theme_config(t: &ZedTheme) -> Rc<ThemeConfig> {
     let colors: ThemeConfigColors = serde_json::from_value(Value::Object(kit_colors(t)))
         // Every value is a `#rrggbbaa` string under a key of the schema.
@@ -282,8 +285,8 @@ pub fn kit_theme_config(t: &ZedTheme) -> Rc<ThemeConfig> {
             Appearance::Dark => ThemeMode::Dark,
         },
         colors,
-        radius: Some(6),
-        radius_lg: Some(10),
+        radius: Some(radius::SM as usize),
+        radius_lg: Some(radius::LG as usize),
         ..ThemeConfig::default()
     })
 }

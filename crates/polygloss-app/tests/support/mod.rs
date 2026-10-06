@@ -5,6 +5,7 @@
 //!
 //! - [`harness`]: the `e2e` binary's libtest-compatible, main-thread runner.
 //! - [`screenshot`]: the clean-room screenshot baseline runner.
+//! - [`ink`]: glyph and icon ink in a capture, for reference-edge tests.
 //! - fixture repos for the shell, the provider and the screenshots.
 //!
 //! Every test starts with `let _sb = Sandbox::isolate();` (plan "Test
@@ -14,6 +15,7 @@
 #![allow(dead_code)]
 
 pub mod harness;
+pub mod ink;
 pub mod screenshot;
 
 use std::os::unix::fs::PermissionsExt;
