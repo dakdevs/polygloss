@@ -14,6 +14,7 @@ mod support;
 mod categories;
 mod cursor;
 mod feed;
+mod filmstrip;
 mod find;
 mod header_card;
 mod home;
@@ -67,5 +68,6 @@ fn main() -> std::process::ExitCode {
         header_card::TESTS,
         categories::TESTS,
         press_ink::TESTS,
+        filmstrip::TESTS,
     ])
 }

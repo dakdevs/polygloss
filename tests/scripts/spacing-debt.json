@@ -36,7 +36,7 @@
   "crates/polygloss-app/src/tree/panels.rs": 12,
   "crates/polygloss-app/src/tree/row.rs": 16,
   "crates/polygloss-app/src/viewed/mod.rs": 2,
-  "crates/polygloss-app/src/window.rs": 1,
+  "crates/polygloss-app/src/window.rs": 0,
   "crates/polygloss-viewport/src/card.rs": 8,
   "crates/polygloss-viewport/src/cursor.rs": 3,
   "crates/polygloss-viewport/src/document/metrics.rs": 5,

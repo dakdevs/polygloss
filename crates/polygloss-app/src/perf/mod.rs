@@ -18,10 +18,12 @@
 //! corpus review into the real store.
 //!
 //! Scenarios: `open` ([`open`], `app_first_paint_ms`), `watcher-banner`
-//! ([`watcher_banner`], `watcher_banner_ms`) and `comment-roundtrip`
-//! ([`comment_roundtrip`], `comment_repaint_ms`).
+//! ([`watcher_banner`], `watcher_banner_ms`), `comment-roundtrip`
+//! ([`comment_roundtrip`], `comment_repaint_ms`) and `motion` ([`motion`],
+//! the app shell's motion metrics, T7.3).
 
 pub mod comment_roundtrip;
+pub mod motion;
 pub mod open;
 pub mod watcher_banner;
 
@@ -35,7 +37,7 @@ use polygloss_diff::rows::Layout;
 use serde_json::{Map, Value, json};
 
 /// Printed with every usage error.
-pub const USAGE: &str = "usage: POLYGLOSS_TEST=1 Polygloss --perf-scenario open|watcher-banner|comment-roundtrip --corpus <name> \
+pub const USAGE: &str = "usage: POLYGLOSS_TEST=1 Polygloss --perf-scenario open|watcher-banner|comment-roundtrip|motion --corpus <name> \
     [--layout split|unified] [--json] [--repo <path> --base <rev> --head <rev> [--direct]]";
 
 /// The environment variable that enables test-only surfaces (OQ-P4).
@@ -50,6 +52,8 @@ pub enum Scenario {
     WatcherBanner,
     /// `comment_repaint_ms` with real thread blocks (T3.10).
     CommentRoundtrip,
+    /// The app shell's motion metrics (T7.3).
+    Motion,
 }
 
 impl Scenario {
@@ -58,6 +62,7 @@ impl Scenario {
             Scenario::Open => "open",
             Scenario::WatcherBanner => "watcher-banner",
             Scenario::CommentRoundtrip => "comment-roundtrip",
+            Scenario::Motion => "motion",
         }
     }
 
@@ -66,6 +71,7 @@ impl Scenario {
             "open" => Some(Scenario::Open),
             "watcher-banner" => Some(Scenario::WatcherBanner),
             "comment-roundtrip" => Some(Scenario::CommentRoundtrip),
+            "motion" => Some(Scenario::Motion),
             _ => None,
         }
     }
@@ -175,6 +181,7 @@ pub fn main(args: &[String], clock: Clock) -> ExitCode {
         Scenario::Open => open::run(args, spec, clock),
         Scenario::WatcherBanner => watcher_banner::run(args, spec, clock),
         Scenario::CommentRoundtrip => comment_roundtrip::run(args, spec, clock),
+        Scenario::Motion => motion::run(args, spec, clock),
     }
 }
 
