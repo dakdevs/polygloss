@@ -4,7 +4,7 @@
 //! was before it opened, so it acts on that tab exactly as its key would.
 
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::{ActiveTheme as _, IndexPath, WindowExt as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, IndexPath, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, Global, InteractiveElement as _,
@@ -14,6 +14,7 @@ use gpui_kit::{
 
 use crate::keymap::KeymapStore;
 use crate::keymap::actions::{ACTIONS, ActionInfo};
+use crate::overlay::{self, OverlayHandle};
 use crate::palette::key_cap::{key_cap, key_label};
 use crate::space::{TextStyleExt as _, gap, layout, text};
 
@@ -83,7 +84,7 @@ pub fn groups(cx: &App) -> Vec<(&'static str, Vec<PaletteRow>)> {
     out
 }
 
-/// The open palette (a dialog's content).
+/// The open palette (an overlay's content, [`crate::overlay`]).
 pub struct CommandPalette {
     state: Entity<CommandState>,
     /// Where focus was when the palette opened: the chosen action is
@@ -92,9 +93,9 @@ pub struct CommandPalette {
     groups: Vec<(&'static str, Vec<PaletteRow>)>,
 }
 
-/// The palette while it is open (tests and the cheat sheet read it).
-#[derive(Default)]
-struct OpenPalette(Option<WeakEntity<CommandPalette>>);
+/// The palette and its overlay, last opened (tests and the cheat sheet
+/// read it).
+struct OpenPalette(WeakEntity<CommandPalette>, OverlayHandle);
 
 impl Global for OpenPalette {}
 
@@ -107,16 +108,9 @@ pub fn open(window: &mut Window, cx: &mut App) -> Entity<CommandPalette> {
         target,
         groups,
     });
-    cx.set_global(OpenPalette(Some(palette.downgrade())));
     let content = palette.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog
-            .w(px(layout::PICKER_W))
-            .margin_top(px(layout::PICKER_TOP))
-            .close_button(false)
-            .p_0()
-            .child(content.clone())
-    });
+    let overlay = overlay::open_overlay(window, cx, move |_, _| content.clone().into_any_element());
+    cx.set_global(OpenPalette(palette.downgrade(), overlay));
     let state = palette.read(cx).state.clone();
     state.update(cx, |s, cx| s.focus(window, cx));
     palette
@@ -124,7 +118,12 @@ pub fn open(window: &mut Window, cx: &mut App) -> Entity<CommandPalette> {
 
 /// The open palette, if any.
 pub fn current(cx: &App) -> Option<Entity<CommandPalette>> {
-    cx.try_global::<OpenPalette>()?.0.as_ref()?.upgrade()
+    let OpenPalette(palette, overlay) = cx.try_global::<OpenPalette>()?;
+    if overlay.is_open(cx) {
+        palette.upgrade()
+    } else {
+        None
+    }
 }
 
 impl CommandPalette {
@@ -162,8 +161,7 @@ pub fn confirm(palette: &Entity<CommandPalette>, ix: IndexPath, window: &mut Win
 
 /// Closes the palette and dispatches `info`'s action on `target`.
 fn run(info: &ActionInfo, target: Option<FocusHandle>, window: &mut Window, cx: &mut App) {
-    window.close_dialog(cx);
-    cx.set_global(OpenPalette(None));
+    overlay::close_overlay(window, cx);
     let action = (info.build)();
     match target {
         Some(target) => {
@@ -224,7 +222,7 @@ impl Render for CommandPalette {
             });
             command = command.group(CommandGroup::new().label(*heading).items(items));
         }
-        // The picker's frame (ADR-0031): the dialog's whole content. Rows
+        // The picker's frame (ADR-0031): the overlay's whole content. Rows
         // and headings inherit `text::UI`'s line height, so the kit's rows
         // (`py_1p5` around one line) land on the grid at 32.
         div()

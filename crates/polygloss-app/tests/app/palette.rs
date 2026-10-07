@@ -1,8 +1,8 @@
 //! Command palette, cheat sheet and view toggles (T3.2, design §11.4, §11.6,
 //! §11.8, §11.9).
 
-use gpui_kit::TestAppContext;
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::{TestAppContext, px};
 use polygloss_app::keymap::{KeymapStore, actions};
 use polygloss_app::palette::view_toggles::{self, LayoutChoices};
 use polygloss_app::palette::{cheat_sheet, command, key_cap};
@@ -16,10 +16,14 @@ use polygloss_viewport::{LayoutMode, RowKey, ScrollTarget};
 
 use crate::keymap::wait_until;
 use crate::shell::{Shell, bounds, compare_req, draw, painted, start};
+use crate::support::motion::{advance, requested_frames};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
+/// A gpui-kit dialog or one of our overlays (⌘K, ⌘P, `?`) is open.
 fn has_dialog(shell: &mut Shell) -> bool {
-    shell.cx.update(|window, cx| window.has_active_dialog(cx))
+    shell
+        .cx
+        .update(|window, cx| window.has_active_dialog(cx) || polygloss_app::overlay::is_open(cx))
 }
 
 #[gpui_kit::test]
@@ -745,11 +749,22 @@ fn pickers_share_one_frame(cx: &mut TestAppContext) {
     );
     close_overlay(&mut shell);
 
-    // One width, one left edge, one top and one maximum height.
-    for (name, other) in [("the finder", finder), ("the base picker", picker)] {
+    // One width, one left edge, one top and one maximum height. The base
+    // picker is still a gpui-kit dialog: the kit centres its popup's host,
+    // then rounds the popup's offset to whole points, so a kit dialog lands
+    // half a point off its top when its host's centring is (T7.12).
+    for (name, other, slack) in [
+        ("the finder", finder, 0.0),
+        ("the base picker", picker, 0.5),
+    ] {
         assert_eq!(other.size.width, palette.size.width, "{name}'s width");
         assert_eq!(other.left(), palette.left(), "{name}'s left edge");
-        assert_eq!(other.top(), palette.top(), "{name}'s top");
+        assert!(
+            (other.top() - palette.top()).abs() <= gpui_kit::px(slack),
+            "{name}'s top: {:?} against {:?}",
+            other.top(),
+            palette.top()
+        );
         assert_eq!(
             other.size.height, palette.size.height,
             "{name}'s maximum height"
@@ -924,4 +939,346 @@ fn key_caps_use_the_small_radius(cx: &mut TestAppContext) {
     ] {
         assert_eq!(corner, Some(gpui_kit::px(4.).into()));
     }
+}
+
+// ---------------------------------------------------------------- T7.12
+// Instant overlays (ADR-0030 "Inherited gpui-kit motion", OQ-49): ⌘K, ⌘P
+// and `?` open and close on one frame for every initiator, on Home and in
+// a review. These tests set no motion override: under the Full policy a
+// gpui-kit dialog slides and fades in for 250 ms, requesting a frame each
+// display frame.
+
+/// What an overlay test opens: how, the selector that is painted while it
+/// is open, and rows inside it.
+struct Overlay {
+    name: &'static str,
+    keys: &'static str,
+    action: fn() -> Box<dyn gpui_kit::Action>,
+    painted: &'static str,
+    rows: [&'static str; 2],
+    /// gpui-kit's `Command` lays its rows out again at its list's width on
+    /// the frame after its first (`CommandState::measure_on_next_frame`).
+    remeasures: bool,
+}
+
+const PALETTE: Overlay = Overlay {
+    name: "the palette",
+    keys: "cmd-k",
+    action: || Box::new(actions::window::CommandPalette),
+    painted: "command-palette",
+    rows: [
+        "palette-row-viewport::CursorDown",
+        "palette-row-viewport::CursorUp",
+    ],
+    remeasures: true,
+};
+const FINDER: Overlay = Overlay {
+    name: "the finder",
+    keys: "cmd-p",
+    action: || Box::new(actions::window::FileFinder),
+    painted: "file-finder",
+    rows: ["finder-row-0", "finder-row-1"],
+    remeasures: false,
+};
+const CHEAT_SHEET: Overlay = Overlay {
+    name: "the cheat sheet",
+    keys: "?",
+    action: || Box::new(actions::window::CheatSheet),
+    painted: "cheat-heading-Diff",
+    rows: [
+        "cheat-row-viewport::CursorDown",
+        "cheat-row-window::CheatSheet",
+    ],
+    remeasures: false,
+};
+
+/// The policy a gpui-kit dialog would animate under, and nothing running.
+fn full_policy_at_rest(shell: &mut Shell) {
+    use polygloss_app::motion::{MotionPolicy, policy};
+    assert_eq!(
+        shell.cx.update(|_, cx| policy(cx)),
+        MotionPolicy::Full,
+        "no override and Reduce Motion off"
+    );
+    requested_frames(shell.cx);
+    assert_eq!(requested_frames(shell.cx), 0, "nothing runs before");
+}
+
+/// Opens `overlay` (its keys, or its action dispatched where the keyboard
+/// is, as the menu bar does), with `previous` holding the keyboard: on the
+/// commit frame it and its rows are painted where they rest and it has the
+/// keyboard (its search field when `field` gives one); it requests no frame
+/// but the palette's one re-measure, which moves nothing. Esc takes it off
+/// on the next frame and gives the keyboard back.
+fn opens_and_closes_on_one_frame(
+    shell: &mut Shell,
+    overlay: &Overlay,
+    previous: &gpui_kit::FocusHandle,
+    field: &dyn Fn(&mut Shell) -> Option<gpui_kit::FocusHandle>,
+) {
+    for by_action in [false, true] {
+        let how = if by_action {
+            "its action"
+        } else {
+            overlay.keys
+        };
+        shell.cx.update(|window, cx| window.focus(previous, cx));
+        draw(shell.cx);
+        full_policy_at_rest(shell);
+        if by_action {
+            let action = (overlay.action)();
+            shell
+                .cx
+                .update(|window, cx| window.dispatch_action(action, cx));
+        } else {
+            shell.cx.simulate_keystrokes(overlay.keys);
+        }
+        let at_rest = |shell: &mut Shell| {
+            [overlay.painted, overlay.rows[0], overlay.rows[1]].map(|name| {
+                painted(shell.cx, name).unwrap_or_else(|| {
+                    panic!("{} paints {name} on its first frame ({how})", overlay.name)
+                })
+            })
+        };
+        let first = at_rest(shell);
+        let focused = shell
+            .cx
+            .update(|window, cx| previous.contains_focused(window, cx));
+        assert!(!focused, "{} has the keyboard ({how})", overlay.name);
+        if let Some(field) = field(shell) {
+            let in_field = shell
+                .cx
+                .update(|window, cx| field.contains_focused(window, cx));
+            assert!(
+                in_field,
+                "{}'s search field has the keyboard ({how})",
+                overlay.name
+            );
+        }
+        assert_eq!(
+            requested_frames(shell.cx),
+            usize::from(overlay.remeasures),
+            "{} requests no frame after its first ({how})",
+            overlay.name
+        );
+        // Well past gpui-kit's 250 ms entrance: still where the first frame
+        // put it, and nothing left running.
+        advance(shell.cx, std::time::Duration::from_millis(400));
+        assert_eq!(
+            at_rest(shell),
+            first,
+            "{} rests where its first frame put it ({how})",
+            overlay.name
+        );
+        assert_eq!(requested_frames(shell.cx), 0, "nothing runs ({how})");
+
+        shell.cx.simulate_keystrokes("escape");
+        assert!(
+            painted(shell.cx, overlay.painted).is_none(),
+            "Esc takes {} off on the next frame ({how})",
+            overlay.name
+        );
+        let back = shell.cx.update(|window, _| previous.is_focused(window));
+        assert!(back, "the keyboard is back after {} ({how})", overlay.name);
+        assert_eq!(requested_frames(shell.cx), 0, "nothing runs after ({how})");
+    }
+}
+
+fn palette_field(shell: &mut Shell) -> Option<gpui_kit::FocusHandle> {
+    use gpui_kit::Focusable as _;
+    shell.cx.update(|_, cx| {
+        let palette = command::current(cx).expect("the palette is open");
+        let state = palette.read(cx).state().clone();
+        Some(state.read(cx).focus_handle(cx))
+    })
+}
+
+fn finder_field(shell: &mut Shell) -> Option<gpui_kit::FocusHandle> {
+    use gpui_kit::Focusable as _;
+    shell.cx.update(|_, cx| {
+        let finder = polygloss_app::tree::finder::current(cx).expect("the finder is open");
+        Some(finder.read(cx).focus_handle(cx))
+    })
+}
+
+/// A review of `code_change_repo` with the keyboard in its diff.
+fn review_with_diff_focused(shell: &mut Shell, repo: &FixtureRepo) -> gpui_kit::FocusHandle {
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let focus = tab.read_with(shell.cx, |t, _| t.viewport_focus().clone());
+    shell.cx.update(|window, cx| window.focus(&focus, cx));
+    draw(shell.cx);
+    focus
+}
+
+#[gpui_kit::test]
+fn palette_opens_and_closes_on_one_frame(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let diff = review_with_diff_focused(&mut shell, &repo);
+    opens_and_closes_on_one_frame(&mut shell, &PALETTE, &diff, &palette_field);
+}
+
+#[gpui_kit::test]
+fn finder_opens_and_closes_on_one_frame(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let diff = review_with_diff_focused(&mut shell, &repo);
+    opens_and_closes_on_one_frame(&mut shell, &FINDER, &diff, &finder_field);
+}
+
+#[gpui_kit::test]
+fn cheat_sheet_opens_and_closes_on_one_frame(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    // On Home…
+    let home = home_focus(&mut shell);
+    opens_and_closes_on_one_frame(&mut shell, &CHEAT_SHEET, &home, &|_| None);
+    // …and in a review.
+    let diff = review_with_diff_focused(&mut shell, &repo);
+    opens_and_closes_on_one_frame(&mut shell, &CHEAT_SHEET, &diff, &|_| None);
+}
+
+fn home_focus(shell: &mut Shell) -> gpui_kit::FocusHandle {
+    use gpui_kit::Focusable as _;
+    shell
+        .main
+        .read_with(shell.cx, |m, cx| match m.tabs().active_item() {
+            polygloss_app::tabs::TabItem::Home(home) => home.read(cx).focus_handle(cx),
+            polygloss_app::tabs::TabItem::Review(_) => panic!("Home is showing"),
+        })
+}
+
+#[gpui_kit::test]
+fn palette_opens_on_home(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    let home = home_focus(&mut shell);
+    opens_and_closes_on_one_frame(&mut shell, &PALETTE, &home, &palette_field);
+}
+
+#[gpui_kit::test]
+fn overlays_trap_focus_and_close_on_outside_click(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, point};
+    use polygloss_diff::Side;
+    use polygloss_viewport::CursorPos;
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let diff = tab.read_with(shell.cx, |t, _| t.viewport_focus().clone());
+    let cursor = CursorPos {
+        file_idx: 0,
+        side: Side::New,
+        line: 4,
+        range_start: None,
+    };
+    let window = shell.cx.update(|window, _| window.viewport_size());
+    // Bottom right: diff rows, outside every overlay's frame.
+    let outside = point(window.width - px(40.), window.height - px(40.));
+
+    for overlay in [&PALETTE, &FINDER, &CHEAT_SHEET] {
+        let name = overlay.name;
+        viewport.update(shell.cx, |v, cx| v.set_cursor(Some(cursor), cx));
+        shell.cx.update(|window, cx| window.focus(&diff, cx));
+        draw(shell.cx);
+        shell.cx.simulate_keystrokes(overlay.keys);
+        draw(shell.cx);
+        let frame = bounds(shell.cx, overlay.painted);
+        assert!(
+            !frame.contains(&outside),
+            "{name}: the test's point is outside"
+        );
+
+        // ⇥ and ⇧⇥ cycle inside it: the diff never gets the keyboard, and
+        // Esc still reaches the overlay.
+        for keys in ["tab", "tab", "tab", "shift-tab"] {
+            shell.cx.simulate_keystrokes(keys);
+            draw(shell.cx);
+            let escaped = shell
+                .cx
+                .update(|window, cx| diff.contains_focused(window, cx));
+            assert!(!escaped, "{name}: {keys} kept the keyboard inside");
+            assert!(painted(shell.cx, overlay.painted).is_some(), "{name}: open");
+        }
+        shell.cx.simulate_keystrokes("escape");
+        draw(shell.cx);
+        assert!(
+            painted(shell.cx, overlay.painted).is_none(),
+            "{name}: Esc closed it after ⇥"
+        );
+
+        // A click inside the frame keeps it open…
+        shell.cx.update(|window, cx| window.focus(&diff, cx));
+        shell.cx.simulate_keystrokes(overlay.keys);
+        draw(shell.cx);
+        let frame = bounds(shell.cx, overlay.painted);
+        let inside = frame.origin + point(px(4.), px(4.));
+        shell.cx.simulate_click(inside, Modifiers::none());
+        draw(shell.cx);
+        assert!(
+            painted(shell.cx, overlay.painted).is_some(),
+            "{name}: a click inside keeps it"
+        );
+        // …a click outside closes it, reaches nothing beneath (the diff's
+        // cursor stays) and gives the keyboard back to the diff.
+        shell.cx.simulate_click(outside, Modifiers::none());
+        draw(shell.cx);
+        assert!(
+            painted(shell.cx, overlay.painted).is_none(),
+            "{name}: a click outside closed it"
+        );
+        assert_eq!(
+            viewport.read_with(shell.cx, |v, _| v.cursor()),
+            Some(cursor),
+            "{name}: the click reached nothing beneath"
+        );
+        let back = shell.cx.update(|window, _| diff.is_focused(window));
+        assert!(back, "{name}: the diff has the keyboard again");
+    }
+}
+
+/// In the smallest window an overlay keeps 16 pt of it clear on every side
+/// (gpui-kit's dialog margin): a frame wider than the window narrows, and
+/// one that would run off the bottom moves up.
+#[gpui_kit::test]
+fn overlays_stay_inside_a_short_window(cx: &mut TestAppContext) {
+    use polygloss_app::space::layout;
+
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    let (width, height) = layout::WINDOW_MIN;
+    crate::shell::resize_window(&mut shell, width, height);
+    for overlay in [&PALETTE, &CHEAT_SHEET] {
+        shell.cx.simulate_keystrokes(overlay.keys);
+        draw(shell.cx);
+        let frame = bounds(shell.cx, "overlay-frame");
+        let name = overlay.name;
+        assert!(frame.top() >= px(16.), "{name}: {frame:?}");
+        assert!(frame.bottom() <= px(height - 16.), "{name}: {frame:?}");
+        assert!(frame.left() >= px(16.), "{name}: {frame:?}");
+        assert!(frame.right() <= px(width - 16.), "{name}: {frame:?}");
+        // Centred.
+        assert_eq!(frame.left(), px(width) - frame.right(), "{name}");
+        shell.cx.simulate_keystrokes("escape");
+        draw(shell.cx);
+    }
+    // The palette (96 pt down in a tall window) moved up to fit.
+    shell.cx.simulate_keystrokes("cmd-k");
+    draw(shell.cx);
+    let frame = bounds(shell.cx, "overlay-frame");
+    assert!(frame.top() < px(96.), "{frame:?}");
+    assert_eq!(frame.bottom(), px(height - 16.), "{frame:?}");
+    // The cheat sheet is wider than the window less its margins.
+    shell.cx.simulate_keystrokes("escape");
+    shell.cx.simulate_keystrokes("?");
+    draw(shell.cx);
+    assert_eq!(
+        bounds(shell.cx, "overlay-frame").size.width,
+        px(width - 2. * 16.)
+    );
 }

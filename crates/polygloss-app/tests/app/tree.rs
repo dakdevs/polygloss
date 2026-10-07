@@ -10,7 +10,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::{AppContext as _, Entity, Focusable as _, TestAppContext};
 use polygloss_app::categories::Partition;
 use polygloss_app::review_tab::ReviewTab;
@@ -132,6 +131,11 @@ fn click(o: &mut Opened, selector: &str) {
 fn top_file(o: &mut Opened) -> u32 {
     o.tab
         .read_with(o.shell.cx, |t, cx| t.viewport.read(cx).anchor().file_idx)
+}
+
+/// The finder (⌘P) is open.
+fn finder_open(o: &mut Opened) -> bool {
+    o.shell.cx.update(|_, cx| finder::current(cx).is_some())
 }
 
 fn selected_row(o: &mut Opened) -> Option<ItemId> {
@@ -674,7 +678,7 @@ fn file_finder_jumps_to_file(cx: &mut TestAppContext) {
 
     o.shell.cx.simulate_keystrokes("cmd-p");
     draw(o.shell.cx);
-    assert!(o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(finder_open(&mut o));
     let finder = o
         .shell
         .cx
@@ -695,7 +699,7 @@ fn file_finder_jumps_to_file(cx: &mut TestAppContext) {
     assert_eq!(selected, Some(3));
     o.shell.cx.simulate_keystrokes("enter");
     draw(o.shell.cx);
-    assert!(!o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(!finder_open(&mut o));
     assert_eq!(top_file(&mut o), 3);
     assert_eq!(selected_row(&mut o), Some(ItemId::File(3)));
     // The diff has the keyboard.
@@ -713,7 +717,7 @@ fn file_finder_jumps_to_file(cx: &mut TestAppContext) {
     draw(o.shell.cx);
     o.shell.cx.simulate_keystrokes("escape");
     draw(o.shell.cx);
-    assert!(!o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(!finder_open(&mut o));
     assert_eq!(top_file(&mut o), 3);
 }
 
@@ -747,7 +751,7 @@ fn file_finder_reselects_after_no_match(cx: &mut TestAppContext) {
     assert_eq!(selected(&mut o, &finder), (true, Some(3)));
     o.shell.cx.simulate_keystrokes("enter");
     draw(o.shell.cx);
-    assert!(!o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(!finder_open(&mut o));
     assert_eq!(top_file(&mut o), 3);
 
     // The same after replacing the whole query: `zzz`, then `lib`.
@@ -761,7 +765,7 @@ fn file_finder_reselects_after_no_match(cx: &mut TestAppContext) {
     assert_eq!(selected(&mut o, &finder), (true, Some(5)));
     o.shell.cx.simulate_keystrokes("enter");
     draw(o.shell.cx);
-    assert!(!o.shell.cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(!finder_open(&mut o));
     assert_eq!(top_file(&mut o), 5);
     assert_eq!(selected_row(&mut o), Some(ItemId::File(5)));
 }
