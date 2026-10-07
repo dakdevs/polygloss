@@ -8,11 +8,13 @@
 # minimum macOS, a version that is the crate version or a release version
 # (YYYYMMDD.N, ADR-0019) and an explicit CFBundleVersion equal to it (never
 # cargo-packager's timestamp); the licenses and third-party notices
-# are in Contents/Resources (plan T5.7); the signature (ad-hoc or Developer ID)
-# seals the bundle; Sparkle (T5.3) is embedded exactly when SUFeedURL and
-# SUPublicEDKey are set, without its XPC services; library validation is
-# relaxed (packaging/entitlements-adhoc.plist) only in an ad-hoc bundle that
-# embeds Sparkle, never under a Developer ID.
+# are in Contents/Resources (plan T5.7); Contents/Resources/Assets.car is there
+# exactly when CFBundleIconName names its icon, polygloss (design §21), and
+# with POLYGLOSS_REQUIRE_APP_ICON=1 (a release) both are; the signature
+# (ad-hoc or Developer ID) seals the bundle; Sparkle (T5.3) is embedded
+# exactly when SUFeedURL and SUPublicEDKey are set, without its XPC services;
+# library validation is relaxed (packaging/entitlements-adhoc.plist) only in
+# an ad-hoc bundle that embeds Sparkle, never under a Developer ID.
 #
 # Then it runs the bundle from where it is (never /Applications) in a sandbox:
 # a throwaway HOME, data dir, config and git config (plan: Global constraints,
@@ -113,6 +115,20 @@ for f in LICENSE-MIT LICENSE-APACHE NOTICE third-party-notices.md; do
   [ -s "$contents/Resources/$f" ] || fail "missing Contents/Resources/$f (licenses, plan T5.7)"
 done
 ok "Contents/Resources has the licenses and third-party notices"
+
+# The app icon (design §21): the Assets.car that package-release.sh bundles
+# (packaging/assets.car) and the CFBundleIconName that names its icon, both or
+# neither; a local build without either keeps icon.icns alone.
+icon_name="$(plist_get CFBundleIconName)"
+car="$contents/Resources/Assets.car"
+if [ -n "$icon_name" ] || [ -e "$car" ] || [ "${POLYGLOSS_REQUIRE_APP_ICON-}" = 1 ]; then
+  [ "$icon_name" = polygloss ] ||
+    fail "Info.plist CFBundleIconName is '${icon_name}', expected 'polygloss' (the icon in Contents/Resources/Assets.car)"
+  [ -s "$car" ] || fail "missing Contents/Resources/Assets.car (the app icon CFBundleIconName names)"
+  ok "app icon: Contents/Resources/Assets.car, named by CFBundleIconName"
+else
+  ok "app icon: icon.icns only (no Assets.car)"
+fi
 
 codesign --verify --deep --strict "$app" 2>/dev/null ||
   fail "the code signature does not seal the bundle (codesign --verify --deep --strict)"

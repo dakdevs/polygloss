@@ -130,6 +130,10 @@ function iconDocSha256(doc: string): string {
 
 /** packaging/'s committed app icon: the document, assets.car and its manifest. */
 const iconDir = join(repoRoot, "packaging");
+/** The bundle's minimum macOS, which actool compiles assets.car for. */
+const minimumMacos: string = readPlist(
+  join(iconDir, "Info.plist"),
+).LSMinimumSystemVersion;
 const iconFiles = ["polygloss.icon", "assets.car", "assets.car.json"];
 
 /** A copy of the committed app icon, for POLYGLOSS_ICON_DIR. */
@@ -146,12 +150,19 @@ function staleIconDir(): string {
   return dir;
 }
 
+/** Rewrites values in a copy's assets.car.json. */
+function editManifest(dir: string, changes: Json): void {
+  const path = join(dir, "assets.car.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as Json;
+  writeFileSync(path, JSON.stringify({ ...manifest, ...changes }, null, 2));
+}
+
 // Stand-ins for `xcrun` (the real actool's helper daemon reads and logs into
 // the real ~/Library). On noXcodePath it finds no developer tools, as on a
 // machine without Xcode, after logging its arguments to $FAKE_XCRUN_LOG. On
 // fakeActoolPath it is an actool that reports $FAKE_ACTOOL_VERSION (default
 // 26.0), logs a compile's arguments to $FAKE_ACTOOL_LOG and writes a
-// stand-in Assets.car.
+// stand-in Assets.car, or with $FAKE_ACTOOL_FAIL crashes as ibtoold did.
 const fakeActoolXcrun = `#!/usr/bin/env bash
 set -euo pipefail
 [ "$1" = actool ] || { echo "fake xcrun: unexpected $1" >&2; exit 1; }
@@ -161,6 +172,7 @@ if [ "$1" = --version ]; then
   exit 0
 fi
 printf '%s\\n' "$@" >"$FAKE_ACTOOL_LOG"
+if [ -n "\${FAKE_ACTOOL_FAIL-}" ]; then echo "ibtoold: dyld: symbol missing" >&2; exit 1; fi
 while [ $# -gt 0 ]; do
   if [ "$1" = --compile ]; then echo "stand-in catalog" >"$2/Assets.car"; fi
   shift
@@ -222,9 +234,10 @@ const bundledLicenses: [string, string][] = [
  * A bundle as package-release.sh leaves it: copies of /usr/bin/true (a real
  * Mach-O) as both executables, an Info.plist with the stamped version
  * (unless `plist`), with a stand-in Sparkle.framework (`sparkle`, signed
- * ad-hoc inside out), ad-hoc signed (unless `sign: false`), with
- * `entitlements` (a plist path) on the bundle. `omit` leaves out
- * executables or bundled license files by name.
+ * ad-hoc inside out), with the committed packaging/assets.car as
+ * Contents/Resources/Assets.car (`assetsCar`), ad-hoc signed (unless
+ * `sign: false`), with `entitlements` (a plist path) on the bundle. `omit`
+ * leaves out executables or bundled license files by name.
  */
 function makeBundle(
   dir: string,
@@ -233,6 +246,7 @@ function makeBundle(
     plist?: Json;
     sign?: boolean;
     sparkle?: boolean;
+    assetsCar?: boolean;
     entitlements?: string;
   } = {},
 ): string {
@@ -251,6 +265,11 @@ function makeBundle(
   for (const [name, src] of bundledLicenses)
     if (!opts.omit?.includes(name))
       copyFileSync(src, join(app, "Contents", "Resources", name));
+  if (opts.assetsCar)
+    copyFileSync(
+      join(repoRoot, "packaging", "assets.car"),
+      join(app, "Contents", "Resources", "Assets.car"),
+    );
   if (opts.sparkle) {
     const frameworks = join(app, "Contents", "Frameworks");
     mkdirSync(frameworks, { recursive: true });
@@ -413,6 +432,19 @@ describe("icon", () => {
     expect(manifest["assets-car-sha256"]).toBe(
       sha256(readFileSync(join(iconDir, "assets.car"))),
     );
+    // What actool compiled it for, read back from the catalog: the bundle's
+    // minimum macOS and the icon CFBundleIconName names (design §21).
+    const catalog = JSON.parse(
+      must(["/usr/bin/assetutil", "--info", join(iconDir, "assets.car")]),
+    ) as Json[];
+    expect(catalog[0]?.PlatformVersion).toBe(minimumMacos);
+    expect(
+      catalog.some(
+        (a) => a.Name === "polygloss" && a.AssetType === "IconImageStack",
+      ),
+    ).toBe(true);
+    expect(manifest["minimum-macos"]).toBe(minimumMacos);
+    expect(manifest["app-icon"]).toBe("polygloss");
     // Icon Composer documents need actool from Xcode 26 or later.
     expect(
       Number(/^(\d+)\.\d+ \(\d+\)$/.exec(manifest.actool)?.[1]),
@@ -425,6 +457,21 @@ describe("icon", () => {
     expect(r.output).toBe("");
     expect(r.exitCode).toBe(0);
     expect(existsSync(xcrunLog)).toBe(false);
+  });
+
+  test("git never converts the line endings of what assets.car.json hashes", () => {
+    // A checkout with core.autocrlf=true would otherwise change the
+    // document's bytes, and every release would fail --check.
+    const files = [
+      ...readdirSync(join(iconDir, "polygloss.icon"), { recursive: true })
+        .map((f) => join("packaging", "polygloss.icon", String(f)))
+        .filter((f) => statSync(join(repoRoot, f)).isFile()),
+      join("packaging", "assets.car"),
+    ];
+    const attrs = must(["git", "check-attr", "text", "--", ...files], {
+      cwd: repoRoot,
+    });
+    expect(attrs).toBe(files.map((f) => `${f}: text: unset\n`).join(""));
   });
 
   test("make-icon.sh --check names what makes assets.car stale", () => {
@@ -454,6 +501,21 @@ describe("icon", () => {
             join(doc(dir), "Assets", "3-glosses.svg"),
           ]),
         "polygloss.icon changed since it was compiled",
+      ],
+      [
+        "another minimum macOS",
+        (dir) => editManifest(dir, { "minimum-macos": "13.0" }),
+        `it was compiled for macOS '13.0', not packaging/Info.plist's ${minimumMacos}`,
+      ],
+      [
+        "an older manifest, without the minimum macOS",
+        (dir) => editManifest(dir, { "minimum-macos": undefined }),
+        `it was compiled for macOS '', not packaging/Info.plist's ${minimumMacos}`,
+      ],
+      [
+        "another app icon",
+        (dir) => editManifest(dir, { "app-icon": "gloss" }),
+        "its icon is 'gloss', not polygloss",
       ],
       [
         "another assets.car",
@@ -527,13 +589,13 @@ describe("icon", () => {
       expect(args[0]).toBe(join(dir, "polygloss.icon"));
       expect(flag("--platform")).toBe("macosx");
       expect(flag("--app-icon")).toBe("polygloss");
-      expect(flag("--minimum-deployment-target")).toBe(
-        readPlist(join(iconDir, "Info.plist")).LSMinimumSystemVersion,
-      );
+      expect(flag("--minimum-deployment-target")).toBe(minimumMacos);
       const manifest = readFileSync(join(dir, "assets.car.json"), "utf8");
       expect(JSON.parse(manifest)).toEqual({
         source: "polygloss.icon",
         "source-sha256": iconDocSha256(join(dir, "polygloss.icon")),
+        "minimum-macos": minimumMacos,
+        "app-icon": "polygloss",
         "assets-car-sha256": sha256("stand-in catalog\n"),
         actool: "26.0 (24000)",
       });
@@ -546,6 +608,81 @@ describe("icon", () => {
           env: { POLYGLOSS_ICON_DIR: dir, PATH: noXcodePath },
         }).exitCode,
       ).toBe(0);
+    },
+  );
+
+  test.skipIf(!rasterizer)(
+    "make-icon.sh keeps a current assets.car and its manifest, never running xcrun, until --force",
+    () => {
+      // actool's output is not byte-stable: recompiling an unchanged document
+      // would commit another assets.car for nothing.
+      const dir = iconDirCopy();
+      const xcrunLog = join(scratch("xcrun"), "calls");
+      const r = run([makeIcon], {
+        env: {
+          POLYGLOSS_ICON_DIR: dir,
+          PATH: noXcodePath,
+          FAKE_XCRUN_LOG: xcrunLog,
+        },
+      });
+      expect(r.output).toContain("make-icon: keeping ");
+      expect(r.exitCode).toBe(0);
+      expect(existsSync(xcrunLog)).toBe(false);
+      for (const f of ["assets.car", "assets.car.json"])
+        expect({
+          f,
+          same: readFileSync(join(dir, f)).equals(
+            readFileSync(join(iconDir, f)),
+          ),
+        }).toEqual({ f, same: true });
+      // icon.icns is rendered all the same.
+      expect(iconsetOf(join(dir, "icon.icns"))).toEqual([...sizes].sort());
+
+      const argsLog = join(scratch("actool"), "args");
+      const forced = run([makeIcon, "--force"], {
+        env: {
+          POLYGLOSS_ICON_DIR: dir,
+          PATH: fakeActoolPath,
+          FAKE_ACTOOL_LOG: argsLog,
+        },
+      });
+      expect(forced.exitCode).toBe(0);
+      expect(readFileSync(argsLog, "utf8")).toContain("--compile");
+      expect(readFileSync(join(dir, "assets.car"), "utf8")).toBe(
+        "stand-in catalog\n",
+      );
+      expect(
+        JSON.parse(readFileSync(join(dir, "assets.car.json"), "utf8"))[
+          "assets-car-sha256"
+        ],
+      ).toBe(sha256("stand-in catalog\n"));
+    },
+  );
+
+  test.skipIf(!rasterizer)(
+    "a failed actool compile leaves icon.icns, assets.car and the manifest as they were",
+    () => {
+      const dir = staleIconDir();
+      const before = ["assets.car", "assets.car.json"].map(
+        (f) => [f, readFileSync(join(dir, f))] as const,
+      );
+      const r = run([makeIcon], {
+        env: {
+          POLYGLOSS_ICON_DIR: dir,
+          PATH: fakeActoolPath,
+          FAKE_ACTOOL_LOG: join(scratch("actool"), "args"),
+          FAKE_ACTOOL_FAIL: "1",
+        },
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.output).toContain("  actool: ibtoold: dyld: symbol missing");
+      expect(r.output).toContain("make-icon: actool made no Assets.car from");
+      expect(existsSync(join(dir, "icon.icns"))).toBe(false);
+      for (const [f, bytes] of before)
+        expect({ f, same: readFileSync(join(dir, f)).equals(bytes) }).toEqual({
+          f,
+          same: true,
+        });
     },
   );
 
@@ -607,11 +744,18 @@ describe("icon", () => {
     }
   });
 
-  test("make-icon.sh rejects arguments other than --check", () => {
-    for (const args of [["--bogus"], ["--check", "--check"], ["icon.svg"]]) {
+  test("make-icon.sh rejects arguments other than one --check or --force", () => {
+    for (const args of [
+      ["--bogus"],
+      ["--check", "--check"],
+      ["--check", "--force"],
+      ["icon.svg"],
+    ]) {
       const r = run([makeIcon, ...args]);
       expect({ args, exitCode: r.exitCode }).toEqual({ args, exitCode: 2 });
-      expect(r.output).toContain("usage: scripts/make-icon.sh [--check]");
+      expect(r.output).toContain(
+        "usage: scripts/make-icon.sh [--check | --force]",
+      );
     }
   });
 });
@@ -731,6 +875,68 @@ describe("scripts/smoke-bundle.sh --static", () => {
       );
       expect({ name, exitCode: r.exitCode }).toEqual({ name, exitCode: 1 });
       expect(r.output).toContain(`Contents/Resources/${name}`);
+    }
+  });
+
+  test("Assets.car is bundled exactly when CFBundleIconName names polygloss, and a release needs both", () => {
+    const plist = (name?: string) =>
+      packagerInfoPlist({
+        CFBundleVersion: workspaceVersion,
+        ...(name ? { CFBundleIconName: name } : {}),
+      });
+    const releaseEnv = { POLYGLOSS_REQUIRE_APP_ICON: "1" };
+    const both = makeBundle(scratch("icon"), {
+      plist: plist("polygloss"),
+      assetsCar: true,
+    });
+    for (const env of [{}, releaseEnv]) {
+      const r = smokeStatic(both, env);
+      expect(r.output).toContain(
+        "smoke-bundle: ok: app icon: Contents/Resources/Assets.car",
+      );
+      expect(r.exitCode).toBe(0);
+    }
+    // A local build without actool keeps icon.icns alone; a release never.
+    const plain = makeBundle(scratch("icon"));
+    const local = smokeStatic(plain);
+    expect(local.output).toContain(
+      "smoke-bundle: ok: app icon: icon.icns only",
+    );
+    expect(local.exitCode).toBe(0);
+    const release = smokeStatic(plain, releaseEnv);
+    expect(release.exitCode).toBe(1);
+    expect(release.output).toContain(
+      "Info.plist CFBundleIconName is '', expected 'polygloss'",
+    );
+    const cases: [string, Json, boolean, string][] = [
+      [
+        "a name without Assets.car",
+        plist("polygloss"),
+        false,
+        "missing Contents/Resources/Assets.car",
+      ],
+      [
+        "Assets.car without a name",
+        plist(),
+        true,
+        "CFBundleIconName is '', expected 'polygloss'",
+      ],
+      [
+        "another name",
+        plist("gloss"),
+        true,
+        "CFBundleIconName is 'gloss', expected 'polygloss'",
+      ],
+    ];
+    for (const [change, info, assetsCar, message] of cases) {
+      const r = smokeStatic(
+        makeBundle(scratch("icon"), { plist: info, assetsCar }),
+      );
+      expect({ change, exitCode: r.exitCode }).toEqual({ change, exitCode: 1 });
+      expect({ change, reason: r.output.includes(message) }).toEqual({
+        change,
+        reason: true,
+      });
     }
   });
 
@@ -985,7 +1191,12 @@ describe("scripts/package-release.sh", () => {
         ),
       ).toBe(true);
       const plist = readPlist(join(app, "Contents", "Info.plist"));
-      expect(plist.CFBundleIconName).toBe("polygloss");
+      // The icon actool compiled assets.car with.
+      expect(plist.CFBundleIconName).toBe(
+        JSON.parse(readFileSync(join(iconDir, "assets.car.json"), "utf8"))[
+          "app-icon"
+        ],
+      );
       // icon.icns stays the fallback.
       expect(plist.CFBundleIconFile).toBe("icon.icns");
       expect(r.xcrun).toEqual([]);
@@ -995,7 +1206,29 @@ describe("scripts/package-release.sh", () => {
     }
   });
 
-  test("with POLYGLOSS_REQUIRE_APP_ICON=1 a stale assets.car fails before signing or a DMG, naming make-icon.sh", () => {
+  test("bundles the assets.car of POLYGLOSS_ICON_DIR when that is current", () => {
+    // Another catalog, recorded in its manifest: current, and not packaging/'s.
+    const dir = iconDirCopy();
+    appendFileSync(join(dir, "assets.car"), "another catalog");
+    const car = readFileSync(join(dir, "assets.car"));
+    editManifest(dir, { "assets-car-sha256": sha256(car) });
+    const r = packageRun([], {
+      POLYGLOSS_REQUIRE_APP_ICON: "1",
+      POLYGLOSS_ICON_DIR: dir,
+    });
+    expect(r.output).toContain(
+      `package-release: bundling the app icon (${dir}/assets.car, current`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(
+      readFileSync(
+        join(r.dist, "Polygloss.app", "Contents", "Resources", "Assets.car"),
+      ).equals(car),
+    ).toBe(true);
+    expect(r.xcrun).toEqual([]);
+  });
+
+  test("with POLYGLOSS_REQUIRE_APP_ICON=1 a stale assets.car fails before anything is built, naming make-icon.sh", () => {
     const missing = iconDirCopy();
     rmSync(join(missing, "assets.car.json"));
     for (const dir of [staleIconDir(), missing]) {
@@ -1013,10 +1246,10 @@ describe("scripts/package-release.sh", () => {
         "package-release: POLYGLOSS_REQUIRE_APP_ICON=1 refuses a bundle without the committed Assets.car: run scripts/make-icon.sh",
       );
       expect(r.output).not.toContain("bundling the app icon");
-      expect(r.output).not.toContain("signing ad-hoc");
+      // Before anything is built (so no bundle or DMG either), as the other
+      // release settings are.
+      expect(r.log).toEqual([]);
       expect(existsSync(actoolLog)).toBe(false);
-      expect(readdirSync(r.dist).filter((f) => f.endsWith(".dmg"))).toEqual([]);
-      expect(existsSync(join(r.dist, ".icon-build"))).toBe(false);
     }
   });
 

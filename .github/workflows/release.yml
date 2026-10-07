@@ -12,11 +12,11 @@
 # The job builds the bundle with POLYGLOSS_VERSION (scripts/package-release.sh
 # --sign: the committed app icon, signed as team 5U7E4UQ5M3 from a temporary
 # keychain, notarized and stapled by scripts/sign-and-notarize.sh),
-# smoke-tests it, signs the Sparkle
-# appcast (the notes embedded), writes SHA256SUMS, and `gh release create
-# v<version>` tags the commit and publishes the DMG, appcast.xml and
-# SHA256SUMS as the latest release, the notes as its body. Then it bumps the
-# Homebrew tap, when HOMEBREW_TAP_TOKEN and HOMEBREW_TAP_REPO are set.
+# smoke-tests it, signs the Sparkle appcast (the notes embedded), writes
+# SHA256SUMS, and `gh release create v<version>` tags the commit and publishes
+# the DMG, appcast.xml and SHA256SUMS as the latest release, the notes as its
+# body. Then it bumps the Homebrew tap, when HOMEBREW_TAP_TOKEN and
+# HOMEBREW_TAP_REPO are set.
 #
 # A release is never unsigned: when a required secret or variable is missing,
 # the first step names every missing one and fails before anything is built.
