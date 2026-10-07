@@ -583,11 +583,12 @@ fn many_files_repo() -> FixtureRepo {
     repo
 }
 
-/// ADR-0031 (no layout shift): `N/M` and the threads count keep their
-/// width as their digits change (11 → 88, 11 → 44), so the toolbar's right cluster
-/// stays put: the threads button (shown selected, so it paints its box)
-/// keeps its bounds. Measured with real shaping: the app binary's test
-/// platform draws every glyph one width.
+/// ADR-0031 (no layout shift): `N/M`, the threads count and Submit
+/// review's draft count keep their width as their digits change (11 → 88,
+/// 11 → 44, 11 → 88), so the toolbar's right cluster stays put: the threads
+/// button (shown selected, so it paints its box) and the draft count's
+/// badge keep their bounds. Measured with real shaping: the app binary's
+/// test platform draws every glyph one width.
 fn changing_counts_keep_their_width() {
     let _sb = Sandbox::isolate();
     let repo = many_files_repo();
@@ -621,7 +622,11 @@ fn changing_counts_keep_their_width() {
     // 50 in a review).
     let opened = cx.update(|cx| tab.read(cx).opened.clone());
     let blobs = BlobReader::open(&opened.repo).expect("open the object store");
-    let add = |cx: &mut HeadlessAppContext, n: usize| {
+    let add = |cx: &mut HeadlessAppContext, n: usize, kind: AuthorKind| {
+        let name = match kind {
+            AuthorKind::Agent => "claude-code",
+            _ => "you",
+        };
         for _ in 0..n {
             core.create_thread(
                 &NewThread {
@@ -635,11 +640,11 @@ fn changing_counts_keep_their_width() {
                     },
                     kind: ThreadKind::Comment,
                     body_md: "Count me.".into(),
-                    // An agent's: open, not a draft (a draft would also
-                    // count on Submit review).
+                    // An agent's thread is open, not a draft; a human's is
+                    // a draft, which Submit review counts.
                     author: Author {
-                        kind: AuthorKind::Agent,
-                        name: "claude-code".into(),
+                        kind,
+                        name: name.into(),
                         session_id: None,
                     },
                 },
@@ -649,11 +654,36 @@ fn changing_counts_keep_their_width() {
         }
         cx.update(|cx| tab.update(cx, threads::reload));
     };
-    add(&mut cx, 11);
+    add(&mut cx, 11, AuthorKind::Agent);
     let few = button(&mut cx);
     assert_eq!(cx.update(|cx| threads::open_counts(tab.read(cx), cx)).0, 11);
-    add(&mut cx, 33);
+    add(&mut cx, 33, AuthorKind::Agent);
     let many = button(&mut cx);
     assert_eq!(cx.update(|cx| threads::open_counts(tab.read(cx), cx)).0, 44);
     assert_eq!(few, many, "the threads count kept its width");
+
+    // Submit review's draft count: 11 drafts, then 88. Its badge is the
+    // toolbar's one quad of its fill.
+    let badge_fill = cx.update(|cx| cx.theme().primary_foreground.opacity(0.22));
+    let badge = |cx: &mut HeadlessAppContext| {
+        screenshot::draw(cx, handle);
+        screenshot::draw(cx, handle);
+        let all = quads(cx, handle);
+        quad_of(&all, badge_fill, "Submit review's count", |b| {
+            b.origin.y < 52.0
+        })
+    };
+    let drafts = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| polygloss_app::submit::drafts_count(tab.read(cx), cx))
+    };
+    add(&mut cx, 11, AuthorKind::Human);
+    let eleven = badge(&mut cx);
+    assert_eq!(drafts(&mut cx), 11);
+    add(&mut cx, 77, AuthorKind::Human);
+    let eighty_eight = badge(&mut cx);
+    assert_eq!(drafts(&mut cx), 88);
+    assert_eq!(
+        eleven.size, eighty_eight.size,
+        "Submit review's draft count kept its width"
+    );
 }

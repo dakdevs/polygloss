@@ -29,7 +29,11 @@ function sh(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** The nextest run of the motion's filmstrip test alone. */
+/**
+ * The nextest run of the motion's filmstrip test alone. The E2E harness names
+ * a test after its function, bare or behind its module
+ * (`motion_panels::e2e_motion_sidebar`), so the filter matches either.
+ */
 export function testCommand(cargo: string, name: string): string[] {
   return [
     cargo,
@@ -40,7 +44,7 @@ export function testCommand(cargo: string, name: string): string[] {
     "--features",
     "e2e",
     "-E",
-    `binary(e2e) & test(=e2e_motion_${name})`,
+    `binary(e2e) & test(/(^|::)e2e_motion_${name}$/)`,
   ];
 }
 
