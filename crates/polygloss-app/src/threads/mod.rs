@@ -631,8 +631,9 @@ impl ReviewThreads {
     }
 
     /// Gives the viewport the blocks that changed: `set_blocks` for files
-    /// whose anchors changed, `invalidate_block` for the other threads in
-    /// `changed` whose content changed.
+    /// whose anchors changed (each block a [`block::nested`] card), and
+    /// `invalidate_block` for the blocks there that gained or lost their gap
+    /// below and for the other threads in `changed` whose content changed.
     fn update_blocks(&mut self, changed: &HashMap<String, bool>, cx: &mut Context<Self>) {
         let wanted = placement::by_file(
             self.threads
@@ -664,14 +665,36 @@ impl ReviewThreads {
             if new == old {
                 continue;
             }
+            let below = gaps_below(&new);
+            // Blocks that stay but gain or lose their gap below: the viewport
+            // keeps their measured heights, so they are measured again.
+            let was: HashMap<BlockId, bool> = old
+                .iter()
+                .map(|(id, _)| *id)
+                .zip(gaps_below(&old))
+                .collect();
+            let restacked: Vec<BlockId> = new
+                .iter()
+                .zip(&below)
+                .filter(|((id, _), gap)| was.get(id).is_some_and(|was| was != *gap))
+                .map(|((id, _), _)| *id)
+                .collect();
             let specs: Vec<BlockSpec> = wanted
                 .get(&f)
                 .map(|v| v.iter().map(|p| self.spec(p)).collect::<Vec<_>>())
                 .unwrap_or_default()
                 .into_iter()
                 .chain(extra.iter().cloned())
+                .zip(below)
+                .map(|(spec, gap_below)| nest(spec, gap_below))
                 .collect();
-            self.viewport.update(cx, |v, cx| v.set_blocks(f, specs, cx));
+            self.viewport.update(cx, |v, cx| {
+                v.set_blocks(f, specs, cx);
+                for &block in &restacked {
+                    v.invalidate_block(block, cx);
+                }
+            });
+            self.stats.invalidated.extend(restacked);
             *self.stats.set_blocks.entry(f).or_default() += 1;
             relaid.insert(f);
             if new.is_empty() {
@@ -852,6 +875,32 @@ fn old_side_changes(
         }
     }
     out
+}
+
+/// Per block of a file's list (blocks at one place stack in its order):
+/// whether it keeps `NESTED_Y` below it. A block with another at its anchor
+/// after it does not: the two stack in one column (ADR-0031 C4, nested
+/// cards `NESTED_Y` apart). Blocks whose different anchors land in one place
+/// (both sides of a context line in unified, lines hidden in one gap) keep
+/// both gaps.
+fn gaps_below(blocks: &[(BlockId, BlockAnchor)]) -> Vec<bool> {
+    let mut later = HashSet::with_capacity(blocks.len());
+    let mut out: Vec<bool> = blocks
+        .iter()
+        .rev()
+        .map(|(_, anchor)| later.insert(*anchor))
+        .collect();
+    out.reverse();
+    out
+}
+
+/// `spec` inset as a nested card ([`block::nested`]).
+fn nest(spec: BlockSpec, gap_below: bool) -> BlockSpec {
+    let render = spec.render;
+    BlockSpec {
+        render: std::rc::Rc::new(move |window, cx| block::nested(render(window, cx), gap_below)),
+        ..spec
+    }
 }
 
 /// What a thread's block shows, hashed: a change means re-measuring it.

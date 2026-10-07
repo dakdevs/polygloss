@@ -52,6 +52,7 @@ use crate::keymap::actions::tab as tab_actions;
 use crate::keymap::handlers;
 use crate::live::DiffRefreshed;
 use crate::review_tab::ReviewTab;
+use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, text};
 use crate::threads::{self, ReviewThreads, ThreadsEvent};
 use crate::window::MenuKind;
 
@@ -783,24 +784,13 @@ fn push_blocks(tab: &ReviewTab, cx: &mut Context<ReviewTab>) {
                 BlockSpec {
                     id: o.key.block_id(),
                     anchor,
-                    render: Rc::new(move |_, _| composer_block(&view)),
+                    // The threads model insets it like a thread block.
+                    render: Rc::new(move |_, _| view.clone().into_any_element()),
                 },
             ))
         })
         .collect();
     model.update(cx, |m, cx| m.set_extra_blocks(blocks, cx));
-}
-
-/// A line or file composer as a viewport block, inset like a thread card.
-fn composer_block(view: &Entity<Composer>) -> AnyElement {
-    div()
-        .w_full()
-        .px(px(10.))
-        .py(px(6.))
-        // Clicks stay in the composer; the wheel still scrolls the diff.
-        .block_mouse_except_scroll()
-        .child(view.clone())
-        .into_any_element()
 }
 
 /// A reply or edit composer opened or closed inside a thread card: the
@@ -971,10 +961,11 @@ fn toast_error_app(message: String, window: &mut Window, cx: &mut App) {
 pub fn review_composer(model: &ReviewThreads, cx: &App) -> Option<AnyElement> {
     let entity = model.composers()?;
     let view = entity.read(cx).get(&ComposerKey::Review)?.clone();
+    // A card in the panel: `SIDEBAR` from its edges, as the rows below.
     Some(
         div()
-            .px_2()
-            .py_2()
+            .px(px(edge::SIDEBAR))
+            .py(px(gap::CONTROLS))
             .border_b_1()
             .border_color(cx.theme().border)
             .child(view)
@@ -989,7 +980,7 @@ pub fn comment_editor(model: &ReviewThreads, c: &CommentView, cx: &App) -> Optio
         comment_id: c.id.clone(),
     };
     let view = entity.read(cx).get(&key)?.clone();
-    Some(div().pt_1().child(view).into_any_element())
+    Some(div().pt(px(gap::INLINE)).child(view).into_any_element())
 }
 
 /// The Edit and Delete buttons of one's own comment (none while it is
@@ -1013,7 +1004,7 @@ pub fn comment_tools(model: &ReviewThreads, c: &CommentView, cx: &App) -> Option
     let tab2 = tab.clone();
     Some(
         h_flex()
-            .gap_0p5()
+            .gap(px(gap::INLINE))
             .child(
                 Button::new(SharedString::from(format!("comment-edit-{}", c.id)))
                     .debug_selector({
@@ -1021,6 +1012,7 @@ pub fn comment_tools(model: &ReviewThreads, c: &CommentView, cx: &App) -> Option
                         move || format!("comment-edit-{id}")
                     })
                     .xsmall()
+                    .rounded(px(radius::XS))
                     .ghost()
                     .label("Edit")
                     .tooltip("Edit your comment")
@@ -1036,6 +1028,7 @@ pub fn comment_tools(model: &ReviewThreads, c: &CommentView, cx: &App) -> Option
                         move || format!("comment-delete-{id}")
                     })
                     .xsmall()
+                    .rounded(px(radius::XS))
                     .ghost()
                     .label("Delete")
                     .tooltip("Delete your comment")
@@ -1066,8 +1059,8 @@ pub fn card_footer(model: &ReviewThreads, thread: &ThreadView, cx: &App) -> Opti
         return Some(
             div()
                 .w_full()
-                .px_3()
-                .py_2()
+                .px(px(edge::COMPACT_X))
+                .py(px(edge::COMPACT_Y))
                 .border_t_1()
                 .border_color(theme.border)
                 .bg(theme.secondary)
@@ -1085,15 +1078,16 @@ pub fn card_footer(model: &ReviewThreads, thread: &ThreadView, cx: &App) -> Opti
             })
             .flex_1()
             .min_w_0()
-            .h(px(28.))
-            .px_2p5()
+            // A collapsed field.
+            .h(px(height::MD))
+            .px(px(pad::TEXT))
             .flex()
             .items_center()
-            .rounded(px(6.))
+            .rounded(px(radius::for_height(height::MD)))
             .border_1()
             .border_color(theme.border)
             .bg(theme.background)
-            .text_sm()
+            .text_style(text::UI)
             .text_color(theme.muted_foreground)
             .cursor_text()
             .hover(|s| s.border_color(theme.ring.opacity(0.6)))
@@ -1159,9 +1153,9 @@ pub fn card_footer(model: &ReviewThreads, thread: &ThreadView, cx: &App) -> Opti
     Some(
         h_flex()
             .w_full()
-            .px_3()
-            .py_2()
-            .gap_2()
+            .px(px(edge::COMPACT_X))
+            .py(px(edge::COMPACT_Y))
+            .gap(px(gap::CONTROLS))
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.secondary)

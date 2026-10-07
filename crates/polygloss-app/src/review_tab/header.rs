@@ -22,11 +22,18 @@
 //! even off screen; the document's top anchor keeps a review at the top of
 //! the card while it lands or grows.
 //!
+//! Geometry (ADR-0031 C3): a card (radius `MD`) with its content `CARD_X`
+//! and `CARD_Y` in; the `AVATAR_LG` avatar and its `CONTROLS` gap put the
+//! title's box on `card::CODE_X`, the code column of a one-column card up
+//! to 3 digits. A `TITLE` line over a `BODY` byline make it 56 pt tall,
+//! borders included, for every kind.
+//!
 //! Debug selectors: `header-card`, `header-avatar`, `header-title`,
 //! `header-byline`, `header-stats`, `header-chips`, `header-sha`,
 //! `header-commits-toggle`,
-//! `header-commits` (the list), `header-commit-<i>`, `header-commits-more`
-//! and `live-snapshot`; the texts as `"<name>: <text>"`.
+//! `header-commits` (the list), `header-commit-<i>`,
+//! `header-commit-avatar-<i>`, `header-commits-more` and `live-snapshot`;
+//! the texts as `"<name>: <text>"`.
 
 use std::rc::Rc;
 
@@ -55,13 +62,10 @@ use crate::categories;
 use crate::home::row::{local_utc_offset_s, relative_time};
 use crate::review_tab::toolbar::text;
 use crate::review_tab::{ReviewTab, compare_sides, live_branch, short_ref};
+use crate::space::{TextStyleExt as _, edge, gap, height, radius, size, text};
 
 /// Commits a compare's card lists at most.
 const MAX_COMMITS: u32 = 50;
-/// The card's avatar; the commit list's are smaller.
-const AVATAR: f32 = 26.0;
-const ROW_AVATAR: f32 = 18.0;
-const ROW_HEIGHT: f32 = 28.0;
 
 /// Avatar fills for themes with fewer than eight players (Pierre), per
 /// appearance (research: redesign reference).
@@ -265,7 +269,13 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
     let look = Look::new(cx);
     let parts = match content {
         Content::Commit(c) => Parts {
-            avatar: Some(avatar(c, AVATAR, Some("header-avatar"), &look)),
+            avatar: Some(avatar(
+                c,
+                size::AVATAR_LG,
+                text::BODY,
+                Some("header-avatar"),
+                &look,
+            )),
             title: c.subject.clone(),
             byline: format!("{} committed {}", c.author_name, look.ago(c)),
             toggle: None,
@@ -273,6 +283,7 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
                 labeled("header-sha", c.oid.short().to_string())
                     .flex_none()
                     .font_family(theme.mono_font_family.clone())
+                    .text_style(text::CODE_CHROME)
                     .text_color(colors.commit_sha)
                     .into_any_element(),
             ),
@@ -321,12 +332,13 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
             }
         }
     };
-    // The reference's proportions: a 15 pt subject over a 13 pt line, about
-    // 56 pt in all.
+    // The reference's proportions: a title line over a byline, 56 pt in
+    // all. The byline row keeps its line's height when it holds "Show
+    // commits" (an `XS` button, centred over it), so every kind is as tall.
     let top = h_flex()
-        .gap_3()
-        .px_4()
-        .py_2p5()
+        .gap(px(gap::CONTROLS))
+        .px(px(edge::CARD_X))
+        .py(px(edge::CARD_Y))
         .children(parts.avatar)
         .child(
             v_flex()
@@ -334,16 +346,15 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
                 .min_w_0()
                 .child(
                     labeled("header-title", parts.title)
-                        .text_size(px(15.))
-                        .line_height(px(18.))
+                        .text_style(text::TITLE)
                         .font_semibold(),
                 )
                 .child(
                     h_flex()
                         .min_w_0()
-                        .gap_2()
-                        .text_size(px(13.))
-                        .line_height(px(17.))
+                        .h(px(text::BODY.1))
+                        .gap(px(gap::CONTROLS))
+                        .text_style(text::BODY)
                         .text_color(theme.muted_foreground)
                         .child(labeled("header-byline", parts.byline))
                         .children(parts.toggle),
@@ -352,8 +363,8 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
         .child(
             h_flex()
                 .flex_none()
-                .gap_4()
-                .text_size(px(13.))
+                .gap(px(gap::GROUP))
+                .text_style(text::BODY)
                 .child(totals(t, cx))
                 .children(parts.trailing),
         );
@@ -364,7 +375,7 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
         .bg(colors.card_background)
         .border_1()
         .border_color(colors.card_border)
-        .rounded(px(8.))
+        .rounded(px(radius::MD))
         .text_color(theme.foreground)
         .child(top)
         .children(parts.list)
@@ -397,6 +408,7 @@ fn commits_toggle(open: bool, tab: WeakEntity<ReviewTab>) -> Button {
         .label(label)
         .ghost()
         .xsmall()
+        .rounded(px(radius::XS))
         .on_click(move |_, _, cx| {
             tab.update(cx, toggle_commits).ok();
         })
@@ -428,7 +440,7 @@ fn totals(tab: &ReviewTab, cx: &App) -> AnyElement {
         .then(|| labeled("header-stats", totals.summary()).text_color(theme.muted_foreground));
     h_flex()
         .id("header-totals")
-        .gap_2()
+        .gap(px(gap::CONTROLS))
         .children(stats)
         .children(categories::chips_element("header-chips", &chips, cx))
         .when_some(
@@ -499,9 +511,15 @@ impl Look {
     }
 }
 
-/// The author's initial on their color; found as `name` (and the initial as
-/// `"<name>: <initial>"`) when given one.
-fn avatar(c: &CommitDetails, size: f32, name: Option<&'static str>, look: &Look) -> Div {
+/// The author's initial in text `style` on their color, `size` wide; found
+/// as `name` (and the initial as `"<name>: <initial>"`) when given one.
+fn avatar(
+    c: &CommitDetails,
+    size: f32,
+    style: text::Style,
+    name: Option<&'static str>,
+    look: &Look,
+) -> Div {
     let fill = avatar_color(&c.author_email, &look.players, look.appearance);
     // Dark text on the light fills of dark themes.
     let ink = if fill.l > 0.6 {
@@ -524,7 +542,7 @@ fn avatar(c: &CommitDetails, size: f32, name: Option<&'static str>, look: &Look)
         .justify_center()
         .bg(fill)
         .text_color(ink)
-        .text_size(px(size * 0.5))
+        .text_style(style)
         .font_semibold()
         .child(letter)
 }
@@ -536,17 +554,20 @@ fn commit_list(commits: &[CommitDetails], total: u32, look: &Look, cx: &App) -> 
     let more = u64::from(total).saturating_sub(commits.len() as u64);
     v_flex()
         .debug_selector(|| "header-commits".into())
-        .py_1()
+        .py(px(gap::INLINE))
         .border_t_1()
         .border_color(colors.card_border)
-        .text_size(px(13.))
+        .text_style(text::BODY)
         .children(commits.iter().enumerate().map(|(i, c)| {
             h_flex()
                 .debug_selector(move || format!("header-commit-{i}"))
-                .h(px(ROW_HEIGHT))
-                .px_4()
-                .gap_2()
-                .child(avatar(c, ROW_AVATAR, None, look).text_size(px(10.)))
+                .h(px(height::MD))
+                .px(px(edge::CARD_X))
+                .gap(px(gap::CONTROLS))
+                .child(
+                    avatar(c, size::AVATAR_SM, text::CAPTION, None, look)
+                        .debug_selector(move || format!("header-commit-avatar-{i}")),
+                )
                 .child(
                     text("header-commit", c.subject.clone())
                         .flex_1()
@@ -563,6 +584,7 @@ fn commit_list(commits: &[CommitDetails], total: u32, look: &Look, cx: &App) -> 
                     div()
                         .flex_none()
                         .font_family(theme.mono_font_family.clone())
+                        .text_style(text::CODE_CHROME)
                         .text_color(colors.commit_sha)
                         .child(c.oid.short().to_string()),
                 )
@@ -573,8 +595,8 @@ fn commit_list(commits: &[CommitDetails], total: u32, look: &Look, cx: &App) -> 
                     "header-commits-more",
                     format!("and {} more", group_digits(more)),
                 )
-                .px_4()
-                .py_1()
+                .px(px(edge::CARD_X))
+                .py(px(gap::INLINE))
                 .text_color(theme.muted_foreground),
             )
         })

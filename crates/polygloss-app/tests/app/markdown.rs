@@ -13,6 +13,7 @@ use gpui_kit::{
 };
 use polygloss_app::markdown::suggestion::SuggestionContext;
 use polygloss_app::markdown::{self, code_blocks, sanitize, suggestion};
+use polygloss_app::space::TextStyleExt as _;
 use polygloss_viewport::ViewportTheme;
 
 use crate::shell::{Shell, draw, start};
@@ -28,7 +29,10 @@ impl Render for Probe {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = markdown::configure(TextView::new(&self.state), cx);
         let view = suggestion::with_suggestions(view, self.suggestion.clone());
-        div().w(gpui_kit::px(600.)).child(view)
+        div()
+            .w(gpui_kit::px(600.))
+            .text_style(polygloss_app::space::text::BODY)
+            .child(view)
     }
 }
 
@@ -559,4 +563,52 @@ fn suggestion_on_old_side_renders_plain_code(cx: &mut gpui_kit::TestAppContext) 
         anchor_snippet: None,
     };
     assert!(suggestion::context_for(&file, None).is_none());
+}
+
+/// The painted bounds of `selector` in `window`.
+fn bounds_in(
+    shell: &mut Shell,
+    window: AnyWindowHandle,
+    selector: &'static str,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    VisualTestContext::from_window(window, shell.cx)
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} was not painted"))
+}
+
+/// T7.7, ADR-0031 C4: a suggestion uses the card's column formula from its
+/// frame's inner edge, as a card in the `+-` indicator mode (its `-` and
+/// `+` in a two-advance cell after the gutter). Hand-computed at 13 pt
+/// (advance 7.8): 2-digit numbers, 4 + 4 + 15.6 + 8 = 31.6, at least 40,
+/// code at 40 + 15.6 = 55.6; 4-digit numbers, 4 + 4 + 31.2 + 8 = 47.2 → 48,
+/// code at 63.6, laid out on the window's device pixels (within a quarter
+/// point at 2×). Rows are code rows: round(1.5 × 13) = 20.
+#[gpui_kit::test]
+fn suggestion_uses_the_card_column_formula(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    for (start_line, code_x) in [(12, 55.6), (1_012, 63.6)] {
+        let ctx = SuggestionContext {
+            start_line,
+            lines: vec!["let a = 1;".to_owned()].into(),
+        };
+        let body = "```suggestion\nlet a = 10;\n```\n";
+        let (_, window) = probe(&mut shell, body, Some(ctx));
+        let frame = bounds_in(&mut shell, window, "suggestion-diff");
+        let code = bounds_in(&mut shell, window, "suggestion-code-removed-0");
+        let x = (code.left() - frame.left()).as_f32() - 1.0;
+        assert!((x - code_x).abs() <= 0.25, "line {start_line}: code at {x}");
+        assert_eq!(code.size.height, gpui_kit::px(20.), "line {start_line}");
+    }
+}
+
+/// T7.7: a blank line of raw HTML keeps a comment line's height
+/// (`text::BODY`, 18 pt), not a rem-based one.
+#[gpui_kit::test]
+fn a_blank_html_line_keeps_the_body_line_height(cx: &mut gpui_kit::TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let mut shell = start(cx);
+    let (_, window) = probe(&mut shell, "<pre>\na\n\nb\n</pre>\n", None);
+    let blank = bounds_in(&mut shell, window, "html-blank-line");
+    assert_eq!(blank.size.height, gpui_kit::px(18.));
 }

@@ -1,11 +1,4 @@
 {
-  "crates/polygloss-app/src/composer/mod.rs": 17,
-  "crates/polygloss-app/src/composer/view.rs": 25,
-  "crates/polygloss-app/src/markdown/sanitize.rs": 1,
-  "crates/polygloss-app/src/markdown/suggestion.rs": 11,
   "crates/polygloss-app/src/review_tab/banners.rs": 1,
-  "crates/polygloss-app/src/review_tab/header.rs": 23,
-  "crates/polygloss-app/src/review_tab/panes.rs": 7,
-  "crates/polygloss-app/src/threads/block.rs": 30,
-  "crates/polygloss-app/src/threads/panel.rs": 30
+  "crates/polygloss-app/src/review_tab/panes.rs": 1
 }

@@ -11,6 +11,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod block_geometry;
 mod card_geometry;
 mod categories;
 mod chrome_geometry;
@@ -75,5 +76,6 @@ fn main() -> std::process::ExitCode {
         card_geometry::TESTS,
         overlay_geometry::TESTS,
         chrome_geometry::TESTS,
+        block_geometry::TESTS,
     ])
 }
