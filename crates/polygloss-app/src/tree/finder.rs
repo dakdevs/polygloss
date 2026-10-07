@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use gpui_kit::component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_kit::component::{ActiveTheme as _, IndexPath, StyledExt as _, WindowExt as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, IndexPath, StyledExt as _, h_flex};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, Global, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, Styled as _, Task, WeakEntity, Window, div, px,
@@ -17,6 +17,7 @@ use polygloss_viewport::ScrollTarget;
 
 use super::filters::Fuzzy;
 use super::row::status_badge;
+use crate::overlay::{self, OverlayHandle};
 use crate::review_tab::ReviewTab;
 use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, size, text};
 
@@ -60,15 +61,19 @@ impl FinderDelegate {
 /// The finder's list state.
 pub type Finder = Entity<ListState<FinderDelegate>>;
 
-/// The finder while it is open (tests read it).
-#[derive(Default)]
-struct OpenFinder(Option<WeakEntity<ListState<FinderDelegate>>>);
+/// The finder and its overlay, last opened (tests read it).
+struct OpenFinder(WeakEntity<ListState<FinderDelegate>>, OverlayHandle);
 
 impl Global for OpenFinder {}
 
 /// The open finder, if any.
 pub fn current(cx: &App) -> Option<Finder> {
-    cx.try_global::<OpenFinder>()?.0.as_ref()?.upgrade()
+    let OpenFinder(finder, overlay) = cx.try_global::<OpenFinder>()?;
+    if overlay.is_open(cx) {
+        finder.upgrade()
+    } else {
+        None
+    }
 }
 
 /// Opens the finder over `tab`'s files, its search field focused.
@@ -89,32 +94,27 @@ pub fn open(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab
         }
         state
     });
-    cx.set_global(OpenFinder(Some(state.downgrade())));
     let list = state.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog
-            .w(px(layout::PICKER_W))
-            .margin_top(px(layout::PICKER_TOP))
-            .close_button(false)
-            .p_0()
+    let overlay = overlay::open_overlay(window, cx, move |_, _| {
+        // The picker's frame (ADR-0031): the overlay's whole content.
+        div()
+            .debug_selector(|| "file-finder".into())
             .child(
-                // The picker's frame (ADR-0031): the dialog's whole content.
-                div().debug_selector(|| "file-finder".into()).child(
-                    List::new(&list)
-                        .search_placeholder("Go to file…")
-                        .max_h(px(layout::OVERLAY_MAX_H))
-                        .p(px(edge::OVERLAY)),
-                ),
+                List::new(&list)
+                    .search_placeholder("Go to file…")
+                    .max_h(px(layout::OVERLAY_MAX_H))
+                    .p(px(edge::OVERLAY)),
             )
+            .into_any_element()
     });
+    cx.set_global(OpenFinder(state.downgrade(), overlay));
     state.update(cx, |s, cx| s.focus(window, cx));
     state
 }
 
 /// Closes the finder and jumps to file `idx` of its tab.
 fn jump(tab: &WeakEntity<ReviewTab>, idx: u32, window: &mut Window, cx: &mut App) {
-    window.close_dialog(cx);
-    cx.set_global(OpenFinder(None));
+    overlay::close_overlay(window, cx);
     let Some(tab) = tab.upgrade() else {
         return;
     };
@@ -256,10 +256,5 @@ impl ListDelegate for FinderDelegate {
             let tab = self.tab.clone();
             jump(&tab, idx, window, cx);
         }
-    }
-
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        window.close_dialog(cx);
-        cx.set_global(OpenFinder(None));
     }
 }

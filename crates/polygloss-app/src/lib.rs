@@ -38,6 +38,7 @@ pub mod markdown;
 pub mod motion;
 pub mod notify;
 pub mod open_flow;
+pub mod overlay;
 pub mod palette;
 pub mod perf;
 pub mod provider;

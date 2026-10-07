@@ -131,8 +131,11 @@ fn pane_of(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Option<Pane> {
     })
 }
 
+/// A gpui-kit dialog or one of our overlays (⌘K, ⌘P, `?`) is open.
 fn has_dialog(shell: &mut Shell) -> bool {
-    shell.cx.update(|window, cx| window.has_active_dialog(cx))
+    shell
+        .cx
+        .update(|window, cx| window.has_active_dialog(cx) || polygloss_app::overlay::is_open(cx))
 }
 
 /// Gives `pane` the keyboard as `Tab` does.
@@ -1216,4 +1219,65 @@ fn press_space(shell: &mut Shell) {
     });
     shell.cx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
     draw(shell.cx);
+}
+
+/// ⌘K, ⌘P and `?` (T7.12, OQ-49) take the keyboard from the pane they open
+/// over and give it back to that pane when Esc or a click outside closes
+/// them.
+#[gpui_kit::test]
+fn overlays_return_focus_to_the_previous_pane(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::Modifiers;
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
+    draw(shell.cx);
+    let composer = open_line_composer(&mut shell, &tab);
+    let window = shell.cx.update(|window, _| window.viewport_size());
+    // Bottom left: the sidebar's footer, outside every overlay's frame.
+    let outside = point(px(10.), window.height - px(10.));
+    let overlays = [
+        ("the palette", "cmd-k", "command-palette"),
+        ("the finder", "cmd-p", "file-finder"),
+        ("the cheat sheet", "?", "cheat-row-viewport::CursorDown"),
+    ];
+    let panes = [
+        Pane::Tree,
+        Pane::Viewport,
+        Pane::Threads,
+        Pane::Composer(composer),
+    ];
+    for pane in &panes {
+        for (what, open, selector) in overlays {
+            // `?` is typed into a composer, as into any text field.
+            if open == "?" && matches!(pane, Pane::Composer(_)) {
+                continue;
+            }
+            for close in ["Esc", "a click outside"] {
+                focus_pane(&mut shell, &tab, pane);
+                assert_eq!(pane_of(&mut shell, &tab).as_ref(), Some(pane));
+                keys(&mut shell, open);
+                assert!(painted(shell.cx, selector), "{what} opens over {pane:?}");
+                assert_eq!(
+                    pane_of(&mut shell, &tab),
+                    None,
+                    "{what} has the keyboard over {pane:?}"
+                );
+                if close == "Esc" {
+                    keys(&mut shell, "escape");
+                } else {
+                    shell.cx.simulate_click(outside, Modifiers::none());
+                    draw(shell.cx);
+                }
+                assert!(!painted(shell.cx, selector), "{close} closes {what}");
+                assert_eq!(
+                    pane_of(&mut shell, &tab).as_ref(),
+                    Some(pane),
+                    "{close} gives the keyboard back to {pane:?} after {what}"
+                );
+            }
+        }
+    }
 }

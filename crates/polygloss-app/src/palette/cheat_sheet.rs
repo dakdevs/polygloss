@@ -1,15 +1,21 @@
 //! The keyboard shortcuts cheat sheet (`?`, design §11.8): every binding in
 //! effect, `keymap.json` included, grouped by where it works.
 
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::DialogTitle;
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
+};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, Global, InteractiveElement as _, IntoElement, Keystroke,
     ParentElement as _, Render, Styled as _, WeakEntity, Window, div, px,
 };
 
 use crate::keymap::{KeymapStore, Resolved, actions};
+use crate::overlay::{self, Frame, OverlayHandle};
 use crate::palette::key_cap::key_cap;
-use crate::space::{TextStyleExt as _, gap, height, layout, text};
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, text};
 
 /// One row: an action and every key bound to it in the section's context.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,36 +99,43 @@ fn fold_review_numbers(rows: &mut Vec<CheatRow>) {
     row.span = true;
 }
 
-/// The open cheat sheet (a dialog's content).
+/// The open cheat sheet (an overlay's content, [`crate::overlay`]).
 pub struct CheatSheet {
     sections: Vec<(&'static str, Vec<CheatRow>)>,
 }
 
-#[derive(Default)]
-struct OpenCheatSheet(Option<WeakEntity<CheatSheet>>);
+/// The cheat sheet and its overlay, last opened.
+struct OpenCheatSheet(WeakEntity<CheatSheet>, OverlayHandle);
 
 impl Global for OpenCheatSheet {}
+
+/// Its frame: wider than the pickers, as high as the open flow's.
+const FRAME: Frame = Frame {
+    width: layout::CHEAT_SHEET_W,
+    top: layout::DIALOG_TOP,
+};
 
 /// Opens the cheat sheet over `window` (Esc closes it).
 pub fn open(window: &mut Window, cx: &mut App) -> Entity<CheatSheet> {
     let sheet = cx.new(|cx| CheatSheet {
         sections: sections(KeymapStore::global(cx).resolved()),
     });
-    cx.set_global(OpenCheatSheet(Some(sheet.downgrade())));
     let content = sheet.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog
-            .w(px(layout::CHEAT_SHEET_W))
-            .margin_top(px(layout::DIALOG_TOP))
-            .title("Keyboard Shortcuts")
-            .child(content.clone())
+    let overlay = overlay::open_overlay_in(FRAME, window, cx, move |_, _| {
+        content.clone().into_any_element()
     });
+    cx.set_global(OpenCheatSheet(sheet.downgrade(), overlay));
     sheet
 }
 
 /// The open cheat sheet, if any.
 pub fn current(cx: &App) -> Option<Entity<CheatSheet>> {
-    cx.try_global::<OpenCheatSheet>()?.0.as_ref()?.upgrade()
+    let OpenCheatSheet(sheet, overlay) = cx.try_global::<OpenCheatSheet>()?;
+    if overlay.is_open(cx) {
+        sheet.upgrade()
+    } else {
+        None
+    }
 }
 
 impl CheatSheet {
@@ -202,11 +215,47 @@ impl Render for CheatSheet {
                 .gap(px(gap::SECTION))
                 .children(sections.iter().map(|(h, rows)| section(h, rows, cx)))
         };
-        h_flex()
+        let columns = h_flex()
             .items_start()
             .gap(px(gap::SECTION))
             .child(column(&left, cx))
             .child(column(&middle, cx))
-            .child(column(&right, cx))
+            .child(column(&right, cx));
+        // Laid out as gpui-kit's dialogs lay out theirs (the open flow's,
+        // Submit's): `CARD_X` in from every edge, the title over a body that
+        // scrolls in a short window, and a close button in the corner.
+        v_flex()
+            .flex_1()
+            .overflow_hidden()
+            .py(px(edge::CARD_X))
+            .gap(px(gap::CONTROLS))
+            .child(
+                DialogTitle::new()
+                    .px(px(edge::CARD_X))
+                    .child("Keyboard Shortcuts"),
+            )
+            .child(
+                div().flex_1().overflow_hidden().child(
+                    v_flex()
+                        .size_full()
+                        .overflow_y_scrollbar()
+                        .px(px(edge::CARD_X))
+                        .child(columns),
+                ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(edge::OVERLAY))
+                    .right(px(edge::OVERLAY))
+                    .child(
+                        Button::new("cheat-sheet-close")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Close)
+                            .accessibility_label("Close")
+                            .on_click(|_, window, cx| overlay::close_overlay(window, cx)),
+                    ),
+            )
     }
 }

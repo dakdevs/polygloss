@@ -5,9 +5,10 @@
 //! before, plus ⌘0 (Home), ⌘1–⌘9 (the open reviews by number, OQ-35) and
 //! the sidebar's actions. The window's title follows the active tab. The
 //! app keeps running when it closes, and clicking the Dock icon reopens it
-//! ([`reopen`], `on_reopen`). Also the native menu bar skeleton (App, File,
-//! Edit, View, Review, Window, Help), which feature modules extend with
-//! [`add_menu_items`] before [`install_menus`] runs.
+//! ([`reopen`], `on_reopen`). The open overlay (⌘K, ⌘P and `?`,
+//! [`crate::overlay`]) is drawn above the page. Also the native menu bar
+//! skeleton (App, File, Edit, View, Review, Window, Help), which feature
+//! modules extend with [`add_menu_items`] before [`install_menus`] runs.
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, v_flex};
@@ -536,7 +537,8 @@ impl Render for MainWindow {
         };
         let root = crate::keymap::handlers::apply(v_flex(), cx);
         let theme = cx.theme();
-        root.key_context("Window")
+        let page = root
+            .key_context("Window")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::next_tab))
@@ -548,7 +550,14 @@ impl Render for MainWindow {
             .text_color(theme.foreground)
             // First, so its mouse listeners are registered first every frame.
             .child(crate::motion::settle::root())
-            .child(div().flex_1().min_h_0().child(active))
+            .child(div().flex_1().min_h_0().child(active));
+        // The open overlay (⌘K, ⌘P, `?`) above the page, beside it rather
+        // than inside, so the window's key bindings and handlers stay out of
+        // its dispatch path, as they are out of a kit dialog's.
+        div()
+            .size_full()
+            .child(page)
+            .children(crate::overlay::host(window, cx))
             // Last, so its paint ends the frame's timing (T7.3).
             .child(frames::sentinel())
     }
