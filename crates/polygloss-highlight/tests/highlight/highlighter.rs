@@ -227,11 +227,17 @@ fn highlight_budget_exceeded_returns_within_budget() {
     // Returning at the budget takes about 20 ms whatever the source; checked
     // only at the end, it would take the whole highlight, 10x longer for 10x
     // lines.
-    assert_ratio_below(
+    let [_, large] = assert_ratio_below(
         "a 20 ms budget, 20k -> 200k lines",
         4.0,
         [&sources[0], &sources[1]],
         |src| with_20ms_budget(&hl, src),
+    );
+    // And at the budget, not a multiple of it: the budget is wall-clock, so a
+    // slower machine stops sooner in the source, not later in time.
+    assert!(
+        large < Duration::from_millis(80),
+        "a 20 ms budget returned after {large:?} (limit 80ms)"
     );
 }
 

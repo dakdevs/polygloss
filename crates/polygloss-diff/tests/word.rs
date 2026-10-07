@@ -109,9 +109,9 @@ fn minified(len: usize) -> (String, String) {
     (line, changed)
 }
 
-/// 100 rounds of the three skipped shapes below; how many skipped all three.
+/// 1000 rounds of the three skipped shapes below; how many skipped all three.
 fn skipped_rounds((line, changed): &(String, String)) -> usize {
-    (0..100)
+    (0..1000)
         .filter(|_| {
             word_ranges(line.as_bytes(), changed.as_bytes(), Granularity::Word).is_none()
                 && word_ranges(line.as_bytes(), b"short", Granularity::Char).is_none()

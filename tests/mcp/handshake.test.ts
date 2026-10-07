@@ -166,8 +166,14 @@ describe("polygloss mcp handshake", () => {
       return { messages, ms: performance.now() - started };
     };
     await session(false); // the first start of a fresh binary is slower
-    const plain = await session(false);
-    const { messages, ms } = await session(true);
+    // The faster of two sessions per client, so one slow start-up under load
+    // is not read as a wait.
+    const plainMs = Math.min(
+      (await session(false)).ms,
+      (await session(false)).ms,
+    );
+    const { messages, ms: firstMs } = await session(true);
+    const ms = Math.min(firstMs, (await session(true)).ms);
     expect(messages.some((m) => m.method === "roots/list")).toBe(false);
     const answers = messages.filter((m) => m.id === 2 || m.id === 3);
     expect(answers).toHaveLength(2);
@@ -177,8 +183,8 @@ describe("polygloss mcp handshake", () => {
     }
     // Waiting would add the 2 s roots/list timeout to the session without
     // roots; both pay the same process start-up, whatever the machine.
-    expect(ms - plain.ms).toBeLessThan(1_000);
-  });
+    expect(ms - plainMs).toBeLessThan(1_000);
+  }, 30_000); // five sessions
 
   test("alwaysLoad meta on open_diff list_threads wait_for_review", async () => {
     const { env } = mcpSandbox();

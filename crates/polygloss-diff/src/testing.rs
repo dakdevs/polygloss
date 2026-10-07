@@ -15,15 +15,16 @@ const RUNS: usize = 7;
 
 /// Asserts that `run` on the large input takes less than `limit` times as long
 /// as on the small one (`inputs = [small, large]`), comparing medians of
-/// interleaved runs. Size the work so one small run takes at least about
-/// 100 µs, and a regression's large run a few seconds at most.
+/// interleaved runs, and returns the two medians. Size the work so one small
+/// run takes at least about 100 µs, and a regression's large run a few seconds
+/// at most.
 #[track_caller]
 pub fn assert_ratio_below<T, R>(
     what: &str,
     limit: f64,
     mut inputs: [T; 2],
     mut run: impl FnMut(&mut T) -> R,
-) {
+) -> [Duration; 2] {
     let [small, large] = &mut inputs;
     black_box(run(small));
     black_box(run(large));
@@ -39,6 +40,7 @@ pub fn assert_ratio_below<T, R>(
         ratio < limit,
         "{what}: {s:?} -> {l:?}, {ratio:.1}x (limit {limit}x)"
     );
+    [s, l]
 }
 
 fn time<R>(f: impl FnOnce() -> R) -> Duration {
