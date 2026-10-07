@@ -14,6 +14,7 @@ use polygloss_app::home::prune::{AutoPrune, PRUNE_INTERVAL};
 use polygloss_app::home::row::{
     self, HomeRow, ParsedKey, open_request, parse_key, relative_time, status_label,
 };
+use polygloss_app::motion::{self, MotionPolicy};
 use polygloss_app::tabs::TabItem;
 use polygloss_core::git::{CompareMode, ReviewKind, Since, Source};
 use polygloss_core::objects::BlobReader;
@@ -411,6 +412,11 @@ fn assign_to_session_reassigns_review(cx: &mut TestAppContext) {
     let r = row_of(&mut shell, &opened.review_id);
     assert_eq!(r.agent.as_deref(), Some("claude-code"), "agent badge");
 
+    // Motion Off: gpui-kit's dialog slides in for 250 ms on the wall clock,
+    // so on a loaded machine the click below would land on a moved button.
+    shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(MotionPolicy::Off), cx));
     select(&mut shell, &opened.review_id);
     shell.cx.simulate_keystrokes("a");
     draw(shell.cx);

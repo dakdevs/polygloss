@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use gpui_kit::{Entity, VisualTestContext};
+use polygloss_app::motion::{self, MotionPolicy};
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::submit::{self, SubmitDialog, WaiterState, dialog::AUTOSAVE_DEBOUNCE};
 use polygloss_app::threads;
@@ -90,8 +91,13 @@ fn dialog(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Option<Entity<SubmitDia
     tab.read_with(shell.cx, |t, _| submit::dialog(t))
 }
 
-/// Opens the dialog with ⌘⇧⏎ from the diff.
+/// Opens the dialog with ⌘⇧⏎ from the diff, with motion Off: gpui-kit's
+/// dialog slides in for 250 ms on the wall clock, so on a loaded machine a
+/// click's mouse up lands after its button moved and the click is lost.
 fn open(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Entity<SubmitDialog> {
+    shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(MotionPolicy::Off), cx));
     let focus = tab.read_with(shell.cx, |t, _| t.viewport_focus().clone());
     shell.cx.update(|window, cx| window.focus(&focus, cx));
     shell.cx.simulate_keystrokes("cmd-shift-enter");
