@@ -438,11 +438,9 @@ describe("icon", () => {
       must(["/usr/bin/assetutil", "--info", join(iconDir, "assets.car")]),
     ) as Json[];
     expect(catalog[0]?.PlatformVersion).toBe(minimumMacos);
-    expect(
-      catalog.some(
-        (a) => a.Name === "polygloss" && a.AssetType === "IconImageStack",
-      ),
-    ).toBe(true);
+    // Any rendition: macOS 15's assetutil does not list macOS 26's layered
+    // IconImageStack, only the flattened icon images that macOS 14 and 15 use.
+    expect(catalog.some((a) => a.Name === "polygloss")).toBe(true);
     expect(manifest["minimum-macos"]).toBe(minimumMacos);
     expect(manifest["app-icon"]).toBe("polygloss");
     // Icon Composer documents need actool from Xcode 26 or later.
