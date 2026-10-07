@@ -4,9 +4,8 @@
 // contents, `#[cfg(test)]` items and the token modules (both `space.rs`
 // files; the `tokens` and `ink` modules of the motion modules), then applies
 // seven rules to what is left. Identifiers are matched by `_`-separated
-// component. During M7 a per-file debt map ratchets each file's count down
-// (`spacing-debt.json`; `UPDATE_SPACING_DEBT=1` re-seeds it and fails if an
-// entry rose); T7.15 deletes it.
+// component. Every finding outside the allow-list fails: M7's per-file debt
+// map is gone (plan T7.15), so no file carries spacing debt.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   existsSync,
@@ -23,8 +22,6 @@ import { join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "../..");
 const fixtureDir = join(import.meta.dir, "fixtures/spacing");
-const debtPath = join(import.meta.dir, "spacing-debt.json");
-const update = process.env.UPDATE_SPACING_DEBT === "1";
 
 // ---------------------------------------------------------------------------
 // The scanner
@@ -908,25 +905,6 @@ const ALLOW: Allow[] = [
   },
 ];
 
-// The debt map for `counts` (files at 0 leave it), and every entry that
-// rose (a file absent from `old` counts as 0).
-function reseed(
-  old: Record<string, number>,
-  counts: Record<string, number>,
-): { next: Record<string, number>; rises: string[] } {
-  const next = Object.fromEntries(
-    Object.entries(counts).filter(([, n]) => n > 0),
-  );
-  const rises = Object.entries(next)
-    .filter(([path, n]) => n > (old[path] ?? 0))
-    .map(([path, n]) => debtMessage(path, old[path] ?? 0, n));
-  return { next, rises };
-}
-
-function debtMessage(path: string, from: number, to: number): string {
-  return `spacing-debt.json[${path}]: ${from} → ${to}`;
-}
-
 // ---------------------------------------------------------------------------
 // Fixtures: `// path: <repo path>` on the first line, then cases that each
 // start with `// accept` or `// reject N`.
@@ -990,19 +968,6 @@ function allowed(f: Finding): boolean {
       (a.path.endsWith("/") ? f.path.startsWith(a.path) : f.path === a.path) &&
       (a.snippet === undefined || a.snippet === f.snippet),
   );
-}
-
-function readDebt(): Record<string, number> {
-  return existsSync(debtPath)
-    ? (JSON.parse(readFileSync(debtPath, "utf8")) as Record<string, number>)
-    : {};
-}
-
-function writeDebt(map: Record<string, number>) {
-  const sorted = Object.fromEntries(
-    Object.entries(map).sort(([a], [b]) => (a < b ? -1 : 1)),
-  );
-  writeFileSync(debtPath, `${JSON.stringify(sorted, null, 2)}\n`);
 }
 
 beforeAll(() => {
@@ -1082,9 +1047,6 @@ describe("the spacing lint (ADR-0031)", () => {
       "crates/polygloss-app/src/x.rs:3 rule 1 'px(12.)' → space::gap (ADR-0031)",
       "crates/polygloss-app/src/x.rs:4 rule 2 '.rounded_md()' → space::radius (ADR-0031)",
     ]);
-    expect(debtMessage("crates/polygloss-app/src/x.rs", 3, 4)).toBe(
-      "spacing-debt.json[crates/polygloss-app/src/x.rs]: 3 → 4",
-    );
   });
 
   test("untracked_files_are_scanned", () => {
@@ -1165,60 +1127,12 @@ describe("the spacing lint (ADR-0031)", () => {
     expect(stale).toEqual([]);
     expect(ALLOW.every((a) => a.reason.length > 0)).toBe(true);
   });
-
-  test("reseed_fails_when_an_entry_rises", () => {
-    expect(reseed({ "a.rs": 3, "b.rs": 2 }, { "a.rs": 1, "b.rs": 2 })).toEqual({
-      next: { "a.rs": 1, "b.rs": 2 },
-      rises: [],
-    });
-    // A file that reaches 0 leaves the map.
-    expect(reseed({ "a.rs": 3 }, {}).next).toEqual({});
-    expect(reseed({ "a.rs": 3 }, { "a.rs": 4 }).rises).toEqual([
-      "spacing-debt.json[a.rs]: 3 → 4",
-    ]);
-    // A file absent from the map counts as 0.
-    expect(reseed({}, { "new.rs": 1 }).rises).toEqual([
-      "spacing-debt.json[new.rs]: 0 → 1",
-    ]);
-  });
 });
 
-describe("the debt map (M7 only; T7.15 deletes it)", () => {
-  test.if(update)("UPDATE_SPACING_DEBT=1 re-seeds the debt map", () => {
-    if (!existsSync(debtPath)) {
-      writeDebt(tree.counts); // the first seed (T7.1)
-      return;
-    }
-    const { next, rises } = reseed(readDebt(), tree.counts);
-    expect(rises).toEqual([]);
-    writeDebt(next);
-  });
-
-  test("no_file_exceeds_its_debt", () => {
-    const debt = readDebt();
-    const over = Object.entries(tree.counts)
-      .filter(([path, count]) => count > (debt[path] ?? 0))
-      .flatMap(([path, count]) => [
-        debtMessage(path, debt[path] ?? 0, count),
-        ...tree.findings
-          .filter((f) => f.path === path && !allowed(f))
-          .map(message),
-      ]);
-    expect(over).toEqual([]);
-  });
-
-  test("no_file_is_below_its_debt", () => {
-    const below = Object.entries(readDebt())
-      .filter(([path, entry]) => (tree.counts[path] ?? 0) < entry)
-      .map(([path, entry]) => debtMessage(path, entry, tree.counts[path] ?? 0));
-    expect(below).toEqual([]);
-  });
-
-  test("the_debt_map_names_only_existing_files", () => {
-    expect(existsSync(debtPath)).toBe(true);
-    const missing = Object.keys(readDebt()).filter(
-      (p) => !tree.sources.includes(p),
-    );
-    expect(missing).toEqual([]);
+describe("no spacing debt (ADR-0031, plan T7.15)", () => {
+  test("no_file_has_spacing_debt", () => {
+    // Every finding outside the allow-list, by path:line, rule and group.
+    const debt = tree.findings.filter((f) => !allowed(f)).map(message);
+    expect(debt).toEqual([]);
   });
 });

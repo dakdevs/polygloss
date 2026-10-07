@@ -251,7 +251,8 @@ pub fn button(tab: &ReviewTab, _window: &mut Window, cx: &mut Context<ReviewTab>
         "Submit review"
     };
     let theme = cx.theme();
-    // A badge (`MINI`, at least round), `INLINE` after the label.
+    // A badge (`MINI`, at least round), `INLINE` after the label, in
+    // tabular figures so it keeps its width as the count changes.
     let count = (drafts > 0).then(|| {
         div()
             .debug_selector(|| "submit-review-count".into())
@@ -265,6 +266,7 @@ pub fn button(tab: &ReviewTab, _window: &mut Window, cx: &mut Context<ReviewTab>
             .rounded(px(radius::capsule(height::MINI)))
             .bg(theme.primary_foreground.opacity(0.22))
             .text_style(text::CAPTION)
+            .font_features(crate::chrome::tabular_figures())
             .child(drafts.to_string())
     });
     Button::new("submit-review")

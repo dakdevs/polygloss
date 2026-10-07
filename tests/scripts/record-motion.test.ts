@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { testCommand } from "../../scripts/record-motion";
 import { makeSandbox } from "../support/sandbox";
 
 const repoRoot = resolve(import.meta.dir, "../..");
@@ -86,7 +87,7 @@ describe("record-motion", () => {
     expect({ code: r.code, stderr: r.stderr }).toMatchObject({ code: 0 });
     // One filmstrip test, the Reduced strip recording into `out`.
     expect(readFileSync(cargoLog, "utf8").trim().split("\n")).toEqual([
-      "nextest run -p polygloss-app --features e2e -E binary(e2e) & test(=e2e_motion_probe)",
+      "nextest run -p polygloss-app --features e2e -E binary(e2e) & test(/(^|::)e2e_motion_probe$/)",
       `dump=${out} policy=reduced`,
     ]);
     expect(r.stdout).toContain(
@@ -99,6 +100,28 @@ describe("record-motion", () => {
     expect(r.stdout).toContain(`T extract '${join(out, "probe.mp4")}'`);
     expect(r.stdout).toContain("T candidates");
     expect(r.stdout).toContain("--frames 0,1,2 --name probe");
+  });
+
+  test("the_filter_selects_one_test_with_or_without_its_module", () => {
+    // The E2E harness names a test after its function, alone (`tests![…]`)
+    // or behind its module (`Test::new("motion_panels::…")`); nextest's
+    // `test(/…/)` finds the regex anywhere in the name.
+    const names = [
+      "e2e_motion_probe",
+      "motion_panels::e2e_motion_sidebar",
+      "motion_chrome::e2e_motion_banner",
+      "motion_chrome::e2e_motion_banner_exit",
+      "motion_blocks::not_e2e_motion_banner",
+    ];
+    const selected = (name: string) => {
+      const filter = testCommand("cargo.sh", name).at(-1) ?? "";
+      const regex = /^binary\(e2e\) & test\(\/(.+)\/\)$/.exec(filter)?.[1];
+      if (!regex) throw new Error(`not a regex filter: ${filter}`);
+      return names.filter((n) => new RegExp(regex).test(n));
+    };
+    expect(selected("probe")).toEqual(["e2e_motion_probe"]);
+    expect(selected("sidebar")).toEqual(["motion_panels::e2e_motion_sidebar"]);
+    expect(selected("banner")).toEqual(["motion_chrome::e2e_motion_banner"]);
   });
 
   test("encodes_the_mp4_at_60_fps_when_ffmpeg_is_on_path", () => {
