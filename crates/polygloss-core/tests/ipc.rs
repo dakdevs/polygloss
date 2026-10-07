@@ -11,8 +11,9 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use polygloss_core::ipc::{
     IpcClient, IpcError, Op, PROTOCOL_VERSION, ServerConfig, ServerHandle, codes, current_uid,
@@ -511,11 +512,24 @@ fn call_after_idle_timeout_reconnects() {
 fn nudge_answers_while_a_slow_op_is_in_flight() {
     let _sb = Sandbox::isolate();
     let paths = paths();
-    let _server = serve(&paths, |op: Op| {
-        if matches!(op, Op::Open { .. }) {
-            std::thread::sleep(Duration::from_secs(2));
+    // The `open` handler is held until the nudge has its answer (or for 2T,
+    // past the nudge's own timeout, if handlers ran one at a time).
+    let (entered, released) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let _server = serve(&paths, {
+        let (entered, released) = (entered.clone(), released.clone());
+        move |op: Op| {
+            if matches!(op, Op::Open { .. }) {
+                entered.store(true, Ordering::SeqCst);
+                let deadline = Instant::now() + 2 * T;
+                while !released.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Ok(json!({ "handled": op.name() }))
         }
-        Ok(json!({ "handled": op.name() }))
     })
     .unwrap();
     let slow = {
@@ -531,14 +545,20 @@ fn nudge_answers_while_a_slow_op_is_in_flight() {
             )
         })
     };
-    // Let the slow op reach the handler first.
-    std::thread::sleep(Duration::from_millis(200));
-    let started = std::time::Instant::now();
+    // The slow op reaches its handler first.
+    let deadline = Instant::now() + T;
+    while !entered.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "the slow op never reached its handler"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     client(&paths)
         .call(Op::StoreChanged { seq: 1 }, T)
-        .expect("the nudge is answered");
-    let took = started.elapsed();
-    assert!(took < Duration::from_millis(200), "nudge took {took:?}");
+        .expect("the nudge is answered while the slow op is held");
+    assert!(!slow.is_finished(), "the slow op is still in flight");
+    released.store(true, Ordering::SeqCst);
     slow.join().unwrap().expect("the slow op finishes too");
 }
 

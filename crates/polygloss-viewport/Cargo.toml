@@ -21,6 +21,8 @@ anyhow.workspace = true
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+# `polygloss_diff::testing`: the scaling checks of the timing tests.
+polygloss-diff = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 # The integration tests read `DiffViewport::debug()`.
 polygloss-viewport = { path = ".", features = ["debug-inspect"] }

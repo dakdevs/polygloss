@@ -10,8 +10,6 @@ mod order;
 mod patterns;
 mod settings;
 
-use std::time::Instant;
-
 use polygloss_core::categories::{
     BUILTINS, BuiltinCategory, CUSTOM_ICONS, CategoriesConfig, CategoriesError, Categorizer,
     CategoryId, Explain, Source, Verdict, unknown_groups, unknown_keys,
@@ -19,6 +17,7 @@ use polygloss_core::categories::{
 use polygloss_core::paths::DataPaths;
 use polygloss_core::settings::{categories_config, categories_config_in};
 use polygloss_core::testing::Sandbox;
+use polygloss_diff::testing::assert_ratio_below;
 use polygloss_diff::{FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, ObjectFormat, Oid};
 use serde_json::json;
 
@@ -106,16 +105,4 @@ fn file(path: &[u8], attr: GeneratedAttr, bit: bool) -> FileChange {
         generated: bit,
         generated_attr: attr,
     }
-}
-
-/// Whether `sysctl -n vm.loadavg` reports a one-minute load below 4 (the M6
-/// timing-test rule: assert only on a quiet machine).
-fn quiet_machine() -> Option<f64> {
-    let out = std::process::Command::new("/usr/sbin/sysctl")
-        .args(["-n", "vm.loadavg"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8(out.stdout).ok()?;
-    // "{ 5.28 9.47 19.69 }"
-    text.split_whitespace().find_map(|w| w.parse::<f64>().ok())
 }

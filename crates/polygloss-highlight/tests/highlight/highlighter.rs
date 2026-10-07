@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use polygloss_diff::testing::assert_wall_ratio_below;
 use polygloss_highlight::{
     Budget, HighlightError, Highlighter, Language, Span, StyleId, SyntaxTheme, Tokens,
 };
@@ -167,13 +168,8 @@ fn highlight_cancel_returns_cancelled() {
     );
 }
 
-#[test]
-fn highlight_cancel_from_another_thread_stops_early() {
-    let hl = Highlighter::new(minimal_syntax());
-    // Warm the grammar so the timed call is highlighting only.
-    hl.highlight(b"fn a() {}", &rust(), &AtomicUsize::new(0), unbounded())
-        .unwrap();
-    let src = rust_source(200_000);
+/// Highlights `src` while another thread cancels it 10 ms in.
+fn cancelled_after_10ms(hl: &Highlighter, src: &str) -> Result<Tokens, HighlightError> {
     let cancel = Arc::new(AtomicUsize::new(0));
     let canceller = {
         let cancel = cancel.clone();
@@ -182,12 +178,39 @@ fn highlight_cancel_from_another_thread_stops_early() {
             cancel.store(1, Ordering::Relaxed);
         })
     };
-    let started = Instant::now();
     let result = hl.highlight(src.as_bytes(), &rust(), &cancel, unbounded());
-    let elapsed = started.elapsed();
     canceller.join().unwrap();
-    assert_eq!(result, Err(HighlightError::Cancelled));
-    assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
+    result
+}
+
+#[test]
+fn highlight_cancel_from_another_thread_stops_early() {
+    let hl = Highlighter::new(minimal_syntax());
+    // Warm the grammar so the timed calls are highlighting only.
+    hl.highlight(b"fn a() {}", &rust(), &AtomicUsize::new(0), unbounded())
+        .unwrap();
+    let sources = [rust_source(20_000), rust_source(200_000)];
+    assert_eq!(
+        cancelled_after_10ms(&hl, &sources[1]),
+        Err(HighlightError::Cancelled)
+    );
+    // Stopping early takes about 10 ms whatever the source; checked only at
+    // the end, it would take the whole highlight, 10x longer for 10x lines.
+    assert_wall_ratio_below(
+        "cancelling 10 ms in, 20k -> 200k lines",
+        4.0,
+        [&sources[0], &sources[1]],
+        |src| cancelled_after_10ms(&hl, src),
+    );
+}
+
+/// Highlights `src` with a 20 ms time budget.
+fn with_20ms_budget(hl: &Highlighter, src: &str) -> Result<Tokens, HighlightError> {
+    let budget = Budget {
+        time: Duration::from_millis(20),
+        max_lines: u32::MAX,
+    };
+    hl.highlight(src.as_bytes(), &rust(), &AtomicUsize::new(0), budget)
 }
 
 #[test]
@@ -196,16 +219,26 @@ fn highlight_budget_exceeded_returns_within_budget() {
     // Compiling a grammar's queries is a one-time cost outside the budget.
     hl.highlight(b"fn a() {}", &rust(), &AtomicUsize::new(0), unbounded())
         .unwrap();
-    let src = rust_source(200_000);
-    let budget = Budget {
-        time: Duration::from_millis(20),
-        max_lines: u32::MAX,
-    };
-    let started = Instant::now();
-    let result = hl.highlight(src.as_bytes(), &rust(), &AtomicUsize::new(0), budget);
-    let elapsed = started.elapsed();
-    assert_eq!(result, Err(HighlightError::BudgetExceeded));
-    assert!(elapsed < Duration::from_millis(70), "took {elapsed:?}");
+    let sources = [rust_source(20_000), rust_source(200_000)];
+    assert_eq!(
+        with_20ms_budget(&hl, &sources[1]),
+        Err(HighlightError::BudgetExceeded)
+    );
+    // Returning at the budget takes about 20 ms whatever the source; checked
+    // only at the end, it would take the whole highlight, 10x longer for 10x
+    // lines.
+    let [_, large] = assert_wall_ratio_below(
+        "a 20 ms budget, 20k -> 200k lines",
+        4.0,
+        [&sources[0], &sources[1]],
+        |src| with_20ms_budget(&hl, src),
+    );
+    // And at the budget, not a multiple of it: the budget is wall-clock, so a
+    // slower machine stops sooner in the source, not later in time.
+    assert!(
+        large < Duration::from_millis(80),
+        "a 20 ms budget returned after {large:?} (limit 80ms)"
+    );
 }
 
 #[test]

@@ -1,5 +1,5 @@
 //! Files (raw non-UTF-8 paths), the lenient settings reader and the
-//! 13k-path timing.
+//! categorizing scaling check.
 
 use super::*;
 
@@ -106,8 +106,9 @@ fn categories_config_reads_the_sandboxed_settings_file() {
 }
 
 #[test]
-fn categorizing_13k_paths_with_every_category_on_takes_under_250ms() {
-    // A Linux-sized tree (~13k paths) with every built-in and every group on.
+fn categorizing_13k_paths_with_every_category_on_scales_linearly() {
+    // Paths of a Linux-like tree, with every built-in and every group on; the
+    // first 13k are a Linux-sized tree.
     let dirs = [
         "drivers/net/ethernet/intel",
         "fs/ext4",
@@ -134,7 +135,8 @@ fn categorizing_13k_paths_with_every_category_on_takes_under_250ms() {
         "x.py",
         "build.sh",
     ];
-    let paths: Vec<String> = (0..13_000)
+    // Dirs and names interleave, so every prefix is representative.
+    let paths: Vec<String> = (0..50_000)
         .map(|i| {
             let dir = dirs[i % dirs.len()];
             let name = names[(i / dirs.len()) % names.len()];
@@ -154,13 +156,9 @@ fn categorizing_13k_paths_with_every_category_on_takes_under_250ms() {
         .map(|p| file(p.as_bytes(), Unspecified, false))
         .collect();
 
-    let started = Instant::now();
     let c = Categorizer::new(&cfg, &[]).unwrap();
-    let built = started.elapsed();
-    let started = Instant::now();
-    let got = c.categorize_files(&files);
-    let elapsed = started.elapsed();
-    assert_eq!(got.len(), files.len());
+    let got = c.categorize_files(&files[..13_000]);
+    assert_eq!(got.len(), 13_000);
     // Spot checks, by hand: `tools/testing/selftests/net/sub3/3-main.c` is
     // Tests (`testing/`), `Documentation/admin-guide/sub52/52-index.rst` is
     // Docs (`*.rst`), `fs/ext4/sub1/1-main.c` is nothing.
@@ -168,14 +166,15 @@ fn categorizing_13k_paths_with_every_category_on_takes_under_250ms() {
     assert_eq!(id(3).as_deref(), Some("tests"));
     assert_eq!(id(52).as_deref(), Some("docs"));
     assert_eq!(id(1), None);
-    println!("build {built:?}, categorize 13k paths {elapsed:?}");
-    match quiet_machine() {
-        Some(load) if load < 4.0 => assert!(
-            elapsed.as_millis() < 250,
-            "categorizing 13k paths took {elapsed:?} (load {load})"
-        ),
-        load => println!("load {load:?}: timing not asserted"),
-    }
+    // One pass per path: 10x the paths cost about 10x; a quadratic term fails
+    // once it doubles the large run (an `insert(0, ..)` per result does).
+    // Below about 5k paths the per-path cost hides a cheap quadratic term.
+    assert_ratio_below(
+        "categorizing, 5k -> 50k paths",
+        20.0,
+        [&files[..5_000], &files[..]],
+        |files| c.categorize_files(files),
+    );
 }
 
 #[test]

@@ -2,11 +2,11 @@
 //! anchor, estimates, materialization window and eviction.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use polygloss_diff::hunks::diff_blobs;
 use polygloss_diff::options::DiffOptions;
 use polygloss_diff::rows::{Expansions, GapId, Layout, Row, build_rows};
+use polygloss_diff::testing::assert_ratio_below;
 use polygloss_diff::{
     FileChange, FileKind, FileStatus, GeneratedAttr, GitPath, Mode, ObjectFormat, Oid, Side,
 };
@@ -246,12 +246,35 @@ fn height_index_is_exact_past_f32_precision() {
     assert_eq!(idx.prefix(n), exact);
 }
 
+/// 2k random `set` + `find` calls on a fresh index of `n` 20 px items.
+fn height_index_churn(n: usize) -> impl FnMut() -> usize {
+    let mut idx = HeightIndex::new(&vec![20.0; n]);
+    let mut x = 42u64;
+    move || {
+        let mut acc = 0usize;
+        for k in 0..2_000 {
+            let i = (next(&mut x) % n as u64) as usize;
+            idx.set(i, 10.0 + (k % 7) as f32);
+            let off = (next(&mut x) % 1_000_000) as f64 / 1_000_000.0 * idx.total();
+            acc = acc.wrapping_add(idx.find(off).0);
+        }
+        acc
+    }
+}
+
 #[test]
 fn height_index_100k_updates_fast() {
     let n = 100_000usize;
+    // `set` and `find` are O(log n): the same calls on 10x the items cost
+    // about 1.3x (more levels, more cache misses); 10x if either were linear.
+    assert_ratio_below(
+        "2k set + find, 10k -> 100k items",
+        4.0,
+        [height_index_churn(n / 10), height_index_churn(n)],
+        |churn| churn(),
+    );
     let mut idx = HeightIndex::new(&vec![20.0; n]);
     let mut x = 42u64;
-    let start = Instant::now();
     for k in 0..n {
         let i = (next(&mut x) % n as u64) as usize;
         idx.set(i, 10.0 + (k % 7) as f32);
@@ -262,12 +285,7 @@ fn height_index_100k_updates_fast() {
         let off = (next(&mut x) % 1_000_000) as f64 / 1_000_000.0 * total;
         acc = acc.wrapping_add(idx.find(off).0);
     }
-    let elapsed = start.elapsed();
     assert!(acc > 0);
-    assert!(
-        elapsed < Duration::from_millis(50),
-        "100k set + 100k find took {elapsed:?}"
-    );
     let sum: f64 = (0..n).map(|i| f64::from(idx.get(i))).sum();
     assert_eq!(idx.total(), sum);
 }
@@ -1193,15 +1211,13 @@ fn restoring_a_line_anchor_into_a_collapsed_file_pins_its_header() {
     assert_eq!(d.scroll_top(), d.file_top(1));
 }
 
-#[test]
-fn file_layout_of_200k_rows_is_fast() {
-    // A 200k-line file fully expanded: build, then 20k key lookups each way.
-    let start = Instant::now();
-    let layout = context_layout(200_000, 20.0);
-    assert_eq!(layout.height(), 4_000_000.0);
+/// 2k random key lookups each way (key to row, offset to key) in `layout`,
+/// checked against the context layout's `row == line`, 20 px rows.
+fn file_layout_lookups(layout: &FileLayout) {
+    let n = layout.height() as u64 / 20;
     let mut x = 3u64;
-    for _ in 0..20_000 {
-        let line = (next(&mut x) % 200_000) as u32;
+    for _ in 0..2_000 {
+        let line = (next(&mut x) % n) as u32;
         let key = RowKey::Line {
             side: Side::New,
             line,
@@ -1210,8 +1226,29 @@ fn file_layout_of_200k_rows_is_fast() {
         assert_eq!(row, line as usize);
         assert_eq!(layout.key_at(layout.row_top(row) + 3.0), Some((key, 3.0)));
     }
-    let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
+}
+
+#[test]
+fn file_layout_of_200k_rows_is_fast() {
+    // Building is linear: about 10x for 10x the rows (up to 18x seen under
+    // heavy load: fresh pages for the large vectors); 100x if quadratic.
+    assert_ratio_below(
+        "building a layout, 5k -> 50k rows",
+        40.0,
+        [5_000, 50_000],
+        |&mut n| context_layout(n, 20.0),
+    );
+    // A 200k-line file fully expanded: build, then key lookups each way.
+    let layout = context_layout(200_000, 20.0);
+    assert_eq!(layout.height(), 4_000_000.0);
+    // Lookups are binary searches: 10x the rows cost about 1.3x per lookup;
+    // 10x if a lookup scanned the rows.
+    assert_ratio_below(
+        "2k lookups each way, 20k -> 200k rows",
+        4.0,
+        [&context_layout(20_000, 20.0), &layout],
+        |layout| file_layout_lookups(layout),
+    );
 }
 
 #[test]

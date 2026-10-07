@@ -159,19 +159,6 @@ mod motion_scenario {
         }
     }
 
-    /// The one-minute load average (`sysctl -n vm.loadavg`), for the
-    /// timing-test rule: wall-clock upper bounds are asserted only below 4.
-    fn load_average() -> Option<f64> {
-        let out = std::process::Command::new("/usr/sbin/sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .ok()?;
-        String::from_utf8(out.stdout)
-            .ok()?
-            .split_whitespace()
-            .find_map(|w| w.parse::<f64>().ok())
-    }
-
     /// A window root built like `MainWindow::render`: it marks its start,
     /// spins in its render, then in a child's paint, then the sentinel,
     /// then a sibling that paints after the sentinel.
@@ -227,16 +214,18 @@ mod motion_scenario {
             both >= Duration::from_millis(5),
             "the render's 2 ms count too: {both:?}"
         );
-        // Work painted after the sentinel is not in the frame: an upper
-        // bound on wall-clock time, so only on a quiet machine.
-        let after = timed(cx, 0, 0, 30);
-        match load_average() {
-            Some(load) if load < 4.0 => assert!(
-                after < Duration::from_millis(30),
-                "30 ms painted after the sentinel counted: {after:?} (load {load})"
-            ),
-            load => eprintln!("after the sentinel: {after:?}; load {load:?}: not asserted"),
-        }
+        // Work painted after the sentinel is not in the frame. Counted, a
+        // spin of 10x this machine's empty frame (at least 30 ms) would make
+        // every frame at least that long; uncounted, the shortest of three
+        // is about an empty frame.
+        let mut empty: Vec<Duration> = (0..3).map(|_| timed(cx, 0, 0, 0)).collect();
+        empty.sort_unstable();
+        let spin_ms = (empty[1].as_millis() as u64 * 10).max(30);
+        let after = (0..3).map(|_| timed(cx, 0, 0, spin_ms)).min().unwrap();
+        assert!(
+            after < Duration::from_millis(spin_ms),
+            "{spin_ms} ms painted after the sentinel counted: {after:?} (empty frames {empty:?})"
+        );
     }
 
     /// A root with one 80 × 40 box, with or without the sentinel; it marks

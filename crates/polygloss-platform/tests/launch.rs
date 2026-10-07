@@ -314,18 +314,18 @@ fn app_bin_launcher_spawns_detached_with_url() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nsleep 0.3\nprintf '%s\\n' \"$@\" \"activate=$POLYGLOSS_LAUNCH_ACTIVATE\" > '{}.tmp' && mv '{0}.tmp' '{0}'\n",
+            "#!/bin/sh\nsleep 1\nprintf '%s\\n' \"$@\" \"activate=$POLYGLOSS_LAUNCH_ACTIVATE\" > '{}.tmp' && mv '{0}.tmp' '{0}'\n",
             out.display()
         ),
     )
     .unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    let start = Instant::now();
     SystemLauncher::AppBin(script.clone())
         .launch(Some("polygloss://thread/t"), false)
         .unwrap();
-    assert!(start.elapsed() < Duration::from_millis(250), "detached");
+    // Detached: back before the app has done anything.
+    assert!(!out.exists(), "launch waited for the app");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while !out.exists() {

@@ -13,10 +13,19 @@ repository.workspace = true
 gix-imara-diff.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+# `testing` only: per-thread CPU time (`clock_gettime`).
+libc = { workspace = true, optional = true }
+
+[features]
+# `polygloss_diff::testing`: scaling checks for this crate's and other crates'
+# tests. Never enabled by shipping binaries.
+test-support = ["dep:libc"]
 
 # tempfile: the git-parity tests run `git diff --no-index` under a temp HOME and an
 # empty GIT_CONFIG_GLOBAL (plan "Test hygiene").
 [dev-dependencies]
+# The crate lists itself so its own integration tests get `testing`.
+polygloss-diff = { path = ".", features = ["test-support"] }
 insta.workspace = true
 criterion.workspace = true
 tempfile.workspace = true

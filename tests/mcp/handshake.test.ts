@@ -127,37 +127,53 @@ describe("polygloss mcp handshake", () => {
     // hold up get_thread, reply, resolve, … (T5.9 #16): only open_diff needs
     // the repo default. This raw client never answers roots/list at all.
     const { env } = mcpSandbox();
-    const init = JSON.parse(initializeRequest(1));
-    init.params.capabilities = { roots: { listChanged: true } };
-    const started = performance.now();
-    const r = await rawMcpSession({
-      env,
-      lines: [
-        JSON.stringify(init),
-        JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: 2,
-          method: "tools/call",
-          params: { name: "get_thread", arguments: { thread_id: "nope" } },
-        }),
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: 3,
-          method: "tools/call",
-          params: {
-            name: "list_threads",
-            arguments: { review_id: "nope" },
-          },
-        }),
-      ],
-      waitFor: 3,
-    });
-    const ms = performance.now() - started;
-    const messages = r.stdout
-      .split("\n")
-      .filter((l) => l.trim() !== "")
-      .map((l) => JSON.parse(l) as Record<string, any>);
+    // The same session from a client with or without roots; returns the
+    // messages and how long it took.
+    const session = async (roots: boolean) => {
+      const init = JSON.parse(initializeRequest(1));
+      if (roots) init.params.capabilities = { roots: { listChanged: true } };
+      const started = performance.now();
+      const r = await rawMcpSession({
+        env,
+        lines: [
+          JSON.stringify(init),
+          JSON.stringify({
+            jsonrpc: "2.0",
+            method: "notifications/initialized",
+          }),
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: { name: "get_thread", arguments: { thread_id: "nope" } },
+          }),
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/call",
+            params: {
+              name: "list_threads",
+              arguments: { review_id: "nope" },
+            },
+          }),
+        ],
+        waitFor: 3,
+      });
+      const messages = r.stdout
+        .split("\n")
+        .filter((l) => l.trim() !== "")
+        .map((l) => JSON.parse(l) as Record<string, any>);
+      return { messages, ms: performance.now() - started };
+    };
+    await session(false); // the first start of a fresh binary is slower
+    // The faster of two sessions per client, so one slow start-up under load
+    // is not read as a wait.
+    const plainMs = Math.min(
+      (await session(false)).ms,
+      (await session(false)).ms,
+    );
+    const { messages, ms: firstMs } = await session(true);
+    const ms = Math.min(firstMs, (await session(true)).ms);
     expect(messages.some((m) => m.method === "roots/list")).toBe(false);
     const answers = messages.filter((m) => m.id === 2 || m.id === 3);
     expect(answers).toHaveLength(2);
@@ -165,9 +181,10 @@ describe("polygloss mcp handshake", () => {
       expect(a.result.isError).toBe(true);
       expect(a.result.structuredContent.code).toBe("not_found");
     }
-    // Well under the 2 s roots/list timeout.
-    expect(ms).toBeLessThan(1_900);
-  });
+    // Waiting would add the 2 s roots/list timeout to the session without
+    // roots; both pay the same process start-up, whatever the machine.
+    expect(ms - plainMs).toBeLessThan(1_000);
+  }, 30_000); // five sessions
 
   test("alwaysLoad meta on open_diff list_threads wait_for_review", async () => {
     const { env } = mcpSandbox();

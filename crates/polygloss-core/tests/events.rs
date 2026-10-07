@@ -457,22 +457,22 @@ fn feed_poll_is_noop_when_data_version_unchanged() {
     let scans = feed.scans();
     assert!(scans >= 1);
 
-    // Nothing committed since: no query against `events` at all.
-    let n = 2_000;
-    let started = Instant::now();
-    for _ in 0..n {
+    // Nothing committed since: no query against `events` at all. The feed's
+    // own connection hides the table (its own commits leave its data_version
+    // alone), so any read of `events` would fail the poll.
+    feed.connection()
+        .execute_batch("PRAGMA query_only = OFF; ALTER TABLE events RENAME TO hidden")
+        .unwrap();
+    for _ in 0..2_000 {
         assert!(feed.poll().unwrap().is_empty());
     }
-    let per_poll = started.elapsed() / n;
+    feed.connection()
+        .execute_batch("ALTER TABLE hidden RENAME TO events; PRAGMA query_only = ON")
+        .unwrap();
     assert_eq!(
         feed.scans(),
         scans,
         "an unchanged data_version must not scan"
-    );
-    // Generous bound (debug build, loaded CI); the release cost is about 1 µs.
-    assert!(
-        per_poll < Duration::from_micros(200),
-        "{per_poll:?} per poll"
     );
 
     // A commit elsewhere bumps data_version and triggers exactly one scan.

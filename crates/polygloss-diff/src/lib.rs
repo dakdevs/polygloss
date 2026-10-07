@@ -2,7 +2,10 @@
 //!
 //! Line numbers are 0-based `u32` everywhere in this crate; `polygloss-core`
 //! converts them to the 1-based anchors of the store, MCP and JSON surfaces.
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`, under `test-support` only: `testing` reads the thread
+// CPU clock through libc, in one function that opts back in.
+#![cfg_attr(not(feature = "test-support"), forbid(unsafe_code))]
+#![cfg_attr(feature = "test-support", deny(unsafe_code))]
 
 mod git_myers;
 pub mod hunks;
@@ -11,6 +14,8 @@ pub mod lines;
 mod myers_core;
 pub mod options;
 pub mod rows;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub mod types;
 pub mod unified_text;
 pub mod whitespace;
