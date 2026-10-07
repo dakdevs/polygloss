@@ -67,6 +67,7 @@ use crate::keyboard::menu::KeyMenu;
 use crate::keymap::actions::{tree as tree_actions, window as window_actions};
 use crate::keymap::handlers;
 use crate::review_tab::ReviewTab;
+use crate::space::{edge, gap, height, pad, radius, stroke};
 use crate::window::MenuKind;
 use filters::{StatusFilter, TreeFilter};
 use model::{ItemId, TreeModel};
@@ -862,6 +863,7 @@ impl FileTree {
             // three-line glyph reads as a list filter.
             .icon(IconName::Menu)
             .xsmall()
+            .rounded(px(radius::XS))
             .ghost()
             .selected(active)
             .tooltip("Filter files")
@@ -920,12 +922,14 @@ impl Render for FileTree {
             .bg(theme.sidebar)
             .child(
                 // The rounded filter field, its menu at the right edge. Esc
-                // in it: back to the list.
+                // in it: back to the list. On the sidebar's edges, `RIM`
+                // below the top row (ADR-0031 S1–S4); its icon box
+                // `ICON_LEAD` in. The menu keeps the kit's trailing inset.
                 div()
                     .flex_none()
-                    .px_2()
-                    .pt_1()
-                    .pb_2()
+                    .px(px(edge::SIDEBAR))
+                    .pt(px(pad::RIM))
+                    .pb(px(gap::CONTROLS))
                     .on_action(cx.listener(|t, _: &Escape, window, cx| t.focus(window, cx)))
                     .child(
                         div().debug_selector(|| "tree-filter".into()).child(
@@ -945,8 +949,12 @@ impl Render for FileTree {
                                             el.child(menu.element(Anchor::TopRight))
                                         }),
                                 )
-                                .min_h(px(28.))
-                                .rounded(px(8.))
+                                .h(px(height::MD))
+                                // The kit's field draws its border inside: the icon box
+                                // stays `ICON_LEAD` from the field's edge.
+                                .pl(px(pad::ICON_LEAD - stroke::BORDER))
+                                .gap(px(gap::ICON_LABEL))
+                                .rounded(px(radius::for_height(height::MD)))
                                 .bg(theme.tab_bar_segmented)
                                 .border_color(gpui_kit::transparent_black()),
                         ),

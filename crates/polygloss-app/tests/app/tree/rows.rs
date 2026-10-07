@@ -298,3 +298,149 @@ fn filter_field_holds_the_filter_menu_where_the_header_was(cx: &mut TestAppConte
     draw(o.shell.cx);
     assert!(o.tree.read_with(o.shell.cx, |t, _| t.filters().unviewed));
 }
+
+/// ADR-0031 tree rows, hand-computed from the sidebar's left edge: at depth
+/// n the chevron's 12 pt box at 16 + 14n, the 14 pt icon at 32 + 14n, the
+/// label at 52 + 14n; a file keeps the chevron's slot.
+#[gpui_kit::test]
+fn tree_rows_follow_their_columns(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = tree_repo();
+    let mut o = open_tree(cx, &repo);
+    let depths: Vec<(String, usize)> = super::rows(&mut o);
+    assert!(depths.contains(&("src".into(), 0)), "{depths:?}");
+    assert!(depths.contains(&("button.rs".into(), 2)), "{depths:?}");
+    let sidebar = bounds(o.shell.cx, "sidebar").left();
+    let at = |o: &mut Opened, name: &str| bounds(o.shell.cx, name);
+    let chevron = at(&mut o, "tree-chevron-d:src");
+    assert_eq!(chevron.left() - sidebar, px(16.));
+    assert_eq!(chevron.size.width, px(12.));
+    let folder = at(&mut o, "tree-icon-d:src: folder");
+    assert_eq!(folder.left() - sidebar, px(32.));
+    assert_eq!(folder.size.width, px(14.));
+    assert_eq!(at(&mut o, "tree-name-d:src").left() - sidebar, px(52.));
+    // `src/app/ui/button.rs` at depth 2: 32 + 28 and 52 + 28.
+    let file = at(&mut o, "tree-icon-f:3: file");
+    assert_eq!(file.left() - sidebar, px(60.));
+    assert_eq!(file.size.width, px(14.));
+    assert_eq!(at(&mut o, "tree-name-f:3").left() - sidebar, px(80.));
+}
+
+/// ADR-0031 S1–S4, relational: every sidebar's fields, row highlights and
+/// accordion headers share one left edge; their leading icon and chevron
+/// boxes share one column; the top row's toggle and the tree's Viewed
+/// circle end their icon boxes at one x.
+#[gpui_kit::test]
+fn sidebar_boxes_share_one_column(cx: &mut TestAppContext) {
+    use polygloss_app::viewed;
+
+    let _sb = Sandbox::isolate();
+    // Changes (`src/a.rs`, `src/b.rs`), Generated and Tests: headers show.
+    let repo = crate::categories::mixed_repo(20);
+    let mut shell = crate::shell::start(cx);
+    let tab = shell
+        .open(crate::shell::compare_req(repo.path()))
+        .expect("open the review");
+    draw(shell.cx);
+    tab.update(shell.cx, |t, cx| viewed::set_viewed(t, &[2], true, cx));
+    draw(shell.cx);
+    let left = |shell: &mut crate::shell::Shell, name: &str| bounds(shell.cx, name).left();
+    let boxes = [
+        left(&mut shell, "tree-filter"),
+        left(&mut shell, "tree-row-d:src"),
+        left(&mut shell, "tree-panel-changes"),
+    ];
+    let icons = [
+        left(&mut shell, "tree-chevron-d:src"),
+        left(&mut shell, "tree-panel-chevron-changes"),
+    ];
+    let circle = bounds(shell.cx, "tree-slot-f:2: circle-check").right();
+    let toggle = bounds(shell.cx, "toggle-sidebar-icon").right();
+    assert_eq!(circle, toggle, "trailing icon boxes");
+
+    shell.cx.simulate_keystrokes("cmd-f");
+    draw(shell.cx);
+    let find = [
+        left(&mut shell, "find-input"),
+        left(&mut shell, "find-header-icon"),
+    ];
+    shell.cx.simulate_keystrokes("escape");
+    crate::shell::click(shell.cx, "segment-reviews");
+    let nav = [
+        left(&mut shell, "nav-home"),
+        left(&mut shell, "nav-home-icon"),
+    ];
+
+    let all_boxes = [boxes.as_slice(), &[find[0], nav[0]]].concat();
+    assert!(
+        all_boxes.iter().all(|x| *x == all_boxes[0]),
+        "{all_boxes:?}"
+    );
+    let all_icons = [icons.as_slice(), &[find[1], nav[1]]].concat();
+    assert!(
+        all_icons.iter().all(|x| *x == all_icons[0]),
+        "{all_icons:?}"
+    );
+}
+
+/// ADR-0031's ladder: an accordion header is a row (28), the find header a
+/// pane bar (36, its divider included), the footer 40 with its divider, a
+/// banner notice 24.
+#[gpui_kit::test]
+fn bars_follow_the_ladder(cx: &mut TestAppContext) {
+    use polygloss_app::review_tab::BannerKind;
+    use polygloss_app::review_tab::panes::ToggleThreadsPanel;
+
+    let _sb = Sandbox::isolate();
+    let repo = crate::categories::mixed_repo(20);
+    let mut shell = crate::shell::start(cx);
+    let tab = shell
+        .open(crate::shell::compare_req(repo.path()))
+        .expect("open the review");
+    // The footer counts the Changes panel's files (the uncategorized ones).
+    let main = crate::categories::main_files(&mut shell, &tab);
+    let paths: Vec<String> = tab.read_with(shell.cx, |t, _| {
+        main.iter()
+            .map(|&f| t.opened.files[f as usize].display_path().to_owned())
+            .collect()
+    });
+    let mut args = vec![
+        "diff",
+        "--numstat",
+        "refs/tags/base",
+        "refs/tags/head",
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    let (mut added, mut removed) = (0u64, 0u64);
+    let numstat = repo.git(&args);
+    for line in numstat.lines() {
+        let mut cols = line.split('\t');
+        added += cols.next().unwrap().parse::<u64>().unwrap();
+        removed += cols.next().unwrap().parse::<u64>().unwrap();
+    }
+    let height = |shell: &mut crate::shell::Shell, name: &str| bounds(shell.cx, name).size.height;
+    let footer = format!("tree-footer: Total: +{added} −{removed}");
+    for _ in 0..60 {
+        if painted(shell.cx, &footer).is_some() {
+            break;
+        }
+        draw(shell.cx);
+    }
+    assert_eq!(height(&mut shell, &footer), px(40.));
+    assert_eq!(height(&mut shell, "tree-panel-changes"), px(28.));
+    let banners = tab.read_with(shell.cx, |t, _| t.banners.clone());
+    banners.update(shell.cx, |b, cx| {
+        b.set(
+            BannerKind::LiveChanges,
+            "1 file changed".into(),
+            Box::new(ToggleThreadsPanel),
+            cx,
+        )
+    });
+    draw(shell.cx);
+    assert_eq!(height(&mut shell, "banner-notice-0"), px(24.));
+    shell.cx.simulate_keystrokes("cmd-f");
+    draw(shell.cx);
+    assert_eq!(height(&mut shell, "find-header"), px(36.));
+}

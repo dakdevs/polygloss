@@ -7,6 +7,14 @@
 //! closes it as ⌘W does. The list is for the mouse: the keyboard has the Home
 //! page (⌘0) and ⌘1–⌘9.
 //!
+//! Spacing (ADR-0031 S1–S4): the list sits on the sidebar's edge, its first
+//! row `RIM` below the top row as the filter field is; rows are `MD` row
+//! highlights that touch, their icon box `ICON_LEAD` in and the label
+//! `ICON_LABEL` after it; a trailing button's icon ends `ICON_LEAD` from the
+//! highlight's end and trailing text `TEXT`; headings are plain text on the
+//! rows' text column, `CONTROLS` below the row before them. Rows show press
+//! ink.
+//!
 //! The lists are read from the window's tabs and [`HomeView`] (never a
 //! second `HomeView`), and every row acts on its review by id when it runs,
 //! so a tab closed or a list reloaded since the frame never makes it act on
@@ -28,10 +36,9 @@ use polygloss_core::git::ReviewKind;
 
 use crate::home::HomeView;
 use crate::home::row::HomeRow;
+use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, text};
 use crate::window::MainWindow;
 
-/// A row's height.
-const ROW_HEIGHT: f32 = 28.0;
 /// The hover group of a row (its ×, its ⋯).
 const ROW_GROUP: &str = "nav-row";
 
@@ -112,10 +119,9 @@ impl RenderOnce for Nav {
             .debug_selector(|| "nav".into())
             .size_full()
             .overflow_y_scroll()
-            .px_2()
-            .pt_1()
-            .pb_3()
-            .gap_0p5();
+            .px(px(edge::SIDEBAR))
+            .pt(px(pad::RIM))
+            .pb(px(edge::SIDEBAR));
         let (Some((_, main)), Some(home)) = (crate::window::main_window(cx), super::home_view(cx))
         else {
             return list;
@@ -130,7 +136,8 @@ impl RenderOnce for Nav {
             div()
                 .debug_selector(move || format!("nav-home-awaiting-{n}"))
                 .flex_none()
-                .text_xs()
+                .text_style(text::SMALL)
+                .font_features(crate::chrome::tabular_figures())
                 .font_medium()
                 .text_color(theme.muted_foreground)
                 .child(n.to_string())
@@ -138,7 +145,8 @@ impl RenderOnce for Nav {
         let home_row = {
             let main = main.clone();
             row("nav-home".into(), lists.home_active, cx)
-                .child(icon(IconName::Inbox, cx))
+                .pr(px(pad::TEXT))
+                .child(icon("nav-home", IconName::Inbox, cx))
                 .child(label("Home"))
                 .children(count)
                 .on_click(move |_, window, cx| {
@@ -151,6 +159,7 @@ impl RenderOnce for Nav {
             .icon(IconName::Plus)
             .ghost()
             .xsmall()
+            .rounded(px(radius::XS))
             .tooltip("Open… (⌘O)")
             .debug_selector(|| "nav-open".into())
             .on_click(|_, window, cx| {
@@ -185,28 +194,46 @@ impl RenderOnce for Nav {
     }
 }
 
-/// A row of the list, `name` its element id and debug selector.
+/// A row of the list, `name` its element id and debug selector, ending in
+/// a trailing button (callers ending in text set `pad::TEXT`).
 fn row(name: SharedString, active: bool, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
+    let radius = radius::for_height(height::MD);
     h_flex()
         .id(name.clone())
         .debug_selector(move || name.into())
         .group(ROW_GROUP)
+        .relative()
         .flex_none()
-        .h(px(ROW_HEIGHT))
-        .px_2()
-        .gap_2()
-        .rounded(theme.radius)
-        .text_sm()
+        .h(px(height::MD))
+        .pl(px(pad::ICON_LEAD))
+        .pr(px(button_end()))
+        .gap(px(gap::ICON_LABEL))
+        .rounded(px(radius))
+        .text_style(text::UI)
         .text_color(theme.sidebar_foreground)
         .when(active, |el| el.bg(theme.list_active))
-        .when(!active, |el| el.hover(|s| s.bg(theme.list_hover)))
+        .child(crate::chrome::ink_layer(radius, cx))
 }
 
-fn icon(name: impl Into<Icon>, cx: &App) -> Icon {
-    Icon::new(name)
-        .small()
-        .text_color(cx.theme().muted_foreground)
+/// From a row's or heading's end to its trailing `.xsmall()` button, so
+/// the button's icon ends `ICON_LEAD` from the end, as leading icons start.
+fn button_end() -> f32 {
+    pad::ICON_LEAD - (height::XS - size::ICON_XS) / 2.0
+}
+
+/// A row's icon (`ICON_SM`), found as `<row>-icon`.
+fn icon(row: &str, name: impl Into<Icon>, cx: &App) -> Div {
+    let selector = format!("{row}-icon");
+    div()
+        .debug_selector(move || selector)
+        .flex_none()
+        .flex()
+        .child(
+            Icon::new(name)
+                .with_size(px(size::ICON_SM))
+                .text_color(cx.theme().muted_foreground),
+        )
 }
 
 fn label(text: impl Into<SharedString>) -> Div {
@@ -232,11 +259,11 @@ fn heading(
     h_flex()
         .debug_selector(move || selector.into())
         .flex_none()
-        .h(px(ROW_HEIGHT))
-        .mt_2()
-        .pl_2()
-        .pr_1()
-        .text_xs()
+        .h(px(height::MD))
+        .mt(px(gap::CONTROLS))
+        .pl(px(pad::TEXT))
+        .pr(px(button_end()))
+        .text_style(text::SMALL)
         .font_medium()
         .text_color(cx.theme().muted_foreground)
         .child(div().flex_1().child(title))
@@ -271,6 +298,7 @@ fn open_row(item: Item, active: bool, main: &WeakEntity<MainWindow>, cx: &App) -
             .icon(IconName::Close)
             .ghost()
             .xsmall()
+            .rounded(px(radius::XS))
             .tooltip("Close Review (⌘W)")
             .debug_selector(move || selector)
             .on_click(move |_, window, cx| {
@@ -287,13 +315,14 @@ fn open_row(item: Item, active: bool, main: &WeakEntity<MainWindow>, cx: &App) -
         div()
             .debug_selector(move || selector)
             .flex_none()
-            .size(px(6.))
+            .size(px(size::DOT))
             .rounded_full()
             .bg(cx.theme().success)
     });
     let activate = main.clone();
-    row(format!("open-review-{id}").into(), active, cx)
-        .child(icon(kind_icon(item.kind), cx))
+    let name = format!("open-review-{id}");
+    row(name.clone().into(), active, cx)
+        .child(icon(&name, kind_icon(item.kind), cx))
         .child(label(item.title))
         .children(live)
         .child(on_hover(close, false))
@@ -329,6 +358,7 @@ fn compact_row(
             .icon(IconName::Ellipsis)
             .ghost()
             .xsmall()
+            .rounded(px(radius::XS))
             .tooltip("Actions")
             .debug_selector(move || selector)
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
@@ -343,8 +373,9 @@ fn compact_row(
     };
     let (open_home, open_id) = (home.clone(), id.clone());
     let ctx_id = id.clone();
-    row(format!("nav-row-{id}").into(), false, cx)
-        .child(icon(kind_icon(item.kind), cx))
+    let name = format!("nav-row-{id}");
+    row(name.clone().into(), false, cx)
+        .child(icon(&name, kind_icon(item.kind), cx))
         .child(label(item.title))
         .child(on_hover(menu, pinned))
         .on_click(move |_, window, cx| {

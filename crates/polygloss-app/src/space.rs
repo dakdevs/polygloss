@@ -16,12 +16,18 @@ use gpui_kit::{Styled, px};
 /// dialog sizes, Home's columns, the toolbar's give-way caps, the tree's
 /// Viewed slot, the divider's drag band and the first window size.
 pub mod layout {
-    /// Where the zoom button ends in a unified toolbar: the macOS 26 probe
-    /// puts the three 14 pt traffic lights at x = 19, 42 and 65.
-    pub const TRAFFIC_LIGHTS_END: f32 = 19.0 + 3.0 * 14.0 + 2.0 * 9.0;
+    /// The first traffic light's x in a unified toolbar, each light's size
+    /// and the gap between them: the macOS 26 probe puts the three 14 pt
+    /// lights at x = 19, 42 and 65. AppKit's, set in the window's options.
+    pub const TRAFFIC_LIGHT_X: f32 = 19.0;
+    pub const TRAFFIC_LIGHT: f32 = 14.0;
+    pub const TRAFFIC_LIGHT_GAP: f32 = 9.0;
+    /// Where the zoom button ends.
+    pub const TRAFFIC_LIGHTS_END: f32 =
+        TRAFFIC_LIGHT_X + 3.0 * TRAFFIC_LIGHT + 2.0 * TRAFFIC_LIGHT_GAP;
     /// The toolbar's leading inset while the sidebar is hidden: one light
-    /// gap (9) after the zoom button. The show-sidebar button sits there.
-    pub const TOOLBAR_INSET_HIDDEN: f32 = TRAFFIC_LIGHTS_END + 9.0;
+    /// gap after the zoom button. The show-sidebar button sits there.
+    pub const TOOLBAR_INSET_HIDDEN: f32 = TRAFFIC_LIGHTS_END + TRAFFIC_LIGHT_GAP;
     pub const SIDEBAR_WIDTH: f32 = 280.0;
     /// The sidebar's drag-resize range.
     pub const SIDEBAR_RANGE: (f32, f32) = (220.0, 480.0);
@@ -68,9 +74,15 @@ pub mod layout {
     pub const DIVIDER_DRAG: f32 = 9.0;
     /// The main window's first size.
     pub const WINDOW: (f32, f32) = (1440.0, 900.0);
+    /// The smallest window: it holds the narrowest sidebar beside the main
+    /// column's minimum with the threads panel showing.
+    pub const WINDOW_MIN: (f32, f32) = (720.0, 480.0);
 
     /// Every token with its values (a pair's two in order).
     pub const ALL: &[(&str, &[f32])] = &[
+        ("TRAFFIC_LIGHT_X", &[TRAFFIC_LIGHT_X]),
+        ("TRAFFIC_LIGHT", &[TRAFFIC_LIGHT]),
+        ("TRAFFIC_LIGHT_GAP", &[TRAFFIC_LIGHT_GAP]),
         ("TRAFFIC_LIGHTS_END", &[TRAFFIC_LIGHTS_END]),
         ("TOOLBAR_INSET_HIDDEN", &[TOOLBAR_INSET_HIDDEN]),
         ("SIDEBAR_WIDTH", &[SIDEBAR_WIDTH]),
@@ -102,6 +114,7 @@ pub mod layout {
         ("VIEWED_SLOT", &[VIEWED_SLOT]),
         ("DIVIDER_DRAG", &[DIVIDER_DRAG]),
         ("WINDOW", &[WINDOW.0, WINDOW.1]),
+        ("WINDOW_MIN", &[WINDOW_MIN.0, WINDOW_MIN.1]),
     ];
 }
 

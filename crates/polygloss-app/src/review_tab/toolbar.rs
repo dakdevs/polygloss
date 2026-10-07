@@ -37,6 +37,7 @@ use polygloss_core::git::ReviewKind;
 
 use crate::keymap::actions::tab as tab_actions;
 use crate::review_tab::{ReviewTab, compare_sides, live_branch, repo_dir, repo_name, short_ref};
+use crate::space::{TextStyleExt as _, gap, height, layout, radius, text};
 use crate::tabs::TabItem;
 
 /// How far the toolbar has given way to fit its row, in the order things
@@ -49,7 +50,7 @@ pub enum Narrow {
     Full,
     /// The repo's parent path hides.
     NoParentPath,
-    /// Ref, branch and SHA pills truncate to [`PILL_TEXT_MAX`].
+    /// Ref, branch and SHA pills truncate to `layout::PILL_TEXT_MAX`.
     ShortPills,
     /// The iteration pill shortens ("2/3", "Since review").
     ShortIteration,
@@ -62,7 +63,7 @@ pub enum Narrow {
     /// The kind and iteration pills show only their icons (their text in
     /// the tooltip).
     IconPills,
-    /// The repo name truncates to [`REPO_NAME_MAX`].
+    /// The repo name truncates to `layout::REPO_NAME_MAX`.
     ShortRepo,
 }
 
@@ -80,11 +81,6 @@ impl Narrow {
         Narrow::ShortRepo,
     ];
 }
-
-/// The longest a ref, branch or SHA pill's text gets once the row is narrow.
-pub const PILL_TEXT_MAX: f32 = 64.0;
-/// The longest the repo name gets at the last step.
-pub const REPO_NAME_MAX: f32 = 48.0;
 
 /// The index of [`Narrow`]'s last step.
 const LAST: usize = Narrow::ALL.len() - 1;
@@ -138,7 +134,7 @@ fn build(
         .h_full()
         .min_w_0()
         .overflow_hidden()
-        .gap_2()
+        .gap(px(gap::CONTROLS))
         .children(left)
         .when(keep < all, |side| {
             side.relative()
@@ -217,7 +213,7 @@ impl Element for Fit {
     ) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = px(crate::chrome::TOP_ROW_HEIGHT).into();
+        style.size.height = px(height::TOP).into();
         style.flex_shrink = 0.;
         (window.request_layout(style, [], cx), ())
     }
@@ -302,7 +298,7 @@ pub fn pill(id: &'static str, icon: Lucide, label: Option<Div>, cx: &App) -> But
         .debug_selector(move || id.into())
         .secondary()
         .small()
-        .rounded(px(12.))
+        .rounded(px(radius::capsule(height::SM)))
         .border_1()
         .icon(Icon::new(icon).text_color(cx.theme().muted_foreground))
         .when_some(label, |pill, label| pill.child(label))
@@ -325,9 +321,9 @@ pub fn parent_path(dir: &Path, home: Option<&Path>) -> String {
     }
 }
 
-/// The repo block: its name (bold) over its parent directory (dim); its
-/// tooltip names the review's kind and the repo's path. Not a control: it
-/// moves the window like the row.
+/// The repo block: its name (bold, `text::UI`) over its parent directory
+/// (dim, `text::SMALL`); its tooltip names the review's kind and the repo's
+/// path. Not a control: it moves the window like the row.
 pub fn repo_block(tab: &ReviewTab, cx: &App) -> AnyElement {
     let narrow = narrow(tab);
     let theme = cx.theme();
@@ -339,22 +335,20 @@ pub fn repo_block(tab: &ReviewTab, cx: &App) -> AnyElement {
         .debug_selector(|| "repo-block".into())
         .min_w_0()
         .when(narrow >= Narrow::ShortRepo, |block| {
-            block.flex_none().max_w(px(REPO_NAME_MAX))
+            block.flex_none().max_w(px(layout::REPO_NAME_MAX))
         })
         .child(
             text("repo-name", repo_name(&tab.opened))
                 .truncate()
-                .text_sm()
+                .text_style(text::UI)
                 .font_semibold()
-                .line_height(relative(1.2))
                 .text_color(theme.foreground),
         )
         .when(narrow < Narrow::NoParentPath, |block| {
             block.child(
                 text("repo-parent", parent)
                     .truncate()
-                    .text_xs()
-                    .line_height(relative(1.2))
+                    .text_style(text::SMALL)
                     .text_color(theme.muted_foreground),
             )
         })
@@ -385,8 +379,9 @@ pub fn kind_pills(tab: &ReviewTab, cx: &App) -> Vec<AnyElement> {
     // `IconPills`.
     let label = |selector: &'static str, s: String| {
         (!icons_only).then(|| {
-            pill_text(selector, s)
-                .when(narrow >= Narrow::ShortPills, |t| t.max_w(px(PILL_TEXT_MAX)))
+            pill_text(selector, s).when(narrow >= Narrow::ShortPills, |t| {
+                t.max_w(px(layout::PILL_TEXT_MAX))
+            })
         })
     };
     match opened.kind {
@@ -424,7 +419,7 @@ pub fn kind_pills(tab: &ReviewTab, cx: &App) -> Vec<AnyElement> {
                 side("ref-pill-base", "ref-pill-base-label", "Base", base),
                 text("compare-mode", mark)
                     .flex_none()
-                    .text_sm()
+                    .text_style(text::UI)
                     .text_color(theme.muted_foreground)
                     .into_any_element(),
                 side("ref-pill-head", "ref-pill-head-label", "Head", head),

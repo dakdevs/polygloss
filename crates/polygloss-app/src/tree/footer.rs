@@ -22,13 +22,12 @@ use gpui_kit::{
 use polygloss_viewport::{DiffViewport, group_digits};
 
 use crate::categories::{self, Partition, Totals};
-
-/// The footer's height (pt).
-const HEIGHT: f32 = 38.0;
+use crate::space::{TextStyleExt as _, edge, gap, height, text};
 
 /// The footer: "Total: +X −Y" over `changes` (indices into the diff; `None`
 /// when every file is categorized), then `partition`'s chips, with its
-/// breakdown as the tooltip.
+/// breakdown as the tooltip. A `height::FOOTER` bar, its divider included,
+/// its text on the sidebar's edge (ADR-0031 S4); the chips a group apart.
 pub fn footer(
     changes: Option<&[u32]>,
     partition: Option<&Arc<Partition>>,
@@ -38,34 +37,28 @@ pub fn footer(
     let theme = cx.theme();
     let chips = partition.map(|p| categories::chips(p)).unwrap_or_default();
     let totals = changes.map(|files| Totals::of(files.iter().copied(), viewport.read(cx)));
-    let text = match totals {
+    let shown = match totals {
         Some(t) if t.counted => format!("Total: {}", t.lines()),
         Some(_) => "Total: …".to_owned(),
         None => categories::chips_text(&chips),
     };
     let colors = crate::theme::viewport_theme(cx);
     // The counts in the code font, as in the rows.
-    let count = |text: String, color: Hsla| {
+    let count = |digits: String, color: Hsla| {
         div()
             .font_family(theme.mono_font_family.clone())
+            .text_style(text::CODE_CHROME)
             .font_semibold()
             .text_color(color)
-            .child(text)
+            .child(digits)
     };
-    h_flex()
-        .id("tree-footer")
-        .debug_selector(move || format!("tree-footer: {text}"))
-        .flex_none()
-        .h(px(HEIGHT))
-        .px_3()
-        .gap_1()
-        .border_t_1()
-        .border_color(theme.border)
-        .text_sm()
-        .when_some(totals, |row, t| {
-            let row = row.child(div().text_color(theme.muted_foreground).child("Total:"));
-            if t.counted {
-                row.child(count(
+    let totals = totals.map(|t| {
+        let label = h_flex()
+            .gap(px(gap::INLINE))
+            .child(div().text_color(theme.muted_foreground).child("Total:"));
+        if t.counted {
+            label
+                .child(count(
                     format!("+{}", group_digits(t.additions)),
                     colors.stat_added,
                 ))
@@ -73,14 +66,22 @@ pub fn footer(
                     format!("−{}", group_digits(t.deletions)),
                     colors.stat_removed,
                 ))
-            } else {
-                row.child(div().text_color(theme.muted_foreground).child("…"))
-            }
-        })
-        .when_some(
-            categories::chips_element("tree-chips", &chips, cx),
-            |row, chips| row.child(div().w(px(6.))).child(chips),
-        )
+        } else {
+            label.child(div().text_color(theme.muted_foreground).child("…"))
+        }
+    });
+    h_flex()
+        .id("tree-footer")
+        .debug_selector(move || format!("tree-footer: {shown}"))
+        .flex_none()
+        .h(px(height::FOOTER))
+        .px(px(edge::SIDEBAR))
+        .gap(px(gap::GROUP))
+        .border_t_1()
+        .border_color(theme.border)
+        .text_style(text::SMALL)
+        .children(totals)
+        .children(categories::chips_element("tree-chips", &chips, cx))
         .when_some(
             partition.and_then(|p| categories::breakdown_tooltip(p, viewport)),
             |row, tooltip| row.tooltip(tooltip),

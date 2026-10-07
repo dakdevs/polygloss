@@ -24,8 +24,14 @@
 //! - **Folders** cover their own panel's files only (a `src/` in Changes
 //!   and one in Tests are two rows with two Viewed slots).
 //!
+//! - **Spacing** (ADR-0031): a header is a row of its list, `height::MD`,
+//!   its highlight on the sidebar's edge like the rows'; its chevron box at
+//!   `ICON_LEAD`, the category's icon (the label's leading box) and the
+//!   title each `gap::ICON_LABEL` later.
+//!
 //! Debug selectors (`key` = [`PanelKey`]'s text: `changes`, `tests`,
-//! `custom:tokens`): `tree-panel-{key}` (the header), `tree-panel-title-{key}:
+//! `custom:tokens`): `tree-panel-{key}` (the header), `tree-panel-chevron-{key}`
+//! (its chevron's box), `tree-panel-title-{key}:
 //! {title}`, `tree-panel-count-{key}: {count}`, `tree-panel-threads-{key}:
 //! {n}`, `tree-panel-agent-{key}`, `tree-panel-changed-{key}`.
 
@@ -54,9 +60,8 @@ use super::row::Check;
 use super::{FileTree, KEY_CONTEXT, row};
 use crate::categories::Partition;
 use crate::review_tab::toolbar::tooltip;
+use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, text};
 
-/// A panel header's height (pt).
-const HEADER_HEIGHT: f32 = 30.0;
 /// The Changes panel's icon (a category's is its own).
 const CHANGES_ICON: &str = "icons/file-text.svg";
 
@@ -513,17 +518,19 @@ pub(super) fn header(
         };
         div().debug_selector(move || selector)
     };
-    h_flex()
+    let radius = radius::for_height(height::MD);
+    let chevron = format!("tree-panel-chevron-{key}");
+    let control = h_flex()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector)
-        .flex_none()
-        .h(px(HEADER_HEIGHT))
-        .px_2()
-        .gap_1p5()
-        .text_sm()
+        .relative()
+        .h(px(height::MD))
+        .pl(px(pad::ICON_LEAD))
+        .pr(px(pad::TEXT))
+        .gap(px(gap::ICON_LABEL))
+        .rounded(px(radius))
+        .text_style(text::UI)
         .cursor_pointer()
-        .when(!first, |el| el.border_t_1().border_color(theme.border))
-        .hover(|s| s.bg(theme.foreground.opacity(0.04)))
         .on_click(move |_, window, cx| {
             if let Some(tree) = tree.upgrade() {
                 tree.update(cx, |t, cx| {
@@ -532,19 +539,26 @@ pub(super) fn header(
                 });
             }
         })
+        .child(crate::chrome::ink_layer(radius, cx))
         .child(
-            Icon::new(if open {
-                IconName::ChevronDown
-            } else {
-                IconName::ChevronRight
-            })
-            .xsmall()
-            .text_color(theme.muted_foreground),
+            div()
+                .debug_selector(move || chevron)
+                .flex_none()
+                .flex()
+                .child(
+                    Icon::new(if open {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .with_size(px(size::ICON_XS))
+                    .text_color(theme.muted_foreground),
+                ),
         )
         .child(
             Icon::empty()
                 .path(panel.icon.clone())
-                .small()
+                .with_size(px(size::ICON_SM))
                 .text_color(theme.muted_foreground),
         )
         .child(
@@ -556,7 +570,8 @@ pub(super) fn header(
         .child(
             named("count", Some(count.clone()))
                 .flex_none()
-                .text_xs()
+                .text_style(text::SMALL)
+                .font_features(crate::chrome::tabular_figures())
                 .text_color(theme.muted_foreground)
                 .child(count),
         )
@@ -568,7 +583,7 @@ pub(super) fn header(
                         "tree-panel-changed-{}",
                         panel.key
                     )))
-                    .size(px(6.))
+                    .size(px(size::DOT))
                     .rounded_full()
                     .bg(theme.blue)
                     .tooltip(tooltip("Changed since viewed")),
@@ -583,10 +598,11 @@ pub(super) fn header(
                         panel.key
                     )))
                     .flex_none()
-                    .px_1p5()
+                    .px(px(pad::BADGE_X))
                     .rounded_full()
                     .bg(theme.muted)
-                    .text_xs()
+                    .text_style(text::SMALL)
+                    .font_features(crate::chrome::tabular_figures())
                     .child(n.to_string())
                     .tooltip(tooltip(match n {
                         1 => "1 open thread".to_owned(),
@@ -600,7 +616,15 @@ pub(super) fn header(
                     .text_color(theme.primary)
                     .child(Icon::new(IconName::Bot).xsmall()),
             )
-        })
+        });
+    // The separator spans the sidebar; the header's highlight sits on the
+    // sidebar's edge.
+    div()
+        .flex_none()
+        .w_full()
+        .px(px(edge::SIDEBAR))
+        .when(!first, |el| el.border_t_1().border_color(theme.border))
+        .child(control)
 }
 
 impl FileTree {
@@ -695,8 +719,8 @@ impl FileTree {
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .gap_2()
-                .text_sm()
+                .gap(px(gap::CONTROLS))
+                .text_style(text::UI)
                 .text_color(theme.muted_foreground)
                 .child(if none {
                     "No files changed"
@@ -709,6 +733,7 @@ impl FileTree {
                             .debug_selector(|| "tree-clear-filters".into())
                             .label("Clear filters")
                             .xsmall()
+                            .rounded(px(radius::XS))
                             .outline()
                             .on_click(move |_, window, cx| {
                                 if let Some(t) = this.upgrade() {
@@ -723,7 +748,7 @@ impl FileTree {
         div()
             .flex_1()
             .min_h_0()
-            .px_1p5()
+            .px(px(edge::SIDEBAR))
             .child(
                 tree(
                     panel.tree_state(),

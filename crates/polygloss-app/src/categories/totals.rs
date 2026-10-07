@@ -16,6 +16,7 @@ use polygloss_diff::{FileChange, FileKind};
 use polygloss_viewport::{DiffViewport, group_digits};
 
 use super::Partition;
+use crate::space::{TextStyleExt as _, gap, pad, text};
 
 /// A category's chip in the totals (design §11.15): "1 test", "6 tests".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,7 +168,8 @@ pub(crate) fn chips_text(chips: &[Chip]) -> String {
         .join(" · ")
 }
 
-/// `chips` as small muted capsules, found as `"<name>: 6 tests · 1
+/// `chips` as small muted capsules (`pad::BADGE_X`, `text::SMALL`,
+/// `gap::INLINE` apart), found as `"<name>: 6 tests · 1
 /// generated"`; `None` without chips.
 pub(crate) fn chips_element(name: &'static str, chips: &[Chip], cx: &App) -> Option<AnyElement> {
     if chips.is_empty() {
@@ -179,13 +181,13 @@ pub(crate) fn chips_element(name: &'static str, chips: &[Chip], cx: &App) -> Opt
         h_flex()
             .debug_selector(move || format!("{name}: {joined}"))
             .flex_none()
-            .gap_1()
+            .gap(px(gap::INLINE))
             .children(chips.iter().map(|c| {
                 div()
-                    .px(px(6.))
+                    .px(px(pad::BADGE_X))
                     .rounded_full()
                     .bg(theme.muted)
-                    .text_xs()
+                    .text_style(text::SMALL)
                     .text_color(theme.muted_foreground)
                     .child(c.text.clone())
             }))

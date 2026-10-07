@@ -10,6 +10,13 @@
 //! └─────────────────────────────────────┴────────────────────────────────────┘
 //! ```
 //!
+//! Spacing (ADR-0031 M1–M3): the main column starts after the sidebar's
+//! 1 pt divider; both top rows hold their items on `edge::CANVAS` from their
+//! trailing edge, the toolbar from its leading edge too (the cards' edge),
+//! or after the traffic lights (`layout::TOOLBAR_INSET_HIDDEN`) while the
+//! sidebar is hidden; items are `gap::CONTROLS` apart. The custom controls
+//! here show press ink ([`ink_layer`]).
+//!
 //! Both top rows move the window when dragged and zoom (the system's
 //! double-click setting) on a double click, from anywhere but a control: a
 //! control claims its press (`Window::prevent_default` on mouse-down, as
@@ -20,20 +27,23 @@
 //! comes back when the window widens.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, ResizableState, Sizable as _, h_flex, h_resizable, resizable_panel,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, Global,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Stateful,
+    AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, FontFeatures, Global,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Role, Stateful,
     StatefulInteractiveElement as _, Styled as _, TitlebarOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, px, size,
 };
+
+use crate::motion::ink::PressInk as _;
+use crate::segmented::{SegmentSpec, segmented};
+use crate::space::{edge, gap, height, layout, radius, size as icon_size, stroke};
 
 gpui_kit::actions!(
     window,
@@ -46,25 +56,6 @@ gpui_kit::actions!(
         ShowReviews,
     ]
 );
-
-/// The height of both top rows: the sidebar's and the main column's toolbar.
-pub const TOP_ROW_HEIGHT: f32 = 52.0;
-/// Where AppKit puts the close button: a 14 pt button centred in the top row
-/// (tuned by eye in T6.16).
-pub const TRAFFIC_LIGHT_POSITION: (f32, f32) = (19.0, 19.0);
-/// The width the traffic lights take at the left of a top row.
-pub const TRAFFIC_LIGHT_INSET: f32 = 80.0;
-/// The sidebar's width until the user drags its edge.
-pub const SIDEBAR_WIDTH: f32 = 280.0;
-/// The widths the sidebar may take.
-pub const SIDEBAR_RANGE: (f32, f32) = (220.0, 480.0);
-/// The main column's minimum width.
-pub const MAIN_MIN_WIDTH: f32 = 320.0;
-/// The main column's minimum while the threads panel shows: viewport 260 +
-/// threads panel 220.
-pub const THREADS_MAIN_MIN_WIDTH: f32 = 480.0;
-/// The smallest window (720 pt holds a 220 pt sidebar beside 480 pt).
-const WINDOW_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
 /// What the sidebar shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,10 +149,14 @@ pub fn show_files(_window: &mut Window, cx: &mut App) {
 }
 
 /// The main window's options: `bounds`, a transparent titlebar with the
-/// traffic lights at [`TRAFFIC_LIGHT_POSITION`], our own titlebar drag, an
-/// opaque background (OQ-50), no native window tabs.
+/// traffic lights where AppKit puts them in a unified toolbar (their row
+/// centred in the top rows), our own titlebar drag, an opaque background
+/// (OQ-50), no native window tabs.
 pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions {
-    let (x, y) = TRAFFIC_LIGHT_POSITION;
+    let (x, y) = (
+        layout::TRAFFIC_LIGHT_X,
+        (height::TOP - layout::TRAFFIC_LIGHT) / 2.0,
+    );
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -172,7 +167,7 @@ pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions {
         app_owns_titlebar_drag: true,
         window_background: WindowBackgroundAppearance::Opaque,
         tabbing_identifier: None,
-        window_min_size: Some(size(px(WINDOW_MIN_SIZE.0), px(WINDOW_MIN_SIZE.1))),
+        window_min_size: Some(size(px(layout::WINDOW_MIN.0), px(layout::WINDOW_MIN.1))),
         focus: true,
         show: true,
         ..WindowOptions::default()
@@ -182,21 +177,24 @@ pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 /// The main column's minimum width.
 fn main_min_width(threads_shown: bool) -> f32 {
     if threads_shown {
-        THREADS_MAIN_MIN_WIDTH
+        layout::THREADS_MAIN_MIN_WIDTH
     } else {
-        MAIN_MIN_WIDTH
+        layout::MAIN_MIN_WIDTH
     }
 }
 
 /// The widest the sidebar may be in a `window_width` window: what the main
-/// column's minimum leaves, within [`SIDEBAR_RANGE`].
+/// column's minimum and the sidebar's divider leave, within
+/// `layout::SIDEBAR_RANGE`.
 pub fn sidebar_max(window_width: f32, threads_shown: bool) -> f32 {
-    (window_width - main_min_width(threads_shown)).clamp(SIDEBAR_RANGE.0, SIDEBAR_RANGE.1)
+    (window_width - main_min_width(threads_shown) - stroke::BORDER)
+        .clamp(layout::SIDEBAR_RANGE.0, layout::SIDEBAR_RANGE.1)
 }
 
 /// The main column's width in `window` as [`shell`] lays it out: the
-/// window's, less the sidebar's while it shows (its stored width, the default
-/// before the first layout, within [`SIDEBAR_RANGE`] and [`sidebar_max`]).
+/// window's, less the sidebar's and its divider's while it shows (its
+/// stored width, the default before the first layout, within
+/// `layout::SIDEBAR_RANGE` and [`sidebar_max`]).
 pub fn main_column_width(threads_shown: bool, window: &Window, cx: &App) -> f32 {
     let window_width = window.viewport_size().width.as_f32();
     let chrome = chrome(cx).read(cx);
@@ -211,14 +209,20 @@ pub fn main_column_width(threads_shown: bool, window: &Window, cx: &App) -> f32 
         .sizes()
         .first()
         .map(|w| w.as_f32())
-        .filter(|w| *w >= SIDEBAR_RANGE.0)
-        .unwrap_or(SIDEBAR_WIDTH);
-    window_width - stored.clamp(SIDEBAR_RANGE.0, sidebar_max(window_width, threads_shown))
+        .filter(|w| *w >= layout::SIDEBAR_RANGE.0)
+        .unwrap_or(layout::SIDEBAR_WIDTH);
+    window_width
+        - stored.clamp(
+            layout::SIDEBAR_RANGE.0,
+            sidebar_max(window_width, threads_shown),
+        )
+        - stroke::BORDER
 }
 
-/// A page: `sidebar` (its top row included) beside `main`, or `main` alone
-/// while the sidebar is hidden. `threads_shown`: the page's threads panel
-/// shows, so the main column needs [`THREADS_MAIN_MIN_WIDTH`].
+/// A page: `sidebar` (its top row included) and its 1 pt divider beside
+/// `main`, or `main` alone while the sidebar is hidden. `threads_shown`:
+/// the page's threads panel shows, so the main column needs
+/// `layout::THREADS_MAIN_MIN_WIDTH`.
 pub fn shell(
     sidebar: AnyElement,
     main: AnyElement,
@@ -232,25 +236,33 @@ pub fn shell(
     };
     let main = div()
         .debug_selector(|| "main-column".into())
-        .size_full()
+        .h_full()
         .min_w_0()
         .child(main);
     if !visible {
-        return main.into_any_element();
+        return main.w_full().into_any_element();
     }
     keep_main_column_flexible(&state, cx);
     let window_width = window.viewport_size().width.as_f32();
     let max = sidebar_max(window_width, threads_shown);
     let theme = cx.theme();
+    // The sidebar's divider (ADR-0031 M1): gpui-kit's split draws its
+    // handle's line over the main panel's first point, so the main column
+    // starts after it. This element paints the same line there and carries
+    // the `sidebar-divider` selector, which the kit's handle cannot.
+    let divider = div()
+        .debug_selector(|| "sidebar-divider".into())
+        .flex_none()
+        .w(px(stroke::BORDER))
+        .h_full()
+        .bg(theme.border);
     h_resizable("shell")
         .with_state(&state)
         .child(
             resizable_panel()
-                .size(px(SIDEBAR_WIDTH))
-                .size_range(px(SIDEBAR_RANGE.0)..px(max))
+                .size(px(layout::SIDEBAR_WIDTH))
+                .size_range(px(layout::SIDEBAR_RANGE.0)..px(max))
                 .flex_none()
-                // No border of its own: the split's handle draws the one
-                // divider line.
                 .child(
                     div()
                         .debug_selector(|| "sidebar".into())
@@ -261,8 +273,8 @@ pub fn shell(
         )
         .child(
             resizable_panel()
-                .size_range(px(main_min_width(threads_shown))..Pixels::MAX)
-                .child(main),
+                .size_range(px(main_min_width(threads_shown) + stroke::BORDER)..Pixels::MAX)
+                .child(div().flex().size_full().child(divider).child(main.flex_1())),
         )
         .into_any_element()
 }
@@ -289,88 +301,60 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
         _ => Segment::Reviews,
     };
     let fullscreen = window.is_fullscreen();
-    let theme = cx.theme();
-    let segment = |id: &'static str, icon: IconName, label: &'static str, which: Segment| {
-        let selected = shown == which;
-        let enabled = which == Segment::Reviews || files_enabled;
-        let tooltip: &'static str = if enabled {
+    let spec = |id, icon, label: &'static str, enabled| SegmentSpec {
+        id,
+        icon,
+        label: label.into(),
+        tooltip: if enabled {
             label
         } else {
             "Open a review to see its files"
-        };
-        let chrome = chrome.clone();
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(30.))
-            .h(px(24.))
-            .rounded(px(5.))
-            .text_color(if !enabled {
-                theme.muted_foreground.opacity(0.4)
-            } else if selected {
-                theme.foreground
-            } else {
-                theme.muted_foreground
-            })
-            .when(selected, |el| el.bg(theme.tab_active).shadow_xs())
-            .when(enabled && !selected, |el| {
-                let hover = theme.foreground;
-                el.hover(move |s| s.text_color(hover))
-                    .on_click(move |_, _, cx| {
-                        chrome.update(cx, |c, cx| c.set_segment(which, cx));
-                    })
-            })
-            .child(Icon::new(icon).small())
-            .tooltip(move |window, cx| {
-                Tooltip::element(move |_, _| {
-                    div()
-                        .debug_selector(move || format!("tooltip: {tooltip}"))
-                        .child(tooltip)
-                })
-                .build(window, cx)
-            })
+        }
+        .into(),
+        enabled,
     };
-    let segments = h_flex()
-        .debug_selector(|| "sidebar-segments".into())
-        // A control: a press on it (a segment, a disabled one, the rim)
-        // never moves the window.
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .p(px(2.))
-        .gap(px(2.))
-        .rounded(px(7.))
-        .bg(theme.tab_bar_segmented)
-        .child(segment(
-            "segment-files",
-            IconName::ListTree,
-            "Files",
-            Segment::Files,
-        ))
-        .child(segment(
-            "segment-reviews",
-            IconName::RotateCcwClock,
-            "Reviews",
-            Segment::Reviews,
-        ));
-    let toggle = Button::new("toggle-sidebar")
-        .icon(IconName::PanelLeft)
-        .ghost()
-        .small()
-        .tooltip("Hide sidebar (⌃⌘S)")
-        .debug_selector(|| "toggle-sidebar".into())
-        .on_click(move |_, _, cx| {
-            chrome.update(cx, |c, cx| c.set_sidebar_visible(false, cx));
-        });
+    let select = chrome.clone();
+    let segments = segmented(
+        "sidebar-segments",
+        vec![
+            spec("segment-files", IconName::ListTree, "Files", files_enabled),
+            spec("segment-reviews", IconName::RotateCcwClock, "Reviews", true),
+        ],
+        match shown {
+            Segment::Files => 0,
+            Segment::Reviews => 1,
+        },
+        move |ix, _, cx| {
+            let which = if ix == 0 {
+                Segment::Files
+            } else {
+                Segment::Reviews
+            };
+            // The segment shown keeps the one stored (Reviews on Home).
+            if which != shown {
+                select.update(cx, |c, cx| c.set_segment(which, cx));
+            }
+        },
+    );
+    let toggle = icon_button(
+        "toggle-sidebar",
+        IconName::PanelLeft,
+        ("Hide sidebar", "Hide sidebar (⌃⌘S)"),
+        move |_, cx| chrome.update(cx, |c, cx| c.set_sidebar_visible(false, cx)),
+        cx,
+    );
     let row = h_flex()
         .id("sidebar-top-row")
         .debug_selector(|| "sidebar-top-row".into())
         .flex_none()
-        .h(px(TOP_ROW_HEIGHT))
+        .h(px(height::TOP))
         .w_full()
-        .pl(px(if fullscreen { 12. } else { TRAFFIC_LIGHT_INSET }))
-        .pr_2();
+        .pl(px(if fullscreen {
+            edge::CANVAS
+        } else {
+            layout::TOOLBAR_INSET_HIDDEN
+        }))
+        .pr(px(edge::CANVAS));
     drag_region(row, "sidebar-top-row", window, cx)
         .child(div().flex_1())
         .child(cluster(vec![
@@ -378,6 +362,61 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
             toggle.into_any_element(),
         ]))
         .into_any_element()
+}
+
+/// Press ink (ADR-0030) over whatever a custom control paints: a layer
+/// filling the control (which is `relative()`), rounded at `radius`, put
+/// first among its children so its content paints over it. On the control
+/// itself the ink would replace a selected control's fill.
+pub fn ink_layer(radius: f32, cx: &App) -> Stateful<Div> {
+    div()
+        .id("ink")
+        .absolute()
+        .inset_0()
+        .rounded(px(radius))
+        .press_ink(cx)
+}
+
+/// Tabular figures (OpenType `tnum`): a count in the UI font keeps its
+/// width as its digits change (ADR-0031, no layout shift).
+pub fn tabular_figures() -> FontFeatures {
+    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
+}
+
+/// A top row's icon button: `height::SM` square at its height's radius, a
+/// `size::ICON` icon (debug selector `<id>-icon`), press ink, its
+/// accessibility label and tooltip; a press on it never moves the window.
+fn icon_button(
+    id: &'static str,
+    icon: IconName,
+    (label, tooltip): (&'static str, &'static str),
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<Div> {
+    let radius = radius::for_height(height::SM);
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(height::SM))
+        .rounded(px(radius))
+        .text_color(cx.theme().secondary_foreground)
+        .child(ink_layer(radius, cx))
+        .child(
+            div()
+                .debug_selector(move || format!("{id}-icon"))
+                .flex()
+                .child(Icon::new(icon).with_size(px(icon_size::ICON))),
+        )
+        .role(Role::Button)
+        .aria_label(label)
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .tooltip(crate::review_tab::toolbar::tooltip(tooltip))
 }
 
 /// The main column's top row (design §11.4): `left` and `right` clusters
@@ -394,27 +433,25 @@ pub fn toolbar_row(
     let hidden = !chrome.read(cx).sidebar_visible;
     let inset = hidden && !window.is_fullscreen();
     let show = hidden.then(|| {
-        Button::new("show-sidebar")
-            .icon(IconName::PanelLeftOpen)
-            .ghost()
-            .small()
-            .tooltip("Show sidebar (⌃⌘S)")
-            .debug_selector(|| "show-sidebar".into())
-            .on_click(move |_, _, cx| {
-                chrome.update(cx, |c, cx| c.set_sidebar_visible(true, cx));
-            })
-            .into_any_element()
+        icon_button(
+            "show-sidebar",
+            IconName::PanelLeftOpen,
+            ("Show sidebar", "Show sidebar (⌃⌘S)"),
+            move |_, cx| chrome.update(cx, |c, cx| c.set_sidebar_visible(true, cx)),
+            cx,
+        )
+        .into_any_element()
     });
     let theme = cx.theme();
     let row = h_flex()
         .id(id)
         .debug_selector(move || id.into())
         .flex_none()
-        .h(px(TOP_ROW_HEIGHT))
+        .h(px(height::TOP))
         .w_full()
-        .px_3()
-        .gap_2()
-        .when(inset, |row| row.pl(px(TRAFFIC_LIGHT_INSET)))
+        .px(px(edge::CANVAS))
+        .gap(px(gap::CONTROLS))
+        .when(inset, |row| row.pl(px(layout::TOOLBAR_INSET_HIDDEN)))
         .bg(theme.title_bar)
         .border_b_1()
         .border_color(theme.title_bar_border);
@@ -425,10 +462,15 @@ pub fn toolbar_row(
         .into_any_element()
 }
 
-/// A top row's group of items, 8 pt apart. Its labels and gaps move the
-/// window like the rest of the row; its controls claim their own presses.
+/// A top row's group of items, `gap::CONTROLS` apart. Its labels and gaps
+/// move the window like the rest of the row; its controls claim their own
+/// presses.
 fn cluster(children: Vec<AnyElement>) -> Div {
-    h_flex().h_full().gap_2().items_center().children(children)
+    h_flex()
+        .h_full()
+        .gap(px(gap::CONTROLS))
+        .items_center()
+        .children(children)
 }
 
 /// What a press on a top row asks of the window.

@@ -16,7 +16,8 @@ use super::threads;
 use crate::keymap::actions::tab as tab_actions;
 use crate::palette::MenuEntry;
 use crate::review_tab::ReviewTab;
-use crate::review_tab::toolbar::{text, tooltip};
+use crate::review_tab::toolbar::{text as label, tooltip};
+use crate::space::{TextStyleExt as _, gap, height, pad, radius, size, text};
 
 /// `(open threads, agent notes)` of the tab: open threads that wait on
 /// someone (notes are FYI and counted apart, as in the threads panel), and
@@ -61,32 +62,42 @@ pub fn toolbar_button(
         });
     }
     let theme = cx.theme();
+    let icon = Icon::new(if hidden {
+        Lucide::MessageSquareDot
+    } else {
+        Lucide::MessageSquare
+    })
+    .with_size(px(size::ICON));
     let icon = if hidden {
         div()
             .debug_selector(|| "threads-notes-hidden".into())
-            .child(Icon::new(Lucide::MessageSquareDot).small())
+            .child(icon)
     } else {
-        div().child(Icon::new(Lucide::MessageSquare).small())
+        div().child(icon)
     };
-    let (selected, hover) = (theme.list_active, theme.list_hover);
+    let radius = radius::for_height(height::SM);
+    // A button: its icon `ICON_LEAD` in, the count `TEXT` from its end, in
+    // tabular figures so the button keeps its width as the count changes.
     h_flex()
         .id("toggle-threads-panel")
         .debug_selector(|| "toggle-threads-panel".into())
+        .relative()
         .flex_none()
-        .h(px(24.))
-        .px_1p5()
-        .gap_1()
-        .rounded(px(6.))
-        .text_sm()
+        .h(px(height::SM))
+        .pl(px(pad::ICON_LEAD))
+        .pr(px(pad::TEXT))
+        .gap(px(gap::ICON_LABEL))
+        .rounded(px(radius))
+        .text_style(text::UI)
+        .font_features(crate::chrome::tabular_figures())
         .map(|button| {
             if shown {
-                button.bg(selected).text_color(theme.foreground)
+                button.bg(theme.list_active).text_color(theme.foreground)
             } else {
-                button
-                    .text_color(theme.muted_foreground)
-                    .hover(move |s| s.bg(hover))
+                button.text_color(theme.muted_foreground)
             }
         })
+        .child(crate::chrome::ink_layer(radius, cx))
         // A control: a press on it never moves the window.
         .role(Role::Button)
         .aria_label("Threads panel")
@@ -98,7 +109,7 @@ pub fn toolbar_button(
             cx.listener(|tab, _, window, cx| tab.toggle_threads_panel_from_toolbar(window, cx)),
         )
         .child(icon)
-        .child(text("threads-count", open.to_string()))
+        .child(label("threads-count", open.to_string()))
         .tooltip(tooltip(tip))
         .into_any_element()
 }

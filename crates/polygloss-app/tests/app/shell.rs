@@ -350,25 +350,26 @@ fn threads_panel_gives_way_at_720pt(cx: &mut TestAppContext) {
     let widths = |shell: &mut Shell| {
         ["sidebar", "viewport-pane", "threads-pane"].map(|name| bounds(shell.cx, name).size.width)
     };
-    // Shown first in the smallest window: sidebar 720 − 480 = 240; the
-    // main column's 480 holds the viewport's 260 and the panel's 220.
+    // Shown first in the smallest window: sidebar 720 − 480 − its 1 pt
+    // divider = 239; the main column's 480 holds the viewport's 260 and the
+    // panel's 220.
     resize_window(&mut shell, 720., 480.);
     tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     draw(shell.cx);
-    assert_eq!(widths(&mut shell), [px(240.), px(260.), px(220.)]);
+    assert_eq!(widths(&mut shell), [px(239.), px(260.), px(220.)]);
     assert_eq!(bounds(shell.cx, "threads-pane").right(), px(720.));
     assert_eq!(bounds(shell.cx, "main-column").right(), px(720.));
     // Wider: the stored 340 pt comes back (sidebar 280, viewport
-    // 1,200 − 280 − 340 = 580), and stays 340 wider still.
+    // 1,200 − 281 − 340 = 579), and stays 340 wider still.
     resize_window(&mut shell, 1200., 800.);
-    assert_eq!(widths(&mut shell), [px(280.), px(580.), px(340.)]);
+    assert_eq!(widths(&mut shell), [px(280.), px(579.), px(340.)]);
     resize_window(&mut shell, 1440., 900.);
-    assert_eq!(widths(&mut shell), [px(280.), px(820.), px(340.)]);
+    assert_eq!(widths(&mut shell), [px(280.), px(819.), px(340.)]);
     // Narrow again, then back.
     resize_window(&mut shell, 720., 480.);
-    assert_eq!(widths(&mut shell), [px(240.), px(260.), px(220.)]);
+    assert_eq!(widths(&mut shell), [px(239.), px(260.), px(220.)]);
     resize_window(&mut shell, 1200., 800.);
-    assert_eq!(widths(&mut shell), [px(280.), px(580.), px(340.)]);
+    assert_eq!(widths(&mut shell), [px(280.), px(579.), px(340.)]);
 }
 
 /// The painted bounds of debug selector `name` (any string: leaked, as
@@ -420,7 +421,6 @@ fn window_options_inset_the_traffic_lights() {
         titlebar.traffic_light_position,
         Some(point(px(19.), px(19.)))
     );
-    assert_eq!(chrome::TOP_ROW_HEIGHT, 52.0);
     assert!(
         options.app_owns_titlebar_drag,
         "our top rows move the window"
@@ -473,8 +473,10 @@ fn sidebar_spans_the_window_height(cx: &mut TestAppContext) {
     assert_eq!(sidebar.origin, point(px(0.), px(0.)));
     assert_eq!(sidebar.size.height, window.height);
     assert_eq!(sidebar.size.width, px(280.), "design §11.1's default");
+    // The main column starts after the sidebar's 1 pt divider (ADR-0031
+    // M1).
     let main = bounds(shell.cx, "main-column");
-    assert_eq!(main.left(), sidebar.right());
+    assert_eq!(main.left(), sidebar.right() + px(1.));
     assert_eq!(main.right(), window.width);
     assert_eq!(main.size.height, window.height);
     // The tree fills the sidebar under its top row.
@@ -504,9 +506,9 @@ fn banner_strip_sits_between_the_toolbar_and_the_viewport(cx: &mut TestAppContex
 }
 
 /// Asserts that `columns` sit side by side across the whole window and that
-/// each one's `rows` stack from its top to the window's bottom with nothing
-/// between them.
-fn assert_tiles(cx: &mut VisualTestContext, columns: [(&str, &[&str]); 2]) {
+/// each one's `rows` (if any) stack from its top to the window's bottom with
+/// nothing between them.
+fn assert_tiles(cx: &mut VisualTestContext, columns: [(&str, &[&str]); 3]) {
     let window = window_size(cx);
     let mut left = px(0.);
     for (column, rows) in columns {
@@ -521,7 +523,9 @@ fn assert_tiles(cx: &mut VisualTestContext, columns: [(&str, &[&str]); 2]) {
             assert_eq!(r.left(), c.left(), "{row} in {column}");
             top = r.bottom();
         }
-        assert_eq!(top, window.height, "{column} ends with {rows:?}");
+        if !rows.is_empty() {
+            assert_eq!(top, window.height, "{column} ends with {rows:?}");
+        }
     }
     assert_eq!(left, window.width);
 }
@@ -542,6 +546,7 @@ fn no_tab_bar_is_painted(cx: &mut TestAppContext) {
         shell.cx,
         [
             ("sidebar", &["sidebar-top-row", "file-tree-pane"]),
+            ("sidebar-divider", &[]),
             (
                 "main-column",
                 &["review-toolbar", "banner-strip", "viewport-pane"],
@@ -560,6 +565,7 @@ fn no_tab_bar_is_painted(cx: &mut TestAppContext) {
         shell.cx,
         [
             ("sidebar", &["sidebar-top-row", "nav"]),
+            ("sidebar-divider", &[]),
             ("main-column", &["home-toolbar", "home-list"]),
         ],
     );
@@ -650,6 +656,79 @@ fn hidden_sidebar_insets_the_toolbar_and_shows_the_open_button(cx: &mut TestAppC
     assert!(painted(shell.cx, "show-sidebar").is_none());
 }
 
+/// The bounds of the first file card as the last frame painted it.
+fn first_card(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Bounds<Pixels> {
+    tab.read_with(shell.cx, |t, cx| {
+        let v = t.viewport.read(cx);
+        v.card_bounds(v.display_order()[0])
+    })
+    .expect("the first file card is painted")
+}
+
+/// ADR-0031 R1, M1: the sidebar is 280 wide, its 1 pt divider follows it,
+/// and the main column (with the cards 12 inside it) starts after the
+/// divider; hidden, at the window's edge.
+#[gpui_kit::test]
+fn the_main_column_starts_after_the_divider(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let window = window_size(shell.cx);
+    let sidebar = bounds(shell.cx, "sidebar");
+    assert_eq!((sidebar.left(), sidebar.size.width), (px(0.), px(280.)));
+    let divider = bounds(shell.cx, "sidebar-divider");
+    assert_eq!((divider.left(), divider.size.width), (px(280.), px(1.)));
+    assert_eq!((divider.top(), divider.bottom()), (px(0.), window.height));
+    assert_eq!(bounds(shell.cx, "main-column").left(), px(281.));
+    assert_eq!(first_card(&mut shell, &tab).left() - px(12.), px(281.));
+
+    click(shell.cx, "toggle-sidebar");
+    assert!(painted(shell.cx, "sidebar-divider").is_none());
+    assert_eq!(bounds(shell.cx, "main-column").left(), px(0.));
+    assert_eq!(first_card(&mut shell, &tab).left() - px(12.), px(0.));
+}
+
+/// ADR-0031 M1, M3: with the threads panel hidden the toolbar's first
+/// content box and its last control's right edge are the first card's
+/// outer edges, and both top rows end their last control as far from
+/// their trailing edges.
+#[gpui_kit::test]
+fn top_rows_share_the_main_columns_edges(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    assert!(!tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
+    let card = first_card(&mut shell, &tab);
+    let first = bounds(shell.cx, "repo-block");
+    let last = bounds(shell.cx, "submit-review");
+    let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(0.5);
+    assert!(near(first.left(), card.left()), "{first:?} vs {card:?}");
+    assert!(near(last.right(), card.right()), "{last:?} vs {card:?}");
+    let toolbar = bounds(shell.cx, "review-toolbar");
+    let sidebar_row = bounds(shell.cx, "sidebar-top-row");
+    let toggle = bounds(shell.cx, "toggle-sidebar");
+    assert_eq!(
+        sidebar_row.right() - toggle.right(),
+        toolbar.right() - last.right()
+    );
+}
+
+/// ADR-0031 M2, from the macOS probe: the zoom button ends at 79, so the
+/// show-sidebar button sits one 9 pt light gap later (88), and the first
+/// item a 24 pt button and an 8 pt gap after it (120).
+#[gpui_kit::test]
+fn hidden_sidebar_inset_clears_the_traffic_lights(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    shell.open(compare_req(repo.path())).unwrap();
+    click(shell.cx, "toggle-sidebar");
+    assert_eq!(bounds(shell.cx, "show-sidebar").left(), px(79. + 9.));
+    assert_eq!(bounds(shell.cx, "repo-block").left(), px(88. + 24. + 8.));
+}
+
 #[gpui_kit::test]
 fn sidebar_width_is_shared_by_every_review(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
@@ -688,13 +767,14 @@ fn sidebar_gives_way_to_the_main_column_minimum(cx: &mut TestAppContext) {
     draw(shell.cx);
 
     // 720 pt: the threads panel shows, so the main column keeps 480 pt
-    // (viewport 260 + panel 220) and the sidebar gets 720 − 480.
+    // (viewport 260 + panel 220) and the sidebar gets 720 − 480 less its
+    // 1 pt divider.
     resize_window(&mut shell, 720., 480.);
-    assert_eq!(sidebar(&mut shell), px(240.));
-    // Without the panel the main column needs 320 pt: 720 − 320.
+    assert_eq!(sidebar(&mut shell), px(239.));
+    // Without the panel the main column needs 320 pt: 720 − 320 − 1.
     tab.update(shell.cx, |t, cx| t.toggle_threads_panel(cx));
     draw(shell.cx);
-    assert_eq!(sidebar(&mut shell), px(400.));
+    assert_eq!(sidebar(&mut shell), px(399.));
     let main = bounds(shell.cx, "main-column");
     assert_eq!(main.size.width, px(320.));
     assert_eq!(main.right(), px(720.), "nothing past the window's edge");
@@ -1343,7 +1423,11 @@ fn home_renders_in_the_shell_with_files_disabled(cx: &mut TestAppContext) {
     let window = window_size(shell.cx);
     let sidebar = bounds(shell.cx, "sidebar");
     assert_eq!(sidebar.size.height, window.height);
-    assert_eq!(bounds(shell.cx, "main-column").left(), sidebar.right());
+    assert_eq!(
+        bounds(shell.cx, "main-column").left(),
+        sidebar.right() + px(1.),
+        "after the divider"
+    );
     assert!(painted(shell.cx, "home-toolbar").is_some());
     // Reviews shows on Home whatever the window's segment is (Files by
     // default), and Files cannot be picked.

@@ -4,6 +4,14 @@
 //! the match-case and regex toggles; then the result list (each file's path
 //! and count, then its matches: line number and the line with the match
 //! highlighted), virtualized, the current match selected and kept in view.
+//!
+//! Spacing (ADR-0031 S1–S4, dense): the header is a pane bar
+//! (`height::BAR`, its divider included) whose leading icon box and
+//! trailing button icon sit on the sidebar's icon columns; the field has
+//! the filter field's geometry (on the sidebar's edges, `RIM` below the
+//! bar, `height::MD`), the toggles inside it; results are `height::SM` row
+//! highlights on the sidebar's edge, their text `pad::TEXT` in, the
+//! current match marked by a `CURSOR_BAR` rail. Rows show press ink.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
@@ -20,9 +28,7 @@ use gpui_kit::{
 use polygloss_diff::Side;
 
 use super::{CONTEXT, FindBar, ListRow, ToggleCaseSensitive, ToggleRegex, file_label};
-
-/// A result row's height.
-const ROW_HEIGHT: f32 = 24.0;
+use crate::space::{TextStyleExt as _, edge, gap, height, layout, pad, radius, size, stroke, text};
 
 impl FindBar {
     /// A result-list cell (line number or preview) in `font`: its family and
@@ -50,7 +56,11 @@ impl Render for FindBar {
                 .debug_selector(move || id.into())
                 .ghost()
                 .xsmall()
+                .rounded(px(radius::XS))
         };
+        // The close button's icon ends `ICON_LEAD` in from the sidebar's
+        // edge, as leading icons start.
+        let trailing = edge::SIDEBAR + pad::ICON_LEAD - (height::XS - size::ICON_XS) / 2.0;
         v_flex()
             .id("find-pane")
             .debug_selector(|| "find-pane".into())
@@ -66,26 +76,40 @@ impl Render for FindBar {
             .bg(theme.sidebar)
             .child(
                 h_flex()
+                    .debug_selector(|| "find-header".into())
                     .flex_none()
-                    .h(px(32.))
-                    .pl_3()
-                    .pr_1()
-                    .gap_1()
+                    .h(px(height::BAR))
+                    .pl(px(edge::SIDEBAR + pad::ICON_LEAD))
+                    .pr(px(trailing))
+                    .gap(px(gap::CONTROLS))
                     .border_b_1()
                     .border_color(theme.border)
-                    .text_xs()
+                    .text_style(text::SMALL)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
-                    .child("FIND")
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap(px(gap::ICON_LABEL))
+                            .child(
+                                div()
+                                    .debug_selector(|| "find-header-icon".into())
+                                    .flex()
+                                    .child(
+                                        Icon::new(IconName::Search).with_size(px(size::ICON_SM)),
+                                    ),
+                            )
+                            .child("FIND"),
+                    )
                     .child(
                         div()
                             .id("find-status")
                             .debug_selector(|| "find-status".into())
-                            .ml_1()
                             .flex_1()
                             .min_w_0()
                             .truncate()
                             .font_normal()
+                            .font_features(crate::chrome::tabular_figures())
                             .text_color(if self.error.is_some() {
                                 theme.danger
                             } else {
@@ -100,63 +124,85 @@ impl Render for FindBar {
                             .child(status),
                     )
                     .child(
-                        icon_button("find-prev")
-                            .icon(Icon::new(IconName::ChevronUp))
-                            .disabled(!has_matches)
-                            .tooltip("Previous match (⇧⏎)")
-                            .on_click(cx.listener(|bar, _, _, cx| bar.prev(cx))),
-                    )
-                    .child(
-                        icon_button("find-next")
-                            .icon(Icon::new(IconName::ChevronDown))
-                            .disabled(!has_matches)
-                            .tooltip("Next match (⏎)")
-                            .on_click(cx.listener(|bar, _, _, cx| bar.next(cx))),
-                    )
-                    .child(
-                        icon_button("find-close")
-                            .icon(Icon::new(IconName::Close))
-                            .tooltip("Close (Esc)")
-                            .on_click(cx.listener(|bar, _, window, cx| bar.close(window, cx))),
+                        h_flex()
+                            .flex_none()
+                            .gap(px(gap::INLINE))
+                            .child(
+                                icon_button("find-prev")
+                                    .icon(Icon::new(IconName::ChevronUp))
+                                    .disabled(!has_matches)
+                                    .tooltip("Previous match (⇧⏎)")
+                                    .on_click(cx.listener(|bar, _, _, cx| bar.prev(cx))),
+                            )
+                            .child(
+                                icon_button("find-next")
+                                    .icon(Icon::new(IconName::ChevronDown))
+                                    .disabled(!has_matches)
+                                    .tooltip("Next match (⏎)")
+                                    .on_click(cx.listener(|bar, _, _, cx| bar.next(cx))),
+                            )
+                            .child(
+                                icon_button("find-close")
+                                    .icon(Icon::new(IconName::Close))
+                                    .tooltip("Close (Esc)")
+                                    .on_click(
+                                        cx.listener(|bar, _, window, cx| bar.close(window, cx)),
+                                    ),
+                            ),
                     ),
             )
             .child(
-                h_flex()
+                div()
                     .flex_none()
-                    .px_2()
-                    .py_1p5()
-                    .gap_1()
+                    .px(px(edge::SIDEBAR))
+                    .pt(px(pad::RIM))
+                    .pb(px(gap::CONTROLS))
                     .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&self.input).small().prefix(
-                                Icon::new(IconName::Search)
-                                    .xsmall()
-                                    .text_color(theme.muted_foreground),
-                            ),
+                        div().debug_selector(|| "find-input".into()).child(
+                            Input::new(&self.input)
+                                .small()
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .with_size(px(size::ICON_SM))
+                                        .text_color(theme.muted_foreground),
+                                )
+                                .suffix(
+                                    h_flex()
+                                        .gap(px(gap::INLINE))
+                                        .child(
+                                            icon_button("find-case-toggle")
+                                                .icon(Icon::new(IconName::CaseSensitive))
+                                                .selected(self.options.case_sensitive)
+                                                .toggled(self.options.case_sensitive)
+                                                .tooltip("Match case (⌥⌘C)")
+                                                .on_click(cx.listener(|bar, _, _, cx| {
+                                                    bar.set_case_sensitive(
+                                                        !bar.options.case_sensitive,
+                                                        cx,
+                                                    )
+                                                })),
+                                        )
+                                        .child(
+                                            // No regex glyph in the bundled icon set: `.*`, as
+                                            // editors label it.
+                                            icon_button("find-regex-toggle")
+                                                .label(".*")
+                                                .selected(self.options.regex)
+                                                .toggled(self.options.regex)
+                                                .accessibility_label("Regular expression")
+                                                .tooltip("Regular expression (⌥⌘R)")
+                                                .on_click(cx.listener(|bar, _, _, cx| {
+                                                    bar.set_regex(!bar.options.regex, cx)
+                                                })),
+                                        ),
+                                )
+                                .h(px(height::MD))
+                                // The kit's field draws its border inside: the icon box
+                                // stays `ICON_LEAD` from the field's edge.
+                                .pl(px(pad::ICON_LEAD - stroke::BORDER))
+                                .gap(px(gap::ICON_LABEL))
+                                .rounded(px(radius::for_height(height::MD))),
                         ),
-                    )
-                    .child(
-                        icon_button("find-case-toggle")
-                            .icon(Icon::new(IconName::CaseSensitive))
-                            .selected(self.options.case_sensitive)
-                            .toggled(self.options.case_sensitive)
-                            .tooltip("Match case (⌥⌘C)")
-                            .on_click(cx.listener(|bar, _, _, cx| {
-                                bar.set_case_sensitive(!bar.options.case_sensitive, cx)
-                            })),
-                    )
-                    .child(
-                        // No regex glyph in the bundled icon set: `.*`, as
-                        // editors label it.
-                        icon_button("find-regex-toggle")
-                            .label(".*")
-                            .selected(self.options.regex)
-                            .toggled(self.options.regex)
-                            .accessibility_label("Regular expression")
-                            .tooltip("Regular expression (⌥⌘R)")
-                            .on_click(
-                                cx.listener(|bar, _, _, cx| bar.set_regex(!bar.options.regex, cx)),
-                            ),
                     ),
             )
             .child(body)
@@ -182,15 +228,16 @@ impl FindBar {
         v_flex()
             .flex_1()
             .min_h_0()
-            .px_4()
-            .gap_1()
+            .px(px(edge::SIDEBAR))
             .items_center()
             .justify_center()
             .text_center()
-            .text_sm()
+            .text_style(text::UI)
             .text_color(theme.muted_foreground)
             .child(title)
-            .when_some(detail, |el, d| el.child(div().text_xs().child(d)))
+            .when_some(detail, |el, d| {
+                el.child(div().text_style(text::SMALL).child(d))
+            })
             .into_any_element()
     }
 
@@ -211,7 +258,8 @@ impl FindBar {
                     }),
                 )
                 .track_scroll(&self.list_scroll)
-                .py_1()
+                .px(px(edge::SIDEBAR))
+                .py(px(gap::INLINE))
                 .size_full(),
             )
             .into_any_element()
@@ -222,14 +270,18 @@ impl FindBar {
         let Some(&row) = self.rows.get(i) else {
             return div().into_any_element();
         };
+        let radius = radius::for_height(height::SM);
         let base = h_flex()
             .id(("find-row", i))
+            .relative()
             .w_full()
-            .h(px(ROW_HEIGHT))
-            .pr_2()
-            .gap_1p5()
-            .text_xs()
-            .cursor_pointer();
+            .h(px(height::SM))
+            .px(px(pad::TEXT))
+            .gap(px(gap::ICON_LABEL))
+            .rounded(px(radius))
+            .text_style(text::SMALL)
+            .cursor_pointer()
+            .child(crate::chrome::ink_layer(radius, cx));
         match row {
             ListRow::File(f) => {
                 let (path, generated) = file_label(self.viewport.read(cx), f);
@@ -243,8 +295,6 @@ impl FindBar {
                     ListRow::File(_) => None,
                 });
                 base.debug_selector(move || format!("find-file-{f}"))
-                    .pl_3()
-                    .hover(|s| s.bg(theme.list_hover))
                     .child(
                         div()
                             .flex_none()
@@ -266,8 +316,8 @@ impl FindBar {
                         el.child(
                             div()
                                 .flex_none()
-                                .px_1()
-                                .rounded(theme.radius)
+                                .px(px(pad::BADGE_X))
+                                .rounded_full()
                                 .bg(theme.secondary)
                                 .text_color(theme.secondary_foreground)
                                 .child("generated"),
@@ -276,9 +326,10 @@ impl FindBar {
                     .child(
                         div()
                             .flex_none()
-                            .px_1p5()
+                            .px(px(pad::BADGE_X))
                             .rounded_full()
                             .bg(theme.muted)
+                            .font_features(crate::chrome::tabular_figures())
                             .text_color(theme.muted_foreground)
                             .child(super::thousands(count)),
                     )
@@ -305,22 +356,25 @@ impl FindBar {
                 let text = StyledText::new(m.preview.clone())
                     .with_highlights([(m.preview_match.clone(), highlight)]);
                 base.debug_selector(move || format!("find-match-{ix}"))
-                    .pl_2()
                     // The selection: the list's active color and an accent
-                    // bar, as the diff marks the cursor line.
-                    .border_l_2()
-                    .border_color(if selected {
-                        theme.primary
-                    } else {
-                        gpui_kit::transparent_black()
+                    // rail, as the diff marks the cursor line; it takes no
+                    // room, so the text never moves.
+                    .when(selected, |el| {
+                        el.bg(theme.list_active).child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(stroke::CURSOR_BAR))
+                                .bg(theme.primary),
+                        )
                     })
-                    .when(selected, |el| el.bg(theme.list_active))
-                    .when(!selected, |el| el.hover(|s| s.bg(theme.list_hover)))
                     .on_click(cx.listener(move |bar, _, _, cx| bar.go_to(ix, cx)))
                     .child(
                         FindBar::preview_cell(&code_font)
                             .flex_none()
-                            .w(px(40.))
+                            .w(px(layout::FIND_NUMBER_COL))
                             .text_right()
                             .text_color(number_color)
                             .child(SharedString::from(number)),

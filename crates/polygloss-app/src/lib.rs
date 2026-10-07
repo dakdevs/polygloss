@@ -43,6 +43,7 @@ pub mod perf;
 pub mod provider;
 pub mod reduce_motion;
 pub mod review_tab;
+pub mod segmented;
 pub mod settings;
 pub mod space;
 pub mod startup;

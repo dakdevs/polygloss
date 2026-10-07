@@ -15,14 +15,12 @@ pub mod key_cap;
 pub mod view_toggles;
 
 use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Action, Anchor, AnyElement, App, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    MenuItem, MouseButton, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Toggled, Window, div, px,
+    MenuItem, SharedString, Window,
 };
 use polygloss_diff::rows::Layout;
 use polygloss_viewport::{LayoutMode, ViewportEvent};
@@ -30,6 +28,7 @@ use polygloss_viewport::{LayoutMode, ViewportEvent};
 use crate::keymap::actions::window as window_actions;
 use crate::keymap::handlers;
 use crate::review_tab::ReviewTab;
+use crate::segmented::{SegmentSpec, segmented};
 use crate::window::{MainWindow, MenuKind};
 
 /// Registers the palette, the cheat sheet and the view toggles.
@@ -81,81 +80,47 @@ pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewT
     .detach();
 }
 
-/// The toolbar's split | unified toggle (design §11.4, `s`): two icon
-/// segments in a track, the layout on screen selected (it follows the
-/// automatic layout as the width changes); a click chooses that layout for
-/// the diff. Not gpui-kit's `TabBar::segmented`, which animates
-/// (ADR-0029).
+/// The toolbar's split | unified toggle (design §11.4, `s`): the one
+/// [`SegmentedControl`](crate::segmented::SegmentedControl), the layout on
+/// screen selected (it follows the automatic layout as the width changes);
+/// a click chooses that layout for the diff. Not gpui-kit's
+/// `TabBar::segmented`, which animates (ADR-0029).
 pub fn layout_toggle(
     tab: &ReviewTab,
     _window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
     let shown = tab.viewport.read(cx).effective_layout();
-    let theme = cx.theme();
-    let segment = |id: &'static str, icon: Lucide, layout: Layout, label: &'static str| {
-        let selected = shown == layout;
-        let mode = match layout {
-            Layout::Split => LayoutMode::Split,
-            Layout::Unified => LayoutMode::Unified,
-        };
-        let icon = Icon::new(icon).small();
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(28.))
-            .h(px(22.))
-            .rounded(px(5.))
-            .map(|segment| {
-                if selected {
-                    segment
-                        .bg(theme.tab_active)
-                        .shadow_xs()
-                        .text_color(theme.foreground)
-                        .child(
-                            div()
-                                .debug_selector(|| "layout-selected".into())
-                                .child(icon),
-                        )
-                } else {
-                    let hover = theme.foreground;
-                    segment
-                        .text_color(theme.muted_foreground)
-                        .hover(move |s| s.text_color(hover))
-                        .child(icon)
-                }
-            })
-            .role(Role::Button)
-            .aria_label(label)
-            .aria_toggled(if selected {
-                Toggled::True
-            } else {
-                Toggled::False
-            })
-            .on_click(
-                cx.listener(move |tab, _, _, cx| view_toggles::set_layout_choice(tab, mode, cx)),
-            )
-            .tooltip(crate::review_tab::toolbar::tooltip(format!("{label} (s)")))
+    let spec = |id, icon, label: &'static str| SegmentSpec {
+        id,
+        icon,
+        label: label.into(),
+        tooltip: format!("{label} (s)").into(),
+        enabled: true,
     };
-    let split = segment("layout-split", Lucide::Columns2, Layout::Split, "Split");
-    let unified = segment("layout-unified", Lucide::Rows2, Layout::Unified, "Unified");
-    h_flex()
-        .id("layout-toggle")
-        .debug_selector(|| "layout-toggle".into())
-        .flex_none()
-        // A control: a press on it (a segment or the rim) never moves the
-        // window.
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .p(px(2.))
-        .gap(px(2.))
-        .rounded(px(7.))
-        .bg(theme.tab_bar_segmented)
-        .child(split)
-        .child(unified)
-        .into_any_element()
+    let tab = cx.weak_entity();
+    segmented(
+        "layout-toggle",
+        vec![
+            spec("layout-split", Lucide::Columns2, "Split"),
+            spec("layout-unified", Lucide::Rows2, "Unified"),
+        ],
+        match shown {
+            Layout::Split => 0,
+            Layout::Unified => 1,
+        },
+        move |ix, _, cx| {
+            let mode = if ix == 0 {
+                LayoutMode::Split
+            } else {
+                LayoutMode::Unified
+            };
+            tab.update(cx, |tab, cx| view_toggles::set_layout_choice(tab, mode, cx))
+                .ok();
+        },
+    )
+    .selected_marker("layout-selected")
+    .into_any_element()
 }
 
 /// The toolbar's display options menu (design §11.4): its items are
