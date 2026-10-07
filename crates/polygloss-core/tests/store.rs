@@ -779,45 +779,48 @@ fn store_parallel_writers_never_surface_busy() {
 
 const LOCK_PROBE_ENV: &str = "POLYGLOSS_STORE_LOCK_PROBE";
 
-/// Child mode for `store_reopen_keeps_the_open_connections_lock`: prints the
-/// POSIX lock another process holds on the database at `$POLYGLOSS_STORE_LOCK_PROBE`
+/// Child mode for the lock tests: for each database in `$POLYGLOSS_STORE_LOCK_PROBE`
+/// (a `PATH`-style list), prints the POSIX lock another process holds on it
 /// (`LOCK-PROBE none`, or `LOCK-PROBE read|write <pid>`); a no-op in a normal run.
 /// `F_GETLK` never reports the caller's own locks, so only a child can see the
 /// test process's.
 #[test]
 fn lock_probe_entry() {
-    let Some(db) = std::env::var_os(LOCK_PROBE_ENV) else {
+    let Some(dbs) = std::env::var_os(LOCK_PROBE_ENV) else {
         return;
     };
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&db)
-        .unwrap();
-    // A write lock on the whole file (l_start 0, l_len 0): F_GETLK describes a
-    // lock that would block it.
-    let mut lock = libc::flock {
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-        l_type: libc::F_WRLCK,
-        l_whence: libc::SEEK_SET as libc::c_short,
-    };
-    // SAFETY: F_GETLK reads and fills in `lock`, which outlives the call.
-    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) };
-    assert_eq!(rc, 0, "F_GETLK: {}", std::io::Error::last_os_error());
-    match lock.l_type {
-        libc::F_UNLCK => println!("LOCK-PROBE none"),
-        libc::F_RDLCK => println!("LOCK-PROBE read {}", lock.l_pid),
-        _ => println!("LOCK-PROBE write {}", lock.l_pid),
+    for db in std::env::split_paths(&dbs) {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&db)
+            .unwrap();
+        // A write lock on the whole file (l_start 0, l_len 0): F_GETLK describes a
+        // lock that would block it.
+        let mut lock = libc::flock {
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            l_type: libc::F_WRLCK,
+            l_whence: libc::SEEK_SET as libc::c_short,
+        };
+        // SAFETY: F_GETLK reads and fills in `lock`, which outlives the call.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) };
+        assert_eq!(rc, 0, "F_GETLK: {}", std::io::Error::last_os_error());
+        match lock.l_type {
+            libc::F_UNLCK => println!("LOCK-PROBE none"),
+            libc::F_RDLCK => println!("LOCK-PROBE read {}", lock.l_pid),
+            _ => println!("LOCK-PROBE write {}", lock.l_pid),
+        }
     }
 }
 
-/// The lock a child process sees on `db`, as `lock_probe_entry` prints it.
-fn lock_seen_by_child(db: &Path) -> String {
+/// The lock a child process sees on each of `dbs`, in order, as `lock_probe_entry`
+/// prints it.
+fn locks_seen_by_child(dbs: &[&Path]) -> Vec<String> {
     let out = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "lock_probe_entry", "--nocapture"])
-        .env(LOCK_PROBE_ENV, db)
+        .env(LOCK_PROBE_ENV, std::env::join_paths(dbs).unwrap())
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -827,11 +830,18 @@ fn lock_seen_by_child(db: &Path) -> String {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    stdout
+    let seen: Vec<String> = stdout
         .lines()
-        .find_map(|l| l.strip_prefix("LOCK-PROBE "))
-        .unwrap_or_else(|| panic!("no probe line in:\n{stdout}"))
-        .to_owned()
+        .filter_map(|l| l.strip_prefix("LOCK-PROBE "))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(seen.len(), dbs.len(), "probe lines in:\n{stdout}");
+    seen
+}
+
+/// The lock a child process sees on `db`.
+fn lock_seen_by_child(db: &Path) -> String {
+    locks_seen_by_child(&[db]).remove(0)
 }
 
 /// A WAL connection holds SQLite's SHARED lock (a read lock on the database file)
@@ -860,4 +870,52 @@ fn store_reopen_keeps_the_open_connections_lock() {
         "none",
         "every connection closed"
     );
+}
+
+/// Threads racing the first `Store::open` of a database: the one that creates the
+/// file must not close its descriptor after another has connected, or the close
+/// drops that connection's SHARED lock (the failure of
+/// `store_reopen_keeps_the_open_connections_lock`, within the first launch of a
+/// process that opens the store from two threads at once). Once the process's lock
+/// is gone SQLite never retakes it while one of its connections stays open, so each
+/// round keeps one store and a child probes them all. The window is microseconds
+/// wide: with 4 threads per core the creating thread is preempted inside it in about
+/// 1 round in 50 (measured on 16 cores), so 500 rounds miss it with negligible odds.
+#[test]
+fn store_racing_first_opens_keep_the_connections_lock() {
+    const ROUNDS: usize = 500;
+    const BATCH: usize = 50;
+    let threads = 4 * std::thread::available_parallelism().map_or(4, |n| n.get());
+    let held = format!("read {}", std::process::id());
+    for _ in 0..ROUNDS / BATCH {
+        let rounds: Vec<_> = (0..BATCH)
+            .map(|_| {
+                let (root, paths) = fresh_paths();
+                let barrier = std::sync::Barrier::new(threads);
+                let store = std::thread::scope(|s| {
+                    let handles: Vec<_> = (0..threads)
+                        .map(|_| {
+                            s.spawn(|| {
+                                barrier.wait();
+                                Store::open(&paths).unwrap()
+                            })
+                        })
+                        .collect();
+                    let mut stores = handles.into_iter().map(|h| h.join().unwrap());
+                    stores.next().unwrap()
+                });
+                (root, paths, store)
+            })
+            .collect();
+        let dbs: Vec<&Path> = rounds
+            .iter()
+            .map(|(_, paths, _)| paths.db.as_path())
+            .collect();
+        let seen = locks_seen_by_child(&dbs);
+        let dropped = seen.iter().filter(|l| **l != held).count();
+        assert_eq!(
+            dropped, 0,
+            "racing first opens dropped the open connections' lock in {dropped} of {BATCH} rounds: {seen:?}"
+        );
+    }
 }
