@@ -276,6 +276,11 @@ fn tree_expansion_of_every_panel_round_trips_through_view_state(cx: &mut TestApp
     // Changes: `docs/x.md`, `src/a.rs`, `src/b.rs`; Tests: `src/a.test.rs`,
     // `tests/it.rs`; Generated: `Cargo.lock`.
     let repo = mixed_repo(3);
+    // Motion off: the header click below switches panels at once (M9 would
+    // keep Changes' `src/` row painted beside Tests' while it glides).
+    cx.update(|cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
     let mut shell = start(cx);
     let tab = shell.open(compare(&repo)).unwrap();
     assert_eq!(

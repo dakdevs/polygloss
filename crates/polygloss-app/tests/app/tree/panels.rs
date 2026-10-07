@@ -3,14 +3,23 @@
 //! each scrolling on its own; its headers' counts and indicators; the open
 //! panel following the viewport; one filter over every panel; folders
 //! covering their own panel's files; and the tree keys walking the open
-//! panel.
+//! panel. Then M9, the panel switch's motion (T7.13, ADR-0030).
 //!
 //! Expected panels are written by hand from design §11.15's table (Tests
 //! takes `*.test.*` and `tests/`, Generated lockfiles, Docs is off).
 
-use gpui_kit::{Entity, ScrollStrategy, TestAppContext};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use gpui_kit::{
+    Entity, Modifiers, MouseButton, ScrollDelta, ScrollStrategy, ScrollWheelEvent, TestAppContext,
+    point, px,
+};
 use polygloss_app::keymap::actions::tree as tree_actions;
 use polygloss_app::live;
+use polygloss_app::motion::tokens::FIRST_STEP;
+use polygloss_app::motion::{self, Initiator, MotionPolicy, Recorded};
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::tree::row::Check;
 use polygloss_app::tree::{FileTree, file_tree};
@@ -22,6 +31,7 @@ use crate::categories::{
     section_id, set_cursor,
 };
 use crate::shell::{Shell, compare_req, draw, painted, start};
+use crate::support::motion::{advance, frame, requested_frames, step_to};
 use crate::support::{FixtureRepo, Sandbox};
 use crate::toolbar::shows;
 
@@ -31,7 +41,10 @@ struct Opened<'a> {
     tree: Entity<FileTree>,
 }
 
+/// `repo` opened with app motion off: these tests act on a header click's
+/// result at once (M9's own tests turn Full on).
 fn open<'a>(cx: &'a mut TestAppContext, repo: &FixtureRepo) -> Opened<'a> {
+    cx.update(|cx| motion::set_override(Some(MotionPolicy::Off), cx));
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     draw(shell.cx);
@@ -757,4 +770,656 @@ fn tree_n_p_walk_the_open_panel(cx: &mut TestAppContext) {
     assert_eq!(key(&mut o, "p"), Some(7));
     assert_eq!(top_file(&mut o), 7);
     assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+}
+
+// M9, the panel switch (T7.13, ADR-0030): a header click lays both bodies
+// out at the body's height H and clips each from its header's bottom edge
+// on one track (the clips sum to H), the headers between gliding and both
+// chevrons turning; the closing body stays live and inert under an
+// occluding layer. Stepped by ADR-0030's protocol; SLIDE is this file's own
+// bisection, and every expected value is quantized here.
+
+/// `cubic-bezier(x1, y1, x2, y2)` at `t` by bisection on x.
+fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
+    let at = |a: f64, b: f64, s: f64| {
+        3.0 * (1.0 - s) * (1.0 - s) * s * a + 3.0 * (1.0 - s) * s * s * b + s * s * s
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..200 {
+        let mid = (low + high) / 2.0;
+        if at(x1, x2, mid) < t {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    at(y1, y2, (low + high) / 2.0)
+}
+
+/// SLIDE.
+fn slide(t: f64) -> f64 {
+    bezier(0.25, 1.0, 0.5, 1.0, t)
+}
+
+fn ms(ms: f64) -> Duration {
+    Duration::from_secs_f64(ms / 1000.0)
+}
+
+/// The body's height in these tests, and its reveal: 150 + 0.1 · 400 ms.
+const H: f32 = 400.0;
+const REVEAL_MS: f64 = 190.0;
+
+type Drawn = Rc<RefCell<Vec<Recorded>>>;
+
+/// `repo` opened under Full app motion, its samples recorded, and the
+/// window sized so the open body is [`H`] tall (it grows with the window).
+fn open_swapping<'a>(cx: &'a mut TestAppContext, repo: &FixtureRepo) -> (Opened<'a>, Drawn) {
+    let drawn: Drawn = Rc::default();
+    cx.update(|cx| motion::record(drawn.clone(), cx));
+    let mut o = open(cx, repo);
+    set_policy(&mut o, MotionPolicy::Full);
+    let key = open_panel(&mut o).expect("an open panel");
+    let body = clip(&mut o, &key);
+    let window = o.shell.cx.update(|window, _| window.viewport_size());
+    crate::shell::resize_window(
+        &mut o.shell,
+        window.width.as_f32(),
+        window.height.as_f32() + H - body,
+    );
+    assert_eq!(clip(&mut o, &key), H, "the open body is H tall");
+    (o, drawn)
+}
+
+fn set_policy(o: &mut Opened, policy: MotionPolicy) {
+    o.shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(policy), cx));
+}
+
+/// `v` on the test window's device pixel grid.
+fn quantized(o: &mut Opened, v: f64) -> f32 {
+    let scale = f64::from(o.shell.cx.update(|window, _| window.scale_factor()));
+    ((v * scale).round() / scale) as f32
+}
+
+/// The opening clip at `at` ms of a 190 ms swap.
+fn opening_at(o: &mut Opened, at: f64) -> f32 {
+    quantized(o, f64::from(H) * slide(at / REVEAL_MS))
+}
+
+/// The visible height of panel `key`'s body (its clip); 0 when it is not
+/// painted.
+fn clip(o: &mut Opened, key: &str) -> f32 {
+    painted(o.shell.cx, &format!("tree-panel-body-{key}")).map_or(0.0, |b| b.size.height.as_f32())
+}
+
+fn body_top(o: &mut Opened, key: &str) -> f32 {
+    crate::shell::bounds(o.shell.cx, &format!("tree-panel-body-{key}"))
+        .top()
+        .as_f32()
+}
+
+fn header_top(o: &mut Opened, key: &str) -> f32 {
+    crate::shell::bounds(o.shell.cx, &format!("tree-panel-{key}"))
+        .top()
+        .as_f32()
+}
+
+fn header_bottom(o: &mut Opened, key: &str) -> f32 {
+    crate::shell::bounds(o.shell.cx, &format!("tree-panel-{key}"))
+        .bottom()
+        .as_f32()
+}
+
+/// The last recorded sample of `id`.
+fn last(drawn: &Drawn, id: &str) -> Recorded {
+    let id = gpui_kit::ElementId::Name(id.to_owned().into());
+    drawn
+        .borrow()
+        .iter()
+        .rev()
+        .find(|r| r.id == id)
+        .cloned()
+        .unwrap_or_else(|| panic!("nothing drawn for {id:?}"))
+}
+
+/// The angle panel `key`'s chevron was last drawn at, in degrees.
+fn chevron(drawn: &Drawn, key: &str) -> f32 {
+    last(drawn, &format!("tree-panel-chevron-{key}")).rotation
+}
+
+/// The opacity panel `key`'s list was last drawn at.
+fn list_opacity(drawn: &Drawn, key: &str) -> f32 {
+    last(drawn, &format!("tree-panel-body-{key}")).opacity
+}
+
+/// A pointer click on panel `key`'s header where it was last painted, and
+/// the commit frame.
+fn press_header(o: &mut Opened, key: &str) {
+    let at = crate::shell::bounds(o.shell.cx, &format!("tree-panel-{key}")).center();
+    o.shell.cx.simulate_click(at, Modifiers::none());
+    frame(o.shell.cx);
+}
+
+/// Whether the window stops asking for frames without the clock moving: a
+/// jump's own loads may take a few, a running motion asks on every frame.
+fn goes_quiet(o: &mut Opened) -> bool {
+    (0..20).any(|_| requested_frames(o.shell.cx) == 0)
+}
+
+fn swapping(o: &mut Opened) -> bool {
+    o.tree
+        .read_with(o.shell.cx, |t, _| t.panels().is_swapping())
+}
+
+fn panel_key(o: &mut Opened, key: &str) -> polygloss_app::tree::panels::PanelKey {
+    o.tree.read_with(o.shell.cx, |t, _| {
+        t.panels()
+            .panels()
+            .iter()
+            .find(|p| p.key().to_string() == key)
+            .expect("the panel")
+            .key()
+            .clone()
+    })
+}
+
+/// Opens panel `key` at once, as a jump does.
+fn open_at_once(o: &mut Opened, key: &str) {
+    let key = panel_key(o, key);
+    let tree = o.tree.clone();
+    o.shell
+        .cx
+        .update(|_, cx| tree.update(cx, |t, cx| t.open_panel(&key, cx)));
+    draw(o.shell.cx);
+}
+
+/// The tops of `headers` with panel `open` open, measured at rest; then
+/// the panel that was open opens again.
+fn tops_with_open(o: &mut Opened, open: &str, headers: &[&str]) -> Vec<f32> {
+    let was = open_panel(o).expect("an open panel");
+    open_at_once(o, open);
+    let tops = headers.iter().map(|k| header_top(o, k)).collect();
+    open_at_once(o, &was);
+    tops
+}
+
+#[gpui_kit::test]
+fn header_click_trades_heights(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, drawn) = open_swapping(cx, &repo);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("changes"));
+    // Changes (open, on top) closes and Generated (the last) opens: the
+    // headers of Tests and Generated, between them, glide up by H.
+    let between = ["tests", "generated"];
+    let start: Vec<f32> = between.iter().map(|k| header_top(&mut o, k)).collect();
+    let end = tops_with_open(&mut o, "generated", &between);
+    for (s, e) in start.iter().zip(&end) {
+        assert_eq!(s - e, H, "H between a header's two places");
+    }
+    let changes_top = header_top(&mut o, "changes");
+    // At rest, the open body ends this far above the next header (its
+    // separator).
+    let gap = header_top(&mut o, "tests") - (body_top(&mut o, "changes") + H);
+
+    // The commit frame: the model is final (Generated open), the paint is
+    // where it was.
+    press_header(&mut o, "generated");
+    assert_eq!(open_panel(&mut o).as_deref(), Some("generated"));
+    assert!(swapping(&mut o));
+    assert_eq!(clip(&mut o, "changes"), H, "the commit frame");
+    assert_eq!(clip(&mut o, "generated"), 0.0);
+    for (k, s) in between.iter().zip(&start) {
+        assert_eq!(header_top(&mut o, k), *s, "{k} on the commit frame");
+    }
+    assert_eq!(chevron(&drawn, "changes"), 0.0);
+    assert_eq!(chevron(&drawn, "generated"), -90.0);
+
+    for (at, label) in [(16.667, "the first step"), (REVEAL_MS / 2.0, "½")] {
+        if at < 20.0 {
+            step_to(o.shell.cx, FIRST_STEP);
+        } else {
+            advance(o.shell.cx, ms(at) - FIRST_STEP);
+        }
+        let opening = opening_at(&mut o, at);
+        assert!(0.0 < opening && opening < H, "{label}: {opening}");
+        assert_eq!(clip(&mut o, "generated"), opening, "{label}");
+        assert_eq!(
+            clip(&mut o, "changes") + clip(&mut o, "generated"),
+            H,
+            "{label}: the clips sum to H"
+        );
+        for (k, e) in between.iter().zip(&end) {
+            assert_eq!(header_top(&mut o, k), e + H - opening, "{label}: {k}");
+        }
+        // Each body hangs from its header's bottom edge; the closing one
+        // ends where it did at rest before the next header.
+        assert_eq!(header_top(&mut o, "changes"), changes_top, "{label}");
+        assert_eq!(
+            body_top(&mut o, "changes"),
+            header_bottom(&mut o, "changes")
+        );
+        assert_eq!(
+            body_top(&mut o, "generated"),
+            header_bottom(&mut o, "generated")
+        );
+        assert_eq!(
+            header_top(&mut o, "tests") - (body_top(&mut o, "changes") + clip(&mut o, "changes")),
+            gap,
+            "{label}"
+        );
+        // Both chevrons share the track.
+        let share = slide(at / REVEAL_MS) as f32;
+        let (opening_deg, closing_deg) = (chevron(&drawn, "generated"), chevron(&drawn, "changes"));
+        assert!(
+            (opening_deg + 90.0 * (1.0 - share)).abs() < 1e-3,
+            "{label}: {opening_deg}"
+        );
+        assert!(
+            (closing_deg + 90.0 * share).abs() < 1e-3,
+            "{label}: {closing_deg}"
+        );
+    }
+
+    // Settled after 190 ms: Changes' body is gone, every header at its
+    // place, no frame asked for.
+    advance(o.shell.cx, ms(REVEAL_MS / 2.0));
+    assert!(!swapping(&mut o));
+    assert!(painted(o.shell.cx, "tree-panel-body-changes").is_none());
+    assert_eq!(clip(&mut o, "generated"), H);
+    for (k, e) in between.iter().zip(&end) {
+        assert_eq!(header_top(&mut o, k), *e, "{k} settled");
+    }
+    assert_eq!(chevron(&drawn, "generated"), 0.0);
+    assert_eq!(chevron(&drawn, "changes"), -90.0);
+    assert_eq!(requested_frames(o.shell.cx), 0, "nothing runs");
+}
+
+#[gpui_kit::test]
+fn header_click_upward_glides_the_headers_down(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    open_at_once(&mut o, "generated");
+    // Generated (the last) closes, Changes (on top) opens: the headers of
+    // Tests and Generated glide down by H, and Generated's body rides its
+    // header.
+    let between = ["tests", "generated"];
+    let start: Vec<f32> = between.iter().map(|k| header_top(&mut o, k)).collect();
+    let end = tops_with_open(&mut o, "changes", &between);
+    let gap = {
+        open_at_once(&mut o, "changes");
+        let gap = header_top(&mut o, "tests") - (body_top(&mut o, "changes") + H);
+        open_at_once(&mut o, "generated");
+        gap
+    };
+    press_header(&mut o, "changes");
+    assert_eq!(clip(&mut o, "generated"), H, "the commit frame");
+    assert_eq!(clip(&mut o, "changes"), 0.0);
+    step_to(o.shell.cx, ms(REVEAL_MS / 2.0));
+    let opening = opening_at(&mut o, REVEAL_MS / 2.0);
+    assert_eq!(clip(&mut o, "changes"), opening);
+    assert_eq!(clip(&mut o, "generated"), H - opening);
+    for ((k, s), e) in between.iter().zip(&start).zip(&end) {
+        let top = header_top(&mut o, k);
+        assert_eq!(top, s + opening, "{k}");
+        assert!(*s < top && top < *e, "{k} between its places");
+    }
+    assert_eq!(
+        body_top(&mut o, "changes"),
+        header_bottom(&mut o, "changes")
+    );
+    assert_eq!(
+        body_top(&mut o, "generated"),
+        header_bottom(&mut o, "generated")
+    );
+    assert_eq!(
+        header_top(&mut o, "tests") - (body_top(&mut o, "changes") + opening),
+        gap,
+        "the opening clip ends where the open body does at rest"
+    );
+}
+
+#[gpui_kit::test]
+fn the_closing_body_is_inert(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    let changes = o.tree.read_with(o.shell.cx, |t, _| {
+        t.panels().panels()[0].tree_state().clone()
+    });
+    let state = |o: &mut Opened| {
+        (
+            changes.read_with(o.shell.cx, |s, _| s.selected_index()),
+            top_file(o),
+            o.tree.read_with(o.shell.cx, |t, _| t.expanded_dirs()),
+        )
+    };
+    let before = state(&mut o);
+    press_header(&mut o, "tests");
+    step_to(o.shell.cx, FIRST_STEP);
+    // `src/b.rs`, in the shrinking Changes body, still shows.
+    let row = crate::shell::bounds(o.shell.cx, "tree-row-f:4");
+    let shown_to = body_top(&mut o, "changes") + clip(&mut o, "changes");
+    assert!(row.bottom().as_f32() < shown_to, "the row shows");
+    o.shell.cx.simulate_click(row.center(), Modifiers::none());
+    draw(o.shell.cx);
+    assert_eq!(state(&mut o), before, "the click selected nothing");
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    assert_eq!(selected_file(&mut o), None);
+}
+
+#[gpui_kit::test]
+fn follow_and_jumps_switch_instantly(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    let instant = |o: &mut Opened, key: &str, others: &[&str], what: &str| {
+        assert_eq!(open_panel(o).as_deref(), Some(key), "{what}");
+        assert!(!swapping(o), "{what}: no swap");
+        for other in others {
+            assert_eq!(clip(o, other), 0.0, "{what}: {other} closed at once");
+        }
+        assert!(goes_quiet(o), "{what}: no frame asked for");
+    };
+    // A jump into Tests' section.
+    go_to_file(&mut o.shell, &o.tab, 3);
+    instant(&mut o, "tests", &["changes"], "a jump");
+    assert_eq!(clip(&mut o, "tests"), H);
+    // Scrolling up into `src/b.rs`: the follow opens Changes.
+    scroll_by(&mut o, -200.0);
+    assert_eq!(top_file(&mut o), 4);
+    instant(&mut o, "changes", &["tests"], "the follow");
+    assert_eq!(clip(&mut o, "changes"), H);
+    // A keyboard-initiated open.
+    let tests = panel_key(&mut o, "tests");
+    let tree = o.tree.clone();
+    o.shell.cx.update(|window, cx| {
+        tree.update(cx, |t, cx| {
+            t.open_panel_by(&tests, Initiator::Keyboard, window, cx)
+        })
+    });
+    frame(o.shell.cx);
+    instant(&mut o, "tests", &["changes"], "the keyboard");
+    assert_eq!(clip(&mut o, "tests"), H);
+    // The filter leaving only Changes' files opens Changes.
+    set_query(&mut o, "b.rs");
+    instant(&mut o, "changes", &["tests"], "the filter");
+    set_query(&mut o, "");
+    // A jump while a header's switch runs ends it: Tests opens whole at
+    // once, and neither gliding body is left.
+    press_header(&mut o, "generated");
+    step_to(o.shell.cx, FIRST_STEP);
+    assert!(swapping(&mut o));
+    go_to_file(&mut o.shell, &o.tab, 3);
+    instant(
+        &mut o,
+        "tests",
+        &["changes", "generated"],
+        "a jump mid-switch",
+    );
+    assert_eq!(clip(&mut o, "tests"), H);
+}
+
+#[gpui_kit::test]
+fn a_third_click_settles_the_swap(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    let tests_rest = tops_with_open(&mut o, "generated", &["tests"])[0];
+    press_header(&mut o, "generated");
+    step_to(o.shell.cx, FIRST_STEP);
+    // Tests' header is on its way up; a click where it is painted hits it.
+    assert!(
+        header_top(&mut o, "tests") > tests_rest + 1.0,
+        "Tests' header is moving"
+    );
+    press_header(&mut o, "tests");
+    // The first swap ended (Generated whole, Changes gone); the click's own
+    // swap starts from there and still runs after the mouse up.
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    assert!(swapping(&mut o), "the click's swap runs on");
+    assert!(painted(o.shell.cx, "tree-panel-body-changes").is_none());
+    assert_eq!(clip(&mut o, "generated"), H, "the new swap's commit frame");
+    assert_eq!(clip(&mut o, "tests"), 0.0);
+    step_to(o.shell.cx, FIRST_STEP);
+    let opening = opening_at(&mut o, 16.667);
+    assert_eq!(clip(&mut o, "tests"), opening);
+    assert_eq!(clip(&mut o, "generated"), H - opening);
+}
+
+#[gpui_kit::test]
+fn the_opened_list_takes_the_keyboard_at_the_commit(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    let tree = o.tree.clone();
+    let in_tree = |o: &mut Opened| {
+        o.shell
+            .cx
+            .update(|window, cx| tree.read(cx).contains_focus(window, cx))
+    };
+    assert!(!in_tree(&mut o), "the diff has the keyboard");
+    press_header(&mut o, "tests");
+    assert!(swapping(&mut o), "the commit frame");
+    assert!(in_tree(&mut o), "the opened list has the keyboard");
+    // `n` walks Tests' files; its key down settles the swap first.
+    o.shell.cx.simulate_keystrokes("n");
+    frame(o.shell.cx);
+    assert!(!swapping(&mut o), "a key down settles it");
+    assert_eq!(selected_file(&mut o), Some(3));
+    assert_eq!(clip(&mut o, "tests"), H);
+}
+
+#[gpui_kit::test]
+fn each_bodys_scroll_offset_holds_through_the_swap(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    // 0–29 `src/m00.rs`…, 30–59 `tests/t00.rs`…: each list taller than H.
+    let paths: Vec<String> = (0..30)
+        .map(|i| format!("src/m{i:02}.rs"))
+        .chain((0..30).map(|i| format!("tests/t{i:02}.rs")))
+        .collect();
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let repo = repo_with(&paths, 3);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    let (changes, tests) = o.tree.read_with(o.shell.cx, |t, _| {
+        let p = t.panels().panels();
+        (p[0].tree_state().clone(), p[1].tree_state().clone())
+    });
+    let offset = |o: &mut Opened, state: &Entity<gpui_kit::component::tree::TreeState>| {
+        state.read_with(o.shell.cx, |s, _| {
+            s.scroll_handle().0.borrow().base_handle.offset().y
+        })
+    };
+    // Changes scrolled to the viewport's file (the tree keeps the current
+    // file's row in view), Tests by hand (the tree is a cached view:
+    // notified, so the list applies the scroll).
+    go_to_file(&mut o.shell, &o.tab, 20);
+    open_at_once(&mut o, "tests");
+    tests.update(o.shell.cx, |s, _| s.scroll_to_item(25, ScrollStrategy::Top));
+    o.tree.update(o.shell.cx, |_, cx| cx.notify());
+    draw(o.shell.cx);
+    open_at_once(&mut o, "changes");
+    let (c0, t0) = (offset(&mut o, &changes), offset(&mut o, &tests));
+    assert!(
+        c0 < px(0.) && t0 < px(0.),
+        "both lists scrolled: {c0:?} {t0:?}"
+    );
+    // Where a row of each list sits in its body.
+    let in_body = |o: &mut Opened, row: &str, key: &str| {
+        crate::shell::bounds(o.shell.cx, row).top().as_f32() - body_top(o, key)
+    };
+    let changes_row = in_body(&mut o, "tree-row-f:12", "changes");
+
+    press_header(&mut o, "tests");
+    let tests_row = in_body(&mut o, "tree-row-f:55", "tests");
+    let check = |o: &mut Opened, label: &str| {
+        assert_eq!(offset(o, &changes), c0, "Changes: {label}");
+        assert_eq!(offset(o, &tests), t0, "Tests: {label}");
+        assert_eq!(
+            in_body(o, "tree-row-f:12", "changes"),
+            changes_row,
+            "{label}"
+        );
+        assert_eq!(in_body(o, "tree-row-f:55", "tests"), tests_row, "{label}");
+    };
+    check(&mut o, "the commit frame");
+    step_to(o.shell.cx, FIRST_STEP);
+    check(&mut o, "the first step");
+    advance(o.shell.cx, ms(REVEAL_MS / 2.0) - FIRST_STEP);
+    check(&mut o, "½");
+    advance(o.shell.cx, ms(REVEAL_MS / 2.0));
+    assert!(!swapping(&mut o));
+    assert_eq!(offset(&mut o, &tests), t0, "settled");
+    open_at_once(&mut o, "changes");
+    assert_eq!(offset(&mut o, &changes), c0, "Changes kept its place");
+}
+
+#[gpui_kit::test]
+fn header_click_reduced_fades_the_incoming_body(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, drawn) = open_swapping(cx, &repo);
+    let between = ["tests", "generated"];
+    let end = tops_with_open(&mut o, "generated", &between);
+    set_policy(&mut o, MotionPolicy::Reduced);
+    // An instant swap; Generated's list fades in over QUICK.
+    press_header(&mut o, "generated");
+    for (at, label) in [
+        (0.0, "the commit frame"),
+        (16.667, "+1 frame"),
+        (75.0, "½ of QUICK"),
+    ] {
+        if at == 16.667 {
+            step_to(o.shell.cx, FIRST_STEP);
+        } else if at == 75.0 {
+            advance(o.shell.cx, ms(75.0) - FIRST_STEP);
+        }
+        assert!(
+            painted(o.shell.cx, "tree-panel-body-changes").is_none(),
+            "{label}"
+        );
+        assert_eq!(clip(&mut o, "generated"), H, "{label}");
+        for (k, e) in between.iter().zip(&end) {
+            assert_eq!(header_top(&mut o, k), *e, "{label}: {k} at its place");
+        }
+        assert_eq!(chevron(&drawn, "generated"), 0.0, "{label}");
+        assert_eq!(chevron(&drawn, "changes"), -90.0, "{label}");
+        assert_eq!(
+            last(&drawn, "tree-panel-body-generated").offset,
+            point(px(0.), px(0.)),
+            "{label}"
+        );
+    }
+    let half = list_opacity(&drawn, "generated");
+    assert!(0.0 < half && half < 1.0, "fading in: {half}");
+    advance(o.shell.cx, ms(75.0));
+    assert_eq!(
+        list_opacity(&drawn, "generated"),
+        1.0,
+        "faded in after 150 ms"
+    );
+    assert!(!swapping(&mut o));
+    assert_eq!(requested_frames(o.shell.cx), 0);
+
+    // Off (the harnesses): settled on the commit frame.
+    set_policy(&mut o, MotionPolicy::Off);
+    press_header(&mut o, "tests");
+    assert!(!swapping(&mut o));
+    assert_eq!(clip(&mut o, "tests"), H);
+    assert_eq!(list_opacity(&drawn, "tests"), 1.0);
+    assert_eq!(requested_frames(o.shell.cx), 0);
+}
+
+#[gpui_kit::test]
+fn the_swap_freezes_under_a_mouse_down_and_settles_on_input(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    // The footer's corner, left of its text: pressing it does nothing.
+    let blank =
+        crate::shell::bounds(o.shell.cx, "file-tree-pane").bottom_left() + point(px(4.), px(-4.));
+    let back = |o: &mut Opened| {
+        set_policy(o, MotionPolicy::Off);
+        open_at_once(o, "changes");
+        set_policy(o, MotionPolicy::Full);
+    };
+
+    // A pointer move leaves it running.
+    press_header(&mut o, "tests");
+    step_to(o.shell.cx, FIRST_STEP);
+    o.shell
+        .cx
+        .simulate_mouse_move(blank, None, Modifiers::none());
+    advance(o.shell.cx, ms(REVEAL_MS / 2.0) - FIRST_STEP);
+    let half = opening_at(&mut o, REVEAL_MS / 2.0);
+    assert_eq!(clip(&mut o, "tests"), half, "running after a pointer move");
+
+    // A mouse down freezes it, asking for no frame; its mouse up settles
+    // it.
+    o.shell
+        .cx
+        .simulate_mouse_down(blank, MouseButton::Left, Modifiers::none());
+    for _ in 0..3 {
+        advance(o.shell.cx, FIRST_STEP);
+        assert_eq!(clip(&mut o, "tests"), half, "frozen");
+    }
+    assert_eq!(requested_frames(o.shell.cx), 0, "frozen: no frames");
+    o.shell
+        .cx
+        .simulate_mouse_up(blank, MouseButton::Left, Modifiers::none());
+    frame(o.shell.cx);
+    assert!(!swapping(&mut o), "settled at the mouse up");
+    assert_eq!(clip(&mut o, "tests"), H);
+
+    // A scroll settles it.
+    back(&mut o);
+    press_header(&mut o, "tests");
+    step_to(o.shell.cx, FIRST_STEP);
+    let pane = crate::shell::bounds(o.shell.cx, "file-tree-pane").center();
+    o.shell.cx.simulate_event(ScrollWheelEvent {
+        position: pane,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-10.))),
+        ..Default::default()
+    });
+    frame(o.shell.cx);
+    assert!(!swapping(&mut o), "a scroll settles it");
+    assert_eq!(clip(&mut o, "tests"), H);
+    assert_eq!(requested_frames(o.shell.cx), 0);
+
+    // A resize settles it.
+    back(&mut o);
+    press_header(&mut o, "tests");
+    step_to(o.shell.cx, FIRST_STEP);
+    let window = o.shell.cx.update(|window, _| window.viewport_size());
+    o.shell
+        .cx
+        .simulate_resize(gpui_kit::size(window.width + px(40.), window.height));
+    frame(o.shell.cx);
+    assert!(!swapping(&mut o), "a resize settles it");
+    assert_eq!(requested_frames(o.shell.cx), 0);
+}
+
+/// The accordion's perf driver (`perf::motion`) switches between the first
+/// two panels by pointer: a swap runs, and the window's settling sees it.
+#[gpui_kit::test]
+fn accordion_driver_switches_the_first_two_panels_by_pointer(cx: &mut TestAppContext) {
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(60);
+    let (mut o, _drawn) = open_swapping(cx, &repo);
+    let driver = polygloss_app::perf::motion::DRIVERS
+        .iter()
+        .find(|d| d.name == "accordion")
+        .expect("the accordion driver");
+    o.shell.cx.update(|window, cx| (driver.open)(window, cx));
+    frame(o.shell.cx);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("tests"));
+    assert!(swapping(&mut o), "by pointer");
+    o.shell.cx.simulate_keystrokes("escape");
+    assert!(!swapping(&mut o), "settled by a key down");
+    o.shell.cx.update(|window, cx| (driver.close)(window, cx));
+    frame(o.shell.cx);
+    assert_eq!(open_panel(&mut o).as_deref(), Some("changes"));
+    assert!(swapping(&mut o));
 }

@@ -7,8 +7,23 @@
 //!   gpui-kit `TreeState` (virtualized, scrolling on its own) and its own
 //!   collapsed folders; [`FilesPanel`] holds them and which one is open.
 //!   Only the open panel's tree is rendered; the others are their headers.
-//!   Switching is instant (no gpui-component `Accordion`: no motion), and
-//!   the keyboard in the old list moves to the new one.
+//!   The follow, jumps, repartitions and the filter switch at once
+//!   ([`FilesPanel::set_open`]); the keyboard in the old list moves to the
+//!   new one.
+//! - **The switch (M9, ADR-0030):** a header click
+//!   ([`FilesPanel::open_by`], the pointer) glides: on the commit frame the
+//!   model, layout and keyboard are the new panel's, and one [`Track`] of
+//!   `FilesPanel` paints the way there over `reveal(H)` on SLIDE. Both
+//!   bodies are laid out at the body's height H and clipped from their
+//!   headers' bottom edges, the opening one's clip growing 0 → H while the
+//!   closing one's shrinks (their sum is H, from one quantized value); the
+//!   headers between translate by the closing clip (down when the panel
+//!   opening is above); both chevrons turn on the track. The closing body
+//!   stays live (its list keeps its element state and scroll offset) in a
+//!   0 pt slot under its header, inert under an occluding layer. Reduce
+//!   Motion swaps at once and fades the incoming list in over QUICK; Off and
+//!   the keyboard snap. A third header click settles the swap and starts its
+//!   own; the window's settling ([`motion::settle`]) freezes and settles it.
 //! - **Headers:** chevron, the category's icon, its title and file count
 //!   ("3 of 12" while the filter is on), then, over the panel's files, the
 //!   changed-since-viewed dot, the open-thread count and the agent badge. A
@@ -31,13 +46,15 @@
 //!
 //! Debug selectors (`key` = [`PanelKey`]'s text: `changes`, `tests`,
 //! `custom:tokens`): `tree-panel-{key}` (the header), `tree-panel-chevron-{key}`
-//! (its chevron's box), `tree-panel-title-{key}:
+//! (its chevron's box), `tree-panel-body-{key}` (its body's visible part,
+//! the clip), `tree-panel-title-{key}:
 //! {title}`, `tree-panel-count-{key}: {count}`, `tree-panel-threads-{key}:
 //! {n}`, `tree-panel-agent-{key}`, `tree-panel-changed-{key}`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
@@ -48,7 +65,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    WeakEntity, Window, div, px,
+    WeakEntity, Window, canvas, div, point, px, radians,
 };
 use polygloss_core::categories::CategoryId;
 use polygloss_diff::FileChange;
@@ -59,6 +76,9 @@ use super::model::{ItemId, NodeId, TreeModel};
 use super::row::Check;
 use super::{FileTree, KEY_CONTEXT, row};
 use crate::categories::Partition;
+use crate::motion::{
+    self, Initiator, Motion, Recorded, Reduced, ReducedPlay, Settle, Track, tokens, wrap,
+};
 use crate::review_tab::toolbar::tooltip;
 use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, text};
 
@@ -397,6 +417,80 @@ fn tree_items(model: &TreeModel, collapsed: &HashSet<String>) -> Vec<TreeItem> {
         .collect()
 }
 
+/// M9, the panel switch by pointer (ADR-0030): `reveal(H)` on SLIDE, the
+/// chevrons on its track; under Reduce Motion the switch is instant and the
+/// incoming list fades in.
+fn switch_motion(height: f32) -> Motion {
+    let enter = tokens::reveal(height, height);
+    Motion {
+        enter,
+        exit: tokens::exit(enter),
+        easing: tokens::slide,
+        animates: &[Initiator::Pointer],
+        reduced: Reduced {
+            enter: ReducedPlay::Fade,
+            exit: ReducedPlay::Snap,
+        },
+    }
+}
+
+/// A switch under way: the open panel is the one opening.
+struct Swap {
+    /// The panel closing: its body stays mounted, inert, until the swap
+    /// settles.
+    closing: PanelKey,
+    /// The opening body's share of `height`, 0 → 1.
+    track: Track,
+    /// H, both bodies' height.
+    height: f32,
+}
+
+/// One frame of a [`Swap`], from its one quantized clip.
+#[derive(Clone, Copy, Debug)]
+struct SwapFrame {
+    opening: usize,
+    closing: usize,
+    height: f32,
+    /// The opening body's clip; the closing body's is the rest of H.
+    open: f32,
+    /// The opening list's opacity (a Reduced fade).
+    opacity: f32,
+    /// The track's value, which turns both chevrons.
+    progress: f32,
+}
+
+impl SwapFrame {
+    fn closing_clip(&self) -> f32 {
+        self.height - self.open
+    }
+
+    /// How far panel `ix`'s header (and the body hanging from it) is painted
+    /// from its place: the headers after the upper panel, down to the lower
+    /// one, sit below the upper body's clip instead of its settled height.
+    fn offset(&self, ix: usize) -> f32 {
+        let upper = self.opening.min(self.closing);
+        let lower = self.opening.max(self.closing);
+        if ix <= upper || ix > lower {
+            0.0
+        } else if upper == self.closing {
+            self.closing_clip()
+        } else {
+            -self.closing_clip()
+        }
+    }
+
+    /// How open panel `ix`'s chevron is drawn (1 open), if it turns.
+    fn chevron(&self, ix: usize) -> Option<f32> {
+        if ix == self.opening {
+            Some(self.progress)
+        } else if ix == self.closing {
+            Some(1.0 - self.progress)
+        } else {
+            None
+        }
+    }
+}
+
 /// The panels of a tree and the open one.
 #[derive(Default)]
 pub struct FilesPanel {
@@ -404,6 +498,10 @@ pub struct FilesPanel {
     open: Option<usize>,
     /// Each file's panel, by `file_idx` (`u32::MAX`: none).
     owner: Vec<u32>,
+    /// The switch under way (M9).
+    swap: Option<Swap>,
+    /// The open body's height as last laid out (H).
+    body_height: f32,
 }
 
 impl FilesPanel {
@@ -438,13 +536,114 @@ impl FilesPanel {
         (i != u32::MAX).then_some(i as usize)
     }
 
-    /// Opens panel `ix`; `false` when it does not show.
+    /// Opens panel `ix` at once (the follow, jumps, repartitions, the
+    /// filter: Programmatic), ending a switch under way; `false` when it
+    /// does not show.
     pub(super) fn set_open(&mut self, ix: usize) -> bool {
         let shown = self.panels.get(ix).is_some_and(PanelTree::is_shown);
-        if shown {
+        if shown && self.open != Some(ix) {
             self.open = Some(ix);
+            self.swap = None;
         }
         shown
+    }
+
+    /// A user opens panel `key` (a header click: [`Initiator::Pointer`]):
+    /// its list takes the keyboard, and from the open panel it glides when
+    /// `initiator` animates M9 (any switch under way settles first). `true`
+    /// when the open panel changed.
+    pub fn open_by(
+        &mut self,
+        key: &PanelKey,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(ix) = self.index_of(key).filter(|&ix| self.panels[ix].is_shown()) else {
+            return false;
+        };
+        self.panels[ix]
+            .state
+            .update(cx, |s, cx| s.focus(window, cx));
+        if self.open == Some(ix) {
+            return false;
+        }
+        let closing = self.open().filter(|p| p.is_shown()).map(|p| p.key.clone());
+        self.open = Some(ix);
+        self.swap = None;
+        if let Some(closing) = closing
+            && self.body_height > 0.0
+        {
+            let mut track = Track::new(0.0, 1.0);
+            let now = cx.background_executor().now();
+            let motion = switch_motion(self.body_height);
+            track.retarget(1.0, &motion, initiator, motion::policy(cx), now);
+            if !track.is_settled() {
+                self.swap = Some(Swap {
+                    closing,
+                    track,
+                    height: self.body_height,
+                });
+            }
+        }
+        true
+    }
+
+    /// Whether a switch is under way (M9).
+    pub fn is_swapping(&self) -> bool {
+        self.swap.is_some()
+    }
+
+    /// The open body's height as last laid out: H, the distance a switch
+    /// travels.
+    pub fn body_height(&self) -> f32 {
+        self.body_height
+    }
+
+    /// Samples the switch for this frame (requesting the next one while it
+    /// runs): `None` once it settled, or when a change since made it moot
+    /// (either panel gone or hidden).
+    fn sample_swap(&mut self, window: &mut Window, cx: &App) -> Option<SwapFrame> {
+        let Some(opening) = self.open else {
+            self.swap = None;
+            return None;
+        };
+        let closing = self.swap.as_ref().and_then(|s| self.index_of(&s.closing));
+        let live = closing.filter(|&c| {
+            c != opening && self.panels[c].is_shown() && self.panels[opening].is_shown()
+        });
+        let (Some(closing), Some(swap)) = (live, self.swap.as_mut()) else {
+            self.swap = None;
+            return None;
+        };
+        let sample = motion::sample(&mut swap.track, window, cx);
+        if sample.settled {
+            self.swap = None;
+            return None;
+        }
+        Some(SwapFrame {
+            opening,
+            closing,
+            height: swap.height,
+            open: motion::quantize(swap.height * sample.value, window.scale_factor()),
+            opacity: sample.opacity,
+            progress: sample.value,
+        })
+    }
+
+    /// A mouse down: the switch holds where it is.
+    fn freeze(&mut self, now: Instant) {
+        if let Some(swap) = &mut self.swap {
+            swap.track.freeze(now);
+        }
+    }
+
+    /// A settling input ends the switch (`Settle::Frozen`: only if it is
+    /// still frozen).
+    fn settle(&mut self, which: Settle) {
+        if which == Settle::All || self.swap.as_ref().is_some_and(|s| s.track.is_frozen()) {
+            self.swap = None;
+        }
     }
 
     /// The open panel when it shows, else the first one that does.
@@ -452,11 +651,9 @@ impl FilesPanel {
         if self.open().is_some_and(PanelTree::is_shown) {
             return;
         }
-        self.open = self
-            .panels
-            .iter()
-            .position(PanelTree::is_shown)
-            .or(self.open);
+        if let Some(ix) = self.panels.iter().position(PanelTree::is_shown) {
+            self.set_open(ix);
+        }
     }
 
     /// Replaces the panels by `panels` (each file's owner recomputed for
@@ -473,11 +670,13 @@ impl FilesPanel {
         self.owner = owner;
         self.panels = panels;
         self.open = None;
+        self.swap = None;
     }
 
     /// Takes every panel out (to reuse their list states).
     pub(super) fn take(&mut self) -> Vec<PanelTree> {
         self.open = None;
+        self.swap = None;
         std::mem::take(&mut self.panels)
     }
 
@@ -487,10 +686,11 @@ impl FilesPanel {
     }
 }
 
-/// A panel's header: a click opens it.
-pub(super) fn header(
+/// A panel's header, its chevron `open` (0 closed, 1 open; between while it
+/// turns): a click opens the panel.
+fn header(
     panel: &PanelTree,
-    open: bool,
+    open: f32,
     filtering: bool,
     tree: WeakEntity<FileTree>,
     first: bool,
@@ -520,6 +720,16 @@ pub(super) fn header(
     };
     let radius = radius::for_height(height::MD);
     let chevron = format!("tree-panel-chevron-{key}");
+    let angle = tokens::CHEVRON_CLOSED_DEG * (1.0 - open);
+    motion::report(
+        || Recorded {
+            id: SharedString::from(chevron.clone()).into(),
+            offset: Default::default(),
+            opacity: 1.0,
+            rotation: angle,
+        },
+        cx,
+    );
     let control = h_flex()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector)
@@ -534,8 +744,7 @@ pub(super) fn header(
         .on_click(move |_, window, cx| {
             if let Some(tree) = tree.upgrade() {
                 tree.update(cx, |t, cx| {
-                    t.open_panel(&open_key, cx);
-                    t.focus(window, cx);
+                    t.open_panel_by(&open_key, Initiator::Pointer, window, cx)
                 });
             }
         })
@@ -546,13 +755,10 @@ pub(super) fn header(
                 .flex_none()
                 .flex()
                 .child(
-                    Icon::new(if open {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .with_size(px(size::ICON_XS))
-                    .text_color(theme.muted_foreground),
+                    Icon::new(IconName::ChevronDown)
+                        .with_size(px(size::ICON_XS))
+                        .rotate(radians(angle.to_radians()))
+                        .text_color(theme.muted_foreground),
                 ),
         )
         .child(
@@ -625,6 +831,24 @@ pub(super) fn header(
         .px(px(edge::SIDEBAR))
         .when(!first, |el| el.border_t_1().border_color(theme.border))
         .child(control)
+}
+
+/// Where a body is drawn on this frame.
+#[derive(Clone, Copy, Debug)]
+enum Layer {
+    /// Open, nothing moving: the whole slot.
+    Rest,
+    /// Opening (M9): `clip` tall, `top` below its slot's top (its header's
+    /// offset), the list `height` tall at `opacity`.
+    Opening {
+        top: f32,
+        clip: f32,
+        height: f32,
+        opacity: f32,
+    },
+    /// Closing (M9): `clip` tall, `top` below its 0 pt slot, the list
+    /// `height` tall under an occluding layer.
+    Closing { top: f32, clip: f32, height: f32 },
 }
 
 impl FileTree {
@@ -710,46 +934,142 @@ impl FileTree {
         self.rendered_open = open.cloned();
     }
 
-    /// The open panel's tree, or why nothing shows.
-    pub(super) fn body(&self, cx: &Context<Self>) -> AnyElement {
-        let Some(panel) = self.panels.open().filter(|p| p.is_shown()) else {
-            let theme = cx.theme();
-            let none = self.files.is_empty();
-            let this = cx.entity().downgrade();
-            return v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .gap(px(gap::CONTROLS))
-                .text_style(text::UI)
-                .text_color(theme.muted_foreground)
-                .child(if none {
-                    "No files changed"
-                } else {
-                    "No files match the filters"
-                })
-                .when(!none, |el| {
-                    el.child(
-                        Button::new("tree-clear-filters")
-                            .debug_selector(|| "tree-clear-filters".into())
-                            .label("Clear filters")
-                            .xsmall()
-                            .rounded(px(radius::XS))
-                            .outline()
-                            .on_click(move |_, window, cx| {
-                                if let Some(t) = this.upgrade() {
-                                    t.update(cx, |t, cx| t.clear_filters(window, cx));
-                                }
-                            }),
-                    )
-                })
-                .into_any_element();
-        };
+    /// A user opens panel `key` ([`FilesPanel::open_by`]; a header click is
+    /// [`Initiator::Pointer`]): its list takes the keyboard and keeps its
+    /// scroll position, the diff does not move, and the current file's row
+    /// is marked when the panel holds it.
+    pub fn open_panel_by(
+        &mut self,
+        key: &PanelKey,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.panels.open_by(key, initiator, window, cx) {
+            self.selected = None;
+            self.mark_current(false, cx);
+            cx.notify();
+        }
+    }
+
+    /// The accordion for this frame: each shown panel's header, the open
+    /// panel's body after its header and, while a switch runs, the closing
+    /// body after its own (M9); or why nothing shows.
+    pub(super) fn accordion(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let swap = self.panels.sample_swap(window, cx);
+        if swap.is_some() {
+            self.register_swap(window, cx);
+        }
+        let headers = self.panels.has_headers();
+        let filtering = self.filter.is_active();
+        let this = cx.entity().downgrade();
+        let mut out = Vec::new();
+        let mut first = true;
+        for (ix, panel) in self.panels.panels().iter().enumerate() {
+            if !panel.is_shown() {
+                continue;
+            }
+            let is_open = self.panels.open == Some(ix);
+            let offset = swap.map_or(0.0, |s| s.offset(ix));
+            if headers {
+                let open =
+                    swap.and_then(|s| s.chevron(ix))
+                        .unwrap_or(if is_open { 1.0 } else { 0.0 });
+                let header = header(panel, open, filtering, this.clone(), first, cx);
+                out.push(wrap::slide(point(px(0.), px(offset)), header));
+                first = false;
+            }
+            let layer = match swap {
+                None if is_open => Some(Layer::Rest),
+                Some(s) if ix == s.opening => Some(Layer::Opening {
+                    top: offset,
+                    clip: s.open,
+                    height: s.height,
+                    opacity: s.opacity,
+                }),
+                Some(s) if ix == s.closing && s.closing_clip() > 0.0 => Some(Layer::Closing {
+                    top: offset,
+                    clip: s.closing_clip(),
+                    height: s.height,
+                }),
+                _ => None,
+            };
+            if let Some(layer) = layer {
+                out.push(self.body(panel, layer, cx));
+            }
+        }
+        if !self.panels.open().is_some_and(PanelTree::is_shown) {
+            out.push(self.nothing_shows(cx));
+        }
+        out
+    }
+
+    /// While a switch runs, registers it with `motion::settle`: a mouse
+    /// down freezes it, a settling input (or the mouse up after a freeze)
+    /// ends it.
+    fn register_swap(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (freeze, settle) = (cx.weak_entity(), cx.weak_entity());
+        motion::settle::register(
+            None,
+            move |now, cx| {
+                freeze
+                    .update(cx, |t, cx| {
+                        t.panels.freeze(now);
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            move |which, cx| {
+                settle
+                    .update(cx, |t, cx| {
+                        t.panels.settle(which);
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Panel `panel`'s body as `layer` places it: its slot (the open panel's
+    /// takes the free height and measures it as H; a closing one's is 0 pt
+    /// tall, under its header), in it the clip (`tree-panel-body-{key}`),
+    /// and in that the list, at the clip's top.
+    fn body(&self, panel: &PanelTree, layer: Layer, cx: &Context<Self>) -> AnyElement {
         let ctx = row::RowCtx::shared(self.row_ctx(panel, cx));
-        div()
-            .flex_1()
-            .min_h_0()
+        let selector = format!("tree-panel-body-{}", panel.key);
+        let (top, list_height, opacity) = match layer {
+            Layer::Rest => (0.0, None, 1.0),
+            Layer::Opening {
+                top,
+                height,
+                opacity,
+                ..
+            } => (top, Some(height), opacity),
+            Layer::Closing { top, height, .. } => (top, Some(height), 1.0),
+        };
+        motion::report(
+            || Recorded {
+                id: SharedString::from(selector.clone()).into(),
+                offset: point(px(0.), px(top)),
+                opacity,
+                rotation: 0.0,
+            },
+            cx,
+        );
+        let list = div()
+            .w_full()
             .px(px(edge::SIDEBAR))
+            .map(|el| match list_height {
+                Some(h) => el.h(px(h)),
+                None => el.h_full(),
+            })
+            .when(opacity < 1.0, |el| el.opacity(opacity))
             .child(
                 tree(
                     panel.tree_state(),
@@ -758,7 +1078,84 @@ impl FileTree {
                     },
                 )
                 .size_full(),
+            );
+        let clip = div()
+            .debug_selector(move || selector)
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(top))
+            .overflow_hidden()
+            .map(|el| match layer {
+                Layer::Rest => el.bottom_0(),
+                Layer::Opening { clip, .. } | Layer::Closing { clip, .. } => el.h(px(clip)),
+            })
+            .child(list);
+        if let Layer::Closing { .. } = layer {
+            // Live and inert: the occluding layer takes every click.
+            return div()
+                .relative()
+                .flex_none()
+                .w_full()
+                .h(px(0.))
+                .child(clip.child(div().absolute().inset_0().occlude()))
+                .into_any_element();
+        }
+        let this = cx.entity().downgrade();
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        this.update(cx, |t, _| {
+                            t.panels.body_height = bounds.size.height.as_f32()
+                        })
+                        .ok();
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
             )
+            .child(clip)
+            .into_any_element()
+    }
+
+    /// Why no panel shows: no files, or none the filters keep.
+    fn nothing_shows(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let none = self.files.is_empty();
+        let this = cx.entity().downgrade();
+        v_flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(gap::CONTROLS))
+            .text_style(text::UI)
+            .text_color(theme.muted_foreground)
+            .child(if none {
+                "No files changed"
+            } else {
+                "No files match the filters"
+            })
+            .when(!none, |el| {
+                el.child(
+                    Button::new("tree-clear-filters")
+                        .debug_selector(|| "tree-clear-filters".into())
+                        .label("Clear filters")
+                        .xsmall()
+                        .rounded(px(radius::XS))
+                        .outline()
+                        .on_click(move |_, window, cx| {
+                            if let Some(t) = this.upgrade() {
+                                t.update(cx, |t, cx| t.clear_filters(window, cx));
+                            }
+                        }),
+                )
+            })
             .into_any_element()
     }
 }

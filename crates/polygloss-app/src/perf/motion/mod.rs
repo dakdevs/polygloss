@@ -22,6 +22,7 @@
 //! opens and closes) and `<name>_late_frames` (intervals between a toggle's
 //! frames over 1.5 display periods).
 
+pub mod accordion;
 pub mod card;
 pub mod frames;
 pub mod section;
@@ -64,10 +65,11 @@ pub struct Driver {
 /// card (T7.8), section (T7.11), sidebar and threads (T7.10), accordion
 /// (T7.13).
 pub const DRIVERS: &[Driver] = &[
-    card::DRIVER,    // T7.8
-    section::DRIVER, // T7.11
-    sidebar::DRIVER, // T7.10
-    threads::DRIVER, // T7.10
+    card::DRIVER,      // T7.8
+    section::DRIVER,   // T7.11
+    sidebar::DRIVER,   // T7.10
+    threads::DRIVER,   // T7.10
+    accordion::DRIVER, // T7.13
 ];
 
 /// The surfaces whose metrics `benches/budgets.json` registers: each is
