@@ -13,17 +13,27 @@
 //!   paint CPU time (as `scroll_p95_ms`), collapses and expands together.
 //! - `collapse_commit_ms`: the expands' input → the end of their commit
 //!   frame's paint, p95 (the commit lays a body out and shapes its rows).
+//!
+//! Then the section variant (T7.11, ADR-0030 M4): the `sections`
+//! scenario's plan ([`sections::plan`]: every other file behind a closed
+//! band, the last 20 in an open section), its closed band at the top,
+//! opened and closed [`Knobs::ops`] times by a synthesized pointer
+//! (`toggle_section_by`, what the band's Show / Hide does).
+//!
+//! - `section_anim_p95_ms`: the p95 of those toggles' animation frames'
+//!   prepaint + paint CPU time, opens and closes together.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use gpui_kit::AsyncApp;
-use polygloss_viewport::Document;
+use gpui_kit::{AsyncApp, Context, Window};
 use polygloss_viewport::motion::{Initiator, MotionPolicy, MotionPolicyOverride};
+use polygloss_viewport::{DiffViewport, Document, RowKey, ScrollAnchor};
 use serde_json::json;
 
+use super::sections;
 use crate::args::Knobs;
 use crate::harness::{FrameRecord, Harness};
 use crate::metrics::{ScenarioResult, Series, ms};
@@ -73,7 +83,11 @@ pub async fn run(
         .with_context(|| format!("file {f} never finished loading at the top"))?;
         h.quiet(cx, QUIET, QUIET_CAP).await?;
         for expand in [false, true] {
-            let Some(t) = toggle(h, cx, f).await? else {
+            let card =
+                move |v: &mut DiffViewport, w: &mut Window, cx: &mut Context<DiffViewport>| {
+                    v.toggle_collapsed_by(f, Initiator::Pointer, w, cx)
+                };
+            let Some(t) = toggle(h, cx, card).await? else {
                 timeouts += 1;
                 continue;
             };
@@ -97,18 +111,79 @@ pub async fn run(
     );
     result.samples("anim_ms", anim);
     result.samples("commit_ms", commits);
+    section_variant(h, cx, knobs, result).await
+}
+
+/// The section variant: the plan's closed band at the top, opened and
+/// closed by pointer `knobs.ops` times (`section_anim_p95_ms`).
+async fn section_variant(
+    h: &mut Harness,
+    cx: &mut AsyncApp,
+    knobs: &Knobs,
+    result: &mut ScenarioResult,
+) -> anyhow::Result<()> {
+    let band = h.update(cx, |v, cx| {
+        let files = v.document().len();
+        v.set_sections(sections::plan(files), cx);
+        let doc = v.document();
+        let s = doc.section_by_id(sections::BIG)?;
+        let first = doc.sections()[s].files[0];
+        v.scroll_to_anchor(
+            ScrollAnchor {
+                file_idx: first,
+                row: RowKey::Lead,
+                offset_px: 0.0,
+            },
+            cx,
+        );
+        Some(s)
+    });
+    let Some(s) = band else {
+        // A corpus of 21 files or fewer has no closed section.
+        result.metric("section_anim_p95_ms", None);
+        return Ok(());
+    };
+    h.quiet(cx, QUIET, QUIET_CAP).await?;
+    let (mut anim, mut timeouts) = (Vec::new(), 0);
+    for _ in 0..knobs.ops {
+        for _open in [true, false] {
+            let band =
+                move |v: &mut DiffViewport, w: &mut Window, cx: &mut Context<DiffViewport>| {
+                    v.toggle_section_by(s, Initiator::Pointer, w, cx)
+                };
+            match toggle(h, cx, band).await? {
+                Some(t) => anim.extend(t.frames.iter().skip(1).map(|r| ms(r.cpu()))),
+                None => timeouts += 1,
+            }
+        }
+    }
+    result.metric("section_anim_p95_ms", Series::new(&anim).p95());
+    result.info(
+        "section_reveal",
+        json!({
+            "toggles": 2 * knobs.ops,
+            "anim_frames": anim.len(),
+            "timeouts": timeouts,
+            "anim_max_ms": Series::new(&anim).max(),
+        }),
+    );
+    result.samples("section_anim_ms", anim);
     Ok(())
 }
 
-/// Toggles file `f` by pointer at the start of the next display frame and
-/// collects the frames until quiet; `None` when it drew nothing.
-async fn toggle(h: &mut Harness, cx: &mut AsyncApp, f: u32) -> anyhow::Result<Option<Toggle>> {
+/// Runs `input` (a toggle by pointer) at the start of the next display
+/// frame and collects the frames until quiet; `None` when it drew nothing.
+async fn toggle(
+    h: &mut Harness,
+    cx: &mut AsyncApp,
+    input: impl FnOnce(&mut DiffViewport, &mut Window, &mut Context<DiffViewport>) + 'static,
+) -> anyhow::Result<Option<Toggle>> {
     h.drain();
     let ran = Rc::new(Cell::new(None::<Instant>));
     let stamp = ran.clone();
     h.at_next_frame(cx, move |v, window, cx| {
         stamp.set(Some(Instant::now()));
-        v.toggle_collapsed_by(f, Initiator::Pointer, window, cx);
+        input(v, window, cx);
     })?;
     let asked = Instant::now();
     let input = loop {

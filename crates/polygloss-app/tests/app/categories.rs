@@ -783,6 +783,60 @@ fn band_controls_open_and_mark_the_section(cx: &mut TestAppContext) {
     assert_eq!(sections(&mut shell, &tab)[0], s("tests", &[3, 5], true));
 }
 
+/// T7.11 (ADR-0030 M5): the band's Mark all viewed is a pointer's, so its
+/// cards on screen collapse through one compound reveal; the palette's Mark
+/// Section Viewed (the keyboard's) snaps.
+#[gpui_kit::test]
+fn band_mark_all_viewed_glides_and_the_palette_snaps(cx: &mut TestAppContext) {
+    use polygloss_app::motion::{self, MotionPolicy};
+    let _sb = Sandbox::isolate();
+    let repo = mixed_repo(3);
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    let tests = section_id(&mut shell, &tab, "tests");
+    click_band(&mut shell, &tab, ControlAction::SectionToggle(tests));
+    assert_eq!(sections(&mut shell, &tab)[0], s("tests", &[3, 5], true));
+    let state = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            let v = t.viewport.read(cx);
+            let reveal = v
+                .debug()
+                .reveals
+                .iter()
+                .map(|r| r.file_idx)
+                .collect::<Vec<_>>();
+            (
+                v.document().is_collapsed(3),
+                v.document().is_collapsed(5),
+                reveal,
+            )
+        })
+    };
+    shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(MotionPolicy::Full), cx));
+    // The band's click: both cards on screen collapse on one clock.
+    click_band(&mut shell, &tab, ControlAction::SectionMarkViewed(tests));
+    assert_eq!(state(&mut shell), (true, true, vec![3, 5]));
+    // Mark Section Viewed from the palette unmarks them at once.
+    shell.cx.simulate_keystrokes("escape");
+    set_cursor(&mut shell, &tab, 2, 0);
+    act(&mut shell, &tab, category_actions::MarkSectionViewed);
+    let viewed = tab.read_with(shell.cx, |t, _| viewed::states(t).unwrap().to_vec());
+    assert!(
+        viewed
+            .iter()
+            .all(|s| *s != polygloss_core::review::ViewedState::Viewed)
+    );
+    assert_eq!(
+        state(&mut shell),
+        (false, false, vec![]),
+        "the palette's snaps"
+    );
+    let running = tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).motion_running());
+    assert!(!running);
+}
+
 fn toasts(shell: &mut Shell) -> Vec<String> {
     shell.main.read_with(shell.cx, |m, _| {
         m.toasts().iter().map(|t| t.to_string()).collect()

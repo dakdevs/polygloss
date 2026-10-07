@@ -24,6 +24,7 @@
 
 pub mod card;
 pub mod frames;
+pub mod section;
 
 use std::cell::{Cell, RefCell};
 use std::process::ExitCode;
@@ -61,7 +62,8 @@ pub struct Driver {
 /// card (T7.8), section (T7.11), sidebar and threads (T7.10), accordion
 /// (T7.13).
 pub const DRIVERS: &[Driver] = &[
-    card::DRIVER, // T7.8
+    card::DRIVER,    // T7.8
+    section::DRIVER, // T7.11
 ];
 
 /// The surfaces whose metrics `benches/budgets.json` registers: each is

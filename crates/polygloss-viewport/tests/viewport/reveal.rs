@@ -29,22 +29,22 @@ use polygloss_viewport::{
 use crate::support::*;
 
 /// The viewport's height and the window's scale.
-const VIEW_H: f32 = 900.0;
-const SCALE: f32 = 2.0;
+pub(crate) const VIEW_H: f32 = 900.0;
+pub(crate) const SCALE: f32 = 2.0;
 /// ADR-0031's numbers: a card's bottom padding and the gap between cards.
-const CARD_Y: f32 = 8.0;
-const CARDS: f32 = 12.0;
+pub(crate) const CARD_Y: f32 = 8.0;
+pub(crate) const CARDS: f32 = 12.0;
 /// How far `a.rs`'s card grows when it opens.
 const GROWTH: f32 = 400.0;
 /// The first step after a commit (ADR-0030 `FIRST_STEP`).
-const FIRST_STEP: Duration = Duration::from_micros(16_667);
+pub(crate) const FIRST_STEP: Duration = Duration::from_micros(16_667);
 
-fn ms(ms: f64) -> Duration {
+pub(crate) fn ms(ms: f64) -> Duration {
     Duration::from_secs_f64(ms / 1000.0)
 }
 
 /// `cubic-bezier(x1, y1, x2, y2)` at `t`, by bisection on x.
-fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
+pub(crate) fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
     let at = |a: f64, b: f64, s: f64| {
         3.0 * (1.0 - s) * (1.0 - s) * s * a + 3.0 * (1.0 - s) * s * s * b + s * s * s
     };
@@ -61,16 +61,16 @@ fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
 }
 
 /// SLIDE, `cubic-bezier(0.25, 1, 0.5, 1)`.
-fn slide(t: f64) -> f64 {
+pub(crate) fn slide(t: f64) -> f64 {
     bezier(0.25, 1.0, 0.5, 1.0, t)
 }
 
 /// `v` on the device pixel grid at scale 2.
-fn q(v: f64) -> f32 {
+pub(crate) fn q(v: f64) -> f32 {
     ((v * f64::from(SCALE)).round() / f64::from(SCALE)) as f32
 }
 
-fn assert_y(actual: f32, expected: f32, what: &str) {
+pub(crate) fn assert_y(actual: f32, expected: f32, what: &str) {
     assert!(
         (actual - expected).abs() < 1e-3,
         "{what}: painted at {actual}, expected {expected}"
@@ -105,13 +105,13 @@ fn open_cards(
     )
 }
 
-fn set_policy(cx: &mut VisualTestContext, policy: MotionPolicy) {
+pub(crate) fn set_policy(cx: &mut VisualTestContext, policy: MotionPolicy) {
     cx.update(|_, cx| cx.set_global(MotionPolicyOverride(Some(policy))));
 }
 
 /// Draws one frame at the clock's time, delivering the frames motion
 /// requested (their owners are notified, as a display frame would).
-fn frame(cx: &mut VisualTestContext) {
+pub(crate) fn frame(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);
         window.refresh();
@@ -119,14 +119,14 @@ fn frame(cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn advance(cx: &mut VisualTestContext, by: Duration) {
+pub(crate) fn advance(cx: &mut VisualTestContext, by: Duration) {
     cx.executor().advance_clock(by);
     frame(cx);
 }
 
 /// From the commit frame, draws the frame `since_commit` later by the
 /// stepping protocol.
-fn step_to(cx: &mut VisualTestContext, since_commit: Duration) {
+pub(crate) fn step_to(cx: &mut VisualTestContext, since_commit: Duration) {
     let first = since_commit.min(FIRST_STEP);
     advance(cx, first);
     if since_commit > first {
@@ -135,18 +135,18 @@ fn step_to(cx: &mut VisualTestContext, since_commit: Duration) {
 }
 
 /// Frames requested since the last one was delivered (delivering them).
-fn requested_frames(cx: &mut VisualTestContext) -> usize {
+pub(crate) fn requested_frames(cx: &mut VisualTestContext) -> usize {
     cx.update(|window, cx| window.simulate_next_frame(cx))
 }
 
 /// A press and release at viewport `(x, y)`: the commit frame is drawn at
 /// the clock's time, nothing later.
-fn click(cx: &mut VisualTestContext, (x, y): (f32, f32)) {
+pub(crate) fn click(cx: &mut VisualTestContext, (x, y): (f32, f32)) {
     cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
     cx.simulate_click(point(px(x), px(y)), Modifiers::default());
 }
 
-fn center((x, y, w, h): (f32, f32, f32, f32)) -> (f32, f32) {
+pub(crate) fn center((x, y, w, h): (f32, f32, f32, f32)) -> (f32, f32) {
     (x + w / 2.0, y + h / 2.0)
 }
 
@@ -157,7 +157,7 @@ fn click_chevron(view: &gpui_kit::Entity<DiffViewport>, cx: &mut VisualTestConte
 }
 
 /// File `f`'s header as painted.
-fn header_y(d: &ViewportDebug, f: u32) -> f32 {
+pub(crate) fn header_y(d: &ViewportDebug, f: u32) -> f32 {
     d.headers
         .iter()
         .find(|h| h.file_idx == f)
@@ -166,7 +166,7 @@ fn header_y(d: &ViewportDebug, f: u32) -> f32 {
 }
 
 /// File `f`'s card as painted, `(x, y, w, h)`.
-fn card(d: &ViewportDebug, f: u32) -> (f32, f32, f32, f32) {
+pub(crate) fn card(d: &ViewportDebug, f: u32) -> (f32, f32, f32, f32) {
     d.cards
         .iter()
         .find(|c| c.file_idx == f)
@@ -182,7 +182,7 @@ fn chevron_angle(d: &ViewportDebug, f: u32) -> f32 {
         .1
 }
 
-fn running(view: &gpui_kit::Entity<DiffViewport>, cx: &mut VisualTestContext) -> bool {
+pub(crate) fn running(view: &gpui_kit::Entity<DiffViewport>, cx: &mut VisualTestContext) -> bool {
     view.read_with(cx, |v, _| v.motion_running())
 }
 
@@ -517,7 +517,10 @@ fn keyboard_z_and_set_collapsed_snap(cx: &mut TestAppContext) {
 
 /// The veil over `a.rs`'s rows during a Reduced fade: its alpha, if one is
 /// painted in the card's background over them.
-fn veil_alpha(view: &gpui_kit::Entity<DiffViewport>, cx: &mut VisualTestContext) -> Option<f32> {
+pub(crate) fn veil_alpha(
+    view: &gpui_kit::Entity<DiffViewport>,
+    cx: &mut VisualTestContext,
+) -> Option<f32> {
     let background = view.read_with(cx, |v, _| v.options().theme.card_background);
     let rows_top = 46.0;
     shaped_quads(cx)

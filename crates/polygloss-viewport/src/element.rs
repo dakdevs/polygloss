@@ -22,7 +22,7 @@ use gpui_kit::{
 
 use crate::blocks::{self, PreparedBlock};
 use crate::controls::{self, ControlLayer, Target};
-use crate::paint_rows::{Frame, HEADERS, Layer};
+use crate::paint_rows::{Frame, Layer};
 use crate::selection;
 use crate::view::{DiffViewport, FrameStats};
 
@@ -132,8 +132,8 @@ impl Element for DiffElement {
         };
         let hovered = controls::hovered(&prepainted.targets, window);
         let pressed = self.view.read(cx).pressed.clone();
-        let ink = |layer: ControlLayer| {
-            controls::ink(&prepainted.targets, hovered, pressed.as_ref(), layer).map(
+        let ink = |layer: ControlLayer, paint: Option<usize>| {
+            controls::ink(&prepainted.targets, hovered, pressed.as_ref(), layer, paint).map(
                 |(bounds, on_pressed, radius)| Ink {
                     bounds,
                     color: if on_pressed {
@@ -167,35 +167,39 @@ impl Element for DiffElement {
             prepainted.cells.clone(),
             window,
         );
-        let (rows, headers) = frame.layers.split_at(HEADERS);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             paint_quads(&frame.cards, window);
             paint_rounded(&frame.cards, window);
-            for layer in rows {
+            for layer in frame.row_layers() {
                 paint_quads(layer, window);
             }
-            paint_ink(None, ink(ControlLayer::Body), window);
-            for layer in rows {
+            paint_ink(None, ink(ControlLayer::Body, None), window);
+            for layer in frame.row_layers() {
                 paint_rounded(layer, window);
             }
-            for layer in rows {
+            for layer in frame.row_layers() {
                 paint_texts(layer, &frame, window, cx);
             }
             // Host blocks and the prelude over the rows, under the headers;
-            // a Reduced fade's veil over a revealing body's rows and blocks.
+            // a Reduced fade's veils over revealing bodies' rows and blocks.
             blocks::paint(&mut prepainted.blocks, window, cx);
-            if let Some((bounds, color)) = frame.veil {
-                window.paint_quad(fill(bounds, color));
+            for (bounds, color, _) in frame.veils.iter().filter(|v| !v.2) {
+                window.paint_quad(fill(*bounds, *color));
             }
             // Headers last: the pinned one covers the rows and blocks under
             // it. The ink goes over a header's strip and pills (rounded quads
-            // on a card), its icons over that, its text on top.
-            for layer in headers {
+            // on a card), its icons over that, its text on top. A revealing
+            // section's headers are in its group, cut at its curtain.
+            for (i, layer) in frame.header_layers() {
                 paint_quads(layer, window);
                 paint_rounded(layer, window);
-                paint_ink(layer.clip, ink(ControlLayer::Header), window);
-                paint_icons(layer, &frame, window, cx);
+                paint_ink(layer.clip, ink(ControlLayer::Header, Some(i)), window);
+                paint_icons(i, layer, &frame, window, cx);
                 paint_texts(layer, &frame, window, cx);
+            }
+            // A revealing section's cards and headers fade together.
+            for (bounds, color, _) in frame.veils.iter().filter(|v| v.2) {
+                window.paint_quad(fill(*bounds, *color));
             }
         });
         controls::wire(&self.view, prepainted.targets.clone(), hovered, window);
@@ -269,16 +273,18 @@ fn paint_rounded(layer: &Layer, window: &mut Window) {
     });
 }
 
-/// The frame's SVG icons, under `layer`'s clip. An icon no asset source
-/// has draws nothing.
-fn paint_icons(layer: &Layer, frame: &Frame, window: &mut Window, cx: &mut App) {
-    if frame.icons.is_empty() {
+/// The frame's SVG icons of header layer `index`, under `layer`'s clip. An
+/// icon no asset source has draws nothing.
+fn paint_icons(index: usize, layer: &Layer, frame: &Frame, window: &mut Window, cx: &mut App) {
+    if !frame.icons.iter().any(|i| i.layer == index) {
         return;
     }
     let clip = layer.clip.map(|bounds| ContentMask { bounds });
     let scale = window.scale_factor();
     window.with_content_mask(clip, |window| {
-        for (bounds, path, color, degrees) in &frame.icons {
+        for icon in frame.icons.iter().filter(|i| i.layer == index) {
+            let (bounds, path, color, degrees) =
+                (&icon.bounds, &icon.path, &icon.color, &icon.degrees);
             // Turned about its centre, in device pixels (as gpui's `svg`).
             let turn = if *degrees == 0.0 {
                 TransformationMatrix::unit()
