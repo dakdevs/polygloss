@@ -210,7 +210,7 @@ pub fn restore(tab: &mut ReviewTab, state: &ViewState, cx: &mut Context<ReviewTa
         });
     }
     if let Some(shown) = state.threads_panel {
-        tab.panes.threads_panel = Some(shown);
+        tab.panes.restore_threads(shown, cx);
     }
 }
 

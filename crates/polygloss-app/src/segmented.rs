@@ -21,9 +21,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Toggled, Window,
-    div, px,
+    App, BoxShadow, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
+    StyleRefinement, Styled as _, Toggled, Window, div, px,
 };
 
 use crate::motion::{
@@ -111,6 +111,8 @@ pub struct SegmentedControl {
     on_select: OnSelect,
     /// A debug selector on the selected segment's icon.
     selected_marker: Option<&'static str>,
+    /// The opacity a fade around the control paints it at ([`Self::faded`]).
+    fade: f32,
 }
 
 /// A segmented control `id` (its element id and debug selector; its fill's
@@ -131,6 +133,7 @@ pub fn segmented(
         selected,
         on_select: Rc::new(on_select),
         selected_marker: None,
+        fade: 1.0,
     }
 }
 
@@ -141,6 +144,27 @@ impl SegmentedControl {
         self.selected_marker = Some(selector);
         self
     }
+
+    /// The control is inside content fading at `opacity` (a Reduced panel
+    /// fade): the selected fill's shadow ramps by α³ instead of α, so it
+    /// never shows through the fading fill (ADR-0030 rule 8).
+    pub fn faded(mut self, opacity: f32) -> Self {
+        self.fade = opacity;
+        self
+    }
+}
+
+/// gpui's extra-small shadow, its colors at `alpha` of their own (the
+/// fade's α² under the content's own α).
+fn fill_shadow(alpha: f32) -> Vec<BoxShadow> {
+    let mut shadows = StyleRefinement::default()
+        .shadow_xs()
+        .box_shadow
+        .unwrap_or_default();
+    for shadow in &mut shadows {
+        shadow.color = shadow.color.opacity(alpha);
+    }
+    shadows
 }
 
 /// The fill's position this frame, in segments: follows a selection made
@@ -206,7 +230,7 @@ impl RenderOnce for SegmentedControl {
             .h(px(height::SM))
             .rounded(px(segment_radius))
             .bg(theme.tab_active)
-            .shadow_xs();
+            .shadow(fill_shadow(self.fade * self.fade));
         let segments = self.segments.into_iter().enumerate().map(|(ix, spec)| {
             let selected = ix == self.selected;
             let (state, on_select) = (self.state.clone(), self.on_select.clone());

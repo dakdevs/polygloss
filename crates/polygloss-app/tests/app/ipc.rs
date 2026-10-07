@@ -37,7 +37,7 @@ use crate::shell::{Shell, compare_req, draw, start};
 use crate::support::{Sandbox, code_change_repo};
 
 /// Runs `op` through `ipc::handle` and waits for its result.
-fn run(shell: &mut Shell, op: Op) -> Result<Value, IpcError> {
+pub(crate) fn run(shell: &mut Shell, op: Op) -> Result<Value, IpcError> {
     let task = shell.cx.update(|_, cx| ipc::handle(op, cx));
     draw(shell.cx);
     task.now_or_never().expect("the op finished")

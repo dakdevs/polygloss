@@ -49,7 +49,7 @@ fn agent_actor() -> Actor {
 }
 
 /// Another connection to the sandbox store, like the CLI or `polygloss mcp`.
-fn other_core() -> Core {
+pub(crate) fn other_core() -> Core {
     Core::open_default().expect("open a second connection to the store")
 }
 
@@ -63,7 +63,7 @@ fn line(path: &str, line: u32) -> Subject {
 }
 
 /// An agent thread on the diff of `tab`, written through `core`.
-fn agent_thread(
+pub(crate) fn agent_thread(
     core: &Core,
     shell: &mut Shell,
     tab: &Entity<ReviewTab>,
@@ -98,7 +98,7 @@ fn review_id(shell: &mut Shell, tab: &Entity<ReviewTab>) -> String {
 
 /// Wakes the feed at once (the socket's `store_changed` in M4) and lets
 /// everything it starts finish.
-fn nudge(shell: &mut Shell) {
+pub(crate) fn nudge(shell: &mut Shell) {
     shell.cx.update(|_, cx| feed::nudge(cx));
     draw(shell.cx);
 }
@@ -138,7 +138,7 @@ fn last_seen(core: &Core, review_id: &str) -> i64 {
 
 /// Clicks the banner button of `kind` (the strip lists banners in
 /// `BannerKind` order), with nothing focused.
-fn click_banner(shell: &mut Shell, tab: &Entity<ReviewTab>, kind: BannerKind) {
+pub(crate) fn click_banner(shell: &mut Shell, tab: &Entity<ReviewTab>, kind: BannerKind) {
     let ix = banners(shell, tab)
         .iter()
         .position(|(k, _)| *k == kind)

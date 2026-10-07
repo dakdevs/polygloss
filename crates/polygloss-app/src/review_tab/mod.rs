@@ -35,6 +35,7 @@ use polygloss_viewport::{DiffProvider, DiffViewport, ViewportEvent, ViewportOpti
 pub use banners::{BannerKind, BannerStrip};
 
 use crate::app_state::AppState;
+use crate::motion::Initiator;
 use crate::provider::CoreDiffProvider;
 use crate::settings::{Settings, SettingsStore};
 use crate::window::MainWindow;
@@ -135,27 +136,58 @@ impl ReviewTab {
         self.panes.threads_shown()
     }
 
-    /// Shows or hides the threads panel at once; the choice is kept for the
-    /// tab (across Refresh and iteration switches) and saved in the diff's
-    /// view state.
+    /// Shows or hides the threads panel at once (Programmatic: the
+    /// composer, a panel-only thread, agent replies, a URL or MCP `focus`,
+    /// restore); the choice is kept for the tab (across Refresh and
+    /// iteration switches) and saved in the diff's view state.
     pub fn set_threads_panel_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if self.panes.set_threads_shown(visible) {
+        if self
+            .panes
+            .set_threads_shown(visible, Initiator::Programmatic, cx)
+        {
             crate::view_state::changed(self, cx);
             cx.notify();
         }
     }
 
+    /// Shows or hides the threads panel as `initiator` plays it (ADR-0030
+    /// M2): the pointer (the threads button, the View menu) and the palette
+    /// slide it from where it is painted. A closing panel gives the diff the
+    /// keyboard on the commit frame.
+    pub fn set_threads_shown_by(
+        &mut self,
+        shown: bool,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !shown
+            && crate::threads::threads(self)
+                .is_some_and(|m| m.read(cx).panel_focus().contains_focused(window, cx))
+        {
+            window.focus(&self.viewport_focus, cx);
+        }
+        if self.panes.set_threads_shown(shown, initiator, cx) {
+            crate::view_state::changed(self, cx);
+            cx.notify();
+        }
+    }
+
+    /// Shows the threads panel if it is hidden, or hides it, at once (the
+    /// automatic opens).
     pub fn toggle_threads_panel(&mut self, cx: &mut Context<Self>) {
         self.set_threads_panel_visible(!self.threads_panel_visible(), cx);
     }
 
-    /// The toolbar's threads button: [`Self::toggle_threads_panel`]; opened
-    /// with the pointer, the panel's content slides in (design §11.16).
-    pub fn toggle_threads_panel_from_toolbar(&mut self, window: &Window, cx: &mut Context<Self>) {
-        self.toggle_threads_panel(cx);
-        if self.threads_panel_visible() && crate::motion::pointer_initiated(window) {
-            self.panes.enter_threads(cx.background_executor().now());
-        }
+    /// The toolbar's threads button: shows or hides the panel as the
+    /// pointer does (design §11.16).
+    pub fn toggle_threads_panel_from_toolbar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let shown = !self.threads_panel_visible();
+        self.set_threads_shown_by(shown, crate::motion::initiator(window), window, cx);
     }
 
     /// Keeps a feature's per-tab state (one value per type).
@@ -211,7 +243,18 @@ impl Focusable for ReviewTab {
 impl Render for ReviewTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         register_viewport_motion(&self.viewport, window, cx);
-        let sidebar = panes::render_sidebar(self, window, cx);
+        // The sidebar's motion was sampled by the main window's render; the
+        // threads panel's is sampled here, once, before anything reads it.
+        panes::sample_threads(self, window, cx);
+        panes::hold_viewport(self, window, cx);
+        let threads_shown = self.threads_panel_visible();
+        let sidebar_open = crate::chrome::chrome(cx)
+            .read(cx)
+            .sidebar_frame(threads_shown, window)
+            .f
+            > 0.0;
+        // Rendered only while the sidebar's frame is open.
+        let sidebar = sidebar_open.then(|| panes::render_sidebar(self, window, cx));
         let toolbar = toolbar::render(cx);
         let panes = panes::render(self, window, cx);
         let main = v_flex()
@@ -221,13 +264,20 @@ impl Render for ReviewTab {
             .child(self.banners.clone())
             .child(gpui_kit::div().flex_1().min_h_0().child(panes))
             .into_any_element();
-        let shell = crate::chrome::shell(sidebar, main, self.threads_panel_visible(), window, cx);
+        let shell = crate::chrome::shell(
+            move |_, _| sidebar.unwrap_or_else(|| gpui_kit::div().into_any_element()),
+            main,
+            threads_shown,
+            window,
+            cx,
+        );
         crate::keymap::handlers::apply(v_flex(), cx)
             .key_context("Tab")
             .track_focus(&self.focus)
             .on_action(
-                cx.listener(|tab, _: &panes::ToggleThreadsPanel, _, cx| {
-                    tab.toggle_threads_panel(cx)
+                cx.listener(|tab, _: &panes::ToggleThreadsPanel, window, cx| {
+                    let shown = !tab.threads_panel_visible();
+                    tab.set_threads_shown_by(shown, crate::motion::initiator(window), window, cx)
                 }),
             )
             .size_full()

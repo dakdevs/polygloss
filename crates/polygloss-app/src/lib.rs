@@ -40,6 +40,7 @@ pub mod notify;
 pub mod open_flow;
 pub mod overlay;
 pub mod palette;
+pub mod panel_split;
 pub mod perf;
 pub mod provider;
 pub mod reduce_motion;

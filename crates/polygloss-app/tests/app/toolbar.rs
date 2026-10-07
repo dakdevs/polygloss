@@ -17,7 +17,7 @@ use polygloss_core::store::events::Actor;
 use polygloss_diff::Side;
 
 use crate::shell::{
-    Shell, bounds, click, commit_req, compare_req, draw, hover, painted, resize_window,
+    Shell, bounds, click, commit_req, compare_req, draw, hover, no_motion, painted, resize_window,
     set_sidebar_width, start, unhover,
 };
 use crate::support::{Sandbox, code_change_repo};
@@ -451,6 +451,7 @@ fn threads_button_counts_open_threads_and_toggles_the_panel(cx: &mut gpui_kit::T
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     assert!(shows(shell.cx, "threads-count", "0"));
     let at = |line_no| line("src/config.rs", Side::New, line_no, line_no);
@@ -580,4 +581,223 @@ fn both_toggles_are_one_segmented_control(cx: &mut TestAppContext) {
         insets.push(inset);
     }
     assert_eq!(insets[0], insets[1]);
+}
+
+// ---------------------------------------------------------------------------
+// The toolbar while the sidebar slides (T7.10, ADR-0030 Panels): its first
+// item follows the sidebar's edge and never passes under the traffic
+// lights, the show-sidebar button is covered or uncovered in place, and
+// give-way keeps the narrower end's items for the whole motion.
+
+mod sliding {
+    use gpui_kit::component::ActiveTheme as _;
+    use gpui_kit::{Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext};
+    use polygloss_app::motion::MotionPolicy;
+    use polygloss_app::motion::tokens::FIRST_STEP;
+    use polygloss_app::review_tab::toolbar::{self, Narrow};
+
+    use crate::shell::sidebar_motion::{
+        CLOSE_MS, OPEN_MS, WBAR, click_now, finish, frame_width, ms, q, review, set_at_once,
+        set_policy, slide, visible,
+    };
+    use crate::shell::{Shell, bounds, draw, painted, resize_window};
+    use crate::support::Sandbox;
+    use crate::support::motion::{advance, frame, step_to};
+
+    /// The first item's window x, the button's, and the toolbar row's left
+    /// edge (where the button is clipped), checked against ADR-0030's
+    /// rule: the first item at `max(f + 12, inset + 24 + 8)`, the button at
+    /// `inset`, drawn only while some of it is right of `f`.
+    fn check(shell: &mut Shell, inset: f32, at: &str) {
+        let f = frame_width(shell);
+        let first = bounds(shell.cx, "repo-block").left().as_f32();
+        assert_eq!(first, (f + 12.0).max(inset + 24.0 + 8.0), "{at}: f {f}");
+        // The traffic lights end at 79 (fullscreen has none).
+        assert!(inset < 80.0 || first >= 80.0, "{at}: clear of the lights");
+        assert_eq!(
+            bounds(shell.cx, "review-toolbar").left().as_f32(),
+            f,
+            "{at}: the row, and its clip, start at f"
+        );
+        match painted(shell.cx, "show-sidebar") {
+            Some(button) => {
+                assert_eq!(button.left().as_f32(), inset, "{at}: the button stays");
+                assert!(f < inset + 24.0, "{at}: drawn only while uncovered");
+            }
+            None => assert!(f >= inset + 24.0, "{at}: covered at f {f}"),
+        }
+    }
+
+    fn run(shell: &mut Shell, inset: f32) {
+        for (name, end) in [("toggle-sidebar", CLOSE_MS), ("show-sidebar", OPEN_MS)] {
+            click_now(shell, name);
+            check(shell, inset, &format!("{name}, the commit frame"));
+            step_to(shell.cx, FIRST_STEP);
+            check(shell, inset, &format!("{name}, the first step"));
+            advance(shell.cx, ms(end / 2.0) - FIRST_STEP);
+            check(shell, inset, &format!("{name}, ½"));
+            advance(shell.cx, ms(end / 4.0));
+            check(shell, inset, &format!("{name}, ¾"));
+            advance(shell.cx, ms(end / 4.0));
+            check(shell, inset, &format!("{name}, settled"));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn toolbar_leading_edge_follows_the_frame(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (mut shell, _tab) = review(cx);
+        // At rest: W̄ + 12 = 293; hidden, the button at 88 and the item at
+        // 88 + 24 + 8 = 120.
+        check(&mut shell, 88.0, "at rest");
+        assert_eq!(bounds(shell.cx, "repo-block").left().as_f32(), 293.0);
+        run(&mut shell, 88.0);
+        // Fullscreen: the lights are AppKit's again; the inset is CANVAS.
+        shell.cx.update(|window, _| window.toggle_fullscreen());
+        draw(shell.cx);
+        run(&mut shell, 12.0);
+        set_at_once(&mut shell, false);
+        assert_eq!(bounds(shell.cx, "repo-block").left().as_f32(), 44.0);
+    }
+
+    /// Whether the last frame painted the pressed ink (the foreground at
+    /// α 0.12) under `at`.
+    fn pressed_ink_at(cx: &mut VisualTestContext, at: Point<Pixels>) -> bool {
+        cx.update(|window, cx| {
+            let ink = cx.theme().foreground.opacity(0.12);
+            let scale = window.scale_factor();
+            let (x, y) = (at.x.as_f32() * scale, at.y.as_f32() * scale);
+            window.painted_quads().into_iter().any(|q| {
+                let b = q.bounds;
+                q.background.as_solid() == Some(ink)
+                    && b.origin.x.0 <= x
+                    && x <= b.origin.x.0 + b.size.width.0
+                    && b.origin.y.0 <= y
+                    && y <= b.origin.y.0 + b.size.height.0
+            })
+        })
+    }
+
+    #[gpui_kit::test]
+    fn show_sidebar_button_is_uncovered_not_popped(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (mut shell, _tab) = review(cx);
+        // A close uncovers it: nothing of it on the commit frame, its right
+        // part once f < 112, all of it at settle.
+        click_now(&mut shell, "toggle-sidebar");
+        assert!(
+            painted(shell.cx, "show-sidebar").is_none(),
+            "the commit frame"
+        );
+        let mut since = 0.0;
+        let mut uncovered = false;
+        while since < CLOSE_MS {
+            let step = if since == 0.0 { 16.667 } else { 10.0 };
+            if since == 0.0 {
+                step_to(shell.cx, FIRST_STEP);
+            } else {
+                advance(shell.cx, ms(step));
+            }
+            since += step;
+            let f = frame_width(&mut shell);
+            let drawn = painted(shell.cx, "show-sidebar").is_some();
+            assert_eq!(drawn, f < 112.0, "{since} ms: f {f}");
+            uncovered |= drawn && f > 88.0;
+        }
+        assert!(uncovered, "a frame showed only its right part");
+        finish(&mut shell);
+        assert_eq!(frame_width(&mut shell), 0.0);
+        assert_eq!(bounds(shell.cx, "show-sidebar").left().as_f32(), 88.0);
+
+        // Live wherever it is painted during a close: pressed, it inks; its
+        // click reopens from the sampled width.
+        set_at_once(&mut shell, true);
+        click_now(&mut shell, "toggle-sidebar");
+        step_to(shell.cx, ms(CLOSE_MS / 2.0));
+        let f = frame_width(&mut shell);
+        assert_eq!(f, q(WBAR * (1.0 - slide(0.5))));
+        let at = bounds(shell.cx, "show-sidebar").center();
+        shell
+            .cx
+            .simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+        frame(shell.cx);
+        assert!(pressed_ink_at(shell.cx, at), "live: it inks when pressed");
+        shell
+            .cx
+            .simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+        frame(shell.cx);
+        assert!(visible(&mut shell), "its click reopened the sidebar");
+        assert_eq!(frame_width(&mut shell), f, "from the sampled width");
+        finish(&mut shell);
+
+        // Inert from an open's commit: still painted (f < 88 for the first
+        // frames), it neither inks nor clicks.
+        set_at_once(&mut shell, false);
+        click_now(&mut shell, "show-sidebar");
+        step_to(shell.cx, FIRST_STEP);
+        let f = frame_width(&mut shell);
+        assert!(f < 88.0, "the first step leaves it uncovered: {f}");
+        let at = bounds(shell.cx, "show-sidebar").center();
+        shell
+            .cx
+            .simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+        frame(shell.cx);
+        assert!(!pressed_ink_at(shell.cx, at), "inert: no ink");
+        shell
+            .cx
+            .simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+        frame(shell.cx);
+        assert!(visible(&mut shell), "and its click does nothing");
+    }
+
+    #[gpui_kit::test]
+    fn toolbar_give_way_holds_the_narrower_set(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (mut shell, tab) = review(cx);
+        let narrow = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| toolbar::narrow(t));
+        // A window where the hidden sidebar's layout shows Find and `N/M`
+        // and the shown one moves both into the menu.
+        set_policy(&mut shell, MotionPolicy::Off);
+        let mut width = None;
+        for w in (720..2000).step_by(10) {
+            resize_window(&mut shell, w as f32, 800.);
+            set_at_once(&mut shell, false);
+            let hidden = narrow(&mut shell);
+            set_at_once(&mut shell, true);
+            let shown = narrow(&mut shell);
+            if hidden < Narrow::FindInMenu && shown >= Narrow::ProgressInMenu {
+                width = Some((w, hidden, shown));
+                break;
+            }
+        }
+        let (w, hidden, shown) = width.expect("such a window width");
+        set_policy(&mut shell, MotionPolicy::Full);
+        assert!(painted(shell.cx, "toolbar-find").is_none(), "{w}: shown");
+
+        // A close: the shown (narrower) set at every sample, the hidden set
+        // only once it settles.
+        click_now(&mut shell, "toggle-sidebar");
+        assert_eq!(narrow(&mut shell), shown, "the commit frame");
+        step_to(shell.cx, FIRST_STEP);
+        assert_eq!(narrow(&mut shell), shown, "the first step");
+        let mut since = 16.667;
+        while since + 20.0 < CLOSE_MS {
+            advance(shell.cx, ms(20.0));
+            since += 20.0;
+            assert_eq!(narrow(&mut shell), shown, "{since} ms");
+            assert!(painted(shell.cx, "toolbar-find").is_none(), "{since} ms");
+        }
+        advance(shell.cx, ms(CLOSE_MS - since));
+        frame(shell.cx);
+        assert_eq!(narrow(&mut shell), hidden, "settled");
+        assert!(painted(shell.cx, "toolbar-find").is_some());
+        assert!(painted(shell.cx, "viewed-progress").is_some());
+
+        // An open: the shown set from its commit frame.
+        click_now(&mut shell, "show-sidebar");
+        assert_eq!(narrow(&mut shell), shown, "the open's commit frame");
+        assert!(painted(shell.cx, "toolbar-find").is_none());
+        step_to(shell.cx, ms(OPEN_MS / 2.0));
+        assert_eq!(narrow(&mut shell), shown);
+    }
 }

@@ -31,6 +31,8 @@ use polygloss_diff::{FileKind, ObjectFormat};
 
 use crate::support::{FixtureRepo, Sandbox, code_change_repo, strings};
 
+pub mod sidebar_motion;
+
 /// A running app in the sandbox: gpui-kit, every feature, the key bindings
 /// and the main window with its Home tab.
 pub struct Shell<'a> {
@@ -70,6 +72,14 @@ pub fn start(cx: &mut TestAppContext) -> Shell<'_> {
         main,
         cx: vcx,
     }
+}
+
+/// The harnesses' policy (ADR-0030): motion settles on its first frame, so
+/// a test of a panel's state reads its end at once.
+pub fn no_motion(shell: &mut Shell) {
+    shell.cx.update(|_, cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
 }
 
 /// The editor spawner of tests that did not install their own.
@@ -280,6 +290,7 @@ fn review_tab_has_toolbar_banner_strip_and_three_panes(cx: &mut TestAppContext) 
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     tab.update(shell.cx, |t, cx| t.set_threads_panel_visible(true, cx));
     draw(shell.cx);
@@ -387,15 +398,26 @@ fn window_size(cx: &mut VisualTestContext) -> Size<Pixels> {
     cx.update(|window, _| window.viewport_size())
 }
 
-/// Sets the stored sidebar width, as dragging its edge does.
+/// Sets the stored sidebar width through its split's state, as dragging
+/// its divider does (within today's range).
 pub fn set_sidebar_width(shell: &mut Shell, width: f32) {
-    let state = shell
-        .cx
-        .update(|_, cx| chrome::chrome(cx).read(cx).shell().clone());
-    shell
-        .cx
-        .update(|window, cx| state.update(cx, |s, cx| s.resize_panel(0, px(width), window, cx)));
+    use polygloss_app::panel_split::PanelOwner as _;
+    shell.cx.update(|window, cx| {
+        let threads = shell_threads_shown(cx);
+        let range = chrome::sidebar_range(window.viewport_size().width.as_f32(), threads);
+        chrome::chrome(cx).update(cx, |c, cx| {
+            c.panel_mut().width = width.clamp(range.0, range.1);
+            cx.notify();
+        })
+    });
     draw(shell.cx);
+}
+
+/// Whether the active review shows its threads panel.
+fn shell_threads_shown(cx: &gpui_kit::App) -> bool {
+    window::main_window(cx)
+        .and_then(|(_, main)| main.read(cx).tabs().active_item().review().cloned())
+        .is_some_and(|tab| tab.read(cx).threads_panel_visible())
 }
 
 pub fn resize_window(shell: &mut Shell, width: f32, height: f32) {
@@ -621,6 +643,7 @@ fn hidden_sidebar_insets_the_toolbar_and_shows_the_open_button(cx: &mut TestAppC
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     shell.open(compare_req(repo.path())).unwrap();
     set_sidebar_width(&mut shell, 300.);
     assert!(painted(shell.cx, "show-sidebar").is_none());
@@ -673,6 +696,7 @@ fn the_main_column_starts_after_the_divider(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     let window = window_size(shell.cx);
     let sidebar = bounds(shell.cx, "sidebar");
@@ -723,6 +747,7 @@ fn hidden_sidebar_inset_clears_the_traffic_lights(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     shell.open(compare_req(repo.path())).unwrap();
     click(shell.cx, "toggle-sidebar");
     assert_eq!(bounds(shell.cx, "show-sidebar").left(), px(79. + 9.));
@@ -899,6 +924,7 @@ fn top_rows_move_the_window_except_on_controls(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     let log = record_gestures(shell.cx);
     let segments = ["sidebar-segments", "toggle-sidebar"];
@@ -1059,6 +1085,7 @@ fn nav_clicks_act_on_their_review_after_a_close(cx: &mut TestAppContext) {
 fn sidebar_state_lasts_for_the_session(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     set_sidebar_width(&mut shell, 330.);
     let chrome = shell.cx.update(|_, cx| chrome::chrome(cx));
     chrome.update(shell.cx, |c, cx| c.set_segment(Segment::Reviews, cx));
@@ -1225,6 +1252,7 @@ fn toggle_sidebar_action_hides_and_shows(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    no_motion(&mut shell);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     let pane = |shell: &mut Shell| {
         shell
