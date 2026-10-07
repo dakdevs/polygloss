@@ -26,6 +26,7 @@ mod keyboard_only_review;
 mod kit_fonts;
 mod ligatures;
 mod live;
+mod motion_blocks;
 mod motion_chrome;
 mod motion_sections;
 mod motion_viewport;
@@ -83,5 +84,6 @@ fn main() -> std::process::ExitCode {
         motion_viewport::TESTS,
         motion_chrome::TESTS,
         motion_sections::TESTS,
+        motion_blocks::TESTS,
     ])
 }

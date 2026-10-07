@@ -48,6 +48,16 @@ fn painted(cx: &mut VisualTestContext, selector: String) -> bool {
         .is_some()
 }
 
+/// The settled cards: a chip opened by a click glides (ADR-0030 M7,
+/// `threads::chip_motion`), so tests that click inside the card it opens run
+/// under the harness's Off policy.
+fn motion_off(shell: &mut Shell) {
+    use polygloss_app::motion::{MotionPolicy, set_override};
+    shell
+        .cx
+        .update(|_, cx| set_override(Some(MotionPolicy::Off), cx));
+}
+
 fn click(shell: &mut Shell, selector: String) {
     let bounds = shell
         .cx
@@ -506,6 +516,7 @@ fn resolve_is_immediate_not_draft(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    motion_off(&mut shell);
     let tab = shell.open(compare_req(repo.path())).unwrap();
     let id = create(
         &mut shell,
@@ -727,6 +738,7 @@ fn other_reviews_thread_offers_reply_in_its_review_only(cx: &mut gpui_kit::TestA
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    motion_off(&mut shell);
     // Review S: the head commit (its diff is base → head, the same trees as
     // the compare review below), with an agent's published thread.
     let commit = OpenRequest {

@@ -741,6 +741,7 @@ impl<'a> Painter<'a> {
     /// A Reduced fade's veil over revealing body `k`'s band: its
     /// container's background (a card's under rows, the canvas under a
     /// section or the prelude) at the share not yet (or no longer) shown.
+    /// The prelude's covers only what changes, below its part that stays.
     fn veil(&mut self, k: usize) {
         let g = self.reveals[k];
         if g.opacity >= 1.0 {
@@ -752,7 +753,12 @@ impl<'a> Painter<'a> {
             (GeomKind::Card | GeomKind::Rows { .. }, Some(_)) => self.theme.card_background,
         };
         let band = match g.kind {
-            GeomKind::Prelude => self.frame.prelude.as_ref().map(|p| p.clip),
+            GeomKind::Prelude => self.frame.prelude.as_ref().map(|p| {
+                let o = self.bounds.origin.y;
+                let (top, bottom) = (o + px(g.top + g.fixed), o + px(g.frame_bottom));
+                Bounds::from_corners(point(p.clip.left(), top), point(p.clip.right(), bottom))
+                    .intersect(&self.bounds)
+            }),
             _ => Some(self.group_band(k)),
         };
         if let Some(band) = band {

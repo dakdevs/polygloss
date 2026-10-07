@@ -17,7 +17,15 @@
 //! `AVATAR_SM` avatar and its `CONTROLS` gap. The outdated snippet uses the
 //! card's columns ([`Columns`]).
 //!
+//! Motion (ADR-0030 M7): a click on the chip or on the card's Collapse
+//! button toggles the block by the pointer ([`toggle_by`]), which the
+//! viewport reveals between the chip's and the card's height from the
+//! block's top edge (`DiffViewport::reveal_block`); on collapse the chip
+//! replaces the card at once and the vacated height closes. `x`, the
+//! composer's Resolve (an async reload) and the panel's jumps snap.
+//!
 //! Debug selectors (`thread-<id>`, `thread-chip-<id>`, `thread-header-<id>`,
+//! `thread-hide-<id>`,
 //! `thread-comment-<comment>`, `thread-avatar-<comment>`,
 //! `thread-body-<comment>`, `thread-agent-<comment>`,
 //! `thread-draft-<comment>`, `thread-question-<id>`, `thread-outdated-<id>`,
@@ -39,10 +47,10 @@ use polygloss_core::review::{
     AuthorKind, CommentView, Position, PositionState, Subject, ThreadKind, ThreadStatus, ThreadView,
 };
 
-use super::ReviewThreads;
+use super::{ReviewThreads, placement};
 use crate::markdown;
 use crate::markdown::suggestion::{self, Columns};
-use crate::motion::ink::PressInk as _;
+use crate::motion::{self, Initiator, ink::PressInk as _};
 use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, stroke, text};
 
 /// Thread `id`'s block content: its card, or its chip while collapsed
@@ -66,6 +74,32 @@ pub fn render(
     } else {
         card(model, &thread, position.as_ref(), window, cx)
     }
+}
+
+/// Opens thread `id`'s chip into its card, or closes the card to its chip,
+/// as `initiator` asks (ADR-0030 M7): the viewport reveals the block's
+/// change from the height it has now; `Pointer` glides, anything else
+/// snaps. [`ReviewThreads::toggle_expanded`] is the programmatic toggle.
+pub fn toggle_by(model: &Entity<ReviewThreads>, id: &str, initiator: Initiator, cx: &mut App) {
+    model.update(cx, |m, cx| {
+        let block = placement::block_id(id);
+        let from = m
+            .applied
+            .iter()
+            .find(|(_, blocks)| blocks.iter().any(|(b, _)| *b == block))
+            .and_then(|(&f, _)| {
+                let doc = m.viewport.read(cx).document();
+                doc.blocks(f)
+                    .iter()
+                    .find(|b| b.id == block)
+                    .map(|b| b.height)
+            });
+        m.toggle_expanded(id, cx);
+        if let Some(from) = from {
+            m.viewport
+                .update(cx, |v, cx| v.reveal_block(block, px(from), initiator, cx));
+        }
+    });
 }
 
 /// A card inside a file card (a thread block, a composer) as a viewport
@@ -192,8 +226,8 @@ fn chip(model: &Entity<ReviewThreads>, thread: &Arc<ThreadView>, cx: &App) -> im
         .bg(theme.secondary)
         .text_style(text::SMALL)
         .cursor_pointer()
-        .on_click(move |_, _, cx| {
-            model.update(cx, |m, cx| m.toggle_expanded(&toggle_id, cx));
+        .on_click(move |_, window, cx| {
+            toggle_by(&model, &toggle_id, motion::initiator(window), cx);
         })
         .child(
             div()
@@ -345,15 +379,17 @@ fn header(
                     .child(subject_label(&thread.anchor.subject)),
             )
             .when(collapsible, |el| {
+                let selector = format!("thread-hide-{id}");
                 el.child(
-                    Button::new(SharedString::from(format!("thread-hide-{id}")))
+                    Button::new(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector.clone())
                         .xsmall()
                         .rounded(px(radius::XS))
                         .ghost()
                         .icon(IconName::ChevronUp)
                         .tooltip("Collapse")
-                        .on_click(move |_, _, cx| {
-                            model.update(cx, |m, cx| m.toggle_expanded(&id, cx));
+                        .on_click(move |_, window, cx| {
+                            toggle_by(&model, &id, motion::initiator(window), cx);
                         }),
                 )
             }),

@@ -900,6 +900,12 @@ const ALLOW: Allow[] = [
     reason:
       "a leaving Home row's inert copy draws its ⋯ as gpui-kit draws a small icon Button (gpui-component button.rs), in the kit's rem metrics, so the copy matches the live row",
   },
+  {
+    path: "crates/polygloss-app/src/review_tab/header.rs",
+    snippet: "const CHECK_FROM: f32 = 0.9",
+    reason:
+      "a scale factor (ADR-0030 M15: Snapshot's check enters at 0.9 of its size), not a dimension",
+  },
 ];
 
 // The debt map for `counts` (files at 0 leave it), and every entry that

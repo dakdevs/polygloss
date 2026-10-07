@@ -12,7 +12,7 @@
 //! | Card (M3, M5) | a file card below its header: its rows and its bottom padding, which a collapsed card does not have | its rows at the screen y they had before the commit, cut by a curtain the card's bottom padding above the frame |
 //! | Section (M4)  | the region below a section's band: its cards     | opening, the cards at their place, cut the same way (a card the frame's edge crosses closes there); closing, copies of the cards that were on screen ([`Ghost`]), inert |
 //! | Rows (M6, M7) | a run of a file's rows: a gap's inserted rows, a host block's row | at their place (↑20's ride with what follows them), cut at the frame's edge |
-//! | Prelude (M8)  | the host's prelude                               | cut at the frame's edge                                  |
+//! | Prelude (M8)  | the host's prelude                               | cut at the frame's edge, also below its new height while it closes (the header card paints its leaving list there) |
 //!
 //! `h1` is read from the live document on every frame not frozen, so a
 //! host block measured or a wrapped row corrected after the commit (the
@@ -43,8 +43,9 @@
 //! motion uncovers are laid out and shaped then and later frames shape
 //! nothing. Reduced: no displacement or rotation; the content fades in
 //! place under a veil of its container's background (the card under rows,
-//! the canvas under a section or the prelude), in over QUICK at the end
-//! layout, out over MICRO in the held frame, then the height snaps.
+//! the canvas under a section or the prelude, and only over the part of the
+//! prelude that changes), in over QUICK at the end layout, out over MICRO in
+//! the held frame, then the height snaps.
 //!
 //! The viewport settles a running reveal before any change to its layout,
 //! scroll or size ([`DiffViewport::after_scroll`], a resize,
@@ -230,6 +231,9 @@ pub(crate) struct RevealGeom {
     pub top: f32,
     /// The frame's edge: its top + `h`.
     pub frame_bottom: f32,
+    /// How far below its top the body is the same at both ends:
+    /// `min(h0, h1)`. A Reduced fade of the prelude veils only below it.
+    pub fixed: f32,
     /// Where its content is cut.
     pub curtain: f32,
     /// How far the bodies above it displace it.
@@ -703,6 +707,7 @@ impl DiffViewport {
                 }
             };
             let frame_bottom = top + h;
+            let fixed = quantize(body.h0.min(body.h1), scale);
             let shift = before + h - body.h1;
             let open = if turns {
                 value
@@ -717,6 +722,7 @@ impl DiffViewport {
                 slot: body.slot,
                 top,
                 frame_bottom,
+                fixed,
                 curtain,
                 before,
                 shift,

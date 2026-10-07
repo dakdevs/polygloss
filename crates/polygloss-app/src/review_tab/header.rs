@@ -22,6 +22,15 @@
 //! even off screen; the document's top anchor keeps a review at the top of
 //! the card while it lands or grows.
 //!
+//! Motion (ADR-0030): "Show commits" by the pointer reveals the card's new
+//! height from the one measured before (M8, `DiffViewport::reveal_prelude`),
+//! the cards below riding; "Hide commits" closes it the same way, the card
+//! laid out at its height without the list (what the viewport measures from
+//! the first frame) while it paints the list below that, under the curtain,
+//! until the reveal ends. When the user's Snapshot is saved, its camera
+//! becomes a check, scaled from 0.9 and faded in over QUICK (M15,
+//! [`SNAPSHOT_CHECK`]); back to the camera, and pins made elsewhere, snap.
+//!
 //! Geometry (ADR-0031 C3): a card (radius `MD`) with its content `CARD_X`
 //! and `CARD_Y` in; the `AVATAR_LG` avatar and its `CONTROLS` gap put the
 //! title's box on `card::CODE_X`, the code column of a one-column card up
@@ -36,6 +45,7 @@
 //! the texts as `"<name>: <text>"`.
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use gpui_kit::assets::IconName as Lucide;
@@ -48,7 +58,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Global, Hsla, InteractiveElement as _,
     IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Task, WeakEntity, Window, div, px,
+    Styled as _, Task, Transformation, WeakEntity, Window, div, px, size,
 };
 use polygloss_core::git::listing::{CommitDetails, commit_details, range_commits};
 use polygloss_core::git::{Git, ReviewKind, Since};
@@ -60,12 +70,33 @@ use polygloss_viewport::{RenderBlock, group_digits};
 use crate::app_state::AppState;
 use crate::categories;
 use crate::home::row::{local_utc_offset_s, relative_time};
+use crate::motion::{self, Initiator, Motion, Reduced, ReducedPlay, Settle, Track, tokens};
 use crate::review_tab::toolbar::text;
 use crate::review_tab::{ReviewTab, compare_sides, live_branch, short_ref};
 use crate::space::{TextStyleExt as _, edge, gap, height, radius, size, text};
 
 /// Commits a compare's card lists at most.
 const MAX_COMMITS: u32 = 50;
+
+/// M15 (ADR-0030): the Snapshot button's camera becomes a check when the
+/// user's snapshot is saved, by the pointer or the palette: the check's SVG
+/// scale [`CHECK_FROM`] → 1 and its opacity 0 → 1 over QUICK on OUT, about
+/// its centre. Reduced fades it in unscaled. The camera's return (the
+/// button enabled again) is a swap in place.
+pub const SNAPSHOT_CHECK: Motion = Motion {
+    enter: tokens::QUICK,
+    exit: Duration::ZERO,
+    easing: tokens::out,
+    animates: &[Initiator::Pointer, Initiator::Keyboard],
+    reduced: Reduced {
+        enter: ReducedPlay::Fade,
+        exit: ReducedPlay::Snap,
+    },
+};
+
+/// The check's scale as it enters (the animate skill's floor for a scaled
+/// entrance).
+const CHECK_FROM: f32 = 0.9;
 
 /// Avatar fills for themes with fewer than eight players (Pierre), per
 /// appearance (research: redesign reference).
@@ -120,8 +151,32 @@ pub struct HeaderCard {
     /// `None` until the first load lands (or after one failed): no card.
     content: Option<Content>,
     commits_open: bool,
+    /// The card's height without its list, read when the list opens: the
+    /// height it lays out at while the list closes.
+    closed_h: Option<f32>,
+    /// The list was hidden last: while the viewport's prelude reveal runs,
+    /// the card still paints it, below its height, under the curtain.
+    hiding: bool,
     generation: u64,
     _load: Option<Task<()>>,
+    /// M15: 0 the check entering, 1 shown.
+    check: Track,
+    painted_icon: Option<SnapshotIcon>,
+}
+
+/// What the Snapshot button's icon painted on the last frame (tests).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapshotIcon {
+    /// The check (the state is pinned), else the camera.
+    pub check: bool,
+    pub scale: f32,
+    pub opacity: f32,
+}
+
+/// The Snapshot button's icon as the last frame painted it; `None` until a
+/// live card paints one.
+pub fn snapshot_icon(tab: &ReviewTab) -> Option<SnapshotIcon> {
+    tab.extension::<HeaderCard>()?.painted_icon
 }
 
 /// The clock relative times are read on (Unix ms), a GPUI global: the
@@ -145,8 +200,12 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
     tab.insert_extension(HeaderCard {
         content: None,
         commits_open: false,
+        closed_h: None,
+        hiding: false,
         generation: 0,
         _load: None,
+        check: Track::new(1.0, 1.0),
+        painted_icon: None,
     });
     reload(tab, cx);
 }
@@ -232,16 +291,114 @@ fn show(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
         .extension::<HeaderCard>()
         .is_some_and(|c| c.content.is_some());
     let weak = cx.weak_entity();
-    let prelude = shown.then(|| -> RenderBlock { Rc::new(move |_, cx| render(&weak, cx)) });
+    let prelude =
+        shown.then(|| -> RenderBlock { Rc::new(move |window, cx| render(&weak, window, cx)) });
     tab.viewport.update(cx, |v, cx| v.set_prelude(prelude, cx));
 }
 
-/// "Show commits" ⇄ "Hide commits": the card's height changes.
-fn toggle_commits(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
-    if let Some(card) = tab.extension_mut::<HeaderCard>() {
-        card.commits_open = !card.commits_open;
+/// "Show commits" ⇄ "Hide commits" by `initiator`: the card's height
+/// changes, and the viewport reveals the change from the height it measured
+/// before (ADR-0030 M8: the pointer glides, anything else snaps).
+pub fn toggle_commits(tab: &mut ReviewTab, initiator: Initiator, cx: &mut Context<ReviewTab>) {
+    let from = tab.viewport.read(cx).document().prelude_height();
+    let Some(card) = tab.extension_mut::<HeaderCard>() else {
+        return;
+    };
+    card.commits_open = !card.commits_open;
+    card.hiding = !card.commits_open;
+    if card.commits_open {
+        card.closed_h = from;
     }
     show(tab, cx);
+    if let Some(from) = from {
+        tab.viewport
+            .update(cx, |v, cx| v.reveal_prelude(px(from), initiator, cx));
+    }
+}
+
+/// The user's Snapshot saved the live state shown (`live::snapshot`, by
+/// `initiator`): the button's camera becomes a check (M15). Shown only
+/// while that state is the one pinned.
+pub fn snapshot_saved(tab: &mut ReviewTab, initiator: Initiator, cx: &mut Context<ReviewTab>) {
+    let (now, policy) = (cx.background_executor().now(), motion::policy(cx));
+    if let Some(card) = tab.extension_mut::<HeaderCard>() {
+        card.check = Track::new(0.0, 1.0);
+        card.check
+            .retarget(1.0, &SNAPSHOT_CHECK, initiator, policy, now);
+    }
+    cx.notify();
+}
+
+/// The iteration the live state shown is pinned as, if it is.
+fn pinned_seq(tab: &ReviewTab) -> Option<u32> {
+    let current = crate::iterations::current(tab);
+    current
+        .iteration
+        .as_ref()
+        .filter(|it| it.diff_id == current.diff_id)
+        .map(|it| it.seq)
+}
+
+/// A live card's Snapshot icon for this frame: the check's `(scale,
+/// opacity)` while the state shown is pinned, `None` for the camera (which
+/// ends the check's motion: the swap back snaps). A running check registers
+/// with the window's settling.
+fn sample_check(
+    tab: &mut ReviewTab,
+    window: &mut Window,
+    cx: &mut Context<ReviewTab>,
+) -> Option<(f32, f32)> {
+    let pinned = pinned_seq(tab).is_some();
+    let card = tab
+        .extension_mut::<HeaderCard>()
+        .filter(|c| matches!(c.content, Some(Content::Live)))?;
+    let icon = if pinned {
+        let s = motion::sample(&mut card.check, window, cx);
+        SnapshotIcon {
+            check: true,
+            scale: CHECK_FROM + (1.0 - CHECK_FROM) * s.value,
+            opacity: s.value * s.opacity,
+        }
+    } else {
+        card.check.settle();
+        SnapshotIcon {
+            check: false,
+            scale: 1.0,
+            opacity: 1.0,
+        }
+    };
+    card.painted_icon = Some(icon);
+    if !card.check.is_settled() {
+        let (freeze, settle) = (cx.weak_entity(), cx.weak_entity());
+        motion::settle::register(
+            None,
+            move |now, cx| {
+                freeze
+                    .update(cx, |tab, cx| {
+                        if let Some(card) = tab.extension_mut::<HeaderCard>() {
+                            card.check.freeze(now);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            move |which, cx| {
+                settle
+                    .update(cx, |tab, cx| {
+                        if let Some(card) = tab.extension_mut::<HeaderCard>()
+                            && (which == Settle::All || card.check.is_frozen())
+                        {
+                            card.check.settle();
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            window,
+            cx,
+        );
+    }
+    icon.check.then_some((icon.scale, icon.opacity))
 }
 
 /// `s` in an element found as `name` (bounds) holding `"<name>: <s>"`.
@@ -253,17 +410,23 @@ fn labeled(name: &'static str, s: impl Into<SharedString>) -> Div {
 }
 
 /// The card, as the prelude renders it each frame it shows.
-fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
+fn render(tab: &WeakEntity<ReviewTab>, window: &mut Window, cx: &mut App) -> AnyElement {
     let Some(entity) = tab.upgrade() else {
         return div().into_any_element();
     };
+    let check = entity.update(cx, |t, cx| sample_check(t, window, cx));
     let t = entity.read(cx);
-    let Some((content, commits_open)) = t
+    let Some((content, card)) = t
         .extension::<HeaderCard>()
-        .and_then(|card| Some((card.content.as_ref()?, card.commits_open)))
+        .and_then(|card| Some((card.content.as_ref()?, card)))
     else {
         return div().into_any_element();
     };
+    let commits_open = card.commits_open;
+    // A list hidden by a reveal stays painted under its curtain until the
+    // reveal ends, below the card's height without it.
+    let closing = !commits_open && card.hiding && t.viewport.read(cx).prelude_revealing();
+    let closed_h = card.closed_h.filter(|_| closing);
     let theme = cx.theme();
     let colors = crate::theme::viewport_theme(cx);
     let look = Look::new(cx);
@@ -313,7 +476,8 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
                 toggle: (*total > 0).then(|| commits_toggle(commits_open, tab.clone())),
                 trailing: None,
                 // Open with no commits (after a reload): no toggle, no list.
-                list: (commits_open && *total > 0).then(|| commit_list(commits, *total, &look, cx)),
+                list: ((commits_open || closing) && *total > 0)
+                    .then(|| commit_list(commits, *total, &look, cx)),
             }
         }
         Content::Live => {
@@ -327,7 +491,7 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
                 title,
                 byline: format!("vs {}", crate::iterations::base_name(&t.opened)),
                 toggle: None,
-                trailing: Some(snapshot(t, tab.clone()).into_any_element()),
+                trailing: Some(snapshot(t, check, tab.clone()).into_any_element()),
                 list: None,
             }
         }
@@ -368,7 +532,7 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
                 .child(totals(t, cx))
                 .children(parts.trailing),
         );
-    v_flex()
+    let card = v_flex()
         .debug_selector(|| "header-card".into())
         .w_full()
         .overflow_hidden()
@@ -378,8 +542,17 @@ fn render(tab: &WeakEntity<ReviewTab>, cx: &App) -> AnyElement {
         .rounded(px(radius::MD))
         .text_color(theme.foreground)
         .child(top)
-        .children(parts.list)
-        .into_any_element()
+        .children(parts.list);
+    match closed_h {
+        // Laid out without the list, painted with it.
+        Some(h) => div()
+            .relative()
+            .w_full()
+            .h(px(h))
+            .child(card.absolute().top_0().left_0())
+            .into_any_element(),
+        None => card.into_any_element(),
+    }
 }
 
 /// The pieces that differ by kind: left to right, then below.
@@ -409,8 +582,10 @@ fn commits_toggle(open: bool, tab: WeakEntity<ReviewTab>) -> Button {
         .ghost()
         .xsmall()
         .rounded(px(radius::XS))
-        .on_click(move |_, _, cx| {
-            tab.update(cx, toggle_commits).ok();
+        .on_click(move |_, window, cx| {
+            let initiator = motion::initiator(window);
+            tab.update(cx, |tab, cx| toggle_commits(tab, initiator, cx))
+                .ok();
         })
 }
 
@@ -451,17 +626,19 @@ fn totals(tab: &ReviewTab, cx: &App) -> AnyElement {
 }
 
 /// A live card's Snapshot: pins the state shown as an iteration (design
-/// §5.2); disabled once it is pinned.
-fn snapshot(tab: &ReviewTab, weak: WeakEntity<ReviewTab>) -> Button {
-    let current = crate::iterations::current(tab);
-    let pinned = current
-        .iteration
-        .as_ref()
-        .filter(|it| it.diff_id == current.diff_id)
-        .map(|it| it.seq);
+/// §5.2); disabled once it is pinned, its camera then a check (`check`:
+/// its scale and opacity, M15).
+fn snapshot(tab: &ReviewTab, check: Option<(f32, f32)>, weak: WeakEntity<ReviewTab>) -> Button {
+    let pinned = pinned_seq(tab);
+    let icon = match check {
+        Some((scale, opacity)) => Icon::new(IconName::CircleCheck)
+            .transform(Transformation::scale(size(scale, scale)))
+            .opacity(opacity),
+        None => Icon::new(Lucide::Camera),
+    };
     Button::new("live-snapshot")
         .debug_selector(|| "live-snapshot".into())
-        .icon(Icon::new(Lucide::Camera))
+        .icon(icon)
         .label("Snapshot")
         .outline()
         .small()

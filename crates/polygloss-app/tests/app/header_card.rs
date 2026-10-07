@@ -268,6 +268,10 @@ fn compare_header_counts_and_lists_commits(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
     let repo = commits_repo(52);
     let mut shell = start(cx);
+    // The settled card: the list's reveal (M8) is `motion_m8_m15`'s.
+    shell.cx.update(|_, cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Off), cx)
+    });
     shell
         .open(compare(repo.path(), CompareMode::ThreeDot, None))
         .unwrap();
@@ -710,4 +714,486 @@ fn commit_rows_follow_the_ladder(cx: &mut TestAppContext) {
     );
     // Centred on its row.
     assert_eq!(avatar.center().y, rows[0].center().y);
+}
+
+// ---------------------------------------------------------------------------
+// M8, Show / Hide commits, and M15, the Snapshot confirmation (T7.14,
+// ADR-0030), stepped by its protocol with this file's own curve solvers and
+// every height and duration written by hand.
+
+mod motion_m8_m15 {
+    use std::time::Duration;
+
+    use gpui_kit::{Bounds, Entity, TestAppContext};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+    use polygloss_app::motion::{self, MotionPolicy};
+    use polygloss_app::review_tab::{ReviewTab, header};
+    use polygloss_core::git::{CompareMode, Since};
+
+    use super::{commits_repo, compare, live, live_repo, toasts};
+    use crate::shell::{Shell, bounds, click, draw, painted, start};
+    use crate::support::motion::{advance, frame, requested_frames, step_to};
+    use crate::support::{FixtureRepo, Sandbox};
+
+    /// Three commits' list: its top border 1, `INLINE` 4, three 28 pt rows
+    /// and `INLINE` 4.
+    const LIST: f32 = 1.0 + 4.0 + 3.0 * 28.0 + 4.0;
+    /// The card without it (`header_card_is_56_tall`).
+    const CARD: f32 = 56.0;
+    /// `reveal(93)`: 150 + 0.1 · 93 ms.
+    const SHOW_MS: f64 = 159.3;
+    /// `exit(159.3)`: 0.75 · 159.3 = 119.5, rounded to 10 ms.
+    const HIDE_MS: f64 = 120.0;
+    /// The Snapshot icon's motion: QUICK.
+    const CHECK_MS: f64 = 150.0;
+
+    fn ms(ms: f64) -> Duration {
+        Duration::from_secs_f64(ms / 1000.0)
+    }
+
+    /// `cubic-bezier(x1, y1, x2, y2)` at `t` by bisection on x.
+    fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
+        let at = |a: f64, b: f64, s: f64| {
+            3.0 * (1.0 - s) * (1.0 - s) * s * a + 3.0 * (1.0 - s) * s * s * b + s * s * s
+        };
+        let (mut low, mut high) = (0.0, 1.0);
+        for _ in 0..200 {
+            let mid = (low + high) / 2.0;
+            if at(x1, x2, mid) < t {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        at(y1, y2, (low + high) / 2.0)
+    }
+
+    /// SLIDE.
+    fn slide(t: f64) -> f64 {
+        bezier(0.25, 1.0, 0.5, 1.0, t)
+    }
+
+    /// OUT.
+    fn out(t: f64) -> f64 {
+        bezier(0.16, 1.0, 0.3, 1.0, t)
+    }
+
+    /// `round(v · scale) / scale` at the test window's scale, 2.
+    fn q(v: f64) -> f32 {
+        ((v * 2.0).round() / 2.0) as f32
+    }
+
+    fn close(actual: f32, expected: f32, what: &str) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "{what}: {actual} (expected {expected})"
+        );
+    }
+
+    fn set_policy(shell: &mut Shell, policy: MotionPolicy) {
+        shell
+            .cx
+            .update(|_, cx| motion::set_override(Some(policy), cx));
+    }
+
+    /// A compare of three commits under `policy`, its list closed.
+    fn three_commits(
+        cx: &mut TestAppContext,
+        policy: MotionPolicy,
+    ) -> (FixtureRepo, Shell<'_>, Entity<ReviewTab>) {
+        let repo = commits_repo(3);
+        let mut shell = start(cx);
+        set_policy(&mut shell, policy);
+        let tab = shell
+            .open(compare(repo.path(), CompareMode::ThreeDot, None))
+            .unwrap();
+        (repo, shell, tab)
+    }
+
+    /// Opens the list at once (under Off), then switches to `policy`.
+    fn opened(shell: &mut Shell, policy: MotionPolicy) {
+        set_policy(shell, MotionPolicy::Off);
+        click(shell.cx, "header-commits-toggle");
+        assert!(painted(shell.cx, "header-commit-0").is_some());
+        set_policy(shell, policy);
+    }
+
+    /// The window y of the first file card's top, as painted.
+    fn first_card(shell: &mut Shell, tab: &Entity<ReviewTab>) -> f32 {
+        tab.read_with(shell.cx, |t, cx| {
+            let v = t.viewport.read(cx);
+            let f = v.display_order()[0];
+            v.card_bounds(f).expect("the first card is painted").top()
+        })
+        .as_f32()
+    }
+
+    fn prelude(shell: &mut Shell, tab: &Entity<ReviewTab>) -> Option<f32> {
+        tab.read_with(shell.cx, |t, cx| {
+            t.viewport.read(cx).document().prelude_height()
+        })
+    }
+
+    fn running(shell: &mut Shell, tab: &Entity<ReviewTab>) -> bool {
+        tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).motion_running())
+    }
+
+    /// The running reveal's opacity (a Reduced fade's).
+    fn opacity(shell: &mut Shell, tab: &Entity<ReviewTab>) -> f32 {
+        tab.read_with(shell.cx, |t, cx| {
+            t.viewport
+                .read(cx)
+                .debug()
+                .reveal
+                .expect("revealing")
+                .opacity
+        })
+    }
+
+    /// The window `(top, bottom)` of every quad the last frame painted in
+    /// the canvas color at an alpha strictly between 0 and 1: a Reduced
+    /// fade's veil.
+    fn veils(shell: &mut Shell) -> Vec<(f32, f32)> {
+        shell.cx.update(|window, cx| {
+            let canvas = polygloss_app::theme::viewport_theme(cx).canvas;
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    quad.background.as_solid().is_some_and(|c| {
+                        (c.h, c.s, c.l) == (canvas.h, canvas.s, canvas.l) && c.a > 0.0 && c.a < 1.0
+                    })
+                })
+                .map(|quad| {
+                    let b = quad.bounds;
+                    (
+                        b.origin.y.0 / scale,
+                        (b.origin.y.0 + b.size.height.0) / scale,
+                    )
+                })
+                .collect()
+        })
+    }
+
+    fn card_top(shell: &mut Shell) -> f32 {
+        bounds(shell.cx, "header-card").top().as_f32()
+    }
+
+    #[gpui_kit::test]
+    fn show_commits_reveals_from_the_measured_height(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (_repo, mut shell, tab) = three_commits(cx, MotionPolicy::Full);
+        assert_eq!(prelude(&mut shell, &tab), Some(CARD));
+        let old = first_card(&mut shell, &tab);
+        // The commit frame: the card measured with its list (the new value
+        // from the first frame), the cards below where they were.
+        click(shell.cx, "header-commits-toggle");
+        assert!(running(&mut shell, &tab), "the prelude reveals");
+        assert_eq!(prelude(&mut shell, &tab), Some(CARD + LIST));
+        close(first_card(&mut shell, &tab), old, "commit frame");
+        step_to(shell.cx, FIRST_STEP);
+        close(
+            first_card(&mut shell, &tab),
+            old + q(f64::from(LIST) * slide(16.667 / SHOW_MS)),
+            "first step",
+        );
+        advance(shell.cx, ms(SHOW_MS / 2.0) - FIRST_STEP);
+        close(
+            first_card(&mut shell, &tab),
+            old + q(f64::from(LIST) * slide(0.5)),
+            "half way",
+        );
+        advance(shell.cx, ms(SHOW_MS / 2.0));
+        close(first_card(&mut shell, &tab), old + LIST, "settled");
+        assert!(!running(&mut shell, &tab));
+        assert_eq!(requested_frames(shell.cx), 0);
+    }
+
+    #[gpui_kit::test]
+    fn hide_commits_takes_its_exit_duration(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (_repo, mut shell, tab) = three_commits(cx, MotionPolicy::Full);
+        opened(&mut shell, MotionPolicy::Full);
+        let open = first_card(&mut shell, &tab);
+        // The commit frame: measured without its list, which the curtain
+        // still shows, the cards below where they were.
+        click(shell.cx, "header-commits-toggle");
+        assert!(running(&mut shell, &tab), "the prelude reveals");
+        assert_eq!(prelude(&mut shell, &tab), Some(CARD));
+        assert!(
+            painted(shell.cx, "header-commit-2").is_some(),
+            "the list under the curtain"
+        );
+        close(first_card(&mut shell, &tab), open, "commit frame");
+        step_to(shell.cx, ms(HIDE_MS / 2.0));
+        close(
+            first_card(&mut shell, &tab),
+            open - LIST + q(f64::from(LIST) * (1.0 - slide(0.5))),
+            "half way",
+        );
+        advance(shell.cx, ms(HIDE_MS / 2.0));
+        close(first_card(&mut shell, &tab), open - LIST, "settled");
+        assert!(!running(&mut shell, &tab));
+        assert!(
+            painted(shell.cx, "header-commit-0").is_none(),
+            "the list left"
+        );
+        assert_eq!(requested_frames(shell.cx), 0);
+    }
+
+    #[gpui_kit::test]
+    fn hide_commits_reduced_fades_then_snaps(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (_repo, mut shell, tab) = three_commits(cx, MotionPolicy::Full);
+        opened(&mut shell, MotionPolicy::Reduced);
+        let open = first_card(&mut shell, &tab);
+        click(shell.cx, "header-commits-toggle");
+        close(first_card(&mut shell, &tab), open, "commit frame: held");
+        step_to(shell.cx, ms(50.0));
+        let o = opacity(&mut shell, &tab);
+        assert!(0.0 < o && o < 1.0, "the list fades: {o}");
+        close(first_card(&mut shell, &tab), open, "50 ms: held");
+        assert!(painted(shell.cx, "header-commit-2").is_some(), "the list");
+        // Only the list fades: the veil starts where the card without it
+        // ends.
+        let top = card_top(&mut shell);
+        assert_eq!(
+            veils(&mut shell),
+            [(top + CARD, top + CARD + LIST)],
+            "the veil over the list only"
+        );
+        advance(shell.cx, ms(50.0));
+        close(
+            first_card(&mut shell, &tab),
+            open - LIST,
+            "snapped after 100 ms",
+        );
+        assert!(!running(&mut shell, &tab));
+        assert!(painted(shell.cx, "header-commit-0").is_none());
+        assert!(veils(&mut shell).is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn show_commits_reduced_fades_only_the_list_in(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (_repo, mut shell, tab) = three_commits(cx, MotionPolicy::Reduced);
+        let old = first_card(&mut shell, &tab);
+        click(shell.cx, "header-commits-toggle");
+        // The layout snaps; the list fades in, the card's top part never.
+        close(first_card(&mut shell, &tab), old + LIST, "commit frame");
+        step_to(shell.cx, ms(75.0));
+        let o = opacity(&mut shell, &tab);
+        assert!(0.0 < o && o < 1.0, "the list fades in: {o}");
+        let top = card_top(&mut shell);
+        assert_eq!(
+            veils(&mut shell),
+            [(top + CARD, top + CARD + LIST)],
+            "the veil over the list only"
+        );
+        advance(shell.cx, ms(75.0));
+        assert!(!running(&mut shell, &tab));
+        assert!(veils(&mut shell).is_empty());
+    }
+
+    /// A live review of `live_repo` under `policy`.
+    fn live_review(
+        cx: &mut TestAppContext,
+        policy: MotionPolicy,
+    ) -> (FixtureRepo, Shell<'_>, Entity<ReviewTab>) {
+        let repo = live_repo();
+        let mut shell = start(cx);
+        set_policy(&mut shell, policy);
+        let tab = shell.open(live(repo.path(), Since::MergeBase)).unwrap();
+        (repo, shell, tab)
+    }
+
+    fn icon(shell: &mut Shell, tab: &Entity<ReviewTab>) -> header::SnapshotIcon {
+        tab.read_with(shell.cx, |t, _| header::snapshot_icon(t))
+            .expect("the Snapshot button is painted")
+    }
+
+    fn assert_icon(
+        actual: header::SnapshotIcon,
+        check: bool,
+        scale: f64,
+        opacity: f64,
+        what: &str,
+    ) {
+        assert_eq!(actual.check, check, "{what}: {actual:?}");
+        assert!(
+            (f64::from(actual.scale) - scale).abs() < 1e-4,
+            "{what}: scale {actual:?}, expected {scale}"
+        );
+        assert!(
+            (f64::from(actual.opacity) - opacity).abs() < 1e-4,
+            "{what}: opacity {actual:?}, expected {opacity}"
+        );
+    }
+
+    /// The live state changes (an edit, then a refresh): Snapshot is
+    /// enabled again.
+    fn edit_and_refresh(shell: &mut Shell, repo: &FixtureRepo, tab: &Entity<ReviewTab>, n: u32) {
+        repo.write("a.txt", format!("one\ntwo\nedit {n}\n").as_bytes());
+        tab.update_in(shell.cx, polygloss_app::live::refresh_tab);
+        frame(shell.cx);
+    }
+
+    #[gpui_kit::test]
+    fn snapshot_icon_scales_into_a_check(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (repo, mut shell, tab) = live_review(cx, MotionPolicy::Full);
+        assert_icon(icon(&mut shell, &tab), false, 1.0, 1.0, "the camera");
+        // The pin lands: the camera leaves on the commit frame, the check
+        // enters at 0.9 and opacity 0.
+        click(shell.cx, "live-snapshot");
+        assert_icon(icon(&mut shell, &tab), true, 0.9, 0.0, "commit frame");
+        step_to(shell.cx, FIRST_STEP);
+        let first = out(16.667 / CHECK_MS);
+        assert_icon(
+            icon(&mut shell, &tab),
+            true,
+            0.9 + 0.1 * first,
+            first,
+            "first step",
+        );
+        advance(shell.cx, ms(75.0) - FIRST_STEP);
+        assert_icon(
+            icon(&mut shell, &tab),
+            true,
+            0.9 + 0.1 * out(0.5),
+            out(0.5),
+            "75 ms",
+        );
+        assert!(
+            requested_frames(shell.cx) > 0,
+            "the running check asks for frames"
+        );
+        advance(shell.cx, ms(75.0));
+        assert_icon(icon(&mut shell, &tab), true, 1.0, 1.0, "settled");
+        assert_eq!(requested_frames(shell.cx), 0);
+
+        // Reduced: opacity only, scale 1 at every sample.
+        edit_and_refresh(&mut shell, &repo, &tab, 1);
+        assert_icon(icon(&mut shell, &tab), false, 1.0, 1.0, "the camera again");
+        set_policy(&mut shell, MotionPolicy::Reduced);
+        click(shell.cx, "live-snapshot");
+        assert_icon(
+            icon(&mut shell, &tab),
+            true,
+            1.0,
+            0.0,
+            "Reduced: commit frame",
+        );
+        step_to(shell.cx, FIRST_STEP);
+        let s = icon(&mut shell, &tab);
+        assert!(s.check && s.scale == 1.0, "Reduced: first step {s:?}");
+        advance(shell.cx, ms(75.0) - FIRST_STEP);
+        let s = icon(&mut shell, &tab);
+        assert!(
+            s.check && s.scale == 1.0 && 0.0 < s.opacity && s.opacity < 1.0,
+            "Reduced: 75 ms {s:?}"
+        );
+        advance(shell.cx, ms(75.0));
+        assert_icon(icon(&mut shell, &tab), true, 1.0, 1.0, "Reduced: settled");
+    }
+
+    #[gpui_kit::test]
+    fn snapshot_icon_snaps_back_when_reenabled(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (repo, mut shell, tab) = live_review(cx, MotionPolicy::Full);
+        click(shell.cx, "live-snapshot");
+        step_to(shell.cx, ms(75.0));
+        assert!(icon(&mut shell, &tab).check);
+        // Re-enabled mid-motion: the camera on the first frame, at rest.
+        edit_and_refresh(&mut shell, &repo, &tab, 1);
+        assert_icon(
+            icon(&mut shell, &tab),
+            false,
+            1.0,
+            1.0,
+            "the camera at once",
+        );
+        advance(shell.cx, ms(75.0));
+        assert_icon(icon(&mut shell, &tab), false, 1.0, 1.0, "nothing resumes");
+        // Pinned again and re-enabled after it settled: the same.
+        click(shell.cx, "live-snapshot");
+        step_to(shell.cx, ms(CHECK_MS));
+        assert_icon(icon(&mut shell, &tab), true, 1.0, 1.0, "the check");
+        edit_and_refresh(&mut shell, &repo, &tab, 2);
+        assert_icon(
+            icon(&mut shell, &tab),
+            false,
+            1.0,
+            1.0,
+            "the camera at once",
+        );
+    }
+
+    /// ADR-0030 rule 4 on M15: a key down settles the check; a mouse down
+    /// freezes it, with no frame asked for, until its mouse up settles it.
+    #[gpui_kit::test]
+    fn snapshot_check_follows_the_settling_inputs(cx: &mut TestAppContext) {
+        use gpui_kit::{Modifiers, MouseButton};
+        let _sb = Sandbox::isolate();
+        let (repo, mut shell, tab) = live_review(cx, MotionPolicy::Full);
+        click(shell.cx, "live-snapshot");
+        step_to(shell.cx, ms(50.0));
+        assert!(icon(&mut shell, &tab).opacity < 1.0, "running");
+        shell.cx.simulate_keystrokes("shift-a");
+        frame(shell.cx);
+        assert_icon(
+            icon(&mut shell, &tab),
+            true,
+            1.0,
+            1.0,
+            "a key down settles it",
+        );
+
+        edit_and_refresh(&mut shell, &repo, &tab, 1);
+        click(shell.cx, "live-snapshot");
+        step_to(shell.cx, ms(50.0));
+        let held = icon(&mut shell, &tab);
+        assert!(held.opacity < 1.0, "running: {held:?}");
+        // Pressed on the card's title, away from any control.
+        let at = bounds(shell.cx, "header-title").center();
+        shell
+            .cx
+            .simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+        frame(shell.cx);
+        for _ in 0..3 {
+            advance(shell.cx, FIRST_STEP);
+            assert_eq!(icon(&mut shell, &tab), held, "frozen while pressed");
+        }
+        assert_eq!(requested_frames(shell.cx), 0, "no frame while frozen");
+        shell
+            .cx
+            .simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+        draw(shell.cx);
+        assert_icon(
+            icon(&mut shell, &tab),
+            true,
+            1.0,
+            1.0,
+            "the mouse up settles it",
+        );
+    }
+
+    #[gpui_kit::test]
+    fn snapshot_label_is_unchanged(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let (_repo, mut shell, tab) = live_review(cx, MotionPolicy::Off);
+        let before: Bounds<_> = bounds(shell.cx, "live-snapshot");
+        click(shell.cx, "live-snapshot");
+        let saved = "Snapshot saved as iteration 1";
+        assert_eq!(toasts(&mut shell).iter().filter(|t| *t == saved).count(), 1);
+        assert!(icon(&mut shell, &tab).check, "the check");
+        // The same button: the label "Snapshot" (a longer one would widen
+        // it), still disabled (a second click saves nothing).
+        assert_eq!(bounds(shell.cx, "live-snapshot"), before);
+        click(shell.cx, "live-snapshot");
+        assert_eq!(toasts(&mut shell).iter().filter(|t| *t == saved).count(), 1);
+        assert_eq!(bounds(shell.cx, "live-snapshot"), before);
+        draw(shell.cx);
+    }
 }
