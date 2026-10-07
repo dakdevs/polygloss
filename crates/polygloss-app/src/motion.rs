@@ -6,10 +6,8 @@
 //! and gpui-kit's motion tokens ([`kit_tokens`]).
 //!
 //! Every motion is a [`Track`] field of the entity that owns its surface,
-//! sampled in that entity's render (rule 13). [`enter_from`] carries the
-//! threads panel's M6 entrance until T7.10 moves it onto a track of its own
-//! (T7.9 moved the banner strip's); it maps Reduced to a snap, as in M6.
-//! macOS Reduce Motion is read again on every activation of the main window
+//! sampled in that entity's render (rule 13). macOS Reduce Motion is read
+//! again on every activation of the main window
 //! ([`follow_system_reduce_motion`]).
 
 pub mod exit;
@@ -17,36 +15,16 @@ pub mod settle;
 pub mod wrap;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::base::{Easing, Spring};
 use gpui_kit::component::MotionTokens;
 use gpui_kit::component::theme::Theme;
-use gpui_kit::{
-    AnyElement, App, Context, ElementId, EntityId, Global, IntoElement, Pixels, Point, Styled,
-    Window, point,
-};
+use gpui_kit::{App, Context, ElementId, Global, Pixels, Point, Window};
 pub use polygloss_viewport::motion::*;
 
 use crate::window::MainWindow;
-
-/// The threads panel's content entering (M6; retired by T7.10).
-pub const ENTER_PANEL: Duration = Duration::from_millis(180);
-/// A banner notice entering (M6). Unused since T7.9 put the strip on its
-/// own `Track`; T7.10 deletes it with [`enter_from`].
-pub const ENTER_NOTICE: Duration = Duration::from_millis(160);
-
-/// Ease-out quint: fast, then a long settle (the threads panel, M6).
-pub fn ease_out_quint(t: f32) -> f32 {
-    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(5)
-}
-
-/// Ease-out cubic (banner notices, M6).
-pub fn ease_out_cubic(t: f32) -> f32 {
-    gpui_kit::base::animation::ease_out_cubic(t)
-}
 
 /// Whether what the user did last was with the pointer.
 pub fn pointer_initiated(window: &Window) -> bool {
@@ -132,76 +110,6 @@ pub(crate) fn report(recorded: impl FnOnce() -> Recorded, cx: &App) {
     if let Some(RecordSink(sink)) = cx.try_global::<RecordSink>() {
         sink.borrow_mut().push(recorded());
     }
-}
-
-/// The M6 entrances [`enter_from`] plays: by the rendering view and the
-/// caller's id, the epoch it played and its track (retired with
-/// `enter_from`).
-#[derive(Default)]
-struct Entrances(HashMap<(EntityId, ElementId), (u64, Track)>);
-
-impl Global for Entrances {}
-
-/// `element` entering (M6): drawn `from` its place at opacity 0, then easing
-/// to its place at opacity 1 over `duration`, on a [`Track`]. It plays once
-/// per `(view, id, epoch)`: drawn again with the same epoch it stays put; a
-/// new epoch plays again. Pointer only, and Reduced snaps, as in M6.
-#[allow(clippy::too_many_arguments)]
-pub fn enter_from(
-    id: impl Into<ElementId>,
-    epoch: u64,
-    from: Point<Pixels>,
-    duration: Duration,
-    easing: fn(f32) -> f32,
-    element: impl IntoElement + Styled,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let id = id.into();
-    let key = (window.current_view(), id.clone());
-    let now = cx.background_executor().now();
-    let policy = policy(cx);
-    let entrances = &mut cx.default_global::<Entrances>().0;
-    let (played, track) = entrances
-        .entry(key.clone())
-        .or_insert_with(|| (epoch.wrapping_add(1), Track::new(1.0, 1.0)));
-    if *played != epoch {
-        let motion = Motion {
-            enter: duration,
-            exit: duration,
-            easing,
-            animates: &[Initiator::Pointer],
-            reduced: Reduced {
-                enter: ReducedPlay::Snap,
-                exit: ReducedPlay::Snap,
-            },
-        };
-        *played = epoch;
-        *track = Track::new(0.0, 1.0);
-        track.retarget(1.0, &motion, Initiator::Pointer, policy, now);
-    }
-    let mut track = track.clone();
-    let progress = sample(&mut track, window, cx);
-    if let Some((_, kept)) = cx.default_global::<Entrances>().0.get_mut(&key) {
-        *kept = track;
-    }
-    let progress = progress.value;
-    let offset = point(from.x * (1.0 - progress), from.y * (1.0 - progress));
-    report(
-        || Recorded {
-            id,
-            offset,
-            opacity: progress,
-            rotation: 0.0,
-        },
-        cx,
-    );
-    element
-        .relative()
-        .left(offset.x)
-        .top(offset.y)
-        .opacity(progress)
-        .into_any_element()
 }
 
 /// Press and hover feedback (ADR-0030, Feedback without motion): instant,

@@ -275,6 +275,20 @@ pub fn init(cx: &mut App) {
         if lone_modifier(&event.keystroke) {
             return;
         }
+        // What the keystroke runs where the keyboard is: the binding the
+        // focused element's context path resolves it to (the rendered
+        // frame's own context stack is wherever its last element left it,
+        // so `Window::bindings_for_action` cannot answer this).
+        let bound = cx
+            .key_bindings()
+            .borrow()
+            .bindings_for_input(
+                std::slice::from_ref(&event.keystroke),
+                &window.context_stack(),
+            )
+            .0
+            .into_iter()
+            .next();
         let registry = registry(window, cx);
         let all: Vec<_> = registry
             .live
@@ -283,15 +297,11 @@ pub fn init(cx: &mut App) {
             .cloned()
             .collect();
         for registration in all {
-            let own_shortcut = registration.action.as_ref().is_some_and(|action| {
-                window
-                    .bindings_for_action(action.as_ref())
-                    .iter()
-                    .any(|binding| {
-                        binding.match_keystrokes(std::slice::from_ref(&event.keystroke))
-                            == Some(false)
-                    })
-            });
+            let own_shortcut = registration
+                .action
+                .as_ref()
+                .zip(bound.as_ref())
+                .is_some_and(|(action, binding)| binding.action().partial_eq(action.as_ref()));
             if !own_shortcut {
                 (registration.settle)(Settle::All, cx);
             }

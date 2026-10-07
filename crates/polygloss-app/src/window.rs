@@ -103,10 +103,14 @@ pub fn init(cx: &mut App) {
     ];
     // The sidebar: changed through `Chrome` only, so `MainWindow` hands a
     // hidden tree's keyboard to the diff (`sidebar_changed`).
-    handlers::on_action(cx, |_: &mut MainWindow, _: &ToggleSidebar, _, cx| {
+    // ⌃⌘S, the palette and the View menu (gpui dispatches menu commands
+    // without window input, so the last input classifies it): both slide
+    // the sidebar while OQ-58 stays "animate".
+    handlers::on_action(cx, |_: &mut MainWindow, _: &ToggleSidebar, window, cx| {
+        let initiator = crate::motion::initiator(window);
         chrome::chrome(cx).update(cx, |c, cx| {
             let visible = c.sidebar_visible();
-            c.set_sidebar_visible(!visible, cx)
+            c.set_sidebar_visible_by(!visible, initiator, window, cx)
         });
     });
     handlers::on_action(cx, |_: &mut MainWindow, _: &ShowFiles, window, cx| {
@@ -526,6 +530,8 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The perf scenario's frame timing (a no-op unless recording; T7.3).
         frames::render_started(window, cx);
+        // Once per frame, before any page reads the sidebar's frame.
+        chrome::sample_sidebar(window, cx);
         let title = self.tabs.active_item().title(cx);
         if title != self.window_title {
             window.set_window_title(&title);

@@ -10,12 +10,23 @@
 //! └─────────────────────────────────────┴────────────────────────────────────┘
 //! ```
 //!
+//! The sidebar is an app-owned split ([`crate::panel_split`]): it slides in
+//! and out from the window's leading edge (ADR-0030 M1) when the pointer,
+//! ⌃⌘S or the palette shows or hides it (OQ-58), and snaps for everything
+//! else (⌘F, `/`, ⌘P and `⇥` into the tree, ShowFiles/ShowReviews, view
+//! restore). Its track is sampled once per frame, first thing in the main
+//! window's render ([`sample_sidebar`]), so the split, the toolbar and the
+//! tree read one `f`.
+//!
 //! Spacing (ADR-0031 M1–M3): the main column starts after the sidebar's
 //! 1 pt divider; both top rows hold their items on `edge::CANVAS` from their
 //! trailing edge, the toolbar from its leading edge too (the cards' edge),
 //! or after the traffic lights (`layout::TOOLBAR_INSET_HIDDEN`) while the
-//! sidebar is hidden; items are `gap::CONTROLS` apart. The custom controls
-//! here show press ink ([`ink_layer`]).
+//! sidebar is hidden; items are `gap::CONTROLS` apart. While the sidebar
+//! moves the toolbar's first item follows its edge and the show-sidebar
+//! button stays at the inset, covered or uncovered by the sliding frame
+//! ([`toolbar_row`]). The custom controls here show press ink
+//! ([`ink_layer`]).
 //!
 //! Both top rows move the window when dragged and zoom (the system's
 //! double-click setting) on a double click, from anywhere but a control: a
@@ -30,18 +41,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, ResizableState, Sizable as _, h_flex, h_resizable, resizable_panel,
-};
-use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, FontFeatures, Global,
+    AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, FontFeatures, Global, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Role, Stateful,
     StatefulInteractiveElement as _, Styled as _, TitlebarOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, px, size,
 };
 
+use crate::motion::Initiator;
 use crate::motion::ink::PressInk as _;
+use crate::panel_split::{self, PanelEdge, PanelFrame, PanelOwner, PanelState, panel_split};
 use crate::segmented::{SegmentSpec, SegmentedState, segmented};
 use crate::space::{edge, gap, height, layout, radius, size as icon_size, stroke};
 
@@ -72,9 +82,9 @@ pub enum Segment {
 pub struct Chrome {
     segment: Segment,
     sidebar_visible: bool,
-    /// The sidebar | main column split: its first panel's size is the
-    /// sidebar's stored width.
-    shell: Entity<ResizableState>,
+    /// The sidebar's stored width and its motion (M1): the shell's
+    /// [`panel_split`].
+    sidebar: PanelState,
     /// The `[Files | Reviews]` control's selected fill (M11), shared by
     /// every page's sidebar.
     segments: Entity<SegmentedState>,
@@ -92,12 +102,11 @@ impl Chrome {
         if let Some(ChromeGlobal(chrome)) = cx.try_global::<ChromeGlobal>() {
             return chrome.clone();
         }
-        let shell = cx.new(|_| ResizableState::default());
         let segments = cx.new(|_| SegmentedState::new(0));
         let chrome = cx.new(|_| Chrome {
             segment: Segment::Files,
             sidebar_visible: true,
-            shell,
+            sidebar: PanelState::new(layout::SIDEBAR_WIDTH, true),
             segments,
         });
         cx.set_global(ChromeGlobal(chrome.clone()));
@@ -119,9 +128,31 @@ impl Chrome {
         self.sidebar_visible
     }
 
+    /// Shows or hides the sidebar at once (Programmatic: ShowFiles, ⌘F,
+    /// `/`, ⌘P, `⇥` into the tree, restore).
     pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.set_visible(visible, Initiator::Programmatic, cx);
+    }
+
+    /// Shows or hides the sidebar as `initiator` plays it (ADR-0030 M1): the
+    /// pointer (its toggle, the show-sidebar button, the View menu) and the
+    /// keyboard (⌃⌘S, the palette; OQ-58) slide it from where it is painted.
+    /// The model changes now: the tree's keyboard and its `⇥` stop are gone
+    /// from a closing sidebar on the commit frame.
+    pub fn set_sidebar_visible_by(
+        &mut self,
+        visible: bool,
+        initiator: Initiator,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_visible(visible, initiator, cx);
+    }
+
+    fn set_visible(&mut self, visible: bool, initiator: Initiator, cx: &mut Context<Self>) {
         if self.sidebar_visible != visible {
             self.sidebar_visible = visible;
+            self.sidebar.retarget(visible, initiator, cx);
             cx.notify();
         }
     }
@@ -132,11 +163,59 @@ impl Chrome {
         self.sidebar_visible && self.segment == Segment::Files
     }
 
-    /// The sidebar | main column split's state (tests resize it as a drag
-    /// of the sidebar's edge does).
-    pub fn shell(&self) -> &Entity<ResizableState> {
-        &self.shell
+    /// The sidebar's frame this frame, in a window whose review shows its
+    /// threads panel or not (its range follows the main column's minimum).
+    pub fn sidebar_frame(&self, threads_shown: bool, window: &Window) -> PanelFrame {
+        self.sidebar.frame(
+            sidebar_range(window.viewport_size().width.as_f32(), threads_shown),
+            window.scale_factor(),
+        )
     }
+
+    /// While the sidebar moves, its frame's widths at the motion's two
+    /// ends (the toolbar keeps the items that fit at both).
+    pub fn sidebar_ends(&self, threads_shown: bool, window: &Window) -> Option<(f32, f32)> {
+        self.sidebar.ends(
+            self.sidebar_visible,
+            sidebar_range(window.viewport_size().width.as_f32(), threads_shown),
+            window.scale_factor(),
+        )
+    }
+
+    /// The sidebar's frame at rest in its model state (the motion's
+    /// target).
+    pub fn sidebar_rest_frame(&self, threads_shown: bool, window: &Window) -> f32 {
+        self.sidebar.rest_frame(
+            self.sidebar_visible,
+            sidebar_range(window.viewport_size().width.as_f32(), threads_shown),
+            window.scale_factor(),
+        )
+    }
+}
+
+impl PanelOwner for Chrome {
+    fn panel(&self) -> &PanelState {
+        &self.sidebar
+    }
+
+    fn panel_mut(&mut self) -> &mut PanelState {
+        &mut self.sidebar
+    }
+
+    fn shown(&self) -> bool {
+        self.sidebar_visible
+    }
+
+    fn background(&self, cx: &App) -> Hsla {
+        cx.theme().sidebar
+    }
+}
+
+/// Samples the sidebar's motion for this frame: the main window's render
+/// calls it first, before any page reads the sidebar's frame.
+pub(crate) fn sample_sidebar(window: &mut Window, cx: &mut App) {
+    let chrome = chrome(cx);
+    panel_split::sample(&chrome, || Box::new(ToggleSidebar), window, cx);
 }
 
 /// The main window's chrome. Panics before the main window first opened.
@@ -196,104 +275,62 @@ pub fn sidebar_max(window_width: f32, threads_shown: bool) -> f32 {
         .clamp(layout::SIDEBAR_RANGE.0, layout::SIDEBAR_RANGE.1)
 }
 
-/// The main column's width in `window` as [`shell`] lays it out: the
-/// window's, less the sidebar's and its divider's while it shows (its
-/// stored width, the default before the first layout, within
-/// `layout::SIDEBAR_RANGE` and [`sidebar_max`]).
-pub fn main_column_width(threads_shown: bool, window: &Window, cx: &App) -> f32 {
-    let window_width = window.viewport_size().width.as_f32();
-    let chrome = chrome(cx).read(cx);
-    if !chrome.sidebar_visible {
-        return window_width;
-    }
-    // Until the split is first laid out its sizes are placeholders, below
-    // the sidebar's minimum.
-    let stored = chrome
-        .shell
-        .read(cx)
-        .sizes()
-        .first()
-        .map(|w| w.as_f32())
-        .filter(|w| *w >= layout::SIDEBAR_RANGE.0)
-        .unwrap_or(layout::SIDEBAR_WIDTH);
-    window_width
-        - stored.clamp(
-            layout::SIDEBAR_RANGE.0,
-            sidebar_max(window_width, threads_shown),
-        )
-        - stroke::BORDER
+/// The sidebar's width range in a `window_width` window: from
+/// `layout::SIDEBAR_RANGE`'s start to [`sidebar_max`].
+pub fn sidebar_range(window_width: f32, threads_shown: bool) -> (f32, f32) {
+    (
+        layout::SIDEBAR_RANGE.0,
+        sidebar_max(window_width, threads_shown),
+    )
 }
 
-/// A page: `sidebar` (its top row included) and its 1 pt divider beside
-/// `main`, or `main` alone while the sidebar is hidden. `threads_shown`:
-/// the page's threads panel shows, so the main column needs
-/// `layout::THREADS_MAIN_MIN_WIDTH`.
+/// The main column's width in `window` once the sidebar is at rest in its
+/// model state: the window's, less the sidebar's frame (its stored width
+/// within [`sidebar_range`], and its divider) while it shows.
+pub fn main_column_width(threads_shown: bool, window: &Window, cx: &App) -> f32 {
+    window.viewport_size().width.as_f32()
+        - chrome(cx)
+            .read(cx)
+            .sidebar_rest_frame(threads_shown, window)
+}
+
+/// A page: the sidebar (`sidebar` renders its content, top row included,
+/// while its frame is open) and its 1 pt divider beside `main` (debug
+/// selector `main-column`), one [`panel_split`] in every state.
+/// `threads_shown`: the page's threads panel shows, so the main column
+/// needs `layout::THREADS_MAIN_MIN_WIDTH`.
 pub fn shell(
-    sidebar: AnyElement,
+    sidebar: impl FnOnce(&mut Window, &mut App) -> AnyElement,
     main: AnyElement,
     threads_shown: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let (visible, state) = {
-        let c = chrome(cx).read(cx);
-        (c.sidebar_visible, c.shell.clone())
-    };
     let main = div()
         .debug_selector(|| "main-column".into())
-        .h_full()
-        .min_w_0()
-        .child(main);
-    if !visible {
-        return main.w_full().into_any_element();
-    }
-    keep_main_column_flexible(&state, cx);
-    let window_width = window.viewport_size().width.as_f32();
-    let max = sidebar_max(window_width, threads_shown);
-    let theme = cx.theme();
-    // The sidebar's divider (ADR-0031 M1): gpui-kit's split draws its
-    // handle's line over the main panel's first point, so the main column
-    // starts after it. This element paints the same line there and carries
-    // the `sidebar-divider` selector, which the kit's handle cannot.
-    let divider = div()
-        .debug_selector(|| "sidebar-divider".into())
-        .flex_none()
-        .w(px(stroke::BORDER))
-        .h_full()
-        .bg(theme.border);
-    h_resizable("shell")
-        .with_state(&state)
-        .child(
-            resizable_panel()
-                .size(px(layout::SIDEBAR_WIDTH))
-                .size_range(px(layout::SIDEBAR_RANGE.0)..px(max))
-                .flex_none()
-                .child(
-                    div()
-                        .debug_selector(|| "sidebar".into())
-                        .size_full()
-                        .bg(theme.sidebar)
-                        .child(sidebar),
-                ),
-        )
-        .child(
-            resizable_panel()
-                .size_range(px(main_min_width(threads_shown) + stroke::BORDER)..Pixels::MAX)
-                .child(div().flex().size_full().child(divider).child(main.flex_1())),
-        )
-        .into_any_element()
-}
-
-/// Keeps the main column without a size of its own, so the sidebar keeps its
-/// stored width when the window resizes: gpui-kit's split rescales every
-/// panel by the same ratio once all of them have a size, which the first
-/// measurement and every drag give them.
-fn keep_main_column_flexible(state: &Entity<ResizableState>, cx: &mut App) {
-    state.update(cx, |s, cx| {
-        if s.sizes().len() == 2 {
-            s.reset_panel(1, cx);
-        }
-    });
+        .size_full()
+        .child(main)
+        .into_any_element();
+    let range = sidebar_range(window.viewport_size().width.as_f32(), threads_shown);
+    let content = move |window: &mut Window, cx: &mut App| {
+        let fill = cx.theme().sidebar;
+        div()
+            .debug_selector(|| "sidebar".into())
+            .size_full()
+            .bg(fill)
+            .child(sidebar(window, cx))
+            .into_any_element()
+    };
+    panel_split(
+        "sidebar",
+        PanelEdge::Leading,
+        &chrome(cx),
+        range,
+        content,
+        main,
+        window,
+        cx,
+    )
 }
 
 /// The sidebar's top row: the traffic lights' room, then (right-aligned) the
@@ -320,6 +357,9 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
         enabled,
     };
     let select = chrome.clone();
+    // A Reduced fade of the sidebar's content: the selected fill's shadow
+    // ramps by α³ (ADR-0030 Panels, rule 8).
+    let fade = chrome.read(cx).sidebar.sampled().opacity;
     let segments = segmented(
         "sidebar-segments",
         &state,
@@ -342,12 +382,18 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
                 select.update(cx, |c, cx| c.set_segment(which, cx));
             }
         },
-    );
+    )
+    .faded(fade);
     let toggle = icon_button(
         "toggle-sidebar",
         IconName::PanelLeft,
         ("Hide sidebar", "Hide sidebar (⌃⌘S)"),
-        move |_, cx| chrome.update(cx, |c, cx| c.set_sidebar_visible(false, cx)),
+        move |window, cx| {
+            let initiator = crate::motion::initiator(window);
+            chrome.update(cx, |c, cx| {
+                c.set_sidebar_visible_by(false, initiator, window, cx)
+            })
+        },
         cx,
     );
     let row = h_flex()
@@ -401,6 +447,26 @@ fn icon_button(
     cx: &App,
 ) -> Stateful<Div> {
     let radius = radius::for_height(height::SM);
+    button_frame(id, cx)
+        // First, so the icon paints over the ink.
+        .child(ink_layer(radius, cx))
+        .child(button_icon(id, icon))
+        .role(Role::Button)
+        .aria_label(label)
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .tooltip(crate::review_tab::toolbar::tooltip(tooltip))
+}
+
+/// What [`icon_button`] paints, with no listeners: the button's picture (an
+/// opening sidebar covers the show-sidebar button, inert, ADR-0030 M1).
+fn icon_box(id: &'static str, icon: IconName, cx: &App) -> Stateful<Div> {
+    button_frame(id, cx).child(button_icon(id, icon))
+}
+
+/// A top row's icon button's box: `height::SM` square at its height's
+/// radius.
+fn button_frame(id: &'static str, cx: &App) -> Stateful<Div> {
     div()
         .id(id)
         .debug_selector(move || id.into())
@@ -410,60 +476,105 @@ fn icon_button(
         .items_center()
         .justify_center()
         .size(px(height::SM))
-        .rounded(px(radius))
+        .rounded(px(radius::for_height(height::SM)))
         .text_color(cx.theme().secondary_foreground)
-        .child(ink_layer(radius, cx))
-        .child(
-            div()
-                .debug_selector(move || format!("{id}-icon"))
-                .flex()
-                .child(Icon::new(icon).with_size(px(icon_size::ICON))),
-        )
-        .role(Role::Button)
-        .aria_label(label)
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .on_click(move |_, window, cx| on_click(window, cx))
-        .tooltip(crate::review_tab::toolbar::tooltip(tooltip))
+}
+
+/// A top row's button icon, `size::ICON` (debug selector `<id>-icon`).
+fn button_icon(id: &'static str, icon: IconName) -> Div {
+    div()
+        .debug_selector(move || format!("{id}-icon"))
+        .flex()
+        .child(Icon::new(icon).with_size(px(icon_size::ICON)))
+}
+
+/// The toolbar's leading inset while the sidebar is hidden: after the
+/// traffic lights, or `CANVAS` in fullscreen (ADR-0031 M2).
+fn toolbar_inset(fullscreen: bool) -> f32 {
+    if fullscreen {
+        edge::CANVAS
+    } else {
+        layout::TOOLBAR_INSET_HIDDEN
+    }
+}
+
+/// Where the toolbar's first item starts in its row while the sidebar's
+/// frame is `f` wide: at window x `max(f + CANVAS, inset + SM + CONTROLS)`
+/// (ADR-0030 Panels), so it follows the sidebar's edge, rests at the
+/// cards' edge or after the show-sidebar button, and never passes under
+/// the traffic lights.
+pub fn toolbar_lead(f: f32, fullscreen: bool) -> f32 {
+    (toolbar_inset(fullscreen) + height::SM + gap::CONTROLS - f).max(edge::CANVAS)
 }
 
 /// The main column's top row (design §11.4): `left` and `right` clusters
-/// around room to drag. While the sidebar is hidden it keeps the traffic
-/// lights clear (not in fullscreen) and starts with a "show sidebar" button.
+/// around room to drag, its first item [`toolbar_lead`] from its start.
+/// The show-sidebar button sits at window x `inset` (after the traffic
+/// lights; `CANVAS` in fullscreen) whenever the sidebar's frame leaves any
+/// of it uncovered, clipped at the main column's edge: live while the
+/// sidebar is hidden (closing included), inert while it opens.
+/// `threads_shown`: the page's threads panel shows (the sidebar's range
+/// follows it).
 pub fn toolbar_row(
     id: &'static str,
     left: Vec<AnyElement>,
     right: Vec<AnyElement>,
+    threads_shown: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let chrome = chrome(cx);
-    let hidden = !chrome.read(cx).sidebar_visible;
-    let inset = hidden && !window.is_fullscreen();
-    let show = hidden.then(|| {
-        icon_button(
-            "show-sidebar",
+    let (f, hidden) = {
+        let c = chrome.read(cx);
+        (c.sidebar_frame(threads_shown, window).f, !c.sidebar_visible)
+    };
+    let fullscreen = window.is_fullscreen();
+    let inset = toolbar_inset(fullscreen);
+    let show = (f < inset + height::SM).then(|| {
+        let (icon, label) = (
             IconName::PanelLeftOpen,
             ("Show sidebar", "Show sidebar (⌃⌘S)"),
-            move |_, cx| chrome.update(cx, |c, cx| c.set_sidebar_visible(true, cx)),
-            cx,
-        )
-        .into_any_element()
+        );
+        let button = if hidden {
+            icon_button(
+                "show-sidebar",
+                icon,
+                label,
+                move |window, cx| {
+                    let initiator = crate::motion::initiator(window);
+                    chrome.update(cx, |c, cx| {
+                        c.set_sidebar_visible_by(true, initiator, window, cx)
+                    })
+                },
+                cx,
+            )
+        } else {
+            icon_box("show-sidebar", icon, cx)
+        };
+        button
+            .absolute()
+            .left(px(inset - f))
+            .top(px((height::TOP - height::SM) / 2.0))
     });
     let theme = cx.theme();
     let row = h_flex()
         .id(id)
         .debug_selector(move || id.into())
+        .relative()
         .flex_none()
         .h(px(height::TOP))
         .w_full()
-        .px(px(edge::CANVAS))
+        // Clips the show-sidebar button at the main column's edge.
+        .overflow_hidden()
+        .pl(px(toolbar_lead(f, fullscreen)))
+        .pr(px(edge::CANVAS))
         .gap(px(gap::CONTROLS))
-        .when(inset, |row| row.pl(px(layout::TOOLBAR_INSET_HIDDEN)))
         .bg(theme.title_bar)
         .border_b_1()
         .border_color(theme.title_bar_border);
     drag_region(row, id, window, cx)
-        .child(cluster(show.into_iter().chain(left).collect()).min_w_0())
+        .children(show)
+        .child(cluster(left).min_w_0())
         .child(div().flex_1())
         .child(cluster(right).flex_none())
         .into_any_element()

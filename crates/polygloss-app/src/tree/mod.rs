@@ -22,6 +22,10 @@
 //! - The pane is a cached view: the diff's scroll frames do not render it.
 //!   It renders again when notified: its own changes, new line counts
 //!   (`ViewportEvent::CountsUpdated`, `BinaryDetected`) and a new top file.
+//!   While the sidebar's frame moves or its content fades it renders
+//!   uncached: a cached view is reused only at the same bounds and content
+//!   mask, and reuse replays its scene at the opacity it was recorded at
+//!   (ADR-0030 rule 8).
 //! - [`finder`]: ⌘P, every changed path ranked by `nucleo-matcher`; Enter
 //!   jumps to the file.
 //!
@@ -150,16 +154,23 @@ pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewT
 }
 
 /// The file tree pane, cached: the tab renders on every scroll frame of the
-/// diff, the tree only when it is notified.
+/// diff, the tree only when it is notified. Uncached while the sidebar
+/// moves or fades (module docs).
 pub fn render_pane(
     tab: &ReviewTab,
     _window: &mut Window,
-    _cx: &mut Context<ReviewTab>,
+    cx: &mut Context<ReviewTab>,
 ) -> Option<AnyElement> {
+    use crate::panel_split::PanelOwner as _;
+    let moving = crate::chrome::chrome(cx).read(cx).panel().moving();
     file_tree(tab).map(|t| {
-        t.clone()
-            .cached(StyleRefinement::default().size_full())
-            .into_any_element()
+        if moving {
+            t.clone().into_any_element()
+        } else {
+            t.clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        }
     })
 }
 

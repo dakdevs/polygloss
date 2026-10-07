@@ -25,6 +25,7 @@ use crate::shell::{Shell, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
 mod geometry;
+mod panel_motion;
 mod sections;
 
 pub fn human() -> Author {

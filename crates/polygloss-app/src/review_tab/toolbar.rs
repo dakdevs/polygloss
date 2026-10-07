@@ -141,7 +141,15 @@ fn build(
                 .children(crate::features::toolbar_left_menus(tab))
         })
         .into_any_element();
-    let row = crate::chrome::toolbar_row("review-toolbar", vec![left], right, window, cx);
+    let threads_shown = tab.threads_panel_visible();
+    let row = crate::chrome::toolbar_row(
+        "review-toolbar",
+        vec![left],
+        right,
+        threads_shown,
+        window,
+        cx,
+    );
     (row, all)
 }
 
@@ -232,12 +240,25 @@ impl Element for Fit {
             AvailableSpace::MaxContent,
             AvailableSpace::Definite(bounds.size.height),
         );
+        // While the sidebar slides, the row keeps the items that fit at both
+        // ends of the motion, the narrowest it gets; the rest appear when it
+        // settles (ADR-0030 Panels, give-way).
+        let fit = {
+            let threads = tab.read(cx).threads_panel_visible();
+            let chrome = crate::chrome::chrome(cx).read(cx);
+            Fitting {
+                width: bounds.size.width.as_f32(),
+                f: chrome.sidebar_frame(threads, window).f,
+                ends: chrome.sidebar_ends(threads, window),
+                fullscreen: window.is_fullscreen(),
+            }
+        };
         // The row given way to `at`, built by the tab's features (the tab is
         // not being rendered now), whether it fits, and how many items its
         // left side has in all.
         let attempt = |at: usize, window: &mut Window, cx: &mut App| {
             let (mut row, all) = tab.update(cx, |tab, cx| build(tab, at, window, cx));
-            let fits = row.layout_as_root(natural, window, cx).width <= bounds.size.width;
+            let fits = fit.fits(row.layout_as_root(natural, window, cx).width.as_f32());
             (row, fits, all)
         };
         let from = given_way(tab.read(cx));
@@ -259,6 +280,32 @@ impl Element for Fit {
     ) {
         if let Some(row) = row {
             row.paint(window, cx);
+        }
+    }
+}
+
+/// What the toolbar's row must fit in this frame.
+struct Fitting {
+    /// The row's width (the main column's).
+    width: f32,
+    /// The sidebar's frame.
+    f: f32,
+    /// While the sidebar moves, its frame at the motion's two ends.
+    ends: Option<(f32, f32)>,
+    fullscreen: bool,
+}
+
+impl Fitting {
+    /// Whether a row `natural` wide at the sidebar's frame `self.f` fits:
+    /// at rest, in its own width; while the sidebar moves, at both ends of
+    /// the motion, where the row is `f − end` wider and its first item's
+    /// lead is the one at `end`.
+    fn fits(&self, natural: f32) -> bool {
+        let lead = |f: f32| crate::chrome::toolbar_lead(f, self.fullscreen);
+        let fits_at = |end: f32| natural - lead(self.f) + lead(end) <= self.width + self.f - end;
+        match self.ends {
+            None => natural <= self.width,
+            Some((start, target)) => fits_at(start) && fits_at(target),
         }
     }
 }

@@ -858,11 +858,13 @@ impl Focusable for HomeView {
 
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar = v_flex()
-            .size_full()
-            .child(crate::chrome::sidebar_top_row(false, window, cx))
-            .child(div().flex_1().min_h_0().child(nav::render_nav(window, cx)))
-            .into_any_element();
+        let sidebar = |window: &mut Window, cx: &mut App| {
+            v_flex()
+                .size_full()
+                .child(crate::chrome::sidebar_top_row(false, window, cx))
+                .child(div().flex_1().min_h_0().child(nav::render_nav(window, cx)))
+                .into_any_element()
+        };
         let theme = cx.theme().clone();
         let count = (self.loaded && !self.rows.is_empty()).then(|| {
             div()
@@ -895,6 +897,7 @@ impl Render for HomeView {
             "home-toolbar",
             std::iter::once(title).chain(count).collect(),
             vec![open],
+            false,
             window,
             cx,
         );

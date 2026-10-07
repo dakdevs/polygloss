@@ -1,19 +1,19 @@
 //! The motion core in the app (T7.2, design §11.16, ADR-0030): the policy
 //! override, `motion::sample` on the executor clock, settling (keys before
 //! their bindings, mouse downs by freezing, scrolls and resizes), the
-//! `slide` and `clip` wrappers, `Exit`, the kit's tokens, and the two M6
-//! entrances (`enter_from`, retired by T7.9 and T7.10).
+//! `slide` and `clip` wrappers, `Exit`, the kit's tokens, the initiator and
+//! Reduce Motion read again on activation. The M6 entrances (`enter_from`)
+//! were retired by T7.9 and T7.10; the threads panel's motion is tested
+//! with it (`threads::panel_motion`).
 //!
 //! Tests step the clock by ADR-0030's stepping protocol
 //! (`support::motion::step_to`); expected values are this file's own: a
 //! bisection solver for the Béziers and hand-written durations.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, Context, ElementId, Entity, FocusHandle,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
     InteractiveElement as _, IntoElement, KeyBinding, Modifiers, MouseButton, ParentElement as _,
     Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement as _,
     StyleRefinement, Styled as _, TestAppContext, TouchPhase, VisualTestContext, Window, bounds,
@@ -21,8 +21,8 @@ use gpui_kit::{
 };
 use polygloss_app::motion::exit::{Exit, ExitFrame, ExitHitbox, ExitSpec, Placement};
 use polygloss_app::motion::{
-    self, ENTER_PANEL, Initiator, Motion, MotionPolicy, Recorded, ReduceMotionSource, Reduced,
-    ReducedPlay, Sample, Settle, Track, settle, tokens, wrap,
+    self, Initiator, Motion, MotionPolicy, ReduceMotionSource, Reduced, ReducedPlay, Sample,
+    Settle, Track, settle, tokens, wrap,
 };
 
 use crate::shell::{draw, start};
@@ -1226,154 +1226,11 @@ fn kit_tokens_have_no_ease_in_and_no_overshoot(cx: &mut TestAppContext) {
 }
 
 // ---------------------------------------------------------------------------
-// The M6 entrances (`enter_from`), on `Track` until T7.9 and T7.10 move
-// their callers.
-
-/// A window drawing one 40 × 20 pt box that enters from 12 pt right of its
-/// place, as the threads panel's content does.
-struct Entering {
-    epoch: u64,
-}
-
-impl Render for Entering {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let target = div()
-            .debug_selector(|| "probe".into())
-            .w(px(40.))
-            .h(px(20.));
-        div().size_full().child(motion::enter_from(
-            "probe",
-            self.epoch,
-            point(px(12.), px(0.)),
-            ENTER_PANEL,
-            motion::ease_out_quint,
-            target,
-            window,
-            cx,
-        ))
-    }
-}
-
-/// What the motions sampled, in order.
-type Drawn = Rc<RefCell<Vec<Recorded>>>;
-
-fn record(cx: &mut TestAppContext) -> Drawn {
-    let drawn: Drawn = Rc::default();
-    cx.update(|cx| motion::record(drawn.clone(), cx));
-    drawn
-}
-
-/// The last opacity recorded for `id` since `drawn` was cleared.
-fn opacity_of(drawn: &Drawn, id: &ElementId) -> Option<f32> {
-    drawn
-        .borrow()
-        .iter()
-        .rev()
-        .find(|r| &r.id == id)
-        .map(|r| r.opacity)
-}
-
-fn open_entering(cx: &mut TestAppContext) -> (Entity<Entering>, &mut VisualTestContext) {
-    cx.add_window_view(|_, _| Entering { epoch: 1 })
-}
-
-/// Draws one frame at the clock's current time.
-fn entering_frame(cx: &mut VisualTestContext, drawn: &Drawn) {
-    drawn.borrow_mut().clear();
-    cx.update(|window, _| window.refresh());
-    cx.run_until_parked();
-}
-
-/// From the commit frame, the frame `since_commit` later by the stepping
-/// protocol (a first step of 16.667 ms, then the rest).
-fn entering_step(cx: &mut VisualTestContext, drawn: &Drawn, since_commit: Duration) {
-    cx.executor().advance_clock(tokens::FIRST_STEP);
-    entering_frame(cx, drawn);
-    cx.executor()
-        .advance_clock(since_commit - tokens::FIRST_STEP);
-    entering_frame(cx, drawn);
-}
-
-/// The probe's offset from its place and its opacity, as last drawn.
-fn entering_sample(cx: &mut VisualTestContext, drawn: &Drawn) -> (Pixels, f32) {
-    let bounds = cx.debug_bounds("probe").expect("the probe is painted");
-    assert_eq!(bounds.origin.y, px(0.), "the probe moves sideways only");
-    let opacity = opacity_of(drawn, &ElementId::from("probe")).expect("the probe entered");
-    (bounds.origin.x, opacity)
-}
-
-#[gpui_kit::test]
-fn enter_from_starts_at_full_travel_and_settles_on_the_test_clock(cx: &mut TestAppContext) {
-    let drawn = record(cx);
-    let (_probe, cx) = open_entering(cx);
-    entering_frame(cx, &drawn);
-    assert_eq!(
-        entering_sample(cx, &drawn),
-        (px(12.), 0.0),
-        "the first frame"
-    );
-
-    cx.executor().advance_clock(Duration::from_millis(90));
-    entering_frame(cx, &drawn);
-    let (x, opacity) = entering_sample(cx, &drawn);
-    assert!(strictly_between(x.as_f32(), 0., 12.), "half way: x {x:?}");
-    assert!(strictly_between(opacity, 0., 1.), "half way: {opacity}");
-
-    cx.executor().advance_clock(Duration::from_millis(180));
-    entering_frame(cx, &drawn);
-    assert_eq!(entering_sample(cx, &drawn), (px(0.), 1.0), "settled");
-}
-
-#[gpui_kit::test]
-fn enter_from_replays_only_for_a_new_epoch(cx: &mut TestAppContext) {
-    let drawn = record(cx);
-    let (probe, cx) = open_entering(cx);
-    entering_frame(cx, &drawn);
-    entering_step(cx, &drawn, Duration::from_millis(200));
-    assert_eq!(entering_sample(cx, &drawn), (px(0.), 1.0));
-
-    // Drawn again with the same epoch: it stays where it is.
-    entering_frame(cx, &drawn);
-    entering_frame(cx, &drawn);
-    assert_eq!(entering_sample(cx, &drawn), (px(0.), 1.0), "no replay");
-
-    // A new epoch enters again from the start.
-    probe.update(cx, |p, cx| {
-        p.epoch = 2;
-        cx.notify();
-    });
-    entering_frame(cx, &drawn);
-    assert_eq!(entering_sample(cx, &drawn), (px(12.), 0.0), "replayed");
-    entering_step(cx, &drawn, Duration::from_millis(180));
-    assert_eq!(entering_sample(cx, &drawn), (px(0.), 1.0));
-}
-
-#[gpui_kit::test]
-fn enter_from_snaps_under_reduced(cx: &mut TestAppContext) {
-    for policy in [Some(MotionPolicy::Reduced), Some(MotionPolicy::Off), None] {
-        let drawn = record(cx);
-        cx.update(|cx| match policy {
-            Some(policy) => motion::set_override(Some(policy), cx),
-            // Reduce Motion as the system reports it.
-            None => cx.set_reduce_motion(true),
-        });
-        let (_probe, vcx) = open_entering(cx);
-        entering_frame(vcx, &drawn);
-        assert_eq!(
-            entering_sample(vcx, &drawn),
-            (px(0.), 1.0),
-            "{policy:?}: its first frame"
-        );
-        cx.update(|cx| {
-            motion::set_override(None, cx);
-            cx.set_reduce_motion(false);
-        });
-    }
-}
+// Who caused a change, and Reduce Motion as the system reports it.
 
 #[gpui_kit::test]
 fn initiator_follows_the_last_input(cx: &mut TestAppContext) {
-    let (_probe, cx) = open_entering(cx);
+    let (_host, _probe, cx) = open_probe(cx, false);
     let initiator = |cx: &mut VisualTestContext| cx.update(|window, _| motion::initiator(window));
     let pointer =
         |cx: &mut VisualTestContext| cx.update(|window, _| motion::pointer_initiated(window));
@@ -1392,14 +1249,18 @@ fn initiator_follows_the_last_input(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn reduce_motion_is_reread_on_activation(cx: &mut TestAppContext) {
     let _sb = Sandbox::isolate();
-    let drawn = record(cx);
     let shell = start(cx);
     let activate = |cx: &mut VisualTestContext| {
         cx.deactivate_window();
         cx.update(|window, _| window.activate_window());
         draw(cx);
     };
+    // How A, a slide with a Reduced fade, plays a pointer's open now.
+    let plays = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| motion::play(&A, true, Initiator::Pointer, motion::policy(cx)))
+    };
     assert!(!shell.cx.update(|_, cx| cx.reduce_motion()));
+    assert_eq!(plays(shell.cx), motion::Play::Animate);
 
     // The system turned Reduce Motion on while the app ran.
     shell
@@ -1415,16 +1276,7 @@ fn reduce_motion_is_reread_on_activation(cx: &mut TestAppContext) {
         shell.cx.update(|_, cx| motion::policy(cx)),
         MotionPolicy::Reduced
     );
-    let (probe, probe_window) = {
-        let (probe, pcx) = shell.cx.add_window_view(|_, _| Entering { epoch: 1 });
-        entering_frame(pcx, &drawn);
-        assert_eq!(
-            entering_sample(pcx, &drawn),
-            (px(0.), 1.0),
-            "settled on its first frame"
-        );
-        (probe, pcx.update(|window, _| window.window_handle()))
-    };
+    assert_eq!(plays(shell.cx), motion::Play::Fade, "it fades instead");
 
     // And off again.
     shell
@@ -1432,154 +1284,5 @@ fn reduce_motion_is_reread_on_activation(cx: &mut TestAppContext) {
         .update(|_, cx| cx.set_global(ReduceMotionSource(|cx| cx.set_reduce_motion(false))));
     activate(shell.cx);
     assert!(!shell.cx.update(|_, cx| cx.reduce_motion()));
-    let pcx = VisualTestContext::from_window(probe_window, &shell.cx.cx).into_mut();
-    probe.update(pcx, |p, cx| {
-        p.epoch = 2;
-        cx.notify();
-    });
-    entering_frame(pcx, &drawn);
-    assert_eq!(
-        entering_sample(pcx, &drawn),
-        (px(12.), 0.0),
-        "it moves again"
-    );
-}
-
-/// The threads panel's content: its left edge's offset from the pane's, and
-/// the opacity its entrance drew on the last frame (`None`: no entrance was
-/// drawn since `drawn` was last cleared).
-fn panel_sample(cx: &mut VisualTestContext, drawn: &Drawn) -> (f32, Option<f32>) {
-    let pane = crate::shell::bounds(cx, "threads-pane");
-    let content = crate::shell::bounds(cx, "threads-panel");
-    let opacity = opacity_of(drawn, &ElementId::from("threads-panel"));
-    ((content.left() - pane.left()).as_f32(), opacity)
-}
-
-/// Opens `code_change_repo`'s compare review in a started app.
-fn review(
-    shell: &mut crate::shell::Shell,
-    repo: &crate::support::FixtureRepo,
-) -> Entity<polygloss_app::review_tab::ReviewTab> {
-    let tab = shell
-        .open(crate::shell::compare_req(repo.path()))
-        .expect("open the review");
-    assert!(!tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
-    tab
-}
-
-/// A click on the toolbar's threads button.
-fn click_threads_button(cx: &mut VisualTestContext) {
-    let at = crate::shell::bounds(cx, "toggle-threads-panel").center();
-    cx.simulate_click(at, Modifiers::none());
-}
-
-#[gpui_kit::test]
-fn pointer_open_slides_the_panel_content_in(cx: &mut TestAppContext) {
-    let _sb = Sandbox::isolate();
-    let drawn = record(cx);
-    let repo = crate::support::code_change_repo();
-    let mut shell = start(cx);
-    let tab = review(&mut shell, &repo);
-
-    click_threads_button(shell.cx);
-    entering_frame(shell.cx, &drawn);
-    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
-    let (start_x, start_opacity) = panel_sample(shell.cx, &drawn);
-    shell.cx.executor().advance_clock(Duration::from_millis(90));
-    entering_frame(shell.cx, &drawn);
-    let (mid_x, mid_opacity) = panel_sample(shell.cx, &drawn);
-    shell
-        .cx
-        .executor()
-        .advance_clock(Duration::from_millis(180));
-    entering_frame(shell.cx, &drawn);
-    let (end_x, end_opacity) = panel_sample(shell.cx, &drawn);
-    assert_eq!(start_x - end_x, 12.0, "the first frame: 12 pt right");
-    assert_eq!(start_opacity, Some(0.0));
-    assert!(
-        strictly_between(mid_x - end_x, 0., 12.),
-        "half way: {mid_x}"
-    );
-    let mid_opacity = mid_opacity.expect("still entering");
-    assert!(strictly_between(mid_opacity, 0., 1.), "{mid_opacity}");
-    assert_eq!(end_opacity.unwrap_or(1.0), 1.0, "settled");
-
-    // Settled, it stays: away to Home and back plays nothing again.
-    shell.cx.simulate_keystrokes("cmd-0");
-    draw(shell.cx);
-    assert!(crate::shell::painted(shell.cx, "threads-pane").is_none());
-    shell.cx.simulate_keystrokes("cmd-1");
-    draw(shell.cx);
-    entering_frame(shell.cx, &drawn);
-    assert_eq!(panel_sample(shell.cx, &drawn), (end_x, None), "no replay");
-
-    // Closing is instant; opening again enters again.
-    click_threads_button(shell.cx);
-    entering_frame(shell.cx, &drawn);
-    assert!(crate::shell::painted(shell.cx, "threads-pane").is_none());
-    click_threads_button(shell.cx);
-    entering_frame(shell.cx, &drawn);
-    assert_eq!(panel_sample(shell.cx, &drawn), (end_x + 12.0, Some(0.0)));
-}
-
-#[gpui_kit::test]
-fn keyboard_toggle_and_restore_show_the_panel_at_once(cx: &mut TestAppContext) {
-    let _sb = Sandbox::isolate();
-    let drawn = record(cx);
-    let repo = crate::support::code_change_repo();
-    let mut shell = start(cx);
-    let tab = review(&mut shell, &repo);
-
-    // The palette's or View menu's toggle, from the keyboard.
-    shell.cx.simulate_keystrokes("escape");
-    shell
-        .cx
-        .dispatch_action(polygloss_app::review_tab::panes::ToggleThreadsPanel);
-    entering_frame(shell.cx, &drawn);
-    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
-    let (at_once, entrance) = panel_sample(shell.cx, &drawn);
-    assert_eq!(entrance, None, "no entrance");
-    shell
-        .cx
-        .executor()
-        .advance_clock(Duration::from_millis(500));
-    entering_frame(shell.cx, &drawn);
-    assert_eq!(
-        panel_sample(shell.cx, &drawn),
-        (at_once, None),
-        "at its end"
-    );
-
-    // Restored with the review (closed and opened again): at once too.
-    shell.cx.simulate_keystrokes("cmd-w");
-    drop(tab);
-    draw(shell.cx);
-    let tab = shell
-        .open(crate::shell::compare_req(repo.path()))
-        .expect("reopen");
-    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
-    entering_frame(shell.cx, &drawn);
-    assert_eq!(panel_sample(shell.cx, &drawn), (at_once, None));
-}
-
-#[gpui_kit::test]
-fn reduce_motion_shows_the_panel_at_once(cx: &mut TestAppContext) {
-    let _sb = Sandbox::isolate();
-    let drawn = record(cx);
-    cx.update(|cx| cx.set_reduce_motion(true));
-    let repo = crate::support::code_change_repo();
-    let mut shell = start(cx);
-    let tab = review(&mut shell, &repo);
-
-    click_threads_button(shell.cx);
-    entering_frame(shell.cx, &drawn);
-    assert!(tab.read_with(shell.cx, |t, _| t.threads_panel_visible()));
-    let (first, opacity) = panel_sample(shell.cx, &drawn);
-    assert_eq!(opacity.unwrap_or(1.0), 1.0, "opaque on its first frame");
-    shell
-        .cx
-        .executor()
-        .advance_clock(Duration::from_millis(500));
-    entering_frame(shell.cx, &drawn);
-    assert_eq!(panel_sample(shell.cx, &drawn).0, first, "never moved");
+    assert_eq!(plays(shell.cx), motion::Play::Animate, "it moves again");
 }

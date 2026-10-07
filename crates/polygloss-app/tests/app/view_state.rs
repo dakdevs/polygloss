@@ -700,6 +700,7 @@ fn threads_panel_visibility_round_trips_through_view_state(cx: &mut TestAppConte
     let _sb = Sandbox::isolate();
     let repo = long_repo();
     let mut shell = start(cx);
+    crate::shell::no_motion(&mut shell);
     let tab = shell.open(compare(&repo)).unwrap();
     assert!(!threads_shown(&mut shell, &tab));
     settle(&mut shell);
@@ -742,6 +743,7 @@ fn threads_panel_survives_refresh_and_iteration_switches(cx: &mut TestAppContext
     let _sb = Sandbox::isolate();
     let repo = long_repo();
     let mut shell = start(cx);
+    crate::shell::no_motion(&mut shell);
     let tab = shell.open(compare(&repo)).unwrap();
     let diff_id = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| t.opened.diff_id.clone());
     let first = diff_id(&mut shell);

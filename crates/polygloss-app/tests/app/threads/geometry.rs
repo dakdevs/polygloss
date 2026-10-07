@@ -400,20 +400,15 @@ fn empty_states_use_24(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(empty.top() - header.bottom(), px(24.));
 }
 
-/// Asks the split for a threads panel `width` pt wide (its range clamps
-/// it). gpui-kit resizes from its record of the panes' widths, and the
-/// viewport's goes stale once `panes::render` resets it, so a first call
-/// asking for the panel's current width only brings that record up to date
-/// (the reason a drag of the panel's edge misbehaves today; T7.10 replaces
-/// the split).
+/// Asks the threads panel's split for a pane `width` pt wide, its 1 pt
+/// divider included (the range clamps it as the pane is drawn), through
+/// its state, as a drag of its divider stores it (T7.10).
 fn resize_threads_panel(shell: &mut Shell, tab: &Entity<ReviewTab>, width: f32) {
-    let split = tab.read_with(shell.cx, |t, _| t.threads_split().clone());
-    shell.cx.update(|window, cx| {
-        split.update(cx, |s, cx| {
-            let current = s.sizes()[1];
-            s.resize_panel(1, current, window, cx);
-            s.resize_panel(1, px(width), window, cx);
-        })
+    use polygloss_app::panel_split::PanelOwner as _;
+    let panel = tab.read_with(shell.cx, |t, _| t.threads_panel().clone());
+    panel.update(shell.cx, |p, cx| {
+        p.panel_mut().width = width - 1.0;
+        cx.notify();
     });
     draw(shell.cx);
 }
