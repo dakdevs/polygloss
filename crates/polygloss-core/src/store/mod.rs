@@ -240,7 +240,13 @@ fn ensure_private_dir(dir: &Path) -> Result<(), StoreError> {
 /// strip the SHARED lock of its open WAL connections, and other processes could
 /// then lock the database exclusively while it is in use
 /// (<https://sqlite.org/howtocorrupt.html>, §2.2).
+///
+/// A process-wide mutex covers the creation until its descriptor is closed: every
+/// connection of this process opens after this returns, so a thread racing a first
+/// launch waits here instead of connecting before the creating thread's close.
 fn ensure_private_db(db: &Path) -> Result<(), StoreError> {
+    static CREATING: Mutex<()> = Mutex::new(());
+    let _creating = CREATING.lock().unwrap_or_else(|e| e.into_inner());
     let private = Permissions::from_mode(0o600);
     match OpenOptions::new()
         .write(true)
