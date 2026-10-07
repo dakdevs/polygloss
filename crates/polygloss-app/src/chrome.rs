@@ -42,7 +42,7 @@ use gpui_kit::{
 };
 
 use crate::motion::ink::PressInk as _;
-use crate::segmented::{SegmentSpec, segmented};
+use crate::segmented::{SegmentSpec, SegmentedState, segmented};
 use crate::space::{edge, gap, height, layout, radius, size as icon_size, stroke};
 
 gpui_kit::actions!(
@@ -75,6 +75,9 @@ pub struct Chrome {
     /// The sidebar | main column split: its first panel's size is the
     /// sidebar's stored width.
     shell: Entity<ResizableState>,
+    /// The `[Files | Reviews]` control's selected fill (M11), shared by
+    /// every page's sidebar.
+    segments: Entity<SegmentedState>,
 }
 
 /// The [`Chrome`] of the main window (a GPUI global).
@@ -90,10 +93,12 @@ impl Chrome {
             return chrome.clone();
         }
         let shell = cx.new(|_| ResizableState::default());
+        let segments = cx.new(|_| SegmentedState::new(0));
         let chrome = cx.new(|_| Chrome {
             segment: Segment::Files,
             sidebar_visible: true,
             shell,
+            segments,
         });
         cx.set_global(ChromeGlobal(chrome.clone()));
         chrome
@@ -300,6 +305,7 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
         Segment::Files if files_enabled => Segment::Files,
         _ => Segment::Reviews,
     };
+    let state = chrome.read(cx).segments.clone();
     let fullscreen = window.is_fullscreen();
     let spec = |id, icon, label: &'static str, enabled| SegmentSpec {
         id,
@@ -316,6 +322,7 @@ pub fn sidebar_top_row(files_enabled: bool, window: &mut Window, cx: &mut App) -
     let select = chrome.clone();
     let segments = segmented(
         "sidebar-segments",
+        &state,
         vec![
             spec("segment-files", IconName::ListTree, "Files", files_enabled),
             spec("segment-reviews", IconName::RotateCcwClock, "Reviews", true),

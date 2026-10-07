@@ -11,30 +11,64 @@ use gpui_kit::{
 use polygloss_core::review::SessionInfo;
 
 use crate::home::HomeView;
+use crate::motion::{self, Initiator};
 use crate::space::{TextStyleExt as _, gap, layout, text};
 
-/// Asks before pruning `review_id` (`title` in `repo`); OK prunes it.
+/// A review a prune deletes, as its confirmation names it.
+pub(crate) struct PruneRow {
+    pub review_id: String,
+    pub title: SharedString,
+    pub repo: SharedString,
+}
+
+/// Asks before pruning `rows`; OK prunes them. Their rows leave as a pointer
+/// plays it (M14) only when `initiator`, who asked, and the confirmation are
+/// both the pointer's: ⌘⌫ snaps however OK is pressed.
 pub(crate) fn confirm_prune(
     home: WeakEntity<HomeView>,
-    review_id: String,
-    title: SharedString,
-    repo: SharedString,
+    rows: Vec<PruneRow>,
+    initiator: Initiator,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let (title, description) = match rows.as_slice() {
+        [row] => (
+            "Prune this review?".to_owned(),
+            format!(
+                "“{}” in {} and its iterations, threads, comments and \
+                 drafts are deleted. This cannot be undone.",
+                row.title, row.repo
+            ),
+        ),
+        rows => (
+            format!("Prune {} reviews?", rows.len()),
+            format!(
+                "{} and their iterations, threads, comments and drafts are \
+                 deleted. This cannot be undone.",
+                rows.iter()
+                    .map(|r| format!("“{}”", r.title))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+    };
+    let ids: Vec<String> = rows.into_iter().map(|r| r.review_id).collect();
     window.open_alert_dialog(cx, move |alert, _, _| {
-        let (home, review_id) = (home.clone(), review_id.clone());
+        let (home, ids) = (home.clone(), ids.clone());
         alert
-            .title("Prune this review?")
-            .description(format!(
-                "“{title}” in {repo} and its iterations, threads, comments and \
-                 drafts are deleted. This cannot be undone."
-            ))
+            .title(title.clone())
+            .description(description.clone())
             .ok_text("Prune")
             .ok_variant(ButtonVariant::Danger)
             .show_cancel(true)
             .on_ok(move |_, window, cx| {
-                home.update(cx, |home, cx| home.prune(review_id.clone(), window, cx))
+                let confirmed = motion::initiator(window);
+                let by = if (initiator, confirmed) == (Initiator::Pointer, Initiator::Pointer) {
+                    Initiator::Pointer
+                } else {
+                    Initiator::Keyboard
+                };
+                home.update(cx, |home, cx| home.prune(ids.clone(), by, window, cx))
                     .ok();
                 true
             })

@@ -168,10 +168,14 @@ impl<S: 'static> Exit<S> {
                 // margin as if the margin were 0.
                 let slot_div = if slot == 0.0 { div().hidden() } else { div() };
                 // No `flex_none` or `flex_shrink_0`: with the negative margin,
-                // taffy then misplaces the items.
+                // taffy then misplaces the items. Its minimum height keeps it
+                // whole in a list that overflows (a scrolling list shrinks
+                // its items to fit, and a clipped slot's automatic minimum
+                // is 0).
                 slot_div
                     .relative()
                     .h(px(slot))
+                    .min_h(px(slot))
                     .mt(-gap)
                     .overflow_hidden()
                     .child(

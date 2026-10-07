@@ -1572,123 +1572,411 @@ fn banner_strip_never_changes_viewport_anchor(cx: &mut TestAppContext) {
     assert_eq!(cleared, before);
 }
 
-#[gpui_kit::test]
-fn banner_notice_enters_on_the_test_clock_once_per_appearance(cx: &mut TestAppContext) {
-    use std::time::Duration;
+// ---------------------------------------------------------------------------
+// M12, banner notices (T7.9, ADR-0030): a notice enters from 4 pt above over
+// QUICK on OUT; one that leaves the strip empty rises back and fades over
+// MICRO as an inert copy; one replaced by another notice or by the context
+// line leaves on the commit frame. Stepped by ADR-0030's protocol; the curve
+// is this file's own bisection.
 
-    use gpui_kit::ElementId;
-    use polygloss_app::motion::{self, MotionPolicy, Recorded};
-    use polygloss_app::review_tab::panes::ToggleThreadsPanel;
+/// `cubic-bezier(x1, y1, x2, y2)` at `t` by bisection on x.
+fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
+    let at = |a: f64, b: f64, s: f64| {
+        3.0 * (1.0 - s) * (1.0 - s) * s * a + 3.0 * (1.0 - s) * s * s * b + s * s * s
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..200 {
+        let mid = (low + high) / 2.0;
+        if at(x1, x2, mid) < t {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    at(y1, y2, (low + high) / 2.0)
+}
 
-    let _sb = Sandbox::isolate();
-    let drawn: Rc<RefCell<Vec<Recorded>>> = Rc::default();
-    cx.update(|cx| motion::record(drawn.clone(), cx));
-    let repo = code_change_repo();
+/// OUT.
+fn out(t: f64) -> f64 {
+    bezier(0.16, 1.0, 0.3, 1.0, t)
+}
+
+type Drawn = Rc<RefCell<Vec<polygloss_app::motion::Recorded>>>;
+
+/// A review tab under Full app motion (kit motion settled) whose motion
+/// samples are recorded, its strip and the strip's notice at rest: `(shell,
+/// tab, strip, drawn)`.
+fn banner_shell(cx: &mut TestAppContext) -> (Shell<'_>, Entity<ReviewTab>, Drawn) {
+    let drawn: Drawn = Rc::default();
+    cx.update(|cx| polygloss_app::motion::record(drawn.clone(), cx));
+    let repo = Box::leak(Box::new(code_change_repo()));
     let mut shell = start(cx);
     let tab = shell.open(compare_req(repo.path())).unwrap();
+    full_motion(&mut shell);
+    (shell, tab, drawn)
+}
+
+fn set_banner(shell: &mut Shell, tab: &Entity<ReviewTab>, kind: BannerKind, text: &str) {
     let banners = tab.read_with(shell.cx, |t, _| t.banners.clone());
-    let id = ElementId::from(("banner", BannerKind::LiveChanges as usize));
-    let set = |shell: &mut Shell, text: &str| {
-        let text = SharedString::from(text.to_owned());
-        banners.update(shell.cx, |b, cx| {
-            b.set(
-                BannerKind::LiveChanges,
-                text,
-                Box::new(ToggleThreadsPanel),
-                cx,
-            )
-        });
-    };
-    let clear = |shell: &mut Shell| {
-        banners.update(shell.cx, |b, cx| b.clear(BannerKind::LiveChanges, cx));
-    };
-    // One frame at the clock's current time, what was drawn cleared first.
-    let frame = |shell: &mut Shell| {
-        drawn.borrow_mut().clear();
-        shell.cx.update(|window, _| window.refresh());
-        shell.cx.run_until_parked();
-    };
-    // The notice's top below the strip's, and the opacity its entrance
-    // drew this frame (`None`: no entrance).
-    let sample = |shell: &mut Shell| {
-        let strip = bounds(shell.cx, "banner-strip");
-        let notice = bounds(shell.cx, "banner-notice-0");
-        let opacity = drawn
-            .borrow()
-            .iter()
-            .rev()
-            .find(|r| r.id == id)
-            .map(|r| r.opacity);
-        ((notice.top() - strip.top()).as_f32(), opacity)
-    };
-    let advance = |shell: &mut Shell, ms: u64| {
-        shell.cx.executor().advance_clock(Duration::from_millis(ms));
-    };
+    let text = SharedString::from(text.to_owned());
+    banners.update(shell.cx, |b, cx| {
+        b.set(
+            kind,
+            text,
+            Box::new(polygloss_app::review_tab::panes::ToggleThreadsPanel),
+            cx,
+        )
+    });
+}
 
-    set(&mut shell, "1 file changed");
-    frame(&mut shell);
-    let (start_top, start_opacity) = sample(&mut shell);
-    advance(&mut shell, 80);
-    frame(&mut shell);
-    let (mid_top, mid_opacity) = sample(&mut shell);
-    advance(&mut shell, 160);
-    frame(&mut shell);
-    let (end_top, end_opacity) = sample(&mut shell);
-    assert_eq!(start_opacity, Some(0.0), "the first frame");
-    assert_eq!(end_top - start_top, 4.0, "from 4 pt up");
-    assert!(
-        start_top < mid_top && mid_top < end_top,
-        "half way: {mid_top}"
+fn clear_banner(shell: &mut Shell, tab: &Entity<ReviewTab>, kind: BannerKind) {
+    let banners = tab.read_with(shell.cx, |t, _| t.banners.clone());
+    banners.update(shell.cx, |b, cx| b.clear(kind, cx));
+}
+
+/// `name`'s top below the strip's.
+fn below_strip(shell: &mut Shell, name: &str) -> f32 {
+    (bounds(shell.cx, name).top() - bounds(shell.cx, "banner-strip").top()).as_f32()
+}
+
+/// The opacity `id` was last drawn at (`None`: not drawn).
+fn drawn_opacity(drawn: &Drawn, id: impl Into<gpui_kit::ElementId>) -> Option<f32> {
+    let id = id.into();
+    drawn
+        .borrow()
+        .iter()
+        .rev()
+        .find(|r| r.id == id)
+        .map(|r| r.opacity)
+}
+
+/// Lets every motion finish: a first step of one frame (a longer one is
+/// clamped to it), then the rest.
+fn settle_all(shell: &mut Shell) {
+    use crate::support::motion::{advance, step_to};
+    step_to(shell.cx, polygloss_app::motion::tokens::FIRST_STEP);
+    advance(shell.cx, ms(300.0));
+}
+
+/// Draws by `step`, what was drawn before forgotten.
+fn fresh(drawn: &Drawn, shell: &mut Shell, step: impl FnOnce(&mut Shell)) {
+    drawn.borrow_mut().clear();
+    step(shell);
+}
+
+#[gpui_kit::test]
+fn banner_enters_from_above(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, requested_frames, step_to};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+
+    let _sb = Sandbox::isolate();
+    let (mut shell, tab, drawn) = banner_shell(cx);
+    let id = ("banner", BannerKind::LiveChanges as usize);
+    // At rest the notice is centred in the strip.
+    let rest = (32.0 - 24.0) / 2.0;
+
+    fresh(&drawn, &mut shell, |shell| {
+        set_banner(shell, &tab, BannerKind::LiveChanges, "1 file changed");
+        frame(shell.cx);
+    });
+    assert_eq!(
+        below_strip(&mut shell, "banner-notice-0"),
+        rest - 4.0,
+        "from 4 pt up"
     );
-    let mid_opacity = mid_opacity.expect("still entering");
-    assert!(0.0 < mid_opacity && mid_opacity < 1.0, "{mid_opacity}");
-    assert_eq!(end_opacity.unwrap_or(1.0), 1.0, "settled after 160 ms");
+    assert_eq!(drawn_opacity(&drawn, id), Some(0.0), "the commit frame");
+    fresh(&drawn, &mut shell, |shell| step_to(shell.cx, FIRST_STEP));
+    assert_eq!(
+        below_strip(&mut shell, "banner-notice-0"),
+        rest + quantized(-4.0 * (1.0 - out(16.667 / 150.0)))
+    );
+    fresh(&drawn, &mut shell, |shell| {
+        advance(shell.cx, ms(75.0) - FIRST_STEP)
+    });
+    assert_eq!(
+        below_strip(&mut shell, "banner-notice-0"),
+        rest + quantized(-4.0 * (1.0 - out(0.5))),
+        "75 ms"
+    );
+    let half = drawn_opacity(&drawn, id).expect("entering");
+    assert!(
+        ((half as f64) - out(0.5)).abs() < 1e-3,
+        "opacity OUT(½): {half}"
+    );
+    fresh(&drawn, &mut shell, |shell| advance(shell.cx, ms(75.0)));
+    assert_eq!(below_strip(&mut shell, "banner-notice-0"), rest, "settled");
+    assert_eq!(requested_frames(shell.cx), 0);
 
-    // A new text or count is the same notice: nothing plays.
-    set(&mut shell, "2 files changed");
-    frame(&mut shell);
-    assert_eq!(sample(&mut shell), (end_top, None), "no replay on update");
+    // A new text is the same notice: nothing plays.
+    fresh(&drawn, &mut shell, |shell| {
+        set_banner(shell, &tab, BannerKind::LiveChanges, "2 files changed");
+        frame(shell.cx);
+    });
+    assert_eq!(below_strip(&mut shell, "banner-notice-0"), rest);
+    assert_eq!(drawn_opacity(&drawn, id).unwrap_or(1.0), 1.0, "no replay");
     // Away to Home and back: nothing plays either.
     shell.cx.simulate_keystrokes("cmd-0");
     draw(shell.cx);
     assert!(painted(shell.cx, "banner-notice-0").is_none());
     shell.cx.simulate_keystrokes("cmd-1");
     draw(shell.cx);
-    frame(&mut shell);
-    assert_eq!(sample(&mut shell), (end_top, None), "no replay on return");
+    fresh(&drawn, &mut shell, |shell| frame(shell.cx));
+    assert_eq!(below_strip(&mut shell, "banner-notice-0"), rest);
+    assert_eq!(drawn_opacity(&drawn, id).unwrap_or(1.0), 1.0, "no replay");
 
-    // Gone and back: it enters again.
-    clear(&mut shell);
-    frame(&mut shell);
-    set(&mut shell, "1 file changed");
-    frame(&mut shell);
+    // Reduce Motion: it fades in where it rests.
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    settle_all(&mut shell);
+    shell.cx.update(|_, cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Reduced), cx)
+    });
+    fresh(&drawn, &mut shell, |shell| {
+        set_banner(shell, &tab, BannerKind::LiveChanges, "1 file changed");
+        frame(shell.cx);
+    });
     assert_eq!(
-        sample(&mut shell),
-        (start_top, Some(0.0)),
-        "a new appearance"
+        below_strip(&mut shell, "banner-notice-0"),
+        rest,
+        "no travel"
     );
-    // ADR-0030's stepping protocol: a first step of one 60 Hz frame (a
-    // longer one is clamped to it), then the rest.
-    shell
-        .cx
-        .executor()
-        .advance_clock(motion::tokens::FIRST_STEP);
-    frame(&mut shell);
-    advance(&mut shell, 200);
-    frame(&mut shell);
-    assert_eq!(sample(&mut shell).0, end_top);
+    for t in [FIRST_STEP, ms(75.0)] {
+        fresh(&drawn, &mut shell, |shell| step_to(shell.cx, t));
+        assert_eq!(
+            below_strip(&mut shell, "banner-notice-0"),
+            rest,
+            "no travel"
+        );
+    }
+    let half = drawn_opacity(&drawn, id).expect("fading in");
+    assert!(0.0 < half && half < 1.0, "75 ms of QUICK: {half}");
+}
 
-    // Under the harnesses' override it is in place on its first frame.
-    shell
-        .cx
-        .update(|_, cx| motion::set_override(Some(MotionPolicy::Off), cx));
-    clear(&mut shell);
-    frame(&mut shell);
-    set(&mut shell, "1 file changed");
-    frame(&mut shell);
-    let (top, opacity) = sample(&mut shell);
-    assert_eq!(top, end_top, "settled at once");
-    assert_eq!(opacity.unwrap_or(1.0), 1.0);
+#[gpui_kit::test]
+fn banner_exits_upward_only_into_an_empty_strip(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, requested_frames, step_to};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+
+    let _sb = Sandbox::isolate();
+    let (mut shell, tab, drawn) = banner_shell(cx);
+    let rest = (32.0 - 24.0) / 2.0;
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    let shown = bounds(shell.cx, "banner-notice-0");
+
+    // The last notice dismissed: its copy rises and fades where it was.
+    fresh(&drawn, &mut shell, |shell| {
+        clear_banner(shell, &tab, BannerKind::LiveChanges);
+        frame(shell.cx);
+    });
+    assert!(
+        painted(shell.cx, "banner-notice-0").is_none(),
+        "the notice is gone"
+    );
+    assert_eq!(
+        bounds(shell.cx, "banner-exit-notice-0"),
+        shown,
+        "its copy, in place"
+    );
+    assert_eq!(
+        drawn_opacity(&drawn, "banner-exit"),
+        Some(1.0),
+        "the commit frame"
+    );
+    fresh(&drawn, &mut shell, |shell| step_to(shell.cx, FIRST_STEP));
+    assert_eq!(
+        below_strip(&mut shell, "banner-exit-notice-0"),
+        rest + quantized(-4.0 * out(16.667 / 100.0))
+    );
+    fresh(&drawn, &mut shell, |shell| {
+        advance(shell.cx, ms(50.0) - FIRST_STEP)
+    });
+    assert_eq!(
+        below_strip(&mut shell, "banner-exit-notice-0"),
+        rest + quantized(-4.0 * out(0.5)),
+        "50 ms: 4 · OUT(½) up"
+    );
+    let half = drawn_opacity(&drawn, "banner-exit").expect("leaving");
+    assert!(
+        ((half as f64) - (1.0 - out(0.5))).abs() < 1e-3,
+        "opacity 1 − OUT(½): {half}"
+    );
+    fresh(&drawn, &mut shell, |shell| advance(shell.cx, ms(50.0)));
+    assert!(
+        painted(shell.cx, "banner-exit-notice-0").is_none(),
+        "gone after 100 ms"
+    );
+    assert_eq!(requested_frames(shell.cx), 0);
+
+    // Back while its copy leaves: it enters from where the copy was.
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    frame(shell.cx);
+    step_to(shell.cx, ms(50.0));
+    let (copy_y, copy_opacity) = (
+        below_strip(&mut shell, "banner-exit-notice-0"),
+        drawn_opacity(&drawn, "banner-exit").expect("leaving"),
+    );
+    fresh(&drawn, &mut shell, |shell| {
+        set_banner(shell, &tab, BannerKind::LiveChanges, "1 file changed");
+        frame(shell.cx);
+    });
+    assert!(
+        painted(shell.cx, "banner-exit-notice-0").is_none(),
+        "one copy"
+    );
+    assert_eq!(
+        below_strip(&mut shell, "banner-notice-0"),
+        copy_y,
+        "no jump"
+    );
+    let id = ("banner", BannerKind::LiveChanges as usize);
+    assert_eq!(drawn_opacity(&drawn, id), Some(copy_opacity), "no flash");
+    fresh(&drawn, &mut shell, |shell| step_to(shell.cx, FIRST_STEP));
+    assert!(
+        below_strip(&mut shell, "banner-notice-0") >= copy_y,
+        "on its way down"
+    );
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    settle_all(&mut shell);
+
+    // Replaced by another notice: gone on the commit frame; only the new one
+    // enters.
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    fresh(&drawn, &mut shell, |shell| {
+        clear_banner(shell, &tab, BannerKind::LiveChanges);
+        set_banner(shell, &tab, BannerKind::AgentReplies, "claude-code replied");
+        frame(shell.cx);
+    });
+    assert!(
+        painted(shell.cx, "banner-exit-notice-0").is_none(),
+        "no copy"
+    );
+    assert_eq!(
+        drawn_opacity(&drawn, ("banner", BannerKind::AgentReplies as usize)),
+        Some(0.0),
+        "the new one enters"
+    );
+    settle_all(&mut shell);
+
+    // Followed by the context line: gone on the commit frame too.
+    let banners = tab.read_with(shell.cx, |t, _| t.banners.clone());
+    fresh(&drawn, &mut shell, |shell| {
+        banners.update(shell.cx, |b, cx| {
+            b.set_context("Iteration 1 of 2".into(), cx);
+            b.clear(BannerKind::AgentReplies, cx);
+        });
+        frame(shell.cx);
+    });
+    assert!(
+        painted(shell.cx, "banner-exit-notice-0").is_none(),
+        "no copy"
+    );
+    assert!(painted(shell.cx, "banner-context").is_some());
+
+    // Reduce Motion: the copy fades where it is, with no travel.
+    banners.update(shell.cx, |b, cx| b.set_context(SharedString::default(), cx));
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    shell.cx.update(|_, cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Reduced), cx)
+    });
+    fresh(&drawn, &mut shell, |shell| {
+        clear_banner(shell, &tab, BannerKind::LiveChanges);
+        frame(shell.cx);
+    });
+    for t in [FIRST_STEP, ms(50.0)] {
+        fresh(&drawn, &mut shell, |shell| step_to(shell.cx, t));
+        assert_eq!(
+            below_strip(&mut shell, "banner-exit-notice-0"),
+            rest,
+            "no travel"
+        );
+    }
+    let half = drawn_opacity(&drawn, "banner-exit").expect("fading out");
+    assert!(0.0 < half && half < 1.0, "50 ms of MICRO: {half}");
+    advance(shell.cx, ms(50.0));
+    assert!(painted(shell.cx, "banner-exit-notice-0").is_none());
+}
+
+#[gpui_kit::test]
+fn banner_exit_is_inert(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, step_to};
+
+    let _sb = Sandbox::isolate();
+    let (mut shell, tab, drawn) = banner_shell(cx);
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    let button = bounds(shell.cx, "banner-button-0");
+    let visible = |shell: &mut Shell| tab.read_with(shell.cx, |t, _| t.threads_panel_visible());
+    assert!(!visible(&mut shell));
+
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    frame(shell.cx);
+    step_to(shell.cx, ms(30.0));
+    assert!(
+        painted(shell.cx, "banner-exit-button-0").is_some(),
+        "the copy shows"
+    );
+    // A click on its button's position does nothing: the copy has no
+    // listeners (the live button toggled the threads panel).
+    shell.cx.simulate_click(button.center(), Modifiers::none());
+    frame(shell.cx);
+    assert!(!visible(&mut shell), "the copy's button is not a button");
+
+    // A review switch and back mid-exit: it goes on from where it was,
+    // never again from the start.
+    let before = drawn_opacity(&drawn, "banner-exit");
+    shell.cx.simulate_keystrokes("cmd-0");
+    frame(shell.cx);
+    shell.cx.simulate_keystrokes("cmd-1");
+    fresh(&drawn, &mut shell, |shell| frame(shell.cx));
+    let after = drawn_opacity(&drawn, "banner-exit");
+    assert!(
+        after.is_none_or(|a| a < 1.0),
+        "no replay: {before:?} → {after:?}"
+    );
+    advance(shell.cx, ms(100.0));
+    assert!(painted(shell.cx, "banner-exit-notice-0").is_none());
+    shell.cx.simulate_keystrokes("cmd-0");
+    draw(shell.cx);
+    shell.cx.simulate_keystrokes("cmd-1");
+    fresh(&drawn, &mut shell, |shell| frame(shell.cx));
+    assert!(
+        painted(shell.cx, "banner-exit-notice-0").is_none(),
+        "not again"
+    );
+    assert_eq!(drawn_opacity(&drawn, "banner-exit"), None);
+}
+
+#[gpui_kit::test]
+fn banner_entrance_keeps_its_strip(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame};
+
+    let _sb = Sandbox::isolate();
+    let (mut shell, tab, _drawn) = banner_shell(cx);
+    let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+    let still = |shell: &mut Shell| {
+        (
+            bounds(shell.cx, "banner-strip"),
+            bounds(shell.cx, "viewport-pane"),
+            viewport.read_with(shell.cx, |v, _| (v.anchor(), v.debug().visible_rows)),
+        )
+    };
+    let before = still(&mut shell);
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    frame(shell.cx);
+    for _ in 0..10 {
+        assert_eq!(still(&mut shell), before, "entering: nothing below moves");
+        advance(shell.cx, ms(16.667));
+    }
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    frame(shell.cx);
+    for _ in 0..7 {
+        assert_eq!(still(&mut shell), before, "leaving: nothing below moves");
+        advance(shell.cx, ms(16.667));
+    }
 }
 
 #[gpui_kit::test]
@@ -2006,4 +2294,293 @@ fn review_titles_name_the_repo_and_both_sides() {
         review_tab::short_ref("refs/remotes/origin/main"),
         "origin/main"
     );
+}
+
+// ---------------------------------------------------------------------------
+// M11, the segmented fill (T7.9, ADR-0030): it slides between segments over
+// QUICK on MOVE when a pointer picks one; every other way of changing the
+// selection jumps. Stepped by ADR-0030's protocol; the curve is this file's
+// own closed form.
+
+/// MOVE, ease-in-out cubic, in closed form.
+fn in_out(t: f64) -> f64 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
+}
+
+/// `round(v · 2) / 2`: the test window's scale is 2.
+fn quantized(v: f64) -> f32 {
+    ((v * 2.0).round() / 2.0) as f32
+}
+
+fn ms(ms: f64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(ms / 1000.0)
+}
+
+/// The bounds of `control`'s selected fill.
+fn fill(cx: &mut VisualTestContext, control: &str) -> Bounds<Pixels> {
+    bounds(cx, &format!("{control}-fill"))
+}
+
+/// App motion under Full, kit motion settled (any override settles it).
+fn full_motion(shell: &mut Shell) {
+    shell.cx.update(|_, cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Full), cx)
+    });
+    draw(shell.cx);
+}
+
+#[gpui_kit::test]
+fn segmented_fill_slides_from_the_previous_segment(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, requested_frames, step_to};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    shell.open(compare_req(repo.path())).unwrap();
+    full_motion(&mut shell);
+    let (files, reviews) = (
+        bounds(shell.cx, "segment-files"),
+        bounds(shell.cx, "segment-reviews"),
+    );
+    assert_eq!(
+        fill(shell.cx, "sidebar-segments"),
+        files,
+        "at rest under Files"
+    );
+    let from = files.left().as_f32();
+    let travel = f64::from((reviews.left() - files.left()).as_f32());
+    let x = |shell: &mut Shell| fill(shell.cx, "sidebar-segments").left().as_f32();
+
+    // The commit frame: the sidebar shows Reviews, the fill is still under
+    // Files.
+    shell.cx.simulate_click(reviews.center(), Modifiers::none());
+    frame(shell.cx);
+    assert_eq!(sidebar_state(&mut shell), (true, Segment::Reviews));
+    assert!(
+        painted(shell.cx, "nav").is_some(),
+        "the content swapped at once"
+    );
+    assert_eq!(x(&mut shell), from, "the commit frame: full travel ahead");
+    step_to(shell.cx, FIRST_STEP);
+    assert_eq!(
+        x(&mut shell),
+        from + quantized(travel * in_out(16.667 / 150.0))
+    );
+    advance(shell.cx, ms(75.0) - FIRST_STEP);
+    assert_eq!(
+        x(&mut shell),
+        (files.left().as_f32() + reviews.left().as_f32()) / 2.0,
+        "75 ms: in_out(½) = ½, the two segments' midpoint"
+    );
+    advance(shell.cx, ms(75.0));
+    assert_eq!(
+        fill(shell.cx, "sidebar-segments"),
+        reviews,
+        "settled after 150 ms"
+    );
+    assert_eq!(requested_frames(shell.cx), 0, "no frame after it settled");
+
+    // The same on the toolbar's layout toggle: a click on Split.
+    let (split, unified) = (
+        bounds(shell.cx, "layout-split"),
+        bounds(shell.cx, "layout-unified"),
+    );
+    assert_eq!(
+        fill(shell.cx, "layout-toggle"),
+        unified,
+        "this window is unified"
+    );
+    shell.cx.simulate_click(split.center(), Modifiers::none());
+    frame(shell.cx);
+    let marker = bounds(shell.cx, "layout-selected");
+    assert!(
+        split.contains(&marker.center()),
+        "the label switched at once"
+    );
+    assert_eq!(fill(shell.cx, "layout-toggle"), unified, "the commit frame");
+    step_to(shell.cx, ms(75.0));
+    assert_eq!(
+        fill(shell.cx, "layout-toggle").left().as_f32(),
+        (split.left().as_f32() + unified.left().as_f32()) / 2.0
+    );
+    advance(shell.cx, ms(75.0));
+    assert_eq!(fill(shell.cx, "layout-toggle"), split);
+}
+
+#[gpui_kit::test]
+fn segmented_fill_jumps_for_s_palette_and_auto_flips(cx: &mut TestAppContext) {
+    use crate::support::motion::{frame, requested_frames};
+    use polygloss_app::keymap::actions::viewport::LayoutAuto;
+    use polygloss_app::keymap::actions::window::ShowFiles;
+    use polygloss_diff::rows::Layout;
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    full_motion(&mut shell);
+    let layout =
+        |shell: &mut Shell| tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).effective_layout());
+    // Settled on the commit frame, under `segment`, with no frame asked for.
+    let jumped = |shell: &mut Shell, control: &str, segment: &str, how: &str| {
+        let under = bounds(shell.cx, segment);
+        assert_eq!(fill(shell.cx, control), under, "{how}: the commit frame");
+        assert_eq!(requested_frames(shell.cx), 0, "{how}: nothing runs");
+        frame(shell.cx);
+        assert_eq!(fill(shell.cx, control), under, "{how}: and after");
+    };
+    crate::categories::focus_viewport(&mut shell, &tab);
+
+    // `s`, from the keyboard.
+    assert_eq!(layout(&mut shell), Layout::Unified);
+    shell.cx.simulate_keystrokes("s");
+    frame(shell.cx);
+    assert_eq!(layout(&mut shell), Layout::Split);
+    jumped(&mut shell, "layout-toggle", "layout-split", "s");
+
+    // The palette's Unified view.
+    shell.cx.simulate_keystrokes("cmd-k");
+    draw(shell.cx);
+    shell.cx.simulate_input("unified view");
+    draw(shell.cx);
+    shell.cx.simulate_keystrokes("enter");
+    frame(shell.cx);
+    assert_eq!(layout(&mut shell), Layout::Unified);
+    jumped(&mut shell, "layout-toggle", "layout-unified", "the palette");
+
+    // An automatic flip with the width: back to Auto, then wide.
+    shell.cx.dispatch_action(LayoutAuto);
+    draw(shell.cx);
+    shell.cx.simulate_resize(size(px(2800.), px(900.)));
+    frame(shell.cx);
+    assert_eq!(layout(&mut shell), Layout::Split);
+    jumped(
+        &mut shell,
+        "layout-toggle",
+        "layout-split",
+        "an automatic flip",
+    );
+
+    // The sidebar: ⌘F's ShowFiles from Reviews.
+    click(shell.cx, "segment-reviews");
+    draw(shell.cx);
+    shell.cx.dispatch_action(ShowFiles);
+    frame(shell.cx);
+    jumped(&mut shell, "sidebar-segments", "segment-files", "ShowFiles");
+}
+
+#[gpui_kit::test]
+fn split_unified_fill_starts_after_the_heavy_commit(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame};
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    shell.open(compare_req(repo.path())).unwrap();
+    full_motion(&mut shell);
+    let (split, unified) = (
+        bounds(shell.cx, "layout-split"),
+        bounds(shell.cx, "layout-unified"),
+    );
+    let travel = f64::from((split.left() - unified.left()).as_f32());
+    let x = |shell: &mut Shell| fill(shell.cx, "layout-toggle").left().as_f32();
+    shell.cx.simulate_click(split.center(), Modifiers::none());
+    frame(shell.cx);
+    assert_eq!(x(&mut shell), unified.left().as_f32(), "the commit frame");
+    // The split layout's commit frame took 100 ms: the next frame shows the
+    // first 16.667 ms of the slide, not 100 ms of it.
+    advance(shell.cx, ms(100.0));
+    assert_eq!(
+        x(&mut shell),
+        unified.left().as_f32() + quantized(travel * in_out(16.667 / 150.0)),
+        "a 100 ms commit reads as a 16.667 ms first step"
+    );
+    assert_ne!(
+        x(&mut shell),
+        unified.left().as_f32() + quantized(travel * in_out(100.0 / 150.0)),
+        "not 100 ms in"
+    );
+    // From then on t runs from the commit stamp moved back by the clamp:
+    // the midpoint 75 − 16.667 ms later.
+    advance(shell.cx, ms(75.0 - 16.667));
+    assert_eq!(
+        x(&mut shell),
+        (split.left().as_f32() + unified.left().as_f32()) / 2.0
+    );
+}
+
+#[gpui_kit::test]
+fn segmented_fill_retargets_freezes_and_settles(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, requested_frames, step_to};
+    use gpui_kit::MouseButton;
+    use polygloss_app::motion::tokens::FIRST_STEP;
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let mut shell = start(cx);
+    shell.open(compare_req(repo.path())).unwrap();
+    full_motion(&mut shell);
+    let (files, reviews) = (
+        bounds(shell.cx, "segment-files"),
+        bounds(shell.cx, "segment-reviews"),
+    );
+    let (a, b) = (files.left().as_f32(), reviews.left().as_f32());
+    let x = |shell: &mut Shell| fill(shell.cx, "sidebar-segments").left().as_f32();
+    let mid = (a + b) / 2.0;
+
+    // A re-pick at ½ goes back from the midpoint, never from an end.
+    shell.cx.simulate_click(reviews.center(), Modifiers::none());
+    frame(shell.cx);
+    step_to(shell.cx, ms(75.0));
+    assert_eq!(x(&mut shell), mid);
+    shell.cx.simulate_click(files.center(), Modifiers::none());
+    frame(shell.cx);
+    assert_eq!(x(&mut shell), mid, "the re-pick's commit frame");
+    step_to(shell.cx, FIRST_STEP);
+    let back = x(&mut shell);
+    assert!(a < back && back <= mid, "on its way back: {back}");
+
+    // A mouse down freezes it (no frames) until its mouse up settles it.
+    let pressed_at = x(&mut shell);
+    let blank = point(px(500.), px(400.));
+    shell
+        .cx
+        .simulate_mouse_down(blank, MouseButton::Left, Modifiers::none());
+    for _ in 0..3 {
+        advance(shell.cx, FIRST_STEP);
+        assert_eq!(x(&mut shell), pressed_at, "frozen");
+    }
+    assert_eq!(
+        requested_frames(shell.cx),
+        0,
+        "a frozen fill asks for no frame"
+    );
+    shell
+        .cx
+        .simulate_mouse_up(blank, MouseButton::Left, Modifiers::none());
+    frame(shell.cx);
+    assert_eq!(x(&mut shell), a, "settled at the mouse up");
+
+    // A key down settles it before the key is handled.
+    shell.cx.simulate_click(reviews.center(), Modifiers::none());
+    frame(shell.cx);
+    step_to(shell.cx, ms(50.0));
+    assert!(x(&mut shell) < b);
+    shell.cx.simulate_keystrokes("escape");
+    frame(shell.cx);
+    assert_eq!(x(&mut shell), b, "a key down settles it");
+
+    // Reduce Motion: the fill jumps.
+    shell.cx.update(|_, cx| {
+        polygloss_app::motion::set_override(Some(polygloss_app::motion::MotionPolicy::Reduced), cx)
+    });
+    shell.cx.simulate_click(files.center(), Modifiers::none());
+    frame(shell.cx);
+    assert_eq!(x(&mut shell), a, "Reduced: the commit frame is the end");
+    assert_eq!(requested_frames(shell.cx), 0);
 }

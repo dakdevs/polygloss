@@ -864,6 +864,42 @@ const ALLOW: Allow[] = [
     snippet: "let mut h: u64 = 0xcbf2_9ce4_8422_2325",
     reason: "the FNV-1a offset basis, a hash seed",
   },
+  {
+    path: "crates/polygloss-app/src/review_tab/banners.rs",
+    snippet: ".h_5()",
+    reason:
+      "a leaving notice's inert copy draws its button as gpui-kit draws an xsmall ghost Button (gpui-component button.rs), in the kit's rem metrics, so the copy matches the live notice",
+  },
+  {
+    path: "crates/polygloss-app/src/review_tab/banners.rs",
+    snippet: ".px_1()",
+    reason:
+      "a leaving notice's inert copy draws its button as gpui-kit draws an xsmall ghost Button (gpui-component button.rs), in the kit's rem metrics, so the copy matches the live notice",
+  },
+  {
+    path: "crates/polygloss-app/src/review_tab/banners.rs",
+    snippet: ".line_height(relative(1.25))",
+    reason:
+      "a leaving notice's inert copy draws its button as gpui-kit draws an xsmall ghost Button (gpui-component button.rs), in the kit's rem metrics, so the copy matches the live notice",
+  },
+  {
+    path: "crates/polygloss-app/src/review_tab/banners.rs",
+    snippet: ".text_xs()",
+    reason:
+      "a leaving notice's inert copy draws its button as gpui-kit draws an xsmall ghost Button (gpui-component button.rs), in the kit's rem metrics, so the copy matches the live notice",
+  },
+  {
+    path: "crates/polygloss-app/src/review_tab/banners.rs",
+    snippet: ".gap_1()",
+    reason:
+      "a leaving notice's inert copy draws its button as gpui-kit draws an xsmall ghost Button (gpui-component button.rs), in the kit's rem metrics, so the copy matches the live notice",
+  },
+  {
+    path: "crates/polygloss-app/src/home/row.rs",
+    snippet: ".size_6()",
+    reason:
+      "a leaving Home row's inert copy draws its ⋯ as gpui-kit draws a small icon Button (gpui-component button.rs), in the kit's rem metrics, so the copy matches the live row",
+  },
 ];
 
 // The debt map for `counts` (files at 0 leave it), and every entry that

@@ -13,6 +13,12 @@
 //! chevron's slot empty. The Viewed circle's icon ends `ICON_LEAD` from the
 //! highlight's end, as leading icons start.
 //!
+//! A folder's chevron turns when the pointer toggles it (M10, ADR-0030):
+//! 0° (open, pointing down) ↔ −90° over MICRO on MOVE, its rows inserted or
+//! gone on the commit frame; the arrows (the tree's only folder keys),
+//! reveals and restores put it at its end. The turns are [`Chevrons`], kept
+//! by the `FileTree`.
+//!
 //! Debug selectors, `key` being the row's item id (`f:3`, `d:src`):
 //! `tree-row-{key}`, `tree-chevron-{key}` (the chevron's slot),
 //! `tree-icon-{key}: {icon}`, `tree-name-{key}`, the slot
@@ -22,6 +28,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::list::ListItem;
@@ -29,21 +36,173 @@ use gpui_kit::component::tree::TreeEntry;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div, px,
+    App, Context, Entity, Hsla, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity,
+    Window, div, px, radians,
 };
 use polygloss_diff::{FileChange, FileStatus};
 use polygloss_viewport::{DiffViewport, FileCounts, FileFlags, group_digits};
 
 use super::model::{ItemId, TreeModel};
+use super::panels::PanelKey;
 use super::{FileTree, FileTreeEvent};
 use crate::motion::ink::PressInk as _;
+use crate::motion::{
+    self, Initiator, Motion, MotionPolicy, Recorded, Reduced, ReducedPlay, Settle, Track, tokens,
+};
 use crate::review_tab::toolbar::tooltip;
 use crate::space::{TextStyleExt as _, gap, height, layout, pad, radius, size, text};
 
 /// The hover group of a row: its empty Viewed circle shows while it is
 /// hovered.
 const ROW_GROUP: &str = "tree-row";
+
+/// A folder chevron's turn (ADR-0030 M10): MICRO both ways on MOVE, by
+/// pointer only; under Reduce Motion it jumps.
+pub const CHEVRON: Motion = Motion {
+    enter: tokens::MICRO,
+    exit: tokens::MICRO,
+    easing: tokens::in_out,
+    animates: &[Initiator::Pointer],
+    reduced: Reduced {
+        enter: ReducedPlay::Snap,
+        exit: ReducedPlay::Snap,
+    },
+};
+
+/// The angle of a chevron that is `open` (0 → 1), in degrees: 0° open,
+/// pointing down; −90° closed.
+fn chevron_angle(open: f32) -> f32 {
+    tokens::CHEVRON_CLOSED_DEG * (1.0 - open)
+}
+
+/// The folder chevrons turning in a tree (M10), kept by its `FileTree`
+/// (rule 13): one [`Track`] per turning folder, 1 open and 0 closed.
+#[derive(Default)]
+pub struct Chevrons {
+    /// Each turning folder's track and whether it turns open.
+    turning: HashMap<(PanelKey, SharedString), (Track, bool)>,
+    /// The folder row a left mouse down landed on: the toggle it causes is
+    /// the pointer's.
+    pressed: Option<SharedString>,
+    /// The open panel's turning chevrons as last sampled: the angle and
+    /// whether each turns open.
+    drawn: Arc<HashMap<SharedString, (f32, bool)>>,
+}
+
+impl Chevrons {
+    /// A left mouse down on folder row `key` (before the tree toggles it).
+    pub fn press(&mut self, key: SharedString) {
+        self.pressed = Some(key);
+    }
+
+    /// Forgets a press that toggled nothing.
+    fn forget_press(&mut self) {
+        self.pressed = None;
+    }
+
+    /// Folder row `key` of `panel` was expanded (`open`) or collapsed: after
+    /// a press on its row the chevron turns there from where it is painted
+    /// (a turn under way retargets); any other toggle (the arrows, a reveal,
+    /// a restore) puts it there at once.
+    pub fn toggled(
+        &mut self,
+        panel: &PanelKey,
+        key: SharedString,
+        open: bool,
+        policy: MotionPolicy,
+        now: Instant,
+    ) {
+        let pressed = self.pressed.take().is_some_and(|p| p == key);
+        let slot = (panel.clone(), key);
+        if !pressed {
+            self.turning.remove(&slot);
+            return;
+        }
+        let (to, from) = if open { (1.0, 0.0) } else { (0.0, 1.0) };
+        let (track, opens) = self
+            .turning
+            .entry(slot)
+            .or_insert_with(|| (Track::new(from, 1.0), open));
+        *opens = open;
+        track.retarget(to, &CHEVRON, Initiator::Pointer, policy, now);
+    }
+
+    /// Samples the chevrons of `panel` (the open one) for this frame,
+    /// requesting frames while one turns; those that settled or belong to
+    /// another panel are dropped. Call it from the tree's render.
+    fn sample(&mut self, panel: Option<&PanelKey>, window: &mut Window, cx: &App) {
+        self.turning
+            .retain(|(p, _), (track, _)| Some(p) == panel && !track.is_settled());
+        let mut drawn = HashMap::with_capacity(self.turning.len());
+        for ((_, key), (track, opens)) in &mut self.turning {
+            let sample = motion::sample(track, window, cx);
+            drawn.insert(key.clone(), (chevron_angle(sample.value), *opens));
+        }
+        self.drawn = Arc::new(drawn);
+    }
+
+    /// `tree`'s frame of its chevrons (from its render): forgets a press
+    /// that toggled nothing, samples the open panel's turns and, while one
+    /// runs, registers them with `motion::settle`.
+    pub fn frame(
+        tree: &mut FileTree,
+        open: Option<&PanelKey>,
+        window: &mut Window,
+        cx: &mut Context<FileTree>,
+    ) {
+        tree.chevrons.forget_press();
+        tree.chevrons.sample(open, window, cx);
+        if !tree.chevrons.is_turning() {
+            return;
+        }
+        let (freeze, settle) = (cx.weak_entity(), cx.weak_entity());
+        motion::settle::register(
+            None,
+            move |now, cx| {
+                freeze
+                    .update(cx, |t, cx| {
+                        t.chevrons.freeze(now);
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            move |which, cx| {
+                settle
+                    .update(cx, |t, cx| {
+                        t.chevrons.settle(which);
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// What [`Self::sample`] drew, for the rows.
+    pub fn drawn(&self) -> Arc<HashMap<SharedString, (f32, bool)>> {
+        self.drawn.clone()
+    }
+
+    fn is_turning(&self) -> bool {
+        !self.turning.is_empty()
+    }
+
+    /// A mouse down: every turn holds where it is.
+    fn freeze(&mut self, now: Instant) {
+        for (track, _) in self.turning.values_mut() {
+            track.freeze(now);
+        }
+    }
+
+    /// A settling input: every turn (`Settle::All`) or those still frozen
+    /// ends now.
+    fn settle(&mut self, which: Settle) {
+        self.turning
+            .retain(|_, (track, _)| which == Settle::Frozen && !track.is_frozen());
+    }
+}
 
 /// What rows read while the tree renders them.
 pub struct RowCtx {
@@ -57,6 +216,8 @@ pub struct RowCtx {
     /// `+a` and `−d` (the viewport's `stat_added` / `stat_removed`).
     pub stat_added: Hsla,
     pub stat_removed: Hsla,
+    /// The turning chevrons ([`Chevrons::drawn`]).
+    pub chevrons: Arc<HashMap<SharedString, (f32, bool)>>,
 }
 
 impl RowCtx {
@@ -189,14 +350,23 @@ fn folder_row(
         }
     };
     let label = entry.item().label.clone();
-    base.accessibility_label(label.clone()).child(
-        h_flex()
-            .w_full()
-            .gap(px(gap::ICON_LABEL))
-            .child(lead(key, entry, Lucide::Folder, cx))
-            .child(name(key, label, check == Check::On, false, cx))
-            .child(slot(key, check, cx, toggle)),
-    )
+    // The press comes before the tree's own mouse down toggles the folder:
+    // that toggle is the pointer's (M10).
+    let (pressed, press_key) = (ctx.tree.clone(), key.clone());
+    base.accessibility_label(label.clone())
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            if let Some(tree) = pressed.upgrade() {
+                tree.update(cx, |t, _| t.chevrons.press(press_key.clone()));
+            }
+        })
+        .child(
+            h_flex()
+                .w_full()
+                .gap(px(gap::ICON_LABEL))
+                .child(lead(ctx, key, entry, Lucide::Folder, cx))
+                .child(name(key, label, check == Check::On, false, cx))
+                .child(slot(key, check, cx, toggle)),
+        )
 }
 
 fn file_row(
@@ -230,7 +400,7 @@ fn file_row(
             h_flex()
                 .w_full()
                 .gap(px(gap::ICON_LABEL))
-                .child(lead(key, entry, Lucide::File, cx))
+                .child(lead(ctx, key, entry, Lucide::File, cx))
                 .child(name(
                     key,
                     entry.item().label.clone(),
@@ -244,17 +414,42 @@ fn file_row(
 }
 
 /// The chevron's slot, then `gap::INLINE` later the row's `icon`.
-fn lead(key: &SharedString, entry: &TreeEntry, glyph: Lucide, cx: &App) -> impl IntoElement {
+fn lead(
+    ctx: &RowCtx,
+    key: &SharedString,
+    entry: &TreeEntry,
+    glyph: Lucide,
+    cx: &App,
+) -> impl IntoElement {
     h_flex()
         .flex_none()
         .gap(px(gap::INLINE))
-        .child(chevron(key, entry, cx))
+        .child(chevron(ctx, key, entry, cx))
         .child(icon(key, glyph, cx))
 }
 
-/// A folder's expand chevron; an empty slot of the same width for files.
-fn chevron(key: &SharedString, entry: &TreeEntry, cx: &App) -> impl IntoElement {
+/// A folder's expand chevron, one glyph turned about its centre (M10); an
+/// empty slot of the same width for files.
+fn chevron(ctx: &RowCtx, key: &SharedString, entry: &TreeEntry, cx: &App) -> impl IntoElement {
     let selector = format!("tree-chevron-{key}");
+    let angle = entry.is_folder().then(|| {
+        let open = entry.is_expanded();
+        // A turn toward the state the row shows; at rest, that state.
+        let angle = match ctx.chevrons.get(key) {
+            Some(&(angle, opens)) if opens == open => angle,
+            _ => chevron_angle(if open { 1.0 } else { 0.0 }),
+        };
+        motion::report(
+            || Recorded {
+                id: SharedString::from(format!("tree-chevron-{key}")).into(),
+                offset: Default::default(),
+                opacity: 1.0,
+                rotation: angle,
+            },
+            cx,
+        );
+        angle
+    });
     div()
         .debug_selector(move || selector)
         .w(px(size::ICON_XS))
@@ -262,15 +457,12 @@ fn chevron(key: &SharedString, entry: &TreeEntry, cx: &App) -> impl IntoElement 
         .flex()
         .items_center()
         .justify_center()
-        .when(entry.is_folder(), |el| {
+        .when_some(angle, |el, angle| {
             el.child(
-                Icon::new(if entry.is_expanded() {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                })
-                .xsmall()
-                .text_color(cx.theme().muted_foreground),
+                Icon::new(IconName::ChevronDown)
+                    .xsmall()
+                    .rotate(radians(angle.to_radians()))
+                    .text_color(cx.theme().muted_foreground),
             )
         })
 }

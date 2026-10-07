@@ -1,26 +1,55 @@
 //! The banner strip (design §11.7, ADR-0009): a strip of fixed height under
 //! the toolbar, on the canvas. Banners are rounded inline notices that never
 //! insert rows into the viewport, and the strip never changes height, so
-//! nothing below it moves when one comes or goes. A notice enters (design
-//! §11.16: 4 pt down and fading in) once per appearance of its kind, never
-//! again when its text changes. With no banner the strip shows its context
-//! line, which is empty on a review's latest state (OQ-39).
+//! nothing below it moves when one comes or goes. With no banner the strip
+//! shows its context line, which is empty on a review's latest state
+//! (OQ-39).
+//!
+//! Motion (M12, ADR-0030), whoever caused the change: a notice enters once
+//! per appearance of its kind, from 4 pt above and fading in over QUICK on
+//! OUT, never again when its text changes. When the strip is left empty
+//! (the last notice dismissed, a Refresh applied, a jump) the notices it
+//! showed leave the way they came: an inert copy ([`Exit`]: no listeners,
+//! no hitbox) over the empty strip rises 4 pt and fades over MICRO. A notice
+//! replaced by another notice or by the context line leaves on the commit
+//! frame (a swap in place), and a notice that comes back while its copy
+//! leaves enters from where the copy was. Under Reduce Motion both only
+//! fade.
 
 use std::time::Instant;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
 use gpui_kit::{
-    Action, AnyElement, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div, point, px,
+    Action, AnyElement, App, Bounds, Context, Div, FocusHandle, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Point, Render, SharedString, Size, Styled as _,
+    Window, canvas, div, point, px, relative,
 };
 
-use crate::motion;
+use crate::motion::exit::{Exit, ExitHitbox, ExitSpec, Placement};
+use crate::motion::{
+    self, Initiator, Motion, Recorded, Reduced, ReducedPlay, Settle, Track, quantize, tokens, wrap,
+};
 use crate::review_tab::toolbar::text;
 use crate::space::{TextStyleExt as _, edge, gap, height, pad, radius, size, text as type_style};
 
-/// How far above its place a notice starts entering.
-const ENTER_FROM_ABOVE: f32 = 4.0;
+/// A notice entering and leaving (ADR-0030 M12): QUICK in and MICRO out on
+/// OUT, for every initiator (the strip is system-initiated); under Reduce
+/// Motion opacity only.
+pub const NOTICE: Motion = Motion {
+    enter: tokens::QUICK,
+    exit: tokens::MICRO,
+    easing: tokens::out,
+    animates: &[
+        Initiator::Pointer,
+        Initiator::Keyboard,
+        Initiator::Programmatic,
+    ],
+    reduced: Reduced {
+        enter: ReducedPlay::Fade,
+        exit: ReducedPlay::Fade,
+    },
+};
 
 /// The banners of design §11.7, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -39,11 +68,20 @@ struct Banner {
     kind: BannerKind,
     text: SharedString,
     action: Box<dyn Action>,
-    /// Its appearance: the entrance's epoch.
-    generation: u64,
-    /// When its entrance began on the executor clock (its first frame).
-    entered: Option<Instant>,
+    /// Its entrance, from its first frame (`None` until drawn).
+    enter: Option<Track>,
 }
+
+/// A notice as drawn: what an exiting notice's copy shows.
+#[derive(Debug, Clone, PartialEq)]
+struct NoticeCopy {
+    kind: BannerKind,
+    text: SharedString,
+    label: &'static str,
+}
+
+/// The notices a leaving copy shows (an [`Exit`]'s snapshot).
+struct Leaving(Vec<NoticeCopy>);
 
 /// The review tab's banner strip.
 pub struct BannerStrip {
@@ -51,11 +89,20 @@ pub struct BannerStrip {
     /// latest state; empty on it.
     context: SharedString,
     banners: Vec<Banner>,
-    /// Appearances so far, of any kind.
-    appeared: u64,
     /// Where banner actions are dispatched (the review tab); `None`: from
     /// the focused element.
     target: Option<FocusHandle>,
+    /// The notices the last frame drew: what leaves when the strip empties.
+    drawn: Vec<NoticeCopy>,
+    /// The strip's size as last laid out: the leaving copy's bounds.
+    size: Size<Pixels>,
+    /// The strip was left empty (at that time) with notices drawn: their
+    /// exit starts on the strip's next frame.
+    leaving: Option<(Vec<NoticeCopy>, Instant)>,
+    /// The leaving copy and whose notices it shows.
+    exit: Option<(Vec<BannerKind>, Exit<Leaving>)>,
+    /// Whether the last mouse down froze `exit`.
+    exit_frozen: bool,
 }
 
 impl BannerStrip {
@@ -63,8 +110,12 @@ impl BannerStrip {
         BannerStrip {
             context,
             banners: Vec::new(),
-            appeared: 0,
             target: None,
+            drawn: Vec::new(),
+            size: Size::default(),
+            leaving: None,
+            exit: None,
+            exit_frozen: false,
         }
     }
 
@@ -92,13 +143,11 @@ impl BannerStrip {
                 shown.action = action;
             }
             None => {
-                self.appeared += 1;
                 self.banners.push(Banner {
                     kind,
                     text,
                     action,
-                    generation: self.appeared,
-                    entered: None,
+                    enter: None,
                 });
                 self.banners.sort_by_key(|b| b.kind);
             }
@@ -106,11 +155,16 @@ impl BannerStrip {
         cx.notify();
     }
 
-    /// Hides the banner of `kind`.
+    /// Hides the banner of `kind`. If that leaves the strip empty, the
+    /// notices it showed leave as they came (M12).
     pub fn clear(&mut self, kind: BannerKind, cx: &mut Context<Self>) {
         let before = self.banners.len();
         self.banners.retain(|b| b.kind != kind);
         if self.banners.len() != before {
+            if self.banners.is_empty() && self.context.is_empty() && !self.drawn.is_empty() {
+                let now = cx.background_executor().now();
+                self.leaving = Some((self.drawn.clone(), now));
+            }
             cx.notify();
         }
     }
@@ -141,6 +195,111 @@ impl BannerStrip {
         self.context = context;
         cx.notify();
     }
+
+    /// Starts this frame's motion: a notice drawn for the first time enters
+    /// (from where a leaving copy of it was), and the exit of a strip left
+    /// empty starts; a leaving copy goes at once when the strip shows
+    /// anything again.
+    fn begin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let policy = motion::policy(cx);
+        let empty = self.banners.is_empty() && self.context.is_empty();
+        // Back mid-exit: the copy's sampled opacity, and whose copy it was.
+        let mut resumed: Option<(Vec<BannerKind>, f32)> = None;
+        if empty {
+            if let Some((copies, at)) = self.leaving.take()
+                // A strip not drawn since (its tab hidden) has nothing on
+                // screen to leave.
+                && now.saturating_duration_since(at) < NOTICE.exit
+            {
+                let spec = ExitSpec {
+                    placement: Placement::Overlay(Bounds::new(Point::default(), self.size)),
+                    hitbox: ExitHitbox::None,
+                    motion: &NOTICE,
+                    travel: point(px(0.), px(-tokens::NUDGE)),
+                    height: None,
+                };
+                let kinds = copies.iter().map(|c| c.kind).collect();
+                let start = Exit::start(
+                    Leaving(copies),
+                    copy,
+                    spec,
+                    Initiator::Programmatic,
+                    window,
+                    cx,
+                );
+                self.exit = start.map(|exit| (kinds, exit));
+                self.exit_frozen = false;
+            }
+        } else {
+            self.leaving = None;
+            if let Some((kinds, mut exit)) = self.exit.take() {
+                resumed = exit.frame(window, cx).map(|f| (kinds, f.opacity));
+            }
+        }
+        for b in &mut self.banners {
+            if b.enter.is_none() {
+                let from = resumed
+                    .as_ref()
+                    .filter(|(kinds, _)| kinds.contains(&b.kind))
+                    .map_or(0.0, |&(_, opacity)| opacity);
+                let mut track = Track::new(from, 1.0);
+                track.retarget(1.0, &NOTICE, Initiator::Programmatic, policy, now);
+                b.enter = Some(track);
+            }
+        }
+    }
+
+    /// Whether an entrance or the exit is under way.
+    fn moving(&self) -> bool {
+        self.exit.is_some()
+            || self
+                .banners
+                .iter()
+                .any(|b| b.enter.as_ref().is_some_and(|t| !t.is_settled()))
+    }
+
+    /// While something moves: its freeze and settle with `motion::settle`.
+    fn register(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.moving() {
+            return;
+        }
+        let (freeze, settle) = (cx.weak_entity(), cx.weak_entity());
+        motion::settle::register(
+            None,
+            move |now, cx| {
+                freeze
+                    .update(cx, |s, cx| {
+                        for track in s.banners.iter_mut().filter_map(|b| b.enter.as_mut()) {
+                            track.freeze(now);
+                        }
+                        if let Some((_, exit)) = &mut s.exit {
+                            exit.freeze(now);
+                            s.exit_frozen = true;
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            move |which, cx| {
+                settle
+                    .update(cx, |s, cx| {
+                        for track in s.banners.iter_mut().filter_map(|b| b.enter.as_mut()) {
+                            if which == Settle::All || track.is_frozen() {
+                                track.settle();
+                            }
+                        }
+                        if which == Settle::All || s.exit_frozen {
+                            s.exit = None;
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+            },
+            window,
+            cx,
+        );
+    }
 }
 
 /// The button label of a banner.
@@ -152,26 +311,129 @@ fn button_label(kind: BannerKind) -> &'static str {
     }
 }
 
+/// A notice: the info tint, a dot, its text (shrinking and truncating, so
+/// its button stays in view) and `button`, each with debug selector
+/// `<prefix>-notice-{i}`.
+fn notice(prefix: &'static str, i: usize, text: SharedString, button: AnyElement, cx: &App) -> Div {
+    let theme = cx.theme();
+    let (fg, info) = (theme.foreground, theme.info);
+    h_flex()
+        .debug_selector(move || format!("{prefix}-notice-{i}"))
+        .min_w_0()
+        .h(px(height::SM))
+        .pl(px(pad::TEXT))
+        .gap(px(gap::CONTROLS))
+        .rounded(px(radius::for_height(height::SM)))
+        .border_1()
+        .border_color(info.opacity(0.3))
+        .bg(info.opacity(0.1))
+        .child(
+            div()
+                .flex_none()
+                .size(px(size::DOT))
+                .rounded_full()
+                .bg(info),
+        )
+        .child(div().min_w_0().text_color(fg).truncate().child(text))
+        .child(button)
+}
+
+/// The strip's row of notices: on the cards' edge, `CONTROLS` apart.
+fn row() -> Div {
+    h_flex()
+        .px(px(edge::CANVAS))
+        .gap(px(gap::CONTROLS))
+        .text_style(type_style::SMALL)
+}
+
+/// The leaving copy of `copies` ([`Exit`]'s render function): the strip's
+/// row of notices with lookalikes of their buttons, and no listeners, focus
+/// handles, tab stops or tooltips.
+fn copy(Leaving(copies): &Leaving, _window: &mut Window, cx: &mut App) -> AnyElement {
+    let notices: Vec<Div> = copies
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            notice(
+                "banner-exit",
+                i,
+                c.text.clone(),
+                inert_button(i, c.label, cx),
+                cx,
+            )
+        })
+        .collect();
+    row().size_full().children(notices).into_any_element()
+}
+
+/// A notice's button drawn as gpui-kit draws an `.xsmall().ghost()`
+/// `Button` with a label (gpui-component `button.rs`: `h_5`, `px_1`, its
+/// `line_height(1.25)`, the label row's `text_xs` and `gap_1`), rounded as
+/// the live one, with nothing interactive.
+fn inert_button(i: usize, label: &'static str, cx: &App) -> AnyElement {
+    div()
+        .debug_selector(move || format!("banner-exit-button-{i}"))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .h_5()
+        .px_1()
+        .rounded(px(radius::XS))
+        .text_color(cx.theme().secondary_foreground)
+        .line_height(relative(1.25))
+        .child(
+            h_flex()
+                .size_full()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .gap_1()
+                .child(
+                    div()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(label),
+                ),
+        )
+        .into_any_element()
+}
+
 impl Render for BannerStrip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = cx.background_executor().now();
-        let theme = cx.theme();
-        let (muted, fg, info) = (theme.muted_foreground, theme.foreground, theme.info);
-        let canvas = crate::theme::viewport_theme(cx).canvas;
-        let strip = h_flex()
+        self.begin(window, cx);
+        self.register(window, cx);
+        let muted = cx.theme().muted_foreground;
+        let canvas_color = crate::theme::viewport_theme(cx).canvas;
+        let this = cx.weak_entity();
+        let strip = row()
             .id("banner-strip")
             .debug_selector(|| "banner-strip".into())
+            .relative()
             .flex_none()
             // Reserved whether or not a banner shows (OQ-39); its content on
             // the cards' edge.
             .h(px(height::BANNER_STRIP))
             .w_full()
-            .px(px(edge::CANVAS))
-            .gap(px(gap::CONTROLS))
             .overflow_hidden()
-            .bg(canvas)
-            .text_style(type_style::SMALL);
+            .bg(canvas_color)
+            // The strip's size, for a leaving copy laid over it.
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        this.update(cx, |s, _| s.size = bounds.size).ok();
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            );
         if self.banners.is_empty() {
+            self.drawn.clear();
             let context = (!self.context.is_empty()).then(|| {
                 div()
                     .debug_selector(|| "banner-context".into())
@@ -179,68 +441,78 @@ impl Render for BannerStrip {
                     .text_color(muted)
                     .child(text("banner-context", self.context.clone()).truncate())
             });
-            return strip.children(context);
+            let leaving = self.exit.as_mut().and_then(|(_, exit)| {
+                let frame = exit.frame(window, cx);
+                report_exit(frame.map(|f| (f.offset, f.opacity)), cx);
+                exit.render(window, cx)
+            });
+            if leaving.is_none() {
+                self.exit = None;
+            }
+            return strip.children(context).children(leaving);
         }
+        let scale = window.scale_factor();
         let mut notices: Vec<AnyElement> = Vec::with_capacity(self.banners.len());
+        let mut drawn = Vec::with_capacity(self.banners.len());
         for (i, b) in self.banners.iter_mut().enumerate() {
             let action = b.action.boxed_clone();
             let target = self.target.clone();
-            // Long texts shrink and truncate, so every button stays in view.
-            let notice = h_flex()
-                .debug_selector(move || format!("banner-notice-{i}"))
-                .min_w_0()
-                .h(px(height::SM))
-                .pl(px(pad::TEXT))
-                .gap(px(gap::CONTROLS))
-                .rounded(px(radius::for_height(height::SM)))
-                .border_1()
-                .border_color(info.opacity(0.3))
-                .bg(info.opacity(0.1))
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(size::DOT))
-                        .rounded_full()
-                        .bg(info),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .text_color(fg)
-                        .truncate()
-                        .child(b.text.clone()),
-                )
-                .child(
-                    Button::new(("banner", i))
-                        .flex_none()
-                        .label(button_label(b.kind))
-                        .xsmall()
-                        .rounded(px(radius::XS))
-                        .ghost()
-                        .debug_selector(move || format!("banner-button-{i}"))
-                        .on_click(move |_, window, cx| match &target {
-                            Some(target) => target.dispatch_action(&*action, window, cx),
-                            None => window.dispatch_action(action.boxed_clone(), cx),
-                        }),
-                );
-            // Wrapped only while it enters: `enter_from` would play again on
-            // a frame after one without it (another review shown).
-            let began = *b.entered.get_or_insert(now);
-            notices.push(if now < began + motion::ENTER_NOTICE {
-                motion::enter_from(
-                    ("banner", b.kind as usize),
-                    b.generation,
-                    point(px(0.), px(-ENTER_FROM_ABOVE)),
-                    motion::ENTER_NOTICE,
-                    motion::ease_out_cubic,
-                    notice,
-                    window,
-                    cx,
-                )
-            } else {
-                notice.into_any_element()
+            let label = button_label(b.kind);
+            drawn.push(NoticeCopy {
+                kind: b.kind,
+                text: b.text.clone(),
+                label,
             });
+            let button = Button::new(("banner", i))
+                .flex_none()
+                .label(label)
+                .xsmall()
+                .rounded(px(radius::XS))
+                .ghost()
+                .debug_selector(move || format!("banner-button-{i}"))
+                .on_click(move |_, window, cx| match &target {
+                    Some(target) => target.dispatch_action(&*action, window, cx),
+                    None => window.dispatch_action(action.boxed_clone(), cx),
+                })
+                .into_any_element();
+            let sample = b
+                .enter
+                .as_mut()
+                .map(|track| motion::sample(track, window, cx))
+                .map_or((1.0, 1.0), |s| (s.value, s.value * s.opacity));
+            let (shown, opacity) = sample;
+            let offset = point(px(0.), px(quantize(-tokens::NUDGE * (1.0 - shown), scale)));
+            motion::report(
+                || Recorded {
+                    id: ("banner", b.kind as usize).into(),
+                    offset,
+                    opacity,
+                    rotation: 0.0,
+                },
+                cx,
+            );
+            // Always wrapped (rule 13): the notice keeps one element tree.
+            notices.push(wrap::slide(
+                offset,
+                notice("banner", i, b.text.clone(), button, cx).opacity(opacity),
+            ));
         }
+        self.drawn = drawn;
         strip.children(notices)
+    }
+}
+
+/// Records what the leaving copy drew (tests: `motion::record`).
+fn report_exit(frame: Option<(Point<Pixels>, f32)>, cx: &App) {
+    if let Some((offset, opacity)) = frame {
+        motion::report(
+            || Recorded {
+                id: "banner-exit".into(),
+                offset,
+                opacity,
+                rotation: 0.0,
+            },
+            cx,
+        );
     }
 }

@@ -803,9 +803,16 @@ fn overlay_rows_follow_the_ladder(cx: &mut TestAppContext) {
         .update(|_, cx| polygloss_app::open_flow::current(cx))
         .expect("the open flow is open");
     let path = repo.path().to_path_buf();
-    shell
-        .cx
-        .update(|window, cx| flow.update(cx, |f, cx| f.choose_repo(path, window, cx)));
+    shell.cx.update(|window, cx| {
+        flow.update(cx, |f, cx| {
+            f.choose_repo(
+                path,
+                polygloss_app::motion::Initiator::Programmatic,
+                window,
+                cx,
+            )
+        })
+    });
     draw(shell.cx);
     let source = flow
         .read_with(shell.cx, |f, _| f.source().cloned())
