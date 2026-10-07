@@ -56,6 +56,7 @@ pub mod numbers;
 mod paint_rows;
 pub mod pipeline;
 pub mod provider;
+mod reveal;
 mod section_band;
 mod selection;
 pub mod space;
@@ -70,8 +71,8 @@ pub use card::CardStyle;
 pub use controls::ControlAction;
 pub use cursor::{CursorPos, Direction};
 pub use debug::{
-    BandDebug, CardDebug, ControlDebug, HeaderDebug, IconDebug, MenuDebug, PlusDebug, TitleStyle,
-    ViewportDebug,
+    BandDebug, CardDebug, ControlDebug, HeaderDebug, IconDebug, MenuDebug, PlusDebug, RevealDebug,
+    TitleStyle, ViewportDebug,
 };
 pub use document::{
     BlockAnchor, BlockId, BodyRow, Document, FileLayout, FileState, HeightIndex, Metrics,

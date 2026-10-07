@@ -64,6 +64,37 @@ pub struct ViewportDebug {
     /// Where the prelude was placed, `(x, y, width, height)` relative to the
     /// viewport; `None` when it is not set or out of view.
     pub prelude: Option<(f32, f32, f32, f32)>,
+    /// Every painted file's slot: `(file_idx, y)`, its card's top (where
+    /// its header sits in place) relative to the viewport, as painted (a
+    /// reveal displaces the slots below its body), top to bottom.
+    pub slots: Vec<(u32, f32)>,
+    /// The running reveal (ADR-0030 M3), as the last frame painted it.
+    pub reveal: Option<RevealDebug>,
+    /// Every painted file header's chevron: `(file_idx, degrees)`, 0 open
+    /// (pointing down), −90 closed, between while its body moves.
+    pub chevrons: Vec<(u32, f32)>,
+    /// How many times the width chose another layout and every file was
+    /// laid out again, since the viewport was created
+    /// ([`crate::DiffViewport::hold_layout`] holds it).
+    pub relayouts: u32,
+}
+
+/// A running reveal: a file's body opening or closing (ADR-0030 M3).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RevealDebug {
+    pub file_idx: u32,
+    /// The file's display slot: every slot after it rides below the frame.
+    pub slot: u32,
+    /// The body's painted height below its header, the card's bottom
+    /// padding included: the card's frame ends this far below the header.
+    pub height: f32,
+    /// Where the body's rows are cut (`CARD_Y` above the frame's bottom,
+    /// never above the body's top), relative to the viewport.
+    pub curtain: f32,
+    /// The rows' opacity: 1, or a Reduced fade's.
+    pub opacity: f32,
+    /// A mouse down holds it ([`crate::DiffViewport::freeze_motion`]).
+    pub frozen: bool,
 }
 
 /// The "+" painted on the hovered line numbers: the line it comments on.

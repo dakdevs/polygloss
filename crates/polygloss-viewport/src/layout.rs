@@ -196,6 +196,19 @@ impl Columns {
         }
     }
 
+    /// These columns over a row `width` wide (a held layout's width).
+    pub fn with_width(self, width: f32) -> Columns {
+        let half = match (self.layout, self.one_sided) {
+            (Layout::Split, None) => self.x + (width / 2.0).floor(),
+            _ => self.x + width,
+        };
+        Columns {
+            width,
+            half,
+            ..self
+        }
+    }
+
     /// Left edge and width of a pane.
     pub fn pane(&self, pane: Pane) -> (f32, f32) {
         match pane {

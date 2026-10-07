@@ -278,6 +278,20 @@ impl Harness {
         Ok(rx)
     }
 
+    /// Runs `f` on the viewport at the start of the next display frame,
+    /// with its window (a synthesized input: a toggle by pointer).
+    pub fn at_next_frame(
+        &self,
+        cx: &mut AsyncApp,
+        f: impl FnOnce(&mut DiffViewport, &mut Window, &mut Context<DiffViewport>) + 'static,
+    ) -> anyhow::Result<()> {
+        let viewport = self.viewport.clone();
+        cx.update_window(self.window, |_, window, _| {
+            window.on_next_frame(move |window, cx| viewport.update(cx, |v, cx| f(v, window, cx)))
+        })
+        .context("scheduling the input")
+    }
+
     /// Jumps to file `file_idx` (its header at the top).
     pub fn jump_to_file(&self, cx: &mut AsyncApp, file_idx: u32) {
         self.update(cx, |v, cx| v.scroll_to(ScrollTarget::File(file_idx), cx));

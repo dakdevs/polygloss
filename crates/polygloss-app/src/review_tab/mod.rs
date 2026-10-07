@@ -210,6 +210,7 @@ impl Focusable for ReviewTab {
 
 impl Render for ReviewTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        register_viewport_motion(&self.viewport, window, cx);
         let sidebar = panes::render_sidebar(self, window, cx);
         let toolbar = toolbar::render(cx);
         let panes = panes::render(self, window, cx);
@@ -232,6 +233,28 @@ impl Render for ReviewTab {
             .size_full()
             .child(shell)
     }
+}
+
+/// While the viewport's reveal runs (a card opening or closing, ADR-0030
+/// M3), registers it with the window's settling each frame: a key down,
+/// a scroll or a resize settles it, a mouse down freezes it until its mouse
+/// up (the viewport cannot depend on the app, so the tab does this).
+fn register_viewport_motion(viewport: &Entity<DiffViewport>, window: &mut Window, cx: &mut App) {
+    if !viewport.read(cx).motion_running() {
+        return;
+    }
+    let (freeze, settle) = (viewport.downgrade(), viewport.downgrade());
+    crate::motion::settle::register(
+        None,
+        move |now, cx| {
+            freeze.update(cx, |v, cx| v.freeze_motion(now, cx)).ok();
+        },
+        move |which, cx| {
+            settle.update(cx, |v, cx| v.settle_motion(which, cx)).ok();
+        },
+        window,
+        cx,
+    );
 }
 
 /// The repo's directory as shown: its worktree, else the git dir's parent

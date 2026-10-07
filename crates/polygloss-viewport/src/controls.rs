@@ -111,6 +111,9 @@ pub(crate) fn insert_hitboxes(frame: &Frame, window: &mut Window) -> Rc<[Target]
         }
     };
     insert(ControlLayer::Body, window);
+    if let Some(band) = frame.occluded {
+        window.insert_hitbox(band, HitboxBehavior::BlockMouseExceptScroll);
+    }
     for area in &frame.header_areas {
         window.insert_hitbox(*area, HitboxBehavior::BlockMouseExceptScroll);
     }
@@ -227,8 +230,7 @@ impl DiffViewport {
     ) {
         match control.action {
             ControlAction::Collapse(f) => {
-                let collapsed = self.doc.is_collapsed(f);
-                self.set_collapsed(f, !collapsed, cx);
+                self.toggle_collapsed_by(f, crate::motion::Initiator::Pointer, window, cx)
             }
             ControlAction::Viewed(f) => cx.emit(ViewportEvent::ViewedToggled(f)),
             ControlAction::Menu(f) => self.open_menu(f, control.bounds, window, cx),

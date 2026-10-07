@@ -68,6 +68,24 @@
         "linux": 50
       }
     },
+    "collapse_anim_p95_ms": {
+      "label": "collapse motion p95",
+      "unit": "ms",
+      "budget": {
+        "typical": 8.3,
+        "synthetic": 8.3,
+        "linux": 8.3
+      }
+    },
+    "collapse_commit_ms": {
+      "label": "collapse commit",
+      "unit": "ms",
+      "budget": {
+        "typical": 16.7,
+        "synthetic": 16.7,
+        "linux": 50
+      }
+    },
     "shell_idle_draw_p95_ms": {
       "label": "idle chrome p95",
       "unit": "ms",

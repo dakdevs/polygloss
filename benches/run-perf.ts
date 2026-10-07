@@ -92,6 +92,8 @@ export const metricNames = [
   "app_first_paint_ms",
   "sections_scroll_p95_ms",
   "section_toggle_ms",
+  "collapse_anim_p95_ms",
+  "collapse_commit_ms",
   ...motionMetricNames,
   "peak_rss_mb",
 ] as const;
@@ -318,6 +320,15 @@ export const scenarios: Scenario[] = [
     name: "sections",
     runner: "perf",
     metrics: ["sections_scroll_p95_ms", "section_toggle_ms"],
+    enabled: true,
+  },
+  // T7.8: 20 cards collapsed and expanded by pointer (the reveal), in
+  // polygloss-perf: its animation frames' CPU time and an expand's commit
+  // frame.
+  {
+    name: "reveal",
+    runner: "perf",
+    metrics: ["collapse_anim_p95_ms", "collapse_commit_ms"],
     enabled: true,
   },
   // T3.1: first paint through the app's real startup.

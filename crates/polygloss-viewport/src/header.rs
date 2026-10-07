@@ -38,6 +38,7 @@ use polygloss_diff::{FileChange, FileKind, FileStatus, Side};
 use crate::controls::{ControlAction, ControlLayer};
 use crate::debug::TitleStyle;
 use crate::document::{BodyRow, FileState, SizeHint};
+use crate::motion::tokens;
 use crate::numbers::group_digits;
 use crate::paint_rows::{Frame, HEADERS, Painter};
 use crate::space::{card, edge, gap, height, pad, radius, size};
@@ -129,15 +130,22 @@ impl Painter<'_> {
         self.frame.rows += 1;
         self.header_strip(f, y, h, sticky);
 
-        // The chevron, left; ⋯, right.
+        // The chevron, left; ⋯, right. While its body moves it turns with
+        // it (ADR-0030: 0° open, −90° closed).
         let collapsed = self.doc.is_collapsed(f);
-        let chevron = if collapsed {
-            CHEVRON_RIGHT
-        } else {
-            CHEVRON_DOWN
+        // At rest the closed one is drawn as `chevron-right`, unturned.
+        let (chevron, turn, angle) = match self.reveal.filter(|r| r.file == f) {
+            Some(r) => (CHEVRON_DOWN, r.angle, r.angle),
+            None if collapsed => (CHEVRON_RIGHT, 0.0, tokens::CHEVRON_CLOSED_DEG),
+            None => (CHEVRON_DOWN, 0.0, 0.0),
         };
+        #[cfg(feature = "debug-inspect")]
+        self.frame.chevrons.push((f, angle));
+        #[cfg(not(feature = "debug-inspect"))]
+        let _ = angle;
         let chevron_x = x0 + card::CHEVRON_X;
-        self.icon(chevron, chevron_x, icon_y, size::ICON, theme.muted);
+        let icon = (chevron_x, icon_y, size::ICON);
+        self.turned_icon(chevron, icon, theme.muted, turn);
         let action = ControlAction::Collapse(f);
         let chevron_button = chevron_x - icon_inset;
         self.control(

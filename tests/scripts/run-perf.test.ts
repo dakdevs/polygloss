@@ -149,6 +149,18 @@ describe("budgets", () => {
     for (const s of ["sidebar", "threads"])
       expect(metric(`${s}_commit_ms`)).toEqual({ typical: 16.7, linux: 50 });
     expect(metric("shell_idle_draw_p95_ms")).toEqual({});
+    // T7.8: the card reveal in the viewport alone, its animation frames
+    // (< 8.3 p95) and an expand's commit frame (< 16.7, < 50 on linux).
+    expect(metric("collapse_anim_p95_ms")).toEqual({
+      typical: 8.3,
+      synthetic: 8.3,
+      linux: 8.3,
+    });
+    expect(metric("collapse_commit_ms")).toEqual({
+      typical: 16.7,
+      synthetic: 16.7,
+      linux: 50,
+    });
     for (const s of surfaces) expect(metric(`${s}_late_frames`)).toEqual({});
   });
 
@@ -429,6 +441,21 @@ describe("plan", () => {
         .filter((r) => r.scenario === "sections")
         .every((r) => r.runner === "perf" && r.enabled),
     ).toBe(true);
+    // The card reveal (T7.8) on the corpora its budgets name, in
+    // polygloss-perf.
+    expect(where("reveal")).toEqual([
+      "typical/split",
+      "typical/unified",
+      "synthetic/split",
+      "synthetic/unified",
+      "linux/split",
+      "linux/unified",
+    ]);
+    expect(
+      runs
+        .filter((r) => r.scenario === "reveal")
+        .every((r) => r.runner === "perf" && r.enabled),
+    ).toBe(true);
     const banner = runs.filter((r) => r.scenario === "watcher-banner");
     expect(banner.map((r) => [r.corpus, r.runner, r.enabled])).toEqual([
       ["typical", "app", true],
@@ -618,6 +645,7 @@ case "$scenario" in
   highlight) metrics='"highlight_ms": 40' ;;
   blocks) metrics='"comment_repaint_ms": 12' ;;
   sections) metrics="\\"sections_scroll_p95_ms\\": \${SECTIONS_SCROLL:-2.7}, \\"section_toggle_ms\\": \${SECTION_TOGGLE:-18}" ;;
+  reveal) metrics="\\"collapse_anim_p95_ms\\": \${COLLAPSE_ANIM:-3.1}, \\"collapse_commit_ms\\": \${COLLAPSE_COMMIT:-6.2}" ;;
 esac
 printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"repo":"%s","base":"%s","head":"%s","mode":"%s","home":"%s"}}\\n' \\
   "$scenario" "$corpus" "$layout" "$metrics" "$repo" "$base" "$head" "$mode" "$HOME"
@@ -971,6 +999,53 @@ describe("run-perf CLI", () => {
       expect(slow.code).toBe(1);
       expect(slow.stderr).toContain("section_toggle_ms synthetic split = 55");
       expect(slow.stderr).toContain("sections_scroll_p95_ms synthetic split");
+    },
+    cliTimeout,
+  );
+
+  test(
+    "reveal scenario reports the collapse metrics",
+    () => {
+      const out = join(sandbox.home, "results", "reveal.json");
+      const r = runPerf([
+        "--corpus",
+        "typical,linux",
+        "--layouts",
+        "split",
+        "--scenarios",
+        "reveal",
+        "--check-budgets",
+        "--out",
+        out,
+      ]);
+      expect({ code: r.code, stderr: r.stderr }).toMatchObject({ code: 0 });
+      const results = JSON.parse(readFileSync(out, "utf8")) as Results;
+      for (const x of results.rows)
+        expect(x.metrics).toMatchObject({
+          collapse_anim_p95_ms: 3.1,
+          collapse_commit_ms: 6.2,
+        });
+      // polygloss-perf runs it by name.
+      const run = results.runs.find((x) => x.scenario === "reveal")!;
+      expect(run.error).toBeNull();
+      // A commit of 20 ms passes linux (< 50) and misses typical (< 16.7).
+      const slow = runPerf(
+        [
+          "--corpus",
+          "typical,linux",
+          "--layouts",
+          "split",
+          "--scenarios",
+          "reveal",
+          "--check-budgets",
+          "--out",
+          join(sandbox.home, "results", "reveal-slow.json"),
+        ],
+        { COLLAPSE_COMMIT: "20" },
+      );
+      expect(slow.code).toBe(1);
+      expect(slow.stderr).toContain("collapse_commit_ms typical split = 20");
+      expect(slow.stderr).not.toContain("collapse_commit_ms linux split");
     },
     cliTimeout,
   );

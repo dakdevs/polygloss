@@ -17,7 +17,7 @@ use gpui_kit::{
     App, BorderStyle, Bounds, ContentMask, CursorStyle, DispatchPhase, Edges, Element, ElementId,
     Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
     LayoutId, Pixels, ScrollWheelEvent, Style, TransformationMatrix, Window, fill, px, quad,
-    relative,
+    radians, relative,
 };
 
 use crate::blocks::{self, PreparedBlock};
@@ -181,8 +181,12 @@ impl Element for DiffElement {
             for layer in rows {
                 paint_texts(layer, &frame, window, cx);
             }
-            // Host blocks and the prelude over the rows, under the headers.
+            // Host blocks and the prelude over the rows, under the headers;
+            // a Reduced fade's veil over a revealing body's rows and blocks.
             blocks::paint(&mut prepainted.blocks, window, cx);
+            if let Some((bounds, color)) = frame.veil {
+                window.paint_quad(fill(bounds, color));
+            }
             // Headers last: the pinned one covers the rows and blocks under
             // it. The ink goes over a header's strip and pills (rounded quads
             // on a card), its icons over that, its text on top.
@@ -206,6 +210,11 @@ impl Element for DiffElement {
         };
         self.view
             .update(cx, |view, cx| view.finish_frame(frame, stats, cx));
+        // A running reveal draws every display frame; frozen or settled, none.
+        if self.view.read(cx).motion_requests_frame() {
+            let view = self.view.entity_id();
+            window.on_next_frame(move |_, cx| cx.notify(view));
+        }
     }
 }
 
@@ -267,18 +276,22 @@ fn paint_icons(layer: &Layer, frame: &Frame, window: &mut Window, cx: &mut App) 
         return;
     }
     let clip = layer.clip.map(|bounds| ContentMask { bounds });
+    let scale = window.scale_factor();
     window.with_content_mask(clip, |window| {
-        for (bounds, path, color) in &frame.icons {
+        for (bounds, path, color, degrees) in &frame.icons {
+            // Turned about its centre, in device pixels (as gpui's `svg`).
+            let turn = if *degrees == 0.0 {
+                TransformationMatrix::unit()
+            } else {
+                let center = bounds.center();
+                TransformationMatrix::unit()
+                    .translate(center.scale(scale))
+                    .rotate(radians(degrees.to_radians()))
+                    .translate(center.scale(-scale))
+            };
             // A failed render (an unregistered path) has nothing to paint.
             window
-                .paint_svg(
-                    *bounds,
-                    path.clone(),
-                    None,
-                    TransformationMatrix::unit(),
-                    *color,
-                    cx,
-                )
+                .paint_svg(*bounds, path.clone(), None, turn, *color, cx)
                 .ok();
         }
     });

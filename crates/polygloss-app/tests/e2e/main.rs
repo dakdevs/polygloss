@@ -26,6 +26,7 @@ mod keyboard_only_review;
 mod kit_fonts;
 mod ligatures;
 mod live;
+mod motion_viewport;
 mod open_flow;
 mod overlay_geometry;
 mod palette;
@@ -77,5 +78,6 @@ fn main() -> std::process::ExitCode {
         overlay_geometry::TESTS,
         chrome_geometry::TESTS,
         block_geometry::TESTS,
+        motion_viewport::TESTS,
     ])
 }

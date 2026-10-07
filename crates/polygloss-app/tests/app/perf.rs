@@ -575,6 +575,40 @@ mod motion_scenario {
         assert_eq!(unknown["sidebar_anim_draw_p95_ms"].as_f64(), Some(7.0));
     }
 
+    /// T7.8: the card driver toggles the top card by pointer, and the
+    /// review tab registers the running reveal with the window's settling.
+    #[gpui_kit::test]
+    fn card_driver_collapses_and_expands_the_top_card_by_pointer(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let repo = crate::support::code_change_repo();
+        let mut shell = shell::start(cx);
+        let tab = shell
+            .open(shell::commit_req(repo.path(), "refs/tags/head"))
+            .expect("open the review");
+        shell::draw(shell.cx);
+        shell
+            .cx
+            .update(|_, cx| motion::set_override(Some(MotionPolicy::Full), cx));
+        let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+        let top = viewport.read_with(shell.cx, |v, _| v.anchor().file_idx);
+        let card = scenario::DRIVERS
+            .iter()
+            .find(|d| d.name == "card")
+            .expect("the card driver");
+        let state = |shell: &mut shell::Shell| {
+            viewport.read_with(shell.cx, |v, _| {
+                (v.document().is_collapsed(top), v.motion_running())
+            })
+        };
+        shell.cx.update(|window, cx| (card.open)(window, cx));
+        assert_eq!(state(&mut shell), (true, true), "collapsing by pointer");
+        // Registered with the window's settling: a key down settles it.
+        shell.cx.simulate_keystrokes("escape");
+        assert_eq!(state(&mut shell), (true, false), "settled by a key down");
+        shell.cx.update(|window, cx| (card.close)(window, cx));
+        assert_eq!(state(&mut shell), (false, true), "expanding by pointer");
+    }
+
     #[test]
     fn motion_metrics_cover_every_registered_budget() {
         // benches/budgets.json registers the M7 app-shell metrics; the app

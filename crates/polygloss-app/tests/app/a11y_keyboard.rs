@@ -12,6 +12,7 @@ use polygloss_app::iterations;
 use polygloss_app::keyboard::{self, Pane};
 use polygloss_app::keymap::actions::{self, tab as tab_actions};
 use polygloss_app::live;
+use polygloss_app::motion::{self, MotionPolicy};
 use polygloss_app::review_tab::ReviewTab;
 use polygloss_app::threads;
 use polygloss_app::tree;
@@ -1071,12 +1072,23 @@ fn escape_closes_popovers_and_dialogs(cx: &mut gpui_kit::TestAppContext) {
     };
     esc_closes(&mut shell, &tab, "the find bar", v(), "cmd-f", &find);
 
-    // `z` folds the cursor's file, and unfolds it.
+    // `z` folds the cursor's file, and unfolds it: a snap even with motion
+    // on, where the painted chevron glides (T7.8, ADR-0030 M3).
+    shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(MotionPolicy::Full), cx));
     focus_viewport(&mut shell, &tab);
+    let folded = |shell: &mut Shell| {
+        tab.read_with(shell.cx, |t, cx| {
+            let v = t.viewport.read(cx);
+            (v.collapsed(), v.motion_running())
+        })
+    };
     keys(&mut shell, "z");
-    assert!(tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).collapsed() == vec![0]));
+    assert_eq!(folded(&mut shell), (vec![0], false), "folded at once");
     keys(&mut shell, "z");
-    assert!(tab.read_with(shell.cx, |t, cx| t.viewport.read(cx).collapsed().is_empty()));
+    assert_eq!(folded(&mut shell), (vec![], false), "unfolded at once");
+    shell.cx.update(|_, cx| motion::set_override(None, cx));
 
     // A live tab's base picker.
     let live = FixtureRepo::init(ObjectFormat::Sha1);
