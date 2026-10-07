@@ -10,13 +10,13 @@
 # already in the latest release, and Sparkle would offer an older build under
 # a higher version. Every later step is then skipped.
 # The job builds the bundle with POLYGLOSS_VERSION (scripts/package-release.sh
-# --sign: the app icon compiled by the runner's Xcode 26, signed as team
-# 5U7E4UQ5M3 from a temporary keychain, notarized and stapled by
-# scripts/sign-and-notarize.sh), smoke-tests it, signs the Sparkle
-# appcast (the notes embedded), writes SHA256SUMS, and `gh release create
-# v<version>` tags the commit and publishes the DMG, appcast.xml and
-# SHA256SUMS as the latest release, the notes as its body. Then it bumps the
-# Homebrew tap, when HOMEBREW_TAP_TOKEN and HOMEBREW_TAP_REPO are set.
+# --sign: the committed app icon, signed as team 5U7E4UQ5M3 from a temporary
+# keychain, notarized and stapled by scripts/sign-and-notarize.sh),
+# smoke-tests it, signs the Sparkle appcast (the notes embedded), writes
+# SHA256SUMS, and `gh release create v<version>` tags the commit and publishes
+# the DMG, appcast.xml and SHA256SUMS as the latest release, the notes as its
+# body. Then it bumps the Homebrew tap, when HOMEBREW_TAP_TOKEN and
+# HOMEBREW_TAP_REPO are set.
 #
 # A release is never unsigned: when a required secret or variable is missing,
 # the first step names every missing one and fails before anything is built.
@@ -132,29 +132,6 @@ jobs:
             fi
           fi
 
-      # The app icon (packaging/polygloss.icon) needs actool from Xcode 26, the
-      # first to compile Icon Composer documents; the runner's default Xcode
-      # is older. package-release.sh runs the newest Xcode 26 on the image for
-      # the icon alone (POLYGLOSS_ACTOOL_DEVELOPER_DIR): the default Xcode still
-      # builds the executables, the toolchain ci.yml tests them with (Xcode 26
-      # ships the Metal compiler GPUI's shaders need as a separate download,
-      # actions/runner-images#13014). An image without Xcode 26 fails here,
-      # before anything is built.
-      - name: Select Xcode 26 for the app icon
-        if: ${{ env.SKIP_RELEASE != 'true' }}
-        run: |
-          shopt -s nullglob
-          xcodes=(/Applications/Xcode_26.*.app)
-          if [ ${#xcodes[@]} = 0 ]; then
-            echo "::error::no /Applications/Xcode_26.*.app: the app icon (packaging/polygloss.icon) needs actool from Xcode 26"
-            exit 1
-          fi
-          xcode="$(cd "$(printf '%s\n' "${xcodes[@]}" | sort -V | tail -n 1)" && pwd -P)"
-          developer_dir="$xcode/Contents/Developer"
-          DEVELOPER_DIR="$developer_dir" xcodebuild -version
-          DEVELOPER_DIR="$developer_dir" xcrun actool --version
-          echo "POLYGLOSS_ACTOOL_DEVELOPER_DIR=$developer_dir" >>"$GITHUB_ENV"
-
       # rustup >= 1.28 no longer installs the toolchain on `rustup show`; with no
       # argument, `toolchain install` installs the one rust-toolchain.toml pins.
       - if: ${{ env.SKIP_RELEASE != 'true' }}
@@ -204,8 +181,9 @@ jobs:
 
       # A release is signed as team 5U7E4UQ5M3, notarized and stapled; missing
       # notarytool credentials fail it. A dry run stays ad-hoc signed. With
-      # SPARKLE_PUBLIC_ED_KEY the bundle embeds Sparkle and its feed URL. A
-      # release or dry run whose app icon does not compile into Assets.car
+      # SPARKLE_PUBLIC_ED_KEY the bundle embeds Sparkle and its feed URL. The
+      # app icon is the committed packaging/assets.car (scripts/make-icon.sh;
+      # actool never runs here): a release or dry run whose copy is stale
       # fails rather than ship icon.icns alone (POLYGLOSS_REQUIRE_APP_ICON).
       - name: Build, sign and notarize the bundle and DMG
         if: ${{ env.SKIP_RELEASE != 'true' }}

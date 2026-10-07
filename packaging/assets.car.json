@@ -1,0 +1,8 @@
+{
+  "source": "polygloss.icon",
+  "source-sha256": "5541b149ffe2752f67bef9cd149ecd930485a8882eca5230891e1e101d6e633d",
+  "minimum-macos": "14.0",
+  "app-icon": "polygloss",
+  "assets-car-sha256": "1dafc02d50d3d9db5a8a03ecc40755187e300adace9f7f9e096987e32570a092",
+  "actool": "27.0 (25098)"
+}

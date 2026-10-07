@@ -174,6 +174,13 @@ fi
 `,
     );
     chmodSync(join(bin, "bun"), 0o755);
+    // package-release.sh bundles the committed Assets.car; Xcode's actool
+    // (whose helper logs into the real ~/Library) must never run.
+    writeFileSync(
+      join(bin, "xcrun"),
+      "#!/bin/sh\necho 'fake xcrun: no Xcode in tests' >&2\nexit 1\n",
+    );
+    chmodSync(join(bin, "xcrun"), 0o755);
     const plistJson = join(sandbox.home, "packager-info.json");
     const plist = join(sandbox.home, "packager-info.plist");
     const ours = JSON.parse(

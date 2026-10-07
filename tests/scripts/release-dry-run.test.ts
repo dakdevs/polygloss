@@ -166,7 +166,6 @@ describe("--plan on the real release.yml", () => {
     for (const step of [
       "Check the release secrets",
       "Compute the version",
-      "Select Xcode 26 for the app icon",
       "Write the release notes",
       "Fetch Sparkle",
       "Build, sign and notarize the bundle and DMG",

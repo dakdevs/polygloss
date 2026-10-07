@@ -34,10 +34,11 @@
 #   6. runs scripts/smoke-bundle.sh --static on the result.
 #
 # Step 3 also copies LICENSE-MIT, LICENSE-APACHE, NOTICE and
-# packaging/third-party-notices.md (plan T5.7) into Contents/Resources, and,
-# with Xcode 26 or later, adds the app icon's Assets.car (actool;
-# POLYGLOSS_ACTOOL_DEVELOPER_DIR picks the Xcode, POLYGLOSS_REQUIRE_APP_ICON=1
-# fails the build without it).
+# packaging/third-party-notices.md (plan T5.7) into Contents/Resources, and
+# the app icon's Assets.car: the committed packaging/assets.car while its
+# manifest is current (scripts/make-icon.sh --check), else, in a local build,
+# one compiled by this Mac's actool (POLYGLOSS_REQUIRE_APP_ICON=1 fails the
+# build instead, before step 1).
 #
 # Outputs go to dist/ (gitignored), or $POLYGLOSS_DIST_DIR. Needs
 # cargo-packager 0.11.8: `cargo install cargo-packager --version =0.11.8 --locked`.
@@ -95,6 +96,18 @@ if [ -n "$appcast_url" ] || [ -n "$public_ed_key" ]; then
   sparkle=1
 fi
 
+# The app icon (step 3): the committed packaging/assets.car while
+# scripts/make-icon.sh --check passes. Checked before building, so a release
+# (POLYGLOSS_REQUIRE_APP_ICON=1) with a stale copy fails at once.
+# POLYGLOSS_ICON_DIR (default packaging/) is make-icon.sh's test seam.
+icon_dir="${POLYGLOSS_ICON_DIR:-$repo_root/packaging}"
+icon_current=0
+if scripts/make-icon.sh --check; then
+  icon_current=1
+elif [ "${POLYGLOSS_REQUIRE_APP_ICON-}" = 1 ]; then
+  die "POLYGLOSS_REQUIRE_APP_ICON=1 refuses a bundle without the committed Assets.car: run scripts/make-icon.sh (Xcode 26 or later) and commit packaging/assets.car and packaging/assets.car.json"
+fi
+
 signer="$repo_root/scripts/sign-and-notarize.sh"
 
 dist="${POLYGLOSS_DIST_DIR:-$repo_root/dist}"
@@ -143,33 +156,29 @@ for f in LICENSE-MIT LICENSE-APACHE NOTICE packaging/third-party-notices.md; do
   cp "$repo_root/$f" "$app/Contents/Resources/"
 done
 
-# App icon (design §21): Xcode 26's actool compiles the Icon Composer document
-# into Assets.car, which macOS 14 and later prefer to icon.icns once
-# CFBundleIconName names it (on macOS 26: glass, dark, clear and tinted).
-# Without that actool the bundle keeps icon.icns alone, unless
-# POLYGLOSS_REQUIRE_APP_ICON=1 (release.yml) makes that an error.
-# POLYGLOSS_ACTOOL_DEVELOPER_DIR runs another Xcode's actool than the active
-# one (release.yml: the runner's Xcode 26, while its default Xcode builds the
-# executables, as in CI).
+# App icon (design §21): packaging/assets.car is packaging/polygloss.icon
+# (Icon Composer) compiled by actool from Xcode 26 or later, which macOS 14
+# and later prefer to icon.icns once CFBundleIconName names it (on macOS 26:
+# glass, dark, clear and tinted). scripts/make-icon.sh commits it with a
+# manifest of what it was compiled from; while that is current the bundle gets
+# the committed file and actool never runs (its helper daemon has crashed on
+# a CI runner). Otherwise a local build compiles the document with the active
+# Xcode's actool or, without one, keeps icon.icns alone (a release,
+# POLYGLOSS_REQUIRE_APP_ICON=1, has failed before building).
 icon_build="$dist/.icon-build"
 rm -rf "$icon_build"
 mkdir "$icon_build"
-actool_env=()
-if [ -n "${POLYGLOSS_ACTOOL_DEVELOPER_DIR-}" ]; then
-  actool_env=("DEVELOPER_DIR=$POLYGLOSS_ACTOOL_DEVELOPER_DIR")
-fi
-if env ${actool_env[@]+"${actool_env[@]}"} \
-  xcrun actool "$repo_root/packaging/polygloss.icon" --compile "$icon_build" \
+if [ "$icon_current" = 1 ]; then
+  say "bundling the app icon (${icon_dir#"$repo_root"/}/assets.car, current for its polygloss.icon)"
+  cp "$icon_dir/assets.car" "$app/Contents/Resources/Assets.car"
+  plutil -replace CFBundleIconName -string polygloss "$plist"
+elif xcrun actool "$icon_dir/polygloss.icon" --compile "$icon_build" \
   --platform macosx --minimum-deployment-target 14.0 --app-icon polygloss \
   --output-partial-info-plist "$icon_build/partial.plist" >"$icon_build/log" 2>&1 &&
   [ -f "$icon_build/Assets.car" ]; then
-  say "bundling the app icon (Assets.car from packaging/polygloss.icon)"
+  say "bundling the app icon (Assets.car compiled from packaging/polygloss.icon)"
   cp "$icon_build/Assets.car" "$app/Contents/Resources/"
   plutil -replace CFBundleIconName -string polygloss "$plist"
-elif [ "${POLYGLOSS_REQUIRE_APP_ICON-}" = 1 ]; then
-  sed 's/^/  actool: /' "$icon_build/log" >&2
-  rm -rf "$icon_build"
-  die "no Assets.car: packaging/polygloss.icon needs actool from Xcode 26 or later, and POLYGLOSS_REQUIRE_APP_ICON=1 refuses a bundle with icon.icns alone"
 else
   say "warning: no Assets.car: packaging/polygloss.icon needs actool from Xcode 26 or later; the bundle keeps icon.icns only"
   sed 's/^/  actool: /' "$icon_build/log" >&2

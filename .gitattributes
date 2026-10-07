@@ -1,2 +1,6 @@
 # Generated (bun scripts/third-party-notices.ts); collapsed in review diffs.
 packaging/third-party-notices.md linguist-generated=true
+# scripts/make-icon.sh hashes the Icon Composer document's raw bytes and
+# assets.car.json records assets.car's: never convert their line endings.
+packaging/polygloss.icon/** -text
+packaging/assets.car binary
