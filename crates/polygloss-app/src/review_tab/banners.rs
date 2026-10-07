@@ -10,13 +10,14 @@
 //! OUT, never again when its text changes. When the strip is left empty
 //! (the last notice dismissed, a Refresh applied, a jump) the notices it
 //! showed leave the way they came: an inert copy ([`Exit`]: no listeners,
-//! no hitbox) over the empty strip rises 4 pt and fades over MICRO. A notice
-//! replaced by another notice or by the context line leaves on the commit
-//! frame (a swap in place), and a notice that comes back while its copy
-//! leaves enters from where the copy was. Under Reduce Motion both only
-//! fade.
-
-use std::time::Instant;
+//! no hitbox) over the empty strip rises 4 pt and fades over MICRO. The
+//! strip's frame decides it, from what its last frame drew and what it shows
+//! now, so the order of its callers' `clear` and `set_context` never
+//! matters. A notice replaced by another notice or by the context line
+//! leaves on the commit frame (a swap in place), and a notice that comes
+//! back while its copy leaves enters from where the copy was. Under Reduce
+//! Motion both only fade. A strip that was off screen (its tab hidden)
+//! plays nothing that happened meanwhile.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
@@ -27,6 +28,7 @@ use gpui_kit::{
 };
 
 use crate::motion::exit::{Exit, ExitHitbox, ExitSpec, Placement};
+use crate::motion::settle::OnScreen;
 use crate::motion::{
     self, Initiator, Motion, Recorded, Reduced, ReducedPlay, Settle, Track, quantize, tokens, wrap,
 };
@@ -96,9 +98,8 @@ pub struct BannerStrip {
     drawn: Vec<NoticeCopy>,
     /// The strip's size as last laid out: the leaving copy's bounds.
     size: Size<Pixels>,
-    /// The strip was left empty (at that time) with notices drawn: their
-    /// exit starts on the strip's next frame.
-    leaving: Option<(Vec<NoticeCopy>, Instant)>,
+    /// Whether the strip was drawn on the window's last frame.
+    on_screen: OnScreen,
     /// The leaving copy and whose notices it shows.
     exit: Option<(Vec<BannerKind>, Exit<Leaving>)>,
     /// Whether the last mouse down froze `exit`.
@@ -113,7 +114,7 @@ impl BannerStrip {
             target: None,
             drawn: Vec::new(),
             size: Size::default(),
-            leaving: None,
+            on_screen: OnScreen::default(),
             exit: None,
             exit_frozen: false,
         }
@@ -155,16 +156,12 @@ impl BannerStrip {
         cx.notify();
     }
 
-    /// Hides the banner of `kind`. If that leaves the strip empty, the
+    /// Hides the banner of `kind`. If the strip's next frame is empty, the
     /// notices it showed leave as they came (M12).
     pub fn clear(&mut self, kind: BannerKind, cx: &mut Context<Self>) {
         let before = self.banners.len();
         self.banners.retain(|b| b.kind != kind);
         if self.banners.len() != before {
-            if self.banners.is_empty() && self.context.is_empty() && !self.drawn.is_empty() {
-                let now = cx.background_executor().now();
-                self.leaving = Some((self.drawn.clone(), now));
-            }
             cx.notify();
         }
     }
@@ -197,45 +194,47 @@ impl BannerStrip {
     }
 
     /// Starts this frame's motion: a notice drawn for the first time enters
-    /// (from where a leaving copy of it was), and the exit of a strip left
-    /// empty starts; a leaving copy goes at once when the strip shows
-    /// anything again.
+    /// (from where a leaving copy of it was), and when the strip is empty
+    /// now, the notices its last frame drew leave; a leaving copy goes at
+    /// once when the strip shows anything again. After frames off screen
+    /// (its tab hidden) nothing that happened meanwhile plays: what left is
+    /// gone and what was entering is in.
     fn begin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = cx.background_executor().now();
         let policy = motion::policy(cx);
+        if !self.on_screen.was_drawn(window, cx) {
+            self.drawn.clear();
+            self.exit = None;
+            for track in self.banners.iter_mut().filter_map(|b| b.enter.as_mut()) {
+                track.settle();
+            }
+        }
+        self.on_screen.mark(window, cx);
         let empty = self.banners.is_empty() && self.context.is_empty();
         // Back mid-exit: the copy's sampled opacity, and whose copy it was.
         let mut resumed: Option<(Vec<BannerKind>, f32)> = None;
-        if empty {
-            if let Some((copies, at)) = self.leaving.take()
-                // A strip not drawn since (its tab hidden) has nothing on
-                // screen to leave.
-                && now.saturating_duration_since(at) < NOTICE.exit
-            {
-                let spec = ExitSpec {
-                    placement: Placement::Overlay(Bounds::new(Point::default(), self.size)),
-                    hitbox: ExitHitbox::None,
-                    motion: &NOTICE,
-                    travel: point(px(0.), px(-tokens::NUDGE)),
-                    height: None,
-                };
-                let kinds = copies.iter().map(|c| c.kind).collect();
-                let start = Exit::start(
-                    Leaving(copies),
-                    copy,
-                    spec,
-                    Initiator::Programmatic,
-                    window,
-                    cx,
-                );
-                self.exit = start.map(|exit| (kinds, exit));
-                self.exit_frozen = false;
-            }
-        } else {
-            self.leaving = None;
-            if let Some((kinds, mut exit)) = self.exit.take() {
-                resumed = exit.frame(window, cx).map(|f| (kinds, f.opacity));
-            }
+        if empty && !self.drawn.is_empty() {
+            let copies = std::mem::take(&mut self.drawn);
+            let spec = ExitSpec {
+                placement: Placement::Overlay(Bounds::new(Point::default(), self.size)),
+                hitbox: ExitHitbox::None,
+                motion: &NOTICE,
+                travel: point(px(0.), px(-tokens::NUDGE)),
+                height: None,
+            };
+            let kinds = copies.iter().map(|c| c.kind).collect();
+            let start = Exit::start(
+                Leaving(copies),
+                copy,
+                spec,
+                Initiator::Programmatic,
+                window,
+                cx,
+            );
+            self.exit = start.map(|exit| (kinds, exit));
+            self.exit_frozen = false;
+        } else if !empty && let Some((kinds, mut exit)) = self.exit.take() {
+            resumed = exit.frame(window, cx).map(|f| (kinds, f.opacity));
         }
         for b in &mut self.banners {
             if b.enter.is_none() {
@@ -243,7 +242,9 @@ impl BannerStrip {
                     .as_ref()
                     .filter(|(kinds, _)| kinds.contains(&b.kind))
                     .map_or(0.0, |&(_, opacity)| opacity);
-                let mut track = Track::new(from, 1.0);
+                // Full: its offset and opacity continue from the copy's;
+                // Reduced: its fade does.
+                let mut track = Track::visible_at(from, 1.0, from);
                 track.retarget(1.0, &NOTICE, Initiator::Programmatic, policy, now);
                 b.enter = Some(track);
             }
@@ -442,9 +443,9 @@ impl Render for BannerStrip {
                     .child(text("banner-context", self.context.clone()).truncate())
             });
             let leaving = self.exit.as_mut().and_then(|(_, exit)| {
-                let frame = exit.frame(window, cx);
-                report_exit(frame.map(|f| (f.offset, f.opacity)), cx);
-                exit.render(window, cx)
+                let (frame, element) = exit.draw(window, cx)?;
+                report_exit(frame.offset, frame.opacity, cx);
+                Some(element)
             });
             if leaving.is_none() {
                 self.exit = None;
@@ -503,16 +504,14 @@ impl Render for BannerStrip {
 }
 
 /// Records what the leaving copy drew (tests: `motion::record`).
-fn report_exit(frame: Option<(Point<Pixels>, f32)>, cx: &App) {
-    if let Some((offset, opacity)) = frame {
-        motion::report(
-            || Recorded {
-                id: "banner-exit".into(),
-                offset,
-                opacity,
-                rotation: 0.0,
-            },
-            cx,
-        );
-    }
+fn report_exit(offset: Point<Pixels>, opacity: f32, cx: &App) {
+    motion::report(
+        || Recorded {
+            id: "banner-exit".into(),
+            offset,
+            opacity,
+            rotation: 0.0,
+        },
+        cx,
+    );
 }

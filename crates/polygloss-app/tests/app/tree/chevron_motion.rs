@@ -177,6 +177,32 @@ fn folder_chevron_retargets_freezes_and_jumps_when_reduced(cx: &mut TestAppConte
     drawn_after(&mut o, &drawn, |o| frame(o.shell.cx));
     assert_eq!(angle(&drawn, "d:src"), 0.0, "settled at the mouse up");
 
+    // A pointer move leaves a turn running; a scroll settles it.
+    drawn_after(&mut o, &drawn, |o| {
+        press_row(o, "d:src");
+        frame(o.shell.cx);
+    });
+    o.shell
+        .cx
+        .simulate_mouse_move(blank, None, Modifiers::none());
+    drawn_after(&mut o, &drawn, |o| step_to(o.shell.cx, ms(50.0)));
+    let moving = angle(&drawn, "d:src");
+    assert!(
+        (moving + 45.0).abs() < 1e-3,
+        "running after a pointer move: {moving}"
+    );
+    let pane = bounds(o.shell.cx, "file-tree-pane").center();
+    o.shell.cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: pane,
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-10.))),
+        ..Default::default()
+    });
+    drawn_after(&mut o, &drawn, |o| frame(o.shell.cx));
+    assert_eq!(angle(&drawn, "d:src"), -90.0, "a scroll settles it");
+    assert_eq!(requested_frames(o.shell.cx), 0);
+    press_row(&mut o, "d:src");
+    step_to(o.shell.cx, ms(200.0));
+
     // Reduce Motion: the chevron jumps.
     o.shell
         .cx

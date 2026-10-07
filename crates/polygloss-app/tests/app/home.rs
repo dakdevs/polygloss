@@ -1548,3 +1548,239 @@ fn home_row_removal_holds_its_slot_in_a_scrolling_list(cx: &mut TestAppContext) 
     let expected = (72.0 * (1.0 - slide(0.5)) * 2.0).round() as f32 / 2.0;
     assert_eq!(slot, expected, "75 ms: 72 · (1 − SLIDE(½))");
 }
+
+/// Clicks the open menu's item `label` with the pointer (the kit's menu
+/// items are observed by their role and label).
+fn click_menu_item(shell: &mut Shell, label: &str) {
+    let at = shell
+        .cx
+        .update(|window, _| {
+            gpui_kit::base::test_support::snapshots(window)
+                .into_iter()
+                .find(|s| s.role() == Some(gpui_kit::Role::MenuItem) && s.label() == Some(label))
+                .map(|s| s.bounds().center())
+        })
+        .unwrap_or_else(|| panic!("the menu shows {label}"));
+    shell.cx.simulate_click(at, gpui_kit::Modifiers::none());
+}
+
+/// M14 plays only on screen (ADR-0030 rule 9): a row archived by pointer
+/// from the sidebar's ⋯ menu while a review tab shows leaves Home's model at
+/// once, and ⌘0 later shows Home final, with no copy and no frame asked for.
+#[gpui_kit::test]
+fn home_row_removal_off_screen_never_plays(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, requested_frames};
+
+    let _sb = Sandbox::isolate();
+    let core = Core::open_default().unwrap();
+    let (repo, ids) = recent_reviews(&core, 3);
+    let (mut shell, drawn) = home_shell(cx);
+    let (above, removed, below) = (&ids[0], &ids[1], &ids[2]);
+    shell.open(commit_req(repo.path(), "refs/tags/c0")).unwrap();
+    assert_eq!(shell.tabs(), (2, 1), "a review tab shows");
+    // Home's rows are current (as the store feed keeps them), so the
+    // archive's own reload changes nothing else.
+    reload(&mut shell);
+    click(shell.cx, "segment-reviews");
+    draw(shell.cx);
+    open_nav_row_menu(&mut shell, removed);
+    draw(shell.cx);
+    click_menu_item(&mut shell, "Archive");
+    draw(shell.cx);
+    let listed = core.review_summaries(&ReviewFilter::default()).unwrap();
+    assert!(
+        listed.iter().all(|s| &s.review_id != removed),
+        "archived by the menu's click"
+    );
+    assert!(painted(shell.cx, &format!("nav-row-{removed}")).is_none());
+    advance(shell.cx, ms(50.0));
+
+    shell.cx.simulate_keystrokes("cmd-0");
+    shell.cx.run_until_parked();
+    assert_eq!(shell.tabs(), (2, 0), "Home shows");
+    assert!(painted(shell.cx, &copy_name(removed)).is_none(), "no copy");
+    // A tab switch asks for a frame or two of its own (under Off too); after
+    // them, nothing runs.
+    frame(shell.cx);
+    assert!(painted(shell.cx, &copy_name(removed)).is_none(), "no copy");
+    assert_eq!(copy_opacity(&drawn, removed), None, "never drawn");
+    assert_eq!(requested_frames(shell.cx), 0, "nothing runs");
+    assert_eq!(
+        top(&mut shell, &row_name(below)),
+        top(&mut shell, &row_name(above)) + 72.0,
+        "the list is final: a 60 pt card and its 12 pt gap apart"
+    );
+}
+
+/// A reload that read the store before an archive's write (one in flight
+/// when the row was archived) never brings the row back: the removal runs
+/// on, and the write's own reload confirms it.
+#[gpui_kit::test]
+fn home_row_removal_survives_an_older_reload(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, step_to};
+
+    let _sb = Sandbox::isolate();
+    let core = Core::open_default().unwrap();
+    let (_repo, ids) = recent_reviews(&core, 3);
+    let (mut shell, drawn) = home_shell(cx);
+    let (above, removed, below) = (&ids[0], &ids[1], &ids[2]);
+    let below_top = top(&mut shell, &row_name(below));
+    let older = core.review_summaries(&ReviewFilter::default()).unwrap();
+    assert!(older.iter().any(|s| &s.review_id == removed));
+    let home = home(&mut shell);
+    let model_has = |shell: &mut Shell, id: &str| {
+        home.read_with(shell.cx, |h, _| {
+            h.rows().iter().any(|r| r.review_id() == id)
+        })
+    };
+
+    // The commit frame, with the store write not done yet.
+    archive_by_pointer(&mut shell, removed);
+    shell.cx.update(|window, _| window.refresh());
+    assert!(painted(shell.cx, &copy_name(removed)).is_some(), "its copy");
+    // The older reload lands before the write is done.
+    let stale = older.clone();
+    home.update(shell.cx, |h, cx| h.apply_summaries(stale, cx));
+    shell.cx.update(|window, _| window.refresh());
+    assert!(!model_has(&mut shell, removed), "still out of the model");
+    assert!(
+        painted(shell.cx, &row_name(removed)).is_none(),
+        "the row never comes back"
+    );
+    assert!(
+        painted(shell.cx, &copy_name(removed)).is_some(),
+        "its copy still leaves"
+    );
+    assert_eq!(
+        top(&mut shell, &row_name(below)),
+        below_top,
+        "nothing moved"
+    );
+
+    // The write and its reload: the removal runs on to its end.
+    commit_frame(&mut shell);
+    assert!(summary(&core, removed).is_some(), "archived, not deleted");
+    assert!(!model_has(&mut shell, removed));
+    assert_eq!(copy_opacity(&drawn, removed), Some(1.0));
+    step_to(shell.cx, ms(75.0));
+    let at_75 = top(&mut shell, &row_name(below));
+    assert!(
+        strictly_between(at_75, below_top - 72.0, below_top),
+        "75 ms: closing, {at_75}"
+    );
+    advance(shell.cx, ms(100.0));
+    assert!(painted(shell.cx, &copy_name(removed)).is_none());
+    assert_eq!(
+        top(&mut shell, &row_name(below)),
+        top(&mut shell, &row_name(above)) + 72.0
+    );
+}
+
+/// M14's interruptions (ADR-0030 rule 4) and identity: `j` skips the
+/// leaving row at once (its key down settles the removal); a pointer move
+/// leaves a removal running; a mouse down on the copy freezes it, asking for
+/// no frames, and its mouse up settles it with nothing opened; a scroll
+/// settles one. The list's scroll offset holds on every frame of a removal.
+#[gpui_kit::test]
+fn home_row_removal_settles_freezes_and_keeps_the_scroll(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, requested_frames, step_to};
+    use gpui_kit::{Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, point, px};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+
+    let _sb = Sandbox::isolate();
+    let core = Core::open_default().unwrap();
+    let (_repo, ids) = recent_reviews(&core, 16);
+    let (mut shell, _drawn) = home_shell(cx);
+    let home = home(&mut shell);
+    let selected =
+        |shell: &mut Shell| home.read_with(shell.cx, |h, _| h.selected().map(str::to_owned));
+
+    // `j` on the commit frame: from the row above straight past the leaving
+    // one, and the key down settles the removal.
+    select(&mut shell, &ids[0]);
+    archive_by_pointer(&mut shell, &ids[1]);
+    commit_frame(&mut shell);
+    assert!(painted(shell.cx, &copy_name(&ids[1])).is_some());
+    shell.cx.simulate_keystrokes("j");
+    assert_eq!(selected(&mut shell), Some(ids[2].clone()), "`j` skips it");
+    frame(shell.cx);
+    assert!(painted(shell.cx, &copy_name(&ids[1])).is_none(), "settled");
+    assert_eq!(requested_frames(shell.cx), 0);
+
+    // Scrolled 100 pt down, the offset holds on every frame of a removal.
+    let list = bounds(shell.cx, "home-list");
+    let wheel = |shell: &mut Shell, dy: f32| {
+        shell.cx.simulate_event(ScrollWheelEvent {
+            position: list.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
+            ..Default::default()
+        });
+    };
+    let unscrolled = top(&mut shell, &row_name(&ids[4]));
+    wheel(&mut shell, 100.0);
+    draw(shell.cx);
+    let above_top = top(&mut shell, &row_name(&ids[4]));
+    assert_eq!(above_top, unscrolled - 100.0, "scrolled");
+    let below_top = top(&mut shell, &row_name(&ids[6]));
+    archive_by_pointer(&mut shell, &ids[5]);
+    commit_frame(&mut shell);
+    let held = |shell: &mut Shell, when: &str| {
+        assert_eq!(
+            top(shell, &row_name(&ids[4])),
+            above_top,
+            "{when}: the scroll offset holds"
+        );
+    };
+    held(&mut shell, "the commit frame");
+    assert_eq!(top(&mut shell, &row_name(&ids[6])), below_top);
+
+    // A pointer move leaves it running.
+    shell.cx.simulate_mouse_move(
+        point(list.left() + px(4.), list.center().y),
+        None,
+        Modifiers::none(),
+    );
+    step_to(shell.cx, FIRST_STEP);
+    held(&mut shell, "16.667 ms");
+    let moving = top(&mut shell, &row_name(&ids[6]));
+    assert!(
+        strictly_between(moving, below_top - 72.0, below_top),
+        "running after the pointer moved: {moving}"
+    );
+    assert!(requested_frames(shell.cx) > 0, "it asks for frames");
+
+    // A mouse down on the copy freezes it for as long as it is held.
+    let on_copy = bounds(shell.cx, &copy_name(&ids[5])).center();
+    shell
+        .cx
+        .simulate_mouse_down(on_copy, MouseButton::Left, Modifiers::none());
+    for i in 0..3 {
+        advance(shell.cx, FIRST_STEP);
+        assert_eq!(
+            top(&mut shell, &row_name(&ids[6])),
+            moving,
+            "frozen, frame {i}"
+        );
+        held(&mut shell, "frozen");
+    }
+    assert_eq!(requested_frames(shell.cx), 0, "frozen: no frames");
+    shell
+        .cx
+        .simulate_mouse_up(on_copy, MouseButton::Left, Modifiers::none());
+    frame(shell.cx);
+    assert_eq!(shell.tabs(), (1, 0), "the click on the copy opened nothing");
+    assert!(painted(shell.cx, &copy_name(&ids[5])).is_none(), "settled");
+    assert_eq!(top(&mut shell, &row_name(&ids[6])), above_top + 72.0);
+    held(&mut shell, "settled");
+    assert_eq!(requested_frames(shell.cx), 0);
+
+    // A scroll settles a removal.
+    archive_by_pointer(&mut shell, &ids[6]);
+    commit_frame(&mut shell);
+    step_to(shell.cx, FIRST_STEP);
+    assert!(painted(shell.cx, &copy_name(&ids[6])).is_some());
+    wheel(&mut shell, 10.0);
+    frame(shell.cx);
+    assert!(painted(shell.cx, &copy_name(&ids[6])).is_none(), "settled");
+    assert_eq!(requested_frames(shell.cx), 0);
+}

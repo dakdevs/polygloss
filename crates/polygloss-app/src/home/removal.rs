@@ -142,21 +142,19 @@ impl Removals {
     pub fn slots(&mut self, window: &mut Window, cx: &mut App) -> Vec<Slot> {
         let mut slots = Vec::with_capacity(self.leaving.len());
         self.leaving.retain_mut(|leaving| {
-            if let Some(frame) = leaving.exit.frame(window, cx) {
-                let id = SharedString::from(format!("home-row-copy-{}", leaving.review_id));
-                motion::report(
-                    || Recorded {
-                        id: id.into(),
-                        offset: frame.offset,
-                        opacity: frame.opacity,
-                        rotation: 0.0,
-                    },
-                    cx,
-                );
-            }
-            let Some(element) = leaving.exit.render(window, cx) else {
+            let Some((frame, element)) = leaving.exit.draw(window, cx) else {
                 return false;
             };
+            let id = SharedString::from(format!("home-row-copy-{}", leaving.review_id));
+            motion::report(
+                || Recorded {
+                    id: id.into(),
+                    offset: frame.offset,
+                    opacity: frame.opacity,
+                    rotation: 0.0,
+                },
+                cx,
+            );
             slots.push(Slot {
                 before: leaving.before,
                 awaiting: leaving.awaiting,

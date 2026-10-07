@@ -5,8 +5,9 @@
 //!   Reviews]` (M11).
 //! - `tree-chevron`: a pointer folds the tree's first folder (M10).
 //! - `banner`: a live-changes notice enters (M12); `banner-exit`: it leaves
-//!   an empty strip, as its inert copy (the commit frame shows the copy
-//!   exactly where the notice was, pixel for pixel).
+//!   an empty strip, as its inert copy (the commit frame matches the window
+//!   with the live notice within the screenshot budget: channels within 2,
+//!   at most 1‰ of the pixels apart).
 //! - `open-flow-step`: `⏎` picks the recent repo in ⌘O (M13).
 //! - `home-row`: a Home row archived by pointer (M14).
 //!
@@ -17,7 +18,6 @@
 
 use std::sync::Arc;
 
-use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, Entity, HeadlessAppContext, Keystroke, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, point, px, size,

@@ -700,6 +700,45 @@ fn open_flow_step_enters_from_its_direction(cx: &mut TestAppContext) {
     assert_eq!(content_x(&mut shell), rest, "settled after 150 ms");
     assert_eq!(opacity(&drawn), Some(1.0));
 
+    // A pointer move leaves an entrance running; a mouse down freezes it,
+    // asking for no frames, until its mouse up settles it.
+    {
+        use crate::support::motion::requested_frames;
+        use gpui_kit::{Modifiers, MouseButton, point, px};
+
+        shell.cx.simulate_keystrokes("cmd-[");
+        frame(shell.cx);
+        step_to(shell.cx, ms(200.0));
+        shell.cx.simulate_keystrokes("enter");
+        until_step(&mut shell, &flow, FlowStep::Source);
+        frame(shell.cx);
+        // The dialog's padding, beside the content's resting left edge.
+        let dialog = crate::shell::bounds(shell.cx, "open-flow");
+        let blank = point(px(rest - 4.0), dialog.top() + px(4.));
+        shell.cx.simulate_mouse_move(blank, None, Modifiers::none());
+        step_to(shell.cx, FIRST_STEP);
+        let entering = content_x(&mut shell);
+        assert!(
+            rest < entering && entering < rest + 8.0,
+            "running after a pointer move: {entering}"
+        );
+        shell
+            .cx
+            .simulate_mouse_down(blank, MouseButton::Left, Modifiers::none());
+        for i in 0..3 {
+            advance(shell.cx, FIRST_STEP);
+            assert_eq!(content_x(&mut shell), entering, "frozen, frame {i}");
+        }
+        assert_eq!(requested_frames(shell.cx), 0, "frozen: no frames");
+        shell
+            .cx
+            .simulate_mouse_up(blank, MouseButton::Left, Modifiers::none());
+        frame(shell.cx);
+        assert_eq!(content_x(&mut shell), rest, "settled at the mouse up");
+        assert_eq!(flow.read_with(shell.cx, |f, _| f.step()), FlowStep::Source);
+        assert_eq!(requested_frames(shell.cx), 0);
+    }
+
     // ⌘[: back, from the leading edge.
     shell.cx.simulate_keystrokes("cmd-[");
     frame(shell.cx);

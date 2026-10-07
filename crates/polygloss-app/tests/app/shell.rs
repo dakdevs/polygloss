@@ -1898,6 +1898,34 @@ fn banner_exits_upward_only_into_an_empty_strip(cx: &mut TestAppContext) {
     assert!(0.0 < half && half < 1.0, "50 ms of MICRO: {half}");
     advance(shell.cx, ms(50.0));
     assert!(painted(shell.cx, "banner-exit-notice-0").is_none());
+
+    // Back mid-fade: it fades in from the copy's opacity, never from 0.
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    frame(shell.cx);
+    step_to(shell.cx, ms(50.0));
+    let copy_opacity = drawn_opacity(&drawn, "banner-exit").expect("fading out");
+    fresh(&drawn, &mut shell, |shell| {
+        set_banner(shell, &tab, BannerKind::LiveChanges, "1 file changed");
+        frame(shell.cx);
+    });
+    assert!(
+        painted(shell.cx, "banner-exit-notice-0").is_none(),
+        "one copy"
+    );
+    assert_eq!(
+        below_strip(&mut shell, "banner-notice-0"),
+        rest,
+        "no travel"
+    );
+    assert_eq!(drawn_opacity(&drawn, id), Some(copy_opacity), "no flash");
+    fresh(&drawn, &mut shell, |shell| step_to(shell.cx, FIRST_STEP));
+    let next = drawn_opacity(&drawn, id).expect("fading in");
+    assert!(
+        copy_opacity < next && next < 1.0,
+        "fading in from {copy_opacity}: {next}"
+    );
 }
 
 #[gpui_kit::test]
@@ -1977,6 +2005,113 @@ fn banner_entrance_keeps_its_strip(cx: &mut TestAppContext) {
         assert_eq!(still(&mut shell), before, "leaving: nothing below moves");
         advance(shell.cx, ms(16.667));
     }
+}
+
+/// M12's exit is decided on the strip's frame, from what its last frame
+/// drew and what it shows now: a jump to the latest state that clears its
+/// notice before it empties the context line still leaves the strip empty,
+/// so the notice leaves upward.
+#[gpui_kit::test]
+fn banner_exit_follows_the_strip_whatever_order_it_empties_in(cx: &mut TestAppContext) {
+    use crate::support::motion::frame;
+
+    let _sb = Sandbox::isolate();
+    let (mut shell, tab, drawn) = banner_shell(cx);
+    let banners = tab.read_with(shell.cx, |t, _| t.banners.clone());
+    // Off the latest state, with a notice over the context line.
+    banners.update(shell.cx, |b, cx| {
+        b.set_context("Iteration 1 of 2".into(), cx)
+    });
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    let shown = bounds(shell.cx, "banner-notice-0");
+    fresh(&drawn, &mut shell, |shell| {
+        banners.update(shell.cx, |b, cx| {
+            b.clear(BannerKind::LiveChanges, cx);
+            b.set_context(SharedString::default(), cx);
+        });
+        frame(shell.cx);
+    });
+    assert_eq!(
+        bounds(shell.cx, "banner-exit-notice-0"),
+        shown,
+        "its copy leaves from where it was"
+    );
+    assert_eq!(drawn_opacity(&drawn, "banner-exit"), Some(1.0));
+    settle_all(&mut shell);
+    assert!(painted(shell.cx, "banner-exit-notice-0").is_none());
+}
+
+/// M12's interruptions (ADR-0030 rule 4): a pointer move leaves an entrance
+/// running; a mouse down freezes it, asking for no frames, until its mouse
+/// up settles it; a key down and a window resize each settle a leaving copy.
+#[gpui_kit::test]
+fn banner_motion_freezes_and_settles(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, requested_frames, step_to};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+
+    let _sb = Sandbox::isolate();
+    let (mut shell, tab, _drawn) = banner_shell(cx);
+    let rest = (32.0 - 24.0) / 2.0;
+    let strip = bounds(shell.cx, "banner-strip");
+    // The strip's far end: no notice, no control.
+    let blank = point(strip.right() - px(8.), strip.center().y);
+
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    frame(shell.cx);
+    shell.cx.simulate_mouse_move(blank, None, Modifiers::none());
+    step_to(shell.cx, FIRST_STEP);
+    let entering = below_strip(&mut shell, "banner-notice-0");
+    assert!(
+        rest - 4.0 < entering && entering < rest,
+        "running after a pointer move: {entering}"
+    );
+    shell
+        .cx
+        .simulate_mouse_down(blank, MouseButton::Left, Modifiers::none());
+    for i in 0..3 {
+        advance(shell.cx, FIRST_STEP);
+        assert_eq!(
+            below_strip(&mut shell, "banner-notice-0"),
+            entering,
+            "frozen, frame {i}"
+        );
+    }
+    assert_eq!(requested_frames(shell.cx), 0, "frozen: no frames");
+    shell
+        .cx
+        .simulate_mouse_up(blank, MouseButton::Left, Modifiers::none());
+    frame(shell.cx);
+    assert_eq!(below_strip(&mut shell, "banner-notice-0"), rest, "settled");
+    assert_eq!(requested_frames(shell.cx), 0);
+
+    // A key down settles the leaving copy.
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    frame(shell.cx);
+    step_to(shell.cx, FIRST_STEP);
+    assert!(painted(shell.cx, "banner-exit-notice-0").is_some());
+    shell.cx.simulate_keystrokes("escape");
+    frame(shell.cx);
+    assert!(painted(shell.cx, "banner-exit-notice-0").is_none(), "a key");
+    assert_eq!(requested_frames(shell.cx), 0);
+
+    // So does a window resize.
+    set_banner(&mut shell, &tab, BannerKind::LiveChanges, "1 file changed");
+    settle_all(&mut shell);
+    clear_banner(&mut shell, &tab, BannerKind::LiveChanges);
+    frame(shell.cx);
+    step_to(shell.cx, FIRST_STEP);
+    assert!(painted(shell.cx, "banner-exit-notice-0").is_some());
+    let window = shell.cx.update(|window, _| window.viewport_size());
+    shell
+        .cx
+        .simulate_resize(size(window.width - px(40.), window.height));
+    frame(shell.cx);
+    assert!(
+        painted(shell.cx, "banner-exit-notice-0").is_none(),
+        "a resize"
+    );
+    assert_eq!(requested_frames(shell.cx), 0);
 }
 
 #[gpui_kit::test]
@@ -2474,15 +2609,49 @@ fn segmented_fill_jumps_for_s_palette_and_auto_flips(cx: &mut TestAppContext) {
     jumped(&mut shell, "sidebar-segments", "segment-files", "ShowFiles");
 }
 
+/// In production the executor clock is the wall clock: a click's commit
+/// frame renders a moment after its handler retargeted the fill (ε here),
+/// and split | unified's relayout makes that frame long (100 ms here). The
+/// commit frame still paints the fill where it was, and the next frame the
+/// first 16.667 ms of the slide (ADR-0030 rule 6), not ε + 100 ms of it.
 #[gpui_kit::test]
 fn split_unified_fill_starts_after_the_heavy_commit(cx: &mut TestAppContext) {
     use crate::support::motion::{advance, frame};
+    use polygloss_app::segmented::SegmentedState;
+    use std::cell::Cell;
 
     let _sb = Sandbox::isolate();
     let repo = code_change_repo();
     let mut shell = start(cx);
+    // Every segmented control's state, as it is created.
+    let states: Rc<RefCell<Vec<Entity<SegmentedState>>>> = Rc::default();
+    let created = states.clone();
+    shell.cx.update(|_, cx| {
+        cx.observe_new(move |_: &mut SegmentedState, _, cx| {
+            created.borrow_mut().push(cx.entity());
+        })
+        .detach()
+    });
     shell.open(compare_req(repo.path())).unwrap();
     full_motion(&mut shell);
+    // The click's first retarget delays the commit frame by ε: a deferred
+    // clock advance runs after the click's handlers and before the test
+    // window draws what they changed.
+    let delayed = Rc::new(Cell::new(false));
+    let _late_commit: Vec<_> = states
+        .borrow()
+        .iter()
+        .map(|state| {
+            let delayed = delayed.clone();
+            shell.cx.update(|_, cx| {
+                cx.observe(state, move |_, cx| {
+                    if !delayed.replace(true) {
+                        cx.defer(|cx| cx.background_executor().advance_clock(ms(2.0)));
+                    }
+                })
+            })
+        })
+        .collect();
     let (split, unified) = (
         bounds(shell.cx, "layout-split"),
         bounds(shell.cx, "layout-unified"),
@@ -2490,20 +2659,21 @@ fn split_unified_fill_starts_after_the_heavy_commit(cx: &mut TestAppContext) {
     let travel = f64::from((split.left() - unified.left()).as_f32());
     let x = |shell: &mut Shell| fill(shell.cx, "layout-toggle").left().as_f32();
     shell.cx.simulate_click(split.center(), Modifiers::none());
-    frame(shell.cx);
+    assert!(delayed.get(), "the commit frame came ε after the retarget");
     assert_eq!(x(&mut shell), unified.left().as_f32(), "the commit frame");
-    // The split layout's commit frame took 100 ms: the next frame shows the
-    // first 16.667 ms of the slide, not 100 ms of it.
+    frame(shell.cx);
+    assert_eq!(
+        x(&mut shell),
+        unified.left().as_f32(),
+        "drawn again on the commit frame"
+    );
+    // The commit frame took 100 ms: the next frame shows the first
+    // 16.667 ms of the slide.
     advance(shell.cx, ms(100.0));
     assert_eq!(
         x(&mut shell),
         unified.left().as_f32() + quantized(travel * in_out(16.667 / 150.0)),
         "a 100 ms commit reads as a 16.667 ms first step"
-    );
-    assert_ne!(
-        x(&mut shell),
-        unified.left().as_f32() + quantized(travel * in_out(100.0 / 150.0)),
-        "not 100 ms in"
     );
     // From then on t runs from the commit stamp moved back by the clamp:
     // the midpoint 75 − 16.667 ms later.
@@ -2574,6 +2744,26 @@ fn segmented_fill_retargets_freezes_and_settles(cx: &mut TestAppContext) {
     shell.cx.simulate_keystrokes("escape");
     frame(shell.cx);
     assert_eq!(x(&mut shell), b, "a key down settles it");
+
+    // A pointer move leaves it running; a window resize settles it.
+    shell.cx.simulate_click(files.center(), Modifiers::none());
+    frame(shell.cx);
+    shell.cx.simulate_mouse_move(blank, None, Modifiers::none());
+    step_to(shell.cx, ms(50.0));
+    let moving = x(&mut shell);
+    assert!(
+        a < moving && moving < b,
+        "running after a pointer move: {moving}"
+    );
+    let window = shell.cx.update(|window, _| window.viewport_size());
+    shell
+        .cx
+        .simulate_resize(size(window.width - px(40.), window.height));
+    frame(shell.cx);
+    assert_eq!(x(&mut shell), a, "a resize settles it");
+    assert_eq!(requested_frames(shell.cx), 0);
+    shell.cx.simulate_click(reviews.center(), Modifiers::none());
+    step_to(shell.cx, ms(200.0));
 
     // Reduce Motion: the fill jumps.
     shell.cx.update(|_, cx| {
