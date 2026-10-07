@@ -1538,4 +1538,154 @@ mod reveal_motion {
         assert_y(header_y(&debug(&view, cx), 0), 172.0, "160 ms");
         assert!(!running(&view, cx));
     }
+
+    /// A host element `height` tall in `color`; laid out `laid_out` tall when
+    /// given (it then paints below its own bottom, as the header card paints
+    /// its commit list while the list closes, T7.14).
+    fn painting(height: f32, laid_out: Option<f32>, color: u32) -> polygloss_viewport::RenderBlock {
+        use gpui_kit::{ParentElement as _, rgb};
+        Rc::new(move |_, _| match laid_out {
+            None => div()
+                .w_full()
+                .h(px(height))
+                .bg(rgb(color))
+                .into_any_element(),
+            Some(h) => div()
+                .relative()
+                .w_full()
+                .h(px(h))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h(px(height))
+                        .bg(rgb(color)),
+                )
+                .into_any_element(),
+        })
+    }
+
+    /// The `(top, bottom)` of the quads of `color`, and of their clips.
+    fn quads_of(cx: &mut gpui_kit::VisualTestContext, color: u32) -> Vec<((f32, f32), (f32, f32))> {
+        let color = gpui_kit::Hsla::from(gpui_kit::rgb(color));
+        shaped_quads(cx)
+            .into_iter()
+            .filter(|q| q.fill == Some(color))
+            .map(|q| {
+                let (_, y, _, h) = q.bounds;
+                let (_, cy, _, ch) = q.clip;
+                ((y, y + h), (cy, cy + ch))
+            })
+            .collect()
+    }
+
+    /// T7.14: a closing prelude is cut at the frame's edge, not at its new
+    /// height, so a host can keep painting what leaves (the header card's
+    /// commit list) under the curtain.
+    #[gpui_kit::test]
+    fn a_closing_prelude_paints_to_the_frames_edge(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        let provider = MemProvider::new(vec![Spec::added("a.rs", &numbered("a", 10).concat())]);
+        let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 900.);
+        view.update(cx, |v, cx| {
+            v.set_prelude(Some(painting(160.0, None, 0xff0000)), cx)
+        });
+        settle(cx);
+        assert_eq!(header_y(&debug(&view, cx), 0), 172.0);
+        set_policy(cx, MotionPolicy::Full);
+        // The host's list closes: laid out 60 tall, still painting 160;
+        // `exit(reveal(100))` = 120 ms.
+        view.update(cx, |v, cx| {
+            v.set_prelude(Some(painting(160.0, Some(60.0), 0xff0000)), cx);
+            v.reveal_prelude(px(160.), Initiator::Pointer, cx);
+        });
+        frame(cx);
+        assert_eq!(
+            debug(&view, cx).reveal.expect("revealing").kind,
+            RevealKind::Prelude
+        );
+        assert_eq!(
+            quads_of(cx, 0xff0000),
+            [((0.0, 160.0), (0.0, 160.0))],
+            "commit frame"
+        );
+        step_to(cx, ms(60.0));
+        let edge = 60.0 + q(100.0 * (1.0 - slide(0.5)));
+        assert_eq!(
+            quads_of(cx, 0xff0000),
+            [((0.0, 160.0), (0.0, edge))],
+            "60 ms"
+        );
+        assert_y(
+            header_y(&debug(&view, cx), 0),
+            edge + 12.0,
+            "60 ms: the card below",
+        );
+        advance(cx, ms(60.0));
+        assert!(!running(&view, cx));
+        assert_eq!(
+            quads_of(cx, 0xff0000),
+            [((0.0, 160.0), (0.0, 60.0))],
+            "settled"
+        );
+    }
+
+    /// T7.14: a Reduced prelude fade veils only what changes (the header
+    /// card's commit list), never the part of it that stays.
+    #[gpui_kit::test]
+    fn a_reduced_prelude_fade_veils_only_what_changes(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        let provider = MemProvider::new(vec![Spec::added("a.rs", &numbered("a", 10).concat())]);
+        let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 900.);
+        view.update(cx, |v, cx| {
+            v.set_prelude(Some(painting(60.0, None, 0x0000ff)), cx)
+        });
+        settle(cx);
+        let canvas = view.read_with(cx, |v, _| v.options().theme.canvas);
+        let veils = |cx: &mut gpui_kit::VisualTestContext| -> Vec<(f32, f32)> {
+            shaped_quads(cx)
+                .into_iter()
+                .filter_map(|q| {
+                    let fill = q.fill?;
+                    let same = (fill.h, fill.s, fill.l) == (canvas.h, canvas.s, canvas.l);
+                    let (_, y, _, h) = q.bounds;
+                    (same && 0.0 < fill.a && fill.a < canvas.a).then_some((y, y + h))
+                })
+                .collect()
+        };
+        set_policy(cx, MotionPolicy::Reduced);
+        // Opening, 60 → 160: the new 100 pt fade in over QUICK.
+        view.update(cx, |v, cx| {
+            v.set_prelude(Some(painting(160.0, None, 0x0000ff)), cx);
+            v.reveal_prelude(px(60.), Initiator::Pointer, cx);
+        });
+        frame(cx);
+        step_to(cx, ms(75.0));
+        assert!(running(&view, cx));
+        assert_eq!(veils(cx), [(60.0, 160.0)], "75 ms in");
+        advance(cx, ms(75.0));
+        assert!(!running(&view, cx));
+        assert!(veils(cx).is_empty());
+        // Closing, 160 → 60, the host painting its old height under the
+        // curtain: those 100 pt fade out over MICRO in the held frame.
+        view.update(cx, |v, cx| {
+            v.set_prelude(Some(painting(160.0, Some(60.0), 0x0000ff)), cx);
+            v.reveal_prelude(px(160.), Initiator::Pointer, cx);
+        });
+        frame(cx);
+        step_to(cx, ms(50.0));
+        assert!(running(&view, cx));
+        assert_eq!(veils(cx), [(60.0, 160.0)], "50 ms out");
+        assert_eq!(header_y(&debug(&view, cx), 0), 172.0, "the frame held");
+        advance(cx, ms(50.0));
+        assert!(!running(&view, cx));
+        assert!(veils(cx).is_empty());
+        assert_eq!(
+            header_y(&debug(&view, cx), 0),
+            72.0,
+            "then the height snaps"
+        );
+    }
 }

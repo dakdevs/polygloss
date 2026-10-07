@@ -24,6 +24,7 @@ use polygloss_viewport::{BlockAnchor, CursorPos};
 use crate::shell::{Shell, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox, code_change_repo};
 
+mod chip_motion;
 mod geometry;
 mod panel_motion;
 mod sections;

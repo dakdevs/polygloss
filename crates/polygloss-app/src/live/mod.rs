@@ -402,6 +402,8 @@ pub fn snapshot(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Revie
     let core = AppState::global(cx).core.clone();
     let review_id = tab.review_id.clone();
     let base = current.base.clone();
+    // The button's confirmation (ADR-0030 M15) follows who asked.
+    let initiator = crate::motion::initiator(window);
     cx.spawn_in(window, async move |tab, cx: &mut AsyncWindowContext| {
         let pinned = cx
             .background_spawn(async move {
@@ -412,6 +414,7 @@ pub fn snapshot(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<Revie
             Ok(it) => {
                 let message = format!("Snapshot saved as iteration {}", it.seq);
                 crate::iterations::pinned(tab, it, cx);
+                crate::review_tab::header::snapshot_saved(tab, initiator, cx);
                 toast(message, false, window, cx);
                 cx.notify();
             }

@@ -174,6 +174,15 @@ impl DiffViewport {
         cx.notify();
     }
 
+    /// Whether a reveal of the prelude runs (waiting for its measurement
+    /// included): a host that paints what its prelude closes over below its
+    /// new height (the header card's commit list) stops when it ends.
+    pub fn prelude_revealing(&self) -> bool {
+        self.reveal
+            .as_ref()
+            .is_some_and(|r| r.bodies.iter().any(|b| matches!(b.kind, BodyKind::Prelude)))
+    }
+
     /// The prelude's width: a card's.
     pub(crate) fn prelude_width(&self) -> f32 {
         card_span(self.outer_width, self.opts.cards).1
@@ -342,7 +351,10 @@ impl Painter<'_> {
             origin,
             width: self.prelude_width,
             height: h,
-            clip: Bounds::new(origin, size(px(w), px(h.min(shown)))).intersect(&self.bounds),
+            // Cut at the frame's edge: a closing prelude may still paint
+            // what leaves below its new height (the header card's commit
+            // list, T7.14).
+            clip: Bounds::new(origin, size(px(w), px(shown))).intersect(&self.bounds),
             render: render.clone(),
         });
     }

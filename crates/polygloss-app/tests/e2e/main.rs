@@ -27,6 +27,7 @@ mod kit_fonts;
 mod ligatures;
 mod live;
 mod motion_accordion;
+mod motion_blocks;
 mod motion_chrome;
 mod motion_panels;
 mod motion_sections;
@@ -87,5 +88,6 @@ fn main() -> std::process::ExitCode {
         motion_sections::TESTS,
         motion_panels::TESTS,
         motion_accordion::TESTS,
+        motion_blocks::TESTS,
     ])
 }
