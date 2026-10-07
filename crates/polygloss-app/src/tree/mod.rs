@@ -890,32 +890,10 @@ impl Render for FileTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
         let theme = cx.theme().clone();
-        let filtering = self.filter.is_active();
         self.follow_focus(window, cx);
         let open = self.panels.open_key().cloned();
         row::Chevrons::frame(self, open.as_ref(), window, cx);
-        let headers = self.panels.has_headers();
-        let this = cx.entity().downgrade();
-        // Panels with a match, their headers, the open one's tree after its
-        // header.
-        let mut accordion: Vec<AnyElement> = Vec::new();
-        let mut first = true;
-        for panel in self.panels.panels().iter().filter(|p| p.is_shown()) {
-            let is_open = open.as_ref() == Some(panel.key());
-            if headers {
-                accordion.push(
-                    panels::header(panel, is_open, filtering, this.clone(), first, cx)
-                        .into_any_element(),
-                );
-                first = false;
-            }
-            if is_open {
-                accordion.push(self.body(cx));
-            }
-        }
-        if !self.panels.open().is_some_and(PanelTree::is_shown) {
-            accordion.push(self.body(cx));
-        }
+        let accordion = self.accordion(window, cx);
         // The footer counts the Changes panel's files whatever the filter
         // shows; none when every file is categorized.
         let changes: Option<&[u32]> = match self.panels.panels().first() {
