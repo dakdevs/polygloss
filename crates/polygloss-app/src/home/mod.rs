@@ -17,10 +17,20 @@
 //! Home reloads on focus, when the window becomes active, after its own
 //! actions and after an automatic prune ([`prune`]); T3.13's store feed
 //! calls [`HomeView::refresh`] on store events.
+//!
+//! A row archived or pruned leaves the model at once, and every reload
+//! leaves it out until the store write is done (a reload read before the
+//! write never brings it back); by pointer (the ⋯ and context menus, a prune
+//! dialog of at most [`removal::ANIMATED_REMOVALS`] rows) it leaves the list
+//! as M14 ([`removal`]), while Home is on screen; `e`, ⌘⌫, larger prunes,
+//! automatic prunes, a removal that empties its section (whose title goes at
+//! once) and one made from the sidebar on a review tab snap. Any other
+//! change of the list, or Home leaving the screen, ends a removal under way.
 
 pub mod dialogs;
 pub mod nav;
 pub mod prune;
+pub mod removal;
 pub mod row;
 
 use std::collections::HashMap;
@@ -46,7 +56,10 @@ use polygloss_core::review::{AssignedBy, Core, CoreError, ReviewFilter, ReviewSu
 use polygloss_core::store::events::{Actor, now_ms};
 
 use crate::app_state::AppState;
+use crate::home::removal::{Removals, Removed};
 use crate::home::row::{HomeRow, RowPlace};
+use crate::motion::settle::OnScreen;
+use crate::motion::{self, Initiator};
 use crate::space::{TextStyleExt as _, edge, gap, layout, text};
 
 /// The key context of Home.
@@ -149,6 +162,15 @@ pub struct HomeView {
     refreshing: Option<Task<()>>,
     clock: Rc<dyn Fn() -> i64>,
     scroll: ScrollHandle,
+    /// Rows leaving the list (M14).
+    removals: Removals,
+    /// Rows archived or pruned whose store write is not done: every reload
+    /// leaves them out (one entry per removal, so overlapping removals of a
+    /// row each keep it out).
+    removing: Vec<String>,
+    /// Whether Home was drawn on the window's latest frame: removals start
+    /// and run only while it is.
+    on_screen: OnScreen,
     _tick: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -186,6 +208,9 @@ impl HomeView {
                 refreshing: None,
                 clock: Rc::new(now_ms),
                 scroll: ScrollHandle::new(),
+                removals: Removals::default(),
+                removing: Vec::new(),
+                on_screen: OnScreen::default(),
                 _tick: tick,
                 _subscriptions: subscriptions,
             };
@@ -252,6 +277,18 @@ impl HomeView {
         }));
     }
 
+    /// Test seam: applies a reload that read `summaries` (one that was in
+    /// flight while an action wrote the store, so it may predate the write).
+    #[doc(hidden)]
+    pub fn apply_summaries(&mut self, summaries: Vec<ReviewSummary>, cx: &mut Context<Self>) {
+        let loaded = Loaded {
+            summaries,
+            agents: HashMap::new(),
+            subjects: Vec::new(),
+        };
+        self.apply(loaded, cx);
+    }
+
     fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         self.subjects.extend(loaded.subjects);
         let make = |s: ReviewSummary| {
@@ -269,10 +306,21 @@ impl HomeView {
                 .map(|id| loaded.agents.get(id).cloned().unwrap_or_else(|| id.clone()));
             HomeRow::new(s, subject.as_deref(), agent.as_deref())
         };
-        let (awaiting, recent): (Vec<_>, Vec<_>) =
-            loaded.summaries.into_iter().partition(|s| s.awaiting_you);
-        self.awaiting = awaiting.len();
-        self.rows = awaiting.into_iter().chain(recent).map(make).collect();
+        // A row being removed stays out, whenever the reload read the store.
+        let removing = &self.removing;
+        let (awaiting, recent): (Vec<_>, Vec<_>) = loaded
+            .summaries
+            .into_iter()
+            .filter(|s| !removing.contains(&s.review_id))
+            .partition(|s| s.awaiting_you);
+        let count = awaiting.len();
+        let rows: Vec<HomeRow> = awaiting.into_iter().chain(recent).map(make).collect();
+        // Any change but the one a removal already made ends it (M14).
+        if rows != self.rows || count != self.awaiting {
+            self.removals.clear();
+        }
+        self.awaiting = count;
+        self.rows = rows;
         if let Some(sel) = &self.selected
             && self.row(sel).is_none()
         {
@@ -345,34 +393,117 @@ impl HomeView {
         crate::review_tab::open_review(req, window, cx).detach_and_log_err(cx);
     }
 
-    /// Archives the review (hidden from Home until it is opened again).
-    pub fn archive(&mut self, review_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.run("archive the review", window, cx, move |core| {
+    /// Archives the review (hidden from Home until it is opened again). Its
+    /// row leaves at once, as `initiator` plays it (M14).
+    pub fn archive(
+        &mut self,
+        review_id: String,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = vec![review_id.clone()];
+        self.remove_rows(&ids, initiator, window, cx);
+        self.run("archive the review", ids, window, cx, move |core| {
             core.archive_review(&review_id, &Actor::human())
         });
     }
 
-    /// Asks for confirmation, then prunes the review ([`HomeView::prune`]).
-    pub fn request_prune(&mut self, review_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(row) = self.row(review_id) else {
+    /// Asks for confirmation, then prunes the reviews
+    /// ([`HomeView::prune`]); `initiator` asked (⌘⌫, a menu), and the
+    /// confirmation's own initiator counts too.
+    pub fn request_prune(
+        &mut self,
+        review_ids: Vec<String>,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows: Vec<dialogs::PruneRow> = review_ids
+            .iter()
+            .filter_map(|id| self.row(id))
+            .map(|row| dialogs::PruneRow {
+                review_id: row.review_id().to_owned(),
+                title: row.title.clone(),
+                repo: row.summary.repo_display.clone().into(),
+            })
+            .collect();
+        if rows.is_empty() {
             return;
-        };
-        dialogs::confirm_prune(
-            cx.entity().downgrade(),
-            review_id.to_owned(),
-            row.title.clone(),
-            row.summary.repo_display.clone().into(),
-            window,
-            cx,
-        );
+        }
+        dialogs::confirm_prune(cx.entity().downgrade(), rows, initiator, window, cx);
     }
 
-    /// Deletes the review and everything hanging off it (OQ-24), without
-    /// asking; the UI asks first ([`HomeView::request_prune`]).
-    pub fn prune(&mut self, review_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.run("prune the review", window, cx, move |core| {
-            core.prune_review(&review_id)
+    /// Deletes the reviews and everything hanging off them (OQ-24), without
+    /// asking; the UI asks first ([`HomeView::request_prune`]). Their rows
+    /// leave at once, as `initiator` plays it (M14).
+    pub fn prune(
+        &mut self,
+        review_ids: Vec<String>,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remove_rows(&review_ids, initiator, window, cx);
+        let removing = review_ids.clone();
+        self.run("prune the reviews", removing, window, cx, move |core| {
+            review_ids.iter().try_for_each(|id| core.prune_review(id))
         });
+    }
+
+    /// Drops the rows of `review_ids` from the list now (commit first) and
+    /// keeps them out of every reload until the store write is done (its
+    /// reload confirms it, or brings a row back with the error); while Home
+    /// is on screen they leave as `initiator` plays it ([`Removals::start`]).
+    /// Removals under way end first.
+    fn remove_rows(
+        &mut self,
+        review_ids: &[String],
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.removals.clear();
+        self.removing.extend(review_ids.iter().cloned());
+        let gone = |row: &HomeRow| review_ids.iter().any(|id| id == row.review_id());
+        if !self.rows.iter().any(gone) {
+            return;
+        }
+        let (before_awaiting, before_recent) = (self.awaiting, self.rows.len() - self.awaiting);
+        let mut kept = Vec::with_capacity(self.rows.len());
+        let mut removed = Vec::new();
+        let mut awaiting = 0;
+        for (ix, row) in std::mem::take(&mut self.rows).into_iter().enumerate() {
+            let in_awaiting = ix < before_awaiting;
+            if gone(&row) {
+                removed.push(Removed {
+                    before: kept.len(),
+                    awaiting: in_awaiting,
+                    row,
+                });
+            } else {
+                awaiting += usize::from(in_awaiting);
+                kept.push(row);
+            }
+        }
+        let recent = kept.len() - awaiting;
+        let emptied = (before_awaiting > 0 && awaiting == 0) || (before_recent > 0 && recent == 0);
+        self.rows = kept;
+        self.awaiting = awaiting;
+        if self
+            .selected
+            .as_deref()
+            .is_some_and(|sel| self.row(sel).is_none())
+        {
+            self.selected = None;
+        }
+        // From the sidebar on a review tab: nothing on screen leaves.
+        if self.on_screen.was_drawn(window, cx) {
+            let now_ms = (self.clock)();
+            self.removals
+                .start(removed, emptied, now_ms, initiator, window, cx);
+        }
+        cx.notify();
     }
 
     /// Mutes the review's notifications, or unmutes them.
@@ -381,7 +512,7 @@ impl HomeView {
             return;
         };
         let (id, muted) = (review_id.to_owned(), !row.summary.muted);
-        self.run("change mute", window, cx, move |core| {
+        self.run("change mute", Vec::new(), window, cx, move |core| {
             core.set_muted(&id, muted)
         });
     }
@@ -441,16 +572,18 @@ impl HomeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run("assign the review", window, cx, move |core| {
+        self.run("assign the review", Vec::new(), window, cx, move |core| {
             core.assign_review(&review_id, &session_id, AssignedBy::Human)
         });
     }
 
-    /// Runs `f` on the background executor, then reloads; a failure is a
-    /// toast ("Could not <what>: …").
+    /// Runs `f` on the background executor, then lets reloads show the rows
+    /// of `removed` again (one entry each of [`HomeView::remove_rows`]'s)
+    /// and reloads; a failure is a toast ("Could not <what>: …").
     fn run(
         &mut self,
         what: &'static str,
+        removed: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
         f: impl FnOnce(&Core) -> Result<(), CoreError> + Send + 'static,
@@ -461,6 +594,11 @@ impl HomeView {
             this.update_in(cx, |home, window, cx| {
                 if let Err(e) = result {
                     toast(format!("Could not {what}: {e}"), window, cx);
+                }
+                for id in &removed {
+                    if let Some(ix) = home.removing.iter().position(|r| r == id) {
+                        home.removing.swap_remove(ix);
+                    }
                 }
                 home.refresh(cx);
             })
@@ -498,25 +636,35 @@ impl HomeView {
             r.review_id().to_owned(),
             r.summary.muted,
         );
-        let item =
-            |label: &'static str,
-             f: fn(&mut HomeView, String, &mut Window, &mut Context<HomeView>)| {
-                let (home, id) = (home.clone(), review_id.clone());
-                PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                    home.update(cx, |h, cx| f(h, id.clone(), window, cx)).ok();
-                })
-            };
-        menu.item(item("Open", |h, id, w, cx| h.open_row(&id, w, cx)))
+        // Each item reads who chose it (a click, or the menu's keys).
+        let item = |label: &'static str,
+                    f: fn(
+            &mut HomeView,
+            String,
+            Initiator,
+            &mut Window,
+            &mut Context<HomeView>,
+        )| {
+            let (home, id) = (home.clone(), review_id.clone());
+            PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                let initiator = motion::initiator(window);
+                home.update(cx, |h, cx| f(h, id.clone(), initiator, window, cx))
+                    .ok();
+            })
+        };
+        menu.item(item("Open", |h, id, _, w, cx| h.open_row(&id, w, cx)))
             .item(item(
                 if muted { "Unmute" } else { "Mute" },
-                |h, id, w, cx| h.toggle_mute(&id, w, cx),
+                |h, id, _, w, cx| h.toggle_mute(&id, w, cx),
             ))
-            .item(item("Assign to session…", |h, id, w, cx| {
+            .item(item("Assign to session…", |h, id, _, w, cx| {
                 h.request_assign(&id, w, cx)
             }))
             .separator()
-            .item(item("Archive", |h, id, w, cx| h.archive(id, w, cx)))
-            .item(item("Prune…", |h, id, w, cx| h.request_prune(&id, w, cx)))
+            .item(item("Archive", |h, id, i, w, cx| h.archive(id, i, w, cx)))
+            .item(item("Prune…", |h, id, i, w, cx| {
+                h.request_prune(vec![id], i, w, cx)
+            }))
     }
 
     /// [`HomeView::row_menu`] of `review_id`'s row as the menu opens (`menu`
@@ -539,43 +687,69 @@ impl HomeView {
         })
     }
 
-    fn render_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let _ = window;
+    /// The list's children: section titles and rows (each in the rows'
+    /// width), and in a removed row's place its leaving slot (M14), a direct
+    /// child of the list in the rows' width styles.
+    fn render_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let now = (self.clock)();
         let offset = row::local_utc_offset_s(now);
         let theme = cx.theme().clone();
+        let wrap = |child: AnyElement| {
+            div()
+                .flex_none()
+                .w_full()
+                .max_w(px(layout::HOME_MAX_W))
+                .child(child)
+                .into_any_element()
+        };
         // A later section's title sits `SECTION` below the card before it:
         // the list's `CARDS` gap and the rest as padding.
         let section = |title: &'static str, count: usize, first: bool| {
-            h_flex()
-                .gap(px(gap::CONTROLS))
-                .when(!first, |d| d.pt(px(gap::SECTION - gap::CARDS)))
-                .text_style(text::SMALL)
-                .font_semibold()
-                .text_color(theme.muted_foreground)
-                .child(
-                    div()
-                        .debug_selector(move || format!("home-section-{title}"))
-                        .child(title),
-                )
-                .child(div().font_normal().child(count.to_string()))
-                .into_any_element()
+            wrap(
+                h_flex()
+                    .gap(px(gap::CONTROLS))
+                    .when(!first, |d| d.pt(px(gap::SECTION - gap::CARDS)))
+                    .text_style(text::SMALL)
+                    .font_semibold()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        div()
+                            .debug_selector(move || format!("home-section-{title}"))
+                            .child(title),
+                    )
+                    .child(div().font_normal().child(count.to_string()))
+                    .into_any_element(),
+            )
         };
+        // Home was off screen (a review tab showed): what left meanwhile is
+        // gone, never replayed.
+        if !self.on_screen.was_drawn(window, cx) {
+            self.removals.clear();
+        }
+        let mut slots = self.removals.slots(window, cx).into_iter().peekable();
         let mut children = Vec::with_capacity(self.rows.len() + 2);
         let home = cx.entity().downgrade();
         let selected = self.selected_index();
-        for (ix, row) in self.rows.iter().enumerate() {
-            let in_awaiting = ix < self.awaiting;
-            if ix == 0 && in_awaiting {
+        for ix in 0..=self.rows.len() {
+            if ix == 0 && self.awaiting > 0 {
                 children.push(section("AWAITING YOU", self.awaiting, true));
             }
-            if ix == self.awaiting {
+            while slots.peek().is_some_and(|s| s.before == ix && s.awaiting) {
+                children.extend(slots.next().map(|s| s.element.into_any_element()));
+            }
+            if ix == self.awaiting && self.rows.len() > self.awaiting {
                 children.push(section(
                     "RECENT",
                     self.rows.len() - self.awaiting,
                     self.awaiting == 0,
                 ));
             }
+            while slots.peek().is_some_and(|s| s.before == ix) {
+                children.extend(slots.next().map(|s| s.element.into_any_element()));
+            }
+            let Some(row) = self.rows.get(ix) else {
+                break;
+            };
             let id = row.review_id().to_owned();
             let menu_button = {
                 let (home, id) = (home.clone(), id.clone());
@@ -603,7 +777,7 @@ impl HomeView {
             };
             let (open_home, open_id) = (home.clone(), id.clone());
             let (ctx_home, ctx_id) = (home.clone(), id.clone());
-            children.push(
+            children.push(wrap(
                 row::render_row(row, place, now, offset, menu_button, cx)
                     .on_click(move |_, window, cx| {
                         open_home
@@ -617,7 +791,7 @@ impl HomeView {
                         HomeView::menu_for(&ctx_home, &ctx_id, menu, window, cx)
                     })
                     .into_any_element(),
-            );
+            ));
         }
         children
     }
@@ -754,15 +928,9 @@ impl Render for HomeView {
                 .pt(px(gap::SECTION))
                 .pb(px(edge::PAGE))
                 .gap(px(gap::CARDS))
-                // One child per section title and row, so `scroll_to_item`
-                // finds rows by index.
-                .children(self.render_rows(window, cx).into_iter().map(|child| {
-                    div()
-                        .flex_none()
-                        .w_full()
-                        .max_w(px(layout::HOME_MAX_W))
-                        .child(child)
-                }))
+                // One child per section title and row (and leaving slot), so
+                // `scroll_to_item` finds rows by index.
+                .children(self.render_rows(window, cx))
                 .into_any_element()
         };
         // The rows are cards on the diff's canvas (design §11.2).
@@ -774,6 +942,8 @@ impl Render for HomeView {
             .child(div().flex_1().min_h_0().child(page))
             .into_any_element();
         let shell = crate::chrome::shell(sidebar, main, false, window, cx);
+        self.removals.register(window, cx);
+        self.on_screen.mark(window, cx);
         v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
@@ -783,10 +953,14 @@ impl Render for HomeView {
                 h.with_selected(window, cx, |h, id, w, cx| h.open_row(&id, w, cx))
             }))
             .on_action(cx.listener(|h, _: &Archive, window, cx| {
-                h.with_selected(window, cx, |h, id, w, cx| h.archive(id, w, cx))
+                let initiator = motion::initiator(window);
+                h.with_selected(window, cx, |h, id, w, cx| h.archive(id, initiator, w, cx))
             }))
             .on_action(cx.listener(|h, _: &Prune, window, cx| {
-                h.with_selected(window, cx, |h, id, w, cx| h.request_prune(&id, w, cx))
+                let initiator = motion::initiator(window);
+                h.with_selected(window, cx, |h, id, w, cx| {
+                    h.request_prune(vec![id], initiator, w, cx)
+                })
             }))
             .on_action(cx.listener(|h, _: &ToggleMute, window, cx| {
                 h.with_selected(window, cx, |h, id, w, cx| h.toggle_mute(&id, w, cx))

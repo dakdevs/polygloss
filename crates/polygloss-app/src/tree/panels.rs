@@ -640,6 +640,7 @@ impl FileTree {
             status: row::StatusColors::of(cx),
             stat_added: colors.stat_added,
             stat_removed: colors.stat_removed,
+            chevrons: self.chevrons.drawn(),
         }
     }
 

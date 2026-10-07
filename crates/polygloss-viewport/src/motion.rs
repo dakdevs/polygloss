@@ -5,7 +5,10 @@
 //! A [`Track`] is a plain value its owner keeps (rule 13: never keyed
 //! element state) and samples with the executor clock's `now` (rule 5:
 //! never the wall clock), so tests step it. It is commit-first: a retarget
-//! changes nothing but what is painted on the way to the new value.
+//! changes nothing but what is painted on the way to the new value. Its
+//! clock starts on the commit frame, the first sample after the retarget,
+//! and the step after that frame is at most one 60 Hz frame (rule 6), however
+//! long the commit frame took or however late after the input it came.
 
 use std::time::{Duration, Instant};
 
@@ -228,9 +231,24 @@ pub struct Track {
     span: f32,
     /// Where a fade's opacity starts.
     fade_from: f32,
-    /// Whether the first step after the commit was taken (rule 6).
-    stepped: bool,
+    /// Where the next fade from rest starts instead of 0 (in) or 1 (out):
+    /// its surface is partly visible already ([`Track::visible_at`]).
+    rest_opacity: Option<f32>,
+    /// Where it is in its first two frames (rule 6).
+    phase: Phase,
     frozen: Option<Sample>,
+}
+
+/// A retargeted [`Track`]'s first two frames (ADR-0030 rule 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Retargeted, not sampled since: the next sample is the commit frame.
+    Commit,
+    /// The commit frame was sampled (`start` is its time): the next later
+    /// sample is the first step, at most [`tokens::FIRST_STEP`].
+    FirstStep,
+    /// Past the first step: elapsed time from `start`, unclamped.
+    Running,
 }
 
 impl Track {
@@ -250,8 +268,19 @@ impl Track {
             },
             span: 1.0,
             fade_from: 1.0,
-            stepped: true,
+            rest_opacity: None,
+            phase: Phase::Running,
             frozen: None,
+        }
+    }
+
+    /// [`Track::new`] for a surface already showing at `opacity` (a notice
+    /// back while its leaving copy fades): a Reduced fade its next retarget
+    /// starts begins there, as a running fade's would.
+    pub fn visible_at(value: f32, shown: f32, opacity: f32) -> Self {
+        Track {
+            rest_opacity: Some(opacity),
+            ..Track::new(value, shown)
         }
     }
 
@@ -284,9 +313,10 @@ impl Track {
             Play::Fade => tokens::MICRO,
             Play::Snap => Duration::ZERO,
         };
+        let rest_opacity = self.rest_opacity.take();
         self.fade_from = match (play, current.settled) {
-            (Play::Fade, true) if entering => 0.0,
-            (Play::Fade, true) => 1.0,
+            (Play::Fade, true) if entering => rest_opacity.unwrap_or(0.0),
+            (Play::Fade, true) => rest_opacity.unwrap_or(1.0),
             (Play::Fade, false) => current.opacity,
             _ => 1.0,
         };
@@ -298,15 +328,20 @@ impl Track {
         self.span = span;
         self.duration = base.mul_f32(span);
         self.frozen = None;
-        self.stepped = false;
+        self.phase = Phase::Commit;
         self.start = Some(now);
         if play == Play::Snap || self.duration.is_zero() {
             self.settle();
         }
     }
 
-    /// The value to paint at `now`. The first step after a retarget is at
-    /// most [`tokens::FIRST_STEP`]; a frozen track returns its frozen sample.
+    /// The value to paint at `now`. The first sample after a retarget is
+    /// the commit frame: it paints where the motion starts and stamps its
+    /// start at `now`, so the time the commit frame took to come (input
+    /// handling, a heavy layout before its render) is never travelled. The
+    /// next later sample, the first step, is at most [`tokens::FIRST_STEP`]
+    /// after it, so a long commit frame is not travelled either. A frozen
+    /// track returns its frozen sample.
     pub fn sample(&mut self, now: Instant) -> Sample {
         if let Some(frozen) = self.frozen {
             return frozen;
@@ -319,12 +354,20 @@ impl Track {
             };
         };
         let mut elapsed = now.saturating_duration_since(start);
-        if !self.stepped && !elapsed.is_zero() {
-            self.stepped = true;
-            if elapsed > tokens::FIRST_STEP {
-                elapsed = tokens::FIRST_STEP;
-                self.start = Some(now - tokens::FIRST_STEP);
+        match self.phase {
+            Phase::Commit => {
+                self.phase = Phase::FirstStep;
+                self.start = Some(now);
+                elapsed = Duration::ZERO;
             }
+            Phase::FirstStep if !elapsed.is_zero() => {
+                self.phase = Phase::Running;
+                if elapsed > tokens::FIRST_STEP {
+                    elapsed = tokens::FIRST_STEP;
+                    self.start = Some(now - tokens::FIRST_STEP);
+                }
+            }
+            Phase::FirstStep | Phase::Running => {}
         }
         let progress = elapsed.as_secs_f32() / self.duration.as_secs_f32();
         if progress >= 1.0 {
@@ -410,7 +453,7 @@ impl Track {
                 self.play = Play::Fade;
                 self.fade_from = fade_from;
                 self.duration = base;
-                self.stepped = true;
+                self.phase = Phase::Running;
                 self.start = Some(now);
             }
             _ => {}

@@ -6,10 +6,10 @@
 //! and gpui-kit's motion tokens ([`kit_tokens`]).
 //!
 //! Every motion is a [`Track`] field of the entity that owns its surface,
-//! sampled in that entity's render (rule 13). [`enter_from`] carries the two
-//! M6 entrances until T7.9 and T7.10 move their callers onto tracks of their
-//! own; it maps Reduced to a snap, as in M6. macOS Reduce Motion is read
-//! again on every activation of the main window
+//! sampled in that entity's render (rule 13). [`enter_from`] carries the
+//! threads panel's M6 entrance until T7.10 moves it onto a track of its own
+//! (T7.9 moved the banner strip's); it maps Reduced to a snap, as in M6.
+//! macOS Reduce Motion is read again on every activation of the main window
 //! ([`follow_system_reduce_motion`]).
 
 pub mod exit;
@@ -34,7 +34,8 @@ use crate::window::MainWindow;
 
 /// The threads panel's content entering (M6; retired by T7.10).
 pub const ENTER_PANEL: Duration = Duration::from_millis(180);
-/// A banner notice entering (M6; retired by T7.9).
+/// A banner notice entering (M6). Unused since T7.9 put the strip on its
+/// own `Track`; T7.10 deletes it with [`enter_from`].
 pub const ENTER_NOTICE: Duration = Duration::from_millis(160);
 
 /// Ease-out quint: fast, then a long settle (the threads panel, M6).

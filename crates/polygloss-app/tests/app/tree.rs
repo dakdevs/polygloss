@@ -26,6 +26,7 @@ use polygloss_viewport::{
 use crate::shell::{Shell, bounds, compare_req, draw, start};
 use crate::support::{FixtureRepo, Sandbox};
 
+mod chevron_motion;
 mod footer;
 mod panels;
 mod rows;

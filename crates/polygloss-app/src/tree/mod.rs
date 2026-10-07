@@ -218,6 +218,8 @@ pub struct FileTree {
     renders: u64,
     /// Partitions applied ([`FileTree::panel_builds`]).
     builds: u64,
+    /// The folder chevrons turning (M10).
+    chevrons: row::Chevrons,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -279,6 +281,7 @@ impl FileTree {
             key_menu: None,
             renders: 0,
             builds: 0,
+            chevrons: row::Chevrons::default(),
             _subscriptions: subscriptions,
         };
         tree.build(files, None, Vec::new(), cx);
@@ -806,6 +809,9 @@ impl FileTree {
             TreeEvent::Expanded(id) => (id, true),
             TreeEvent::Collapsed(id) => (id, false),
         };
+        let now = cx.background_executor().now();
+        self.chevrons
+            .toggled(panel, id.clone(), expanded, crate::motion::policy(cx), now);
         let (Some(ItemId::Dir(path)), Some(panel)) =
             (ItemId::parse(id), self.panels.get_mut(panel))
         else {
@@ -887,6 +893,7 @@ impl Render for FileTree {
         let filtering = self.filter.is_active();
         self.follow_focus(window, cx);
         let open = self.panels.open_key().cloned();
+        row::Chevrons::frame(self, open.as_ref(), window, cx);
         let headers = self.panels.has_headers();
         let this = cx.entity().downgrade();
         // Panels with a match, their headers, the open one's tree after its

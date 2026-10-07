@@ -646,6 +646,67 @@ fn agent_replies_show_opens_the_panel(cx: &mut gpui_kit::TestAppContext) {
     assert!(shell.cx.debug_bounds(row).is_some());
 }
 
+/// M12 through the feed's own path (T7.9): "Show" sees the last unread
+/// reply, `show_banners` clears the notice, and the strip on the latest
+/// state is left empty, so the notice's inert copy leaves upward from where
+/// it was over MICRO.
+#[gpui_kit::test]
+fn agent_replies_banner_leaves_when_its_last_reply_is_seen(cx: &mut gpui_kit::TestAppContext) {
+    use crate::support::motion::{advance, requested_frames, step_to};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+    use polygloss_app::motion::{self, MotionPolicy, Recorded};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let _sb = Sandbox::isolate();
+    let repo = code_change_repo();
+    let drawn: Rc<RefCell<Vec<Recorded>>> = Rc::default();
+    cx.update(|cx| motion::record(drawn.clone(), cx));
+    let mut shell = start(cx);
+    let tab = shell.open(compare_req(repo.path())).unwrap();
+    shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(MotionPolicy::Full), cx));
+    let other = other_core();
+    agent_thread(&other, &mut shell, &tab, line("src/config.rs", 5), "first");
+    nudge(&mut shell);
+    assert_eq!(
+        banner(&mut shell, &tab, BannerKind::AgentReplies).as_deref(),
+        Some("claude-code replied to 1 thread")
+    );
+    step_to(shell.cx, FIRST_STEP);
+    advance(shell.cx, Duration::from_millis(300));
+    let shown = shell
+        .cx
+        .debug_bounds("banner-notice-0")
+        .expect("the notice shows");
+    let exit_opacity = |drawn: &Rc<RefCell<Vec<Recorded>>>| {
+        let id = gpui_kit::ElementId::from("banner-exit");
+        drawn
+            .borrow()
+            .iter()
+            .rev()
+            .find(|r| r.id == id)
+            .map(|r| r.opacity)
+    };
+
+    click_banner(&mut shell, &tab, BannerKind::AgentReplies);
+    assert_eq!(banner(&mut shell, &tab, BannerKind::AgentReplies), None);
+    assert!(shell.cx.debug_bounds("banner-notice-0").is_none());
+    let copy = shell
+        .cx
+        .debug_bounds("banner-exit-notice-0")
+        .expect("its copy leaves");
+    assert_eq!(copy.origin, shown.origin, "from where the notice was");
+    assert_eq!(exit_opacity(&drawn), Some(1.0), "the commit frame");
+    step_to(shell.cx, Duration::from_millis(50));
+    let half = exit_opacity(&drawn).expect("leaving");
+    assert!(0.0 < half && half < 1.0, "50 ms: {half}");
+    advance(shell.cx, Duration::from_millis(50));
+    assert!(shell.cx.debug_bounds("banner-exit-notice-0").is_none());
+    assert_eq!(requested_frames(shell.cx), 0);
+}
+
 #[gpui_kit::test]
 fn long_rereview_summary_keeps_its_button_in_view(cx: &mut gpui_kit::TestAppContext) {
     let _sb = Sandbox::isolate();

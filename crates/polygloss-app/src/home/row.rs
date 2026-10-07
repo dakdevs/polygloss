@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Div, Hsla, InteractiveElement as _, ParentElement as _, SharedString,
-    Stateful, Styled as _, div, px,
+    AnyElement, App, Div, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    SharedString, Stateful, Styled as _, div, px,
 };
 use polygloss_core::git::{CompareMode, ReviewKind, Since, Source};
 use polygloss_core::review::{OpenRequest, ReviewSummary, Verdict};
@@ -343,6 +343,81 @@ pub fn render_row(
     actions: AnyElement,
     cx: &App,
 ) -> Stateful<Div> {
+    let review_id = row.summary.review_id.clone();
+    let ink = div()
+        .id(("home-row-ink", place.ix))
+        .absolute()
+        .inset_0()
+        .rounded(px(radius::inner(radius::MD, stroke::BORDER)))
+        .press_ink(cx)
+        .into_any_element();
+    card(
+        row,
+        place.selected,
+        now_ms,
+        utc_offset_s,
+        Some(ink),
+        actions,
+        cx,
+    )
+    .debug_selector(move || format!("home-row-{review_id}"))
+    .id(("home-row", place.ix))
+    .cursor_pointer()
+}
+
+/// What a leaving row's copy draws (M14, ADR-0030): the row and the time
+/// its relative date is read at.
+#[derive(Debug, Clone)]
+pub struct RowCopy {
+    pub row: HomeRow,
+    pub now_ms: i64,
+    pub utc_offset_s: i64,
+}
+
+/// A leaving row's inert copy (`Exit`'s render function): the row as
+/// [`render_row`] draws it unselected, with no element id, listeners, ink,
+/// cursor or tooltips, its ⋯ a lookalike of the kit's button (debug
+/// selector `home-row-copy-{review_id}`).
+pub fn render_copy(copy: &RowCopy, _window: &mut gpui_kit::Window, cx: &mut App) -> AnyElement {
+    let review_id = copy.row.summary.review_id.clone();
+    let theme = cx.theme();
+    // gpui-kit's `.small().ghost()` icon `Button` (gpui-component
+    // `button.rs`): `size_6`, the theme's radius, a small icon.
+    let menu = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size_6()
+        .rounded(theme.radius)
+        .text_color(theme.secondary_foreground)
+        .child(gpui_kit::component::Icon::new(IconName::Ellipsis).small())
+        .into_any_element();
+    card(
+        &copy.row,
+        false,
+        copy.now_ms,
+        copy.utc_offset_s,
+        None,
+        div().child(menu).into_any_element(),
+        cx,
+    )
+    .debug_selector(move || format!("home-row-copy-{review_id}"))
+    .into_any_element()
+}
+
+/// The card both draw: `ink` first under the content, the badges' debug
+/// selectors only on a live row (`ink` is `Some`).
+fn card(
+    row: &HomeRow,
+    selected_row: bool,
+    now_ms: i64,
+    utc_offset_s: i64,
+    ink: Option<AnyElement>,
+    actions: AnyElement,
+    cx: &App,
+) -> Div {
+    let live = ink.is_some();
     let theme = cx.theme();
     let s = &row.summary;
     let (status, tone) = status_label(s);
@@ -356,14 +431,11 @@ pub fn render_row(
     };
     // A fixed column, its content at its right edge.
     let column = |width: f32| div().flex_none().w(px(width)).flex().justify_end();
-    let review_id = s.review_id.clone();
     let [kind_id, status_id, questions_id, agent_id] = [(); 4].map(|_| s.review_id.clone());
     let card = crate::theme::viewport_theme(cx);
     // The selection tints the card (the theme's color is translucent).
     let selected = card.card_background.blend(theme.list_active);
     h_flex()
-        .id(("home-row", place.ix))
-        .debug_selector(move || format!("home-row-{review_id}"))
         .h(px(layout::HOME_CARD))
         .w_full()
         .pl(px(edge::CARD_X))
@@ -373,19 +445,11 @@ pub fn render_row(
         .border_1()
         .border_color(card.card_border)
         .rounded(px(radius::MD))
-        .cursor_pointer()
-        .when(place.selected, |d| d.bg(selected))
+        .when(selected_row, |d| d.bg(selected))
         .relative()
-        .child(
-            div()
-                .id(("home-row-ink", place.ix))
-                .absolute()
-                .inset_0()
-                .rounded(px(radius::inner(radius::MD, stroke::BORDER)))
-                .press_ink(cx),
-        )
+        .children(ink)
         // The keyboard selection: a bar on the left edge, taking no space.
-        .when(place.selected, |d| {
+        .when(selected_row, |d| {
             d.child(
                 div()
                     .absolute()
@@ -406,7 +470,9 @@ pub fn render_row(
         .child(
             column(layout::HOME_COL_KIND).child(
                 badge(theme.secondary_foreground)
-                    .debug_selector(move || format!("home-kind-{kind_id}"))
+                    .when(live, |d| {
+                        d.debug_selector(move || format!("home-kind-{kind_id}"))
+                    })
                     .w_full()
                     .justify_center()
                     .bg(theme.secondary)
@@ -459,7 +525,9 @@ pub fn render_row(
         .when_some(questions_label(s), |d, q| {
             d.child(
                 badge(theme.warning)
-                    .debug_selector(move || format!("home-questions-{questions_id}"))
+                    .when(live, |d| {
+                        d.debug_selector(move || format!("home-questions-{questions_id}"))
+                    })
                     .bg(theme.warning.opacity(0.14))
                     .font_medium()
                     .child(q),
@@ -467,7 +535,9 @@ pub fn render_row(
         })
         .child(
             badge(tone_fg)
-                .debug_selector(move || format!("home-status-{status_id}"))
+                .when(live, |d| {
+                    d.debug_selector(move || format!("home-status-{status_id}"))
+                })
                 .bg(tone_bg)
                 .font_medium()
                 .child(status),
@@ -480,7 +550,9 @@ pub fn render_row(
             column(layout::HOME_COL_AGENT).when_some(row.agent.clone(), |d, agent| {
                 d.child(
                     badge(theme.muted_foreground)
-                        .debug_selector(move || format!("home-agent-{agent_id}"))
+                        .when(live, |d| {
+                            d.debug_selector(move || format!("home-agent-{agent_id}"))
+                        })
                         .border_1()
                         .border_color(theme.border)
                         .child(

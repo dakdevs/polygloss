@@ -204,7 +204,14 @@ fn choose_repo(
 ) -> Entity<SourceStep> {
     let path = home.join("src/polygloss");
     cx.update_window(handle, |_, window, cx| {
-        flow.update(cx, |f, cx| f.choose_repo(path, window, cx))
+        flow.update(cx, |f, cx| {
+            f.choose_repo(
+                path,
+                polygloss_app::motion::Initiator::Programmatic,
+                window,
+                cx,
+            )
+        })
     })
     .unwrap();
     for _ in 0..MAX_FRAMES {

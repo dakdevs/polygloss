@@ -11,6 +11,7 @@ use std::process::{Command, Stdio};
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{Entity, Focusable as _, ScrollStrategy, TestAppContext};
+use polygloss_app::motion::Initiator;
 use polygloss_app::open_flow::source_step::{COMMIT_PAGE, SourceMode, SourceStep};
 use polygloss_app::open_flow::{self, FlowStep, OpenFlow, ranking};
 use polygloss_core::git::{CompareMode, ReviewKind, Since, Source};
@@ -54,9 +55,11 @@ fn search_repos(shell: &mut Shell, flow: &Entity<OpenFlow>, query: &str) -> Vec<
 /// Chooses `path` in the repo step and waits for the source step.
 fn choose(shell: &mut Shell, flow: &Entity<OpenFlow>, path: &Path) -> Entity<SourceStep> {
     let path = path.to_path_buf();
-    shell
-        .cx
-        .update(|window, cx| flow.update(cx, |f, cx| f.choose_repo(path, window, cx)));
+    shell.cx.update(|window, cx| {
+        flow.update(cx, |f, cx| {
+            f.choose_repo(path, Initiator::Programmatic, window, cx)
+        })
+    });
     draw(shell.cx);
     flow.read_with(shell.cx, |f, _| f.source().cloned())
         .expect("the source step shows")
@@ -224,7 +227,7 @@ fn open_flow_browse_picks_a_folder(cx: &mut TestAppContext) {
     let flow = open(&mut shell);
     shell
         .cx
-        .update(|window, cx| flow.update(cx, |f, cx| f.browse(window, cx)));
+        .update(|window, cx| flow.update(cx, |f, cx| f.browse(Initiator::Pointer, window, cx)));
     draw(shell.cx);
     assert!(shell.cx.did_prompt_for_paths(), "Browse… asks for a folder");
     let picked = sub.clone();
@@ -572,4 +575,217 @@ fn open_flow_radio_centres_on_its_label(cx: &mut TestAppContext) {
         let dot = crate::shell::bounds(shell.cx, &format!("{option}-dot")).size;
         assert_eq!(dot, gpui_kit::size(gpui_kit::px(6.), gpui_kit::px(6.)));
     }
+}
+
+// ---------------------------------------------------------------------------
+// M13, the step change (T7.9, ADR-0030): the new step's content enters 8 pt
+// from its direction of travel (forward from the trailing edge, Back from the
+// leading one) and fades in over QUICK on OUT, by pointer and keyboard; the
+// old step leaves on the commit frame and focus lands in the new one then.
+
+/// `cubic-bezier(x1, y1, x2, y2)` at `t` by bisection on x.
+fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
+    let at = |a: f64, b: f64, s: f64| {
+        3.0 * (1.0 - s) * (1.0 - s) * s * a + 3.0 * (1.0 - s) * s * s * b + s * s * s
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..200 {
+        let mid = (low + high) / 2.0;
+        if at(x1, x2, mid) < t {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    at(y1, y2, (low + high) / 2.0)
+}
+
+/// OUT.
+fn out(t: f64) -> f64 {
+    bezier(0.16, 1.0, 0.3, 1.0, t)
+}
+
+/// `round(v · 2) / 2`: the test window's scale is 2.
+fn quantized(v: f64) -> f32 {
+    ((v * 2.0).round() / 2.0) as f32
+}
+
+fn ms(ms: f64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(ms / 1000.0)
+}
+
+/// The flow's content's left edge.
+fn content_x(shell: &mut Shell) -> f32 {
+    crate::shell::bounds(shell.cx, "open-flow").left().as_f32()
+}
+
+/// Runs the background work until the flow shows `step`, drawing nothing.
+fn until_step(shell: &mut Shell, flow: &Entity<OpenFlow>, step: FlowStep) {
+    for _ in 0..100 {
+        shell.cx.run_until_parked();
+        if flow.read_with(shell.cx, |f, _| f.step()) == step {
+            return;
+        }
+    }
+    panic!("the flow never showed {step:?}");
+}
+
+#[gpui_kit::test]
+fn open_flow_step_enters_from_its_direction(cx: &mut TestAppContext) {
+    use crate::support::motion::{advance, frame, step_to};
+    use polygloss_app::motion::tokens::FIRST_STEP;
+    use polygloss_app::motion::{self, MotionPolicy, Recorded};
+
+    let _sb = Sandbox::isolate();
+    let repo = feature_repo();
+    // A recent repo: ⏎ in the repo list picks it.
+    Core::open_default()
+        .unwrap()
+        .open(&polygloss_core::review::OpenRequest {
+            worktree: repo.path().to_path_buf(),
+            source: Source::Live { since: Since::Head },
+            label: None,
+            pin: None,
+            actor: polygloss_core::store::events::Actor::human(),
+        })
+        .unwrap();
+    let drawn: std::rc::Rc<std::cell::RefCell<Vec<Recorded>>> = Default::default();
+    cx.update(|cx| {
+        motion::record(drawn.clone(), cx);
+        motion::set_override(Some(MotionPolicy::Full), cx);
+    });
+    let mut shell = start(cx);
+    let flow = open(&mut shell);
+    let rest = content_x(&mut shell);
+    let opacity = |drawn: &std::rc::Rc<std::cell::RefCell<Vec<Recorded>>>| {
+        let id = gpui_kit::ElementId::from("open-flow-step");
+        drawn
+            .borrow()
+            .iter()
+            .rev()
+            .find(|r| r.id == id)
+            .map(|r| r.opacity)
+    };
+
+    // ⏎: forward, from the trailing edge. The commit frame shows the source
+    // step 8 pt right, transparent, with the keyboard in it.
+    shell.cx.simulate_keystrokes("enter");
+    until_step(&mut shell, &flow, FlowStep::Source);
+    frame(shell.cx);
+    assert_eq!(content_x(&mut shell), rest + 8.0, "the commit frame");
+    assert_eq!(opacity(&drawn), Some(0.0));
+    let source = flow
+        .read_with(shell.cx, |f, _| f.source().cloned())
+        .unwrap();
+    assert!(
+        shell
+            .cx
+            .update(|window, cx| source.focus_handle(cx).contains_focused(window, cx)),
+        "focus is in the new step from its first frame"
+    );
+    step_to(shell.cx, FIRST_STEP);
+    assert_eq!(
+        content_x(&mut shell),
+        rest + quantized(8.0 * (1.0 - out(16.667 / 150.0)))
+    );
+    advance(shell.cx, ms(75.0) - FIRST_STEP);
+    assert_eq!(
+        content_x(&mut shell),
+        rest + quantized(8.0 * (1.0 - out(0.5))),
+        "75 ms"
+    );
+    let half = opacity(&drawn).expect("entering");
+    assert!(0.0 < half && half < 1.0, "{half}");
+    advance(shell.cx, ms(75.0));
+    assert_eq!(content_x(&mut shell), rest, "settled after 150 ms");
+    assert_eq!(opacity(&drawn), Some(1.0));
+
+    // A pointer move leaves an entrance running; a mouse down freezes it,
+    // asking for no frames, until its mouse up settles it.
+    {
+        use crate::support::motion::requested_frames;
+        use gpui_kit::{Modifiers, MouseButton, point, px};
+
+        shell.cx.simulate_keystrokes("cmd-[");
+        frame(shell.cx);
+        step_to(shell.cx, ms(200.0));
+        shell.cx.simulate_keystrokes("enter");
+        until_step(&mut shell, &flow, FlowStep::Source);
+        frame(shell.cx);
+        // The dialog's padding, beside the content's resting left edge.
+        let dialog = crate::shell::bounds(shell.cx, "open-flow");
+        let blank = point(px(rest - 4.0), dialog.top() + px(4.));
+        shell.cx.simulate_mouse_move(blank, None, Modifiers::none());
+        step_to(shell.cx, FIRST_STEP);
+        let entering = content_x(&mut shell);
+        assert!(
+            rest < entering && entering < rest + 8.0,
+            "running after a pointer move: {entering}"
+        );
+        shell
+            .cx
+            .simulate_mouse_down(blank, MouseButton::Left, Modifiers::none());
+        for i in 0..3 {
+            advance(shell.cx, FIRST_STEP);
+            assert_eq!(content_x(&mut shell), entering, "frozen, frame {i}");
+        }
+        assert_eq!(requested_frames(shell.cx), 0, "frozen: no frames");
+        shell
+            .cx
+            .simulate_mouse_up(blank, MouseButton::Left, Modifiers::none());
+        frame(shell.cx);
+        assert_eq!(content_x(&mut shell), rest, "settled at the mouse up");
+        assert_eq!(flow.read_with(shell.cx, |f, _| f.step()), FlowStep::Source);
+        assert_eq!(requested_frames(shell.cx), 0);
+    }
+
+    // ⌘[: back, from the leading edge.
+    shell.cx.simulate_keystrokes("cmd-[");
+    frame(shell.cx);
+    assert_eq!(flow.read_with(shell.cx, |f, _| f.step()), FlowStep::Repo);
+    assert_eq!(content_x(&mut shell), rest - 8.0, "the commit frame");
+    step_to(shell.cx, ms(75.0));
+    assert_eq!(
+        content_x(&mut shell),
+        rest + quantized(-8.0 * (1.0 - out(0.5))),
+        "75 ms"
+    );
+    advance(shell.cx, ms(75.0));
+    assert_eq!(content_x(&mut shell), rest);
+
+    // The pointer too: the back button, then text typed on the commit frame
+    // lands in the repo search (the key down ends the entrance at once).
+    shell.cx.simulate_keystrokes("enter");
+    until_step(&mut shell, &flow, FlowStep::Source);
+    frame(shell.cx);
+    step_to(shell.cx, ms(200.0));
+    crate::shell::click(shell.cx, "open-flow-back");
+    let x = content_x(&mut shell);
+    assert!(rest - 8.0 <= x && x < rest, "the back button animates: {x}");
+    shell.cx.simulate_input("zzqq");
+    frame(shell.cx);
+    assert_eq!(content_x(&mut shell), rest, "a key down settles it");
+    assert_eq!(
+        repo_names(&mut shell, &flow),
+        Vec::<String>::new(),
+        "the text went to the repo search"
+    );
+
+    // Reduce Motion: it fades in where it rests.
+    shell
+        .cx
+        .update(|_, cx| motion::set_override(Some(MotionPolicy::Reduced), cx));
+    let path = repo.path().to_path_buf();
+    shell.cx.update(|window, cx| {
+        flow.update(cx, |f, cx| {
+            f.choose_repo(path, polygloss_app::motion::Initiator::Pointer, window, cx)
+        })
+    });
+    until_step(&mut shell, &flow, FlowStep::Source);
+    frame(shell.cx);
+    assert_eq!(content_x(&mut shell), rest, "no travel");
+    step_to(shell.cx, ms(75.0));
+    assert_eq!(content_x(&mut shell), rest, "no travel");
+    let half = opacity(&drawn).expect("fading in");
+    assert!(0.0 < half && half < 1.0, "{half}");
 }

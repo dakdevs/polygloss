@@ -13,6 +13,12 @@
 //! a review that is already open. Keys inside the dialog (context
 //! [`CONTEXT`]): ⌘1/⌘2/⌘3 pick the source kind, ⌘[ goes back to the repos,
 //! Esc closes it. The repo and the refs are read on the background executor.
+//!
+//! A step change (M13, ADR-0030) by pointer or keyboard (`⏎`, ⌘[) swaps the
+//! dialog's content on the commit frame, focus included, and the new step's
+//! content enters 8 pt from its direction of travel (forward from the
+//! trailing edge, Back from the leading one) while fading in over QUICK on
+//! OUT; the dialog's frame stays. Under Reduce Motion it only fades.
 
 pub mod ranking;
 pub mod repo_step;
@@ -32,13 +38,16 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight, Global,
     InteractiveElement as _, IntoElement, KeyBinding, Keystroke, MenuItem, ParentElement as _,
-    PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, TaskExt as _,
-    WeakEntity, Window, div, px,
+    PathPromptOptions, Pixels, Point, Render, SharedString, Styled as _, Subscription, Task,
+    TaskExt as _, WeakEntity, Window, div, point, px,
 };
 
 use crate::app_state::AppState;
 use crate::keymap::actions::window as window_actions;
 use crate::keymap::handlers;
+use crate::motion::{
+    self, Initiator, Motion, Recorded, Reduced, ReducedPlay, Settle, Track, tokens,
+};
 use crate::open_flow::repo_step::{RECENT_REPOS, RepoChoice, RepoDelegate, load_rows, tildify};
 use crate::open_flow::source_step::{RepoData, SourceEvent, SourceMode, SourceStep, load_repo};
 use crate::palette::key_cap::key_cap;
@@ -92,6 +101,20 @@ pub fn init(cx: &mut App) {
     );
 }
 
+/// A step's content entering (ADR-0030 M13): QUICK on OUT, by pointer and
+/// keyboard; the old step leaves on the commit frame, so there is no exit.
+/// Under Reduce Motion it fades in.
+pub const STEP: Motion = Motion {
+    enter: tokens::QUICK,
+    exit: tokens::QUICK,
+    easing: tokens::out,
+    animates: &[Initiator::Pointer, Initiator::Keyboard],
+    reduced: Reduced {
+        enter: ReducedPlay::Fade,
+        exit: ReducedPlay::Snap,
+    },
+};
+
 /// Which step the flow shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowStep {
@@ -113,6 +136,10 @@ pub struct OpenFlow {
     /// The repo being read (after a choice) and the read.
     choosing: Option<(PathBuf, Task<()>)>,
     error: Option<SharedString>,
+    /// The current step's entrance (M13): 0 → 1.
+    entering: Track,
+    /// Where it enters from: 1 forward (the trailing edge), −1 back.
+    from_side: f32,
     _loading_repos: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -154,9 +181,12 @@ impl OpenFlow {
             window,
             |flow: &mut OpenFlow, repos, event: &ListEvent, window, cx| {
                 if let ListEvent::Confirm(ix) = event {
+                    let initiator = motion::initiator(window);
                     match repos.read(cx).delegate().choice(*ix) {
-                        Some(RepoChoice::Repo(path)) => flow.choose_repo(path, window, cx),
-                        Some(RepoChoice::Browse) => flow.browse(window, cx),
+                        Some(RepoChoice::Repo(path)) => {
+                            flow.choose_repo(path, initiator, window, cx)
+                        }
+                        Some(RepoChoice::Browse) => flow.browse(initiator, window, cx),
                         None => {}
                     }
                 }
@@ -182,6 +212,8 @@ impl OpenFlow {
             source: None,
             choosing: None,
             error: None,
+            entering: Track::new(1.0, 1.0),
+            from_side: 1.0,
             _loading_repos: loading,
             _subscriptions: subscriptions,
         }
@@ -229,8 +261,15 @@ impl OpenFlow {
     }
 
     /// Reads the repo containing `path` on the background executor, then
-    /// shows its source step (or the error).
-    pub fn choose_repo(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// shows its source step (or the error); the step enters as `initiator`
+    /// plays it (M13).
+    pub fn choose_repo(
+        &mut self,
+        path: PathBuf,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.error = None;
         let target = path.clone();
         let task = cx.spawn_in(window, async move |flow, cx| {
@@ -238,7 +277,7 @@ impl OpenFlow {
             flow.update_in(cx, |flow, window, cx| {
                 flow.choosing = None;
                 match data {
-                    Ok(data) => flow.show_source(data, window, cx),
+                    Ok(data) => flow.show_source(data, initiator, window, cx),
                     Err(message) => {
                         flow.error = Some(message.into());
                         flow.focus_step(window, cx);
@@ -252,7 +291,13 @@ impl OpenFlow {
         cx.notify();
     }
 
-    fn show_source(&mut self, data: RepoData, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_source(
+        &mut self,
+        data: RepoData,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let source = cx.new(|cx| SourceStep::new(data, window, cx));
         self._subscriptions.push(cx.subscribe_in(
             &source,
@@ -270,10 +315,22 @@ impl OpenFlow {
             }));
         self.source = Some(source);
         self.focus_step(window, cx);
+        self.enter_step(1.0, initiator, cx);
     }
 
-    /// Asks for a folder with the native picker and chooses its repo.
-    pub fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The step just shown enters from `side` (1 forward, −1 back), as
+    /// `initiator` plays it; a step still entering ends first.
+    fn enter_step(&mut self, side: f32, initiator: Initiator, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        self.from_side = side;
+        self.entering = Track::new(0.0, 1.0);
+        self.entering
+            .retarget(1.0, &STEP, initiator, motion::policy(cx), now);
+    }
+
+    /// Asks for a folder with the native picker and chooses its repo (the
+    /// step entering as `initiator`, who asked, plays it).
+    pub fn browse(&mut self, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -287,17 +344,21 @@ impl OpenFlow {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            flow.update_in(cx, |flow, window, cx| flow.choose_repo(path, window, cx))
-                .ok();
+            flow.update_in(cx, |flow, window, cx| {
+                flow.choose_repo(path, initiator, window, cx)
+            })
+            .ok();
         })
         .detach();
     }
 
-    /// Back to the repo list.
-    pub fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Back to the repo list, entering from the leading edge as `initiator`
+    /// plays it.
+    pub fn back(&mut self, initiator: Initiator, window: &mut Window, cx: &mut Context<Self>) {
         if self.source.take().is_some() {
             self.error = None;
             self.focus_step(window, cx);
+            self.enter_step(-1.0, initiator, cx);
             cx.notify();
         }
     }
@@ -358,11 +419,14 @@ impl OpenFlow {
             .when(self.source.is_some(), |d| {
                 d.child(
                     Button::new("open-flow-back")
+                        .debug_selector(|| "open-flow-back".into())
                         .icon(IconName::ChevronLeft)
                         .ghost()
                         .small()
                         .tooltip("Back to repositories (⌘[)")
-                        .on_click(cx.listener(|flow, _, window, cx| flow.back(window, cx))),
+                        .on_click(cx.listener(|flow, _, window, cx| {
+                            flow.back(motion::initiator(window), window, cx)
+                        })),
                 )
             })
             .child(
@@ -473,8 +537,59 @@ impl Focusable for OpenFlow {
     }
 }
 
+impl OpenFlow {
+    /// The entering step's offset and opacity this frame (M13), registering
+    /// the entrance with `motion::settle` while it runs.
+    fn step_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> (Point<Pixels>, f32) {
+        let sample = motion::sample(&mut self.entering, window, cx);
+        if !sample.settled {
+            let (freeze, settle) = (cx.weak_entity(), cx.weak_entity());
+            motion::settle::register(
+                None,
+                move |now, cx| {
+                    freeze
+                        .update(cx, |f, cx| {
+                            f.entering.freeze(now);
+                            cx.notify();
+                        })
+                        .ok();
+                },
+                move |which, cx| {
+                    settle
+                        .update(cx, |f, cx| {
+                            if which == Settle::All || f.entering.is_frozen() {
+                                f.entering.settle();
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                },
+                window,
+                cx,
+            );
+        }
+        let x = motion::quantize(
+            self.from_side * tokens::SHIFT * (1.0 - sample.value),
+            window.scale_factor(),
+        );
+        let offset = point(px(x), px(0.));
+        let opacity = sample.value * sample.opacity;
+        motion::report(
+            || Recorded {
+                id: "open-flow-step".into(),
+                offset,
+                opacity,
+                rotation: 0.0,
+            },
+            cx,
+        );
+        (offset, opacity)
+    }
+}
+
 impl Render for OpenFlow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (offset, opacity) = self.step_motion(window, cx);
         let body = match &self.source {
             None => div()
                 .size_full()
@@ -490,11 +605,13 @@ impl Render for OpenFlow {
                 .into_any_element(),
             Some(source) => source.clone().into_any_element(),
         };
-        v_flex()
+        let content = v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .debug_selector(|| "open-flow".into())
-            .on_action(cx.listener(|flow, _: &Back, window, cx| flow.back(window, cx)))
+            .on_action(cx.listener(|flow, _: &Back, window, cx| {
+                flow.back(motion::initiator(window), window, cx)
+            }))
             .on_action(cx.listener(|flow, _: &Open, window, cx| flow.confirm(window, cx)))
             .on_action(cx.listener(|flow, _: &ModeLive, window, cx| {
                 flow.set_mode(SourceMode::Live, window, cx)
@@ -510,6 +627,8 @@ impl Render for OpenFlow {
             .gap(px(gap::GROUP))
             .child(self.render_header(cx))
             .child(div().flex_1().min_h_0().child(body))
-            .child(self.render_footer(cx))
+            .child(self.render_footer(cx));
+        // Always wrapped (rule 13): the content keeps one element tree.
+        motion::wrap::slide(offset, content.opacity(opacity))
     }
 }

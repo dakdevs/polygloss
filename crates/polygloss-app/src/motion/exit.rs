@@ -145,6 +145,12 @@ impl<S: 'static> Exit<S> {
     /// margin inside another wrapper would not reach the list). `None` with
     /// `frame`.
     pub fn render(&mut self, window: &mut Window, cx: &mut App) -> Option<Div> {
+        self.draw(window, cx).map(|(_, element)| element)
+    }
+
+    /// [`Self::render`] with the frame it drew: one sample of each channel
+    /// per frame (the commit frame is its first sample, rule 6).
+    pub fn draw(&mut self, window: &mut Window, cx: &mut App) -> Option<(ExitFrame, Div)> {
         let frame = self.frame(window, cx)?;
         let copy = (self.render)(&self.snapshot, window, cx);
         let carrier = div().absolute().opacity(frame.opacity).child(copy);
@@ -152,7 +158,7 @@ impl<S: 'static> Exit<S> {
             ExitHitbox::None => carrier,
             ExitHitbox::Occlude => carrier.occlude(),
         };
-        Some(match self.placement {
+        let element = match self.placement {
             Placement::Overlay(bounds) => carrier
                 .left(bounds.origin.x + frame.offset.x)
                 .top(bounds.origin.y + frame.offset.y)
@@ -168,10 +174,14 @@ impl<S: 'static> Exit<S> {
                 // margin as if the margin were 0.
                 let slot_div = if slot == 0.0 { div().hidden() } else { div() };
                 // No `flex_none` or `flex_shrink_0`: with the negative margin,
-                // taffy then misplaces the items.
+                // taffy then misplaces the items. Its minimum height keeps it
+                // whole in a list that overflows (a scrolling list shrinks
+                // its items to fit, and a clipped slot's automatic minimum
+                // is 0).
                 slot_div
                     .relative()
                     .h(px(slot))
+                    .min_h(px(slot))
                     .mt(-gap)
                     .overflow_hidden()
                     .child(
@@ -182,6 +192,7 @@ impl<S: 'static> Exit<S> {
                             .h(height),
                     )
             }
-        })
+        };
+        Some((frame, element))
     }
 }

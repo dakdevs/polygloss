@@ -19,16 +19,16 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::{
-    Action, Anchor, AnyElement, App, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    MenuItem, SharedString, Window,
+    Action, Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle,
+    InteractiveElement as _, IntoElement, MenuItem, SharedString, Window,
 };
 use polygloss_diff::rows::Layout;
-use polygloss_viewport::{LayoutMode, ViewportEvent};
+use polygloss_viewport::{DiffViewport, LayoutMode, ViewportEvent};
 
 use crate::keymap::actions::window as window_actions;
 use crate::keymap::handlers;
 use crate::review_tab::ReviewTab;
-use crate::segmented::{SegmentSpec, segmented};
+use crate::segmented::{SegmentSpec, SegmentedState, segmented};
 use crate::window::{MainWindow, MenuKind};
 
 /// Registers the palette, the cheat sheet and the view toggles.
@@ -60,11 +60,33 @@ pub fn init(cx: &mut App) {
 /// layout flips with the width.
 struct ShownLayout(Layout);
 
+/// The layout toggle's selected fill (M11), one per tab.
+struct LayoutFill(Entity<SegmentedState>);
+
+/// The layout the toggle shows: a manual choice from the moment it is made
+/// (the viewport applies it at its next layout), else the automatic one.
+fn shown_layout(viewport: &DiffViewport) -> Layout {
+    match viewport.options().layout {
+        LayoutMode::Split => Layout::Split,
+        LayoutMode::Unified => Layout::Unified,
+        LayoutMode::Auto => viewport.effective_layout(),
+    }
+}
+
+fn segment_of(layout: Layout) -> usize {
+    match layout {
+        Layout::Split => 0,
+        Layout::Unified => 1,
+    }
+}
+
 /// Sets up the view toggles of a new tab.
 pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     view_toggles::attach(tab, window, cx);
     let shown = tab.viewport.read(cx).effective_layout();
     tab.insert_extension(ShownLayout(shown));
+    let fill = cx.new(|_| SegmentedState::new(segment_of(shown)));
+    tab.insert_extension(LayoutFill(fill));
     let viewport = tab.viewport.clone();
     cx.subscribe(&viewport, |tab: &mut ReviewTab, viewport, event, cx| {
         if let ViewportEvent::FrameStats(_) = event {
@@ -83,14 +105,18 @@ pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewT
 /// The toolbar's split | unified toggle (design §11.4, `s`): the one
 /// [`SegmentedControl`](crate::segmented::SegmentedControl), the layout on
 /// screen selected (it follows the automatic layout as the width changes);
-/// a click chooses that layout for the diff. Not gpui-kit's
-/// `TabBar::segmented`, which animates (ADR-0029).
+/// a click chooses that layout for the diff, and its fill slides there (M11;
+/// `s`, the palette and automatic flips jump).
 pub fn layout_toggle(
     tab: &ReviewTab,
     _window: &mut Window,
     cx: &mut Context<ReviewTab>,
 ) -> AnyElement {
-    let shown = tab.viewport.read(cx).effective_layout();
+    let shown = shown_layout(tab.viewport.read(cx));
+    let Some(LayoutFill(fill)) = tab.extension::<LayoutFill>() else {
+        return gpui_kit::Empty.into_any_element();
+    };
+    let fill = fill.clone();
     let spec = |id, icon, label: &'static str| SegmentSpec {
         id,
         icon,
@@ -101,14 +127,12 @@ pub fn layout_toggle(
     let tab = cx.weak_entity();
     segmented(
         "layout-toggle",
+        &fill,
         vec![
             spec("layout-split", Lucide::Columns2, "Split"),
             spec("layout-unified", Lucide::Rows2, "Unified"),
         ],
-        match shown {
-            Layout::Split => 0,
-            Layout::Unified => 1,
-        },
+        segment_of(shown),
         move |ix, _, cx| {
             let mode = if ix == 0 {
                 LayoutMode::Split

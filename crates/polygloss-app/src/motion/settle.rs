@@ -14,6 +14,10 @@
 //!   both, and for the scroll wheel ([`Settle::All`]).
 //! - A resize, fullscreen or a scale change settles everything
 //!   ([`bounds_observer`]); a window move does not.
+//!
+//! The root also counts the frames its window paints ([`painted_frames`]):
+//! a surface that was not drawn on the last of them is off screen (a hidden
+//! tab), so it starts no exit and drops one under way (rule 9).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -50,6 +54,8 @@ struct Registry {
     /// What the pressed mouse froze: kept past the per-frame rebuild, so an
     /// owner that does not render again (a cached view) still settles.
     frozen: Vec<Rc<Registration>>,
+    /// Frames painted so far.
+    painted: u64,
 }
 
 #[derive(Default)]
@@ -83,6 +89,40 @@ pub fn register(
             freeze: Box::new(freeze),
             settle: Box::new(settle),
         }));
+    }
+}
+
+/// How many frames `window` has painted (0 in a window without a
+/// [`root`]). A render reads the frames before its own; a surface whose last
+/// render read `n` was drawn on the window's latest frame while this reads
+/// `n + 1`, in a handler or in its next render.
+pub fn painted_frames(window: &Window, cx: &App) -> u64 {
+    cx.try_global::<Registries>()
+        .and_then(|r| r.0.get(&window.window_handle().window_id()))
+        .map_or(0, |r| r.painted)
+}
+
+/// Whether a surface is on screen, for one that starts or keeps motion
+/// only while it is (rule 9: an exit never plays because a tab switch hid
+/// its surface): its owner calls [`OnScreen::mark`] from every render.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OnScreen {
+    /// [`painted_frames`] as the surface's last render read it.
+    rendered: Option<u64>,
+}
+
+impl OnScreen {
+    /// Whether the surface was drawn on its window's latest painted frame:
+    /// in a handler, whether it is on screen; in its render (before
+    /// [`Self::mark`]), whether it was on the frame before this one.
+    pub fn was_drawn(&self, window: &Window, cx: &App) -> bool {
+        self.rendered
+            .is_some_and(|n| painted_frames(window, cx) == n + 1)
+    }
+
+    /// The surface renders on this frame.
+    pub fn mark(&mut self, window: &Window, cx: &App) {
+        self.rendered = Some(painted_frames(window, cx));
     }
 }
 
@@ -168,6 +208,7 @@ impl Element for SettleRoot {
         // before paint.
         let current = registry(window, cx);
         current.rooted = true;
+        current.painted += 1;
         current.live = std::mem::take(&mut current.next);
         // Mouse listeners last one frame: register them every frame.
         window.on_mouse_event(|_: &MouseDownEvent, phase, window, cx| {

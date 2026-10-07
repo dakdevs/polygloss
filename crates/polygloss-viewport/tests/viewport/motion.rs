@@ -221,17 +221,68 @@ fn track_clamps_its_first_step() {
     let t0 = Instant::now();
     let mut track = Track::new(0.0, 12.0);
     track.retarget(12.0, &panel(), Initiator::Pointer, MotionPolicy::Full, t0);
-    // A heavy commit: the first sample comes 100 ms after the retarget.
+    // The commit frame comes 100 ms after the retarget (a heavy layout
+    // before it): it still paints the start.
+    let commit = track.sample(t0 + ms(100.0));
+    assert_eq!(
+        (commit.value, commit.settled),
+        (0.0, false),
+        "the late commit frame"
+    );
+    // The commit frame itself took 100 ms: the first step reads as 16.667 ms.
     close(
-        track.sample(t0 + ms(100.0)).value,
+        track.sample(t0 + ms(200.0)).value,
         12.0 * slide(16.667 / 240.0),
         "the first step reads as 16.667 ms",
     );
     // Later steps are not clamped: 50 ms after that, 66.667 ms in.
     close(
-        track.sample(t0 + ms(150.0)).value,
+        track.sample(t0 + ms(250.0)).value,
         12.0 * slide(66.667 / 240.0),
         "the next step",
+    );
+}
+
+/// In production the executor clock is the wall clock: the commit frame
+/// renders a little after the click that retargeted (ε), and a heavy commit
+/// frame (split | unified's relayout) delays the next one by 100 ms. The
+/// commit frame paints the start and the next frame the first 16.667 ms,
+/// never ε + 100 ms of travel.
+#[test]
+fn track_starts_on_a_commit_frame_after_the_input() {
+    let t0 = Instant::now();
+    let mut track = Track::new(0.0, 1.0);
+    let motion = Motion {
+        enter: ms(150.0),
+        exit: ms(150.0),
+        easing: tokens::in_out,
+        ..panel()
+    };
+    // ADR-0030 MOVE, ease-in-out cubic, in closed form.
+    let in_out = |t: f64| {
+        if t < 0.5 {
+            4.0 * t * t * t
+        } else {
+            1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+        }
+    };
+    track.retarget(1.0, &motion, Initiator::Pointer, MotionPolicy::Full, t0);
+    let commit = t0 + ms(0.4);
+    assert_eq!(track.sample(commit).value, 0.0, "the commit frame at ε");
+    assert_eq!(
+        track.sample(commit).value,
+        0.0,
+        "drawn again on the commit frame"
+    );
+    close(
+        track.sample(commit + ms(100.0)).value,
+        in_out(16.667 / 150.0),
+        "100 ms later: the first 16.667 ms",
+    );
+    close(
+        track.sample(commit + ms(100.0) + ms(75.0 - 16.667)).value,
+        0.5,
+        "then t runs on: ½ at 75 ms",
     );
 }
 
