@@ -35,9 +35,11 @@ use polygloss_diff::rows::Layout;
 pub use crate::document::{BlockAnchor, BlockId, PlacedBlock};
 use crate::document::{DEFAULT_WINDOW_SCREENS, RowKey, ScrollAnchor};
 use crate::layout::Pane;
+use crate::motion::{self, Initiator, MotionPolicy, Track};
 #[cfg(feature = "debug-inspect")]
 use crate::paint_rows::{DebugContent, DebugRow};
 use crate::paint_rows::{Frame, Painter, pane_layer};
+use crate::reveal::{BLOCK, BodyKind, Pending, Reveal, RevealBody};
 use crate::space::stroke;
 use crate::view::DiffViewport;
 
@@ -94,6 +96,12 @@ impl Blocks {
 
     fn spec(&self, id: BlockId) -> Option<&BlockSpec> {
         self.specs.get(&id).map(|(_, spec)| spec)
+    }
+
+    /// Whether block `id`'s height is known (measured since it was set or
+    /// invalidated).
+    pub(crate) fn is_measured(&self, id: BlockId) -> bool {
+        self.measured.contains_key(&id)
     }
 }
 
@@ -333,6 +341,85 @@ impl DiffViewport {
             self.reveal = None;
             cx.notify();
         }
+    }
+
+    /// Block `block`'s height changed from `from_h` by a user action (a
+    /// thread card opened from its chip, or closed to it; ADR-0030 M7): the
+    /// change is revealed from the block's top edge, the block laid out at
+    /// its final height and cut at the frame's edge while the rows and cards
+    /// below ride. Call it after [`DiffViewport::set_blocks`] or
+    /// [`DiffViewport::invalidate_block`] (which settle a running reveal):
+    /// the reveal waits for the block's measured height (on the next frame,
+    /// once, never per frame) and takes `reveal(Δ)` to grow,
+    /// `exit(reveal(Δ))` to shrink. `Pointer` glides; `Keyboard` and
+    /// `Programmatic` snap, and so does a block off screen, in a collapsed
+    /// or hidden file, or whose measurement moves the scroll position.
+    /// Reduced fades a grown block's content in at its final height; a
+    /// shrink snaps.
+    pub fn reveal_block(
+        &mut self,
+        block: BlockId,
+        from_h: Pixels,
+        initiator: Initiator,
+        cx: &mut Context<Self>,
+    ) {
+        self.reveal = None;
+        let Some(f) = self.blocks.file_of(block) else {
+            return;
+        };
+        let policy = motion::policy(cx);
+        if !BLOCK.animates.contains(&initiator)
+            || policy == MotionPolicy::Off
+            || self.doc.is_collapsed(f)
+            || self.doc.is_hidden(f)
+        {
+            return;
+        }
+        let Some(layout) = self.doc.file_layout(f) else {
+            return;
+        };
+        let Some(row) = layout.find(RowKey::Block(block)) else {
+            return;
+        };
+        // A pair's row is as tall as its taller block.
+        let other = layout.rows()[row]
+            .block_ids()
+            .into_iter()
+            .flatten()
+            .filter(|&b| b != block)
+            .filter_map(|b| self.doc.blocks(f).iter().find(|p| p.id == b))
+            .map(|b| b.height)
+            .fold(0.0, f32::max);
+        let h0 = from_h.as_f32().max(other);
+        let scroll = self.doc.scroll_top();
+        let top = (self.doc.body_top(f) + layout.row_top(row) - scroll) as f32;
+        if !(0.0..self.doc.viewport_height()).contains(&top) {
+            return;
+        }
+        self.reveal = Some(Reveal {
+            bodies: vec![RevealBody {
+                kind: BodyKind::Rows {
+                    r0: row as u32,
+                    r1: row as u32 + 1,
+                    from_bottom: false,
+                },
+                slot: self.doc.slot(f),
+                h0,
+                h1: h0,
+                rows_screen_y: 0.0,
+            }],
+            track: Track::new(0.0, 1.0),
+            restore: None,
+            primed: false,
+            painted_at: None,
+            pending: Some(Pending {
+                motion: BLOCK,
+                initiator,
+                scroll_top: scroll,
+                block: Some(block),
+            }),
+        });
+        cx.notify();
     }
 
     /// Stores measured block heights. A height change keeps the scroll

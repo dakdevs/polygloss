@@ -41,6 +41,7 @@ use crate::document::{BodyRow, FileState, SizeHint};
 use crate::motion::tokens;
 use crate::numbers::group_digits;
 use crate::paint_rows::{Frame, HEADERS, Painter};
+use crate::reveal::GeomKind;
 use crate::space::{card, edge, gap, height, pad, radius, size};
 use crate::text_cache::{ShapedText, Shaper, TextKey};
 use crate::title::Title;
@@ -134,7 +135,11 @@ impl Painter<'_> {
         // it (ADR-0030: 0° open, −90° closed).
         let collapsed = self.doc.is_collapsed(f);
         // At rest the closed one is drawn as `chevron-right`, unturned.
-        let (chevron, turn, angle) = match self.reveal.filter(|r| r.file == f) {
+        let turning = self
+            .reveals
+            .iter()
+            .find(|g| g.kind == GeomKind::Card && g.file == f);
+        let (chevron, turn, angle) = match turning {
             Some(r) => (CHEVRON_DOWN, r.angle, r.angle),
             None if collapsed => (CHEVRON_RIGHT, 0.0, tokens::CHEVRON_CLOSED_DEG),
             None => (CHEVRON_DOWN, 0.0, 0.0),

@@ -71,13 +71,13 @@ pub const TESTS: &[Test] = &[
 /// Frames drawn at most while waiting for loads and highlights.
 const MAX_FRAMES: usize = 40;
 /// The first step after a commit (ADR-0030 `FIRST_STEP`).
-const FIRST_STEP: Duration = Duration::from_micros(16_667);
+pub(crate) const FIRST_STEP: Duration = Duration::from_micros(16_667);
 
-fn ms(ms: f64) -> Duration {
+pub(crate) fn ms(ms: f64) -> Duration {
     Duration::from_secs_f64(ms / 1000.0)
 }
 
-fn lines(prefix: &str, n: usize) -> String {
+pub(crate) fn lines(prefix: &str, n: usize) -> String {
     (0..n)
         .map(|i| format!("let {prefix}_{i} = {i};\n"))
         .collect()
@@ -98,16 +98,16 @@ fn cards_repo() -> FixtureRepo {
 
 /// The app and its review tab. `cx` is the last field: fields drop in
 /// order, and the app checks for leaked entity handles when it drops.
-struct App {
-    window: AnyWindowHandle,
-    viewport: Entity<DiffViewport>,
-    tab: Entity<ReviewTab>,
-    cx: HeadlessAppContext,
+pub(crate) struct App {
+    pub(crate) window: AnyWindowHandle,
+    pub(crate) viewport: Entity<DiffViewport>,
+    pub(crate) tab: Entity<ReviewTab>,
+    pub(crate) cx: HeadlessAppContext,
 }
 
 /// The app at 1280 × 800 showing the commit once its rows are highlighted,
 /// under the harness's Off policy.
-fn open_settled(repo: &FixtureRepo) -> App {
+pub(crate) fn open_settled(repo: &FixtureRepo) -> App {
     let core = Core::open_default().expect("open the sandbox store");
     let mut cx = screenshot::headless_app_with_assets(Arc::new(gpui_kit::assets::Assets));
     let (window, main) = cx.update(|cx| {
@@ -157,29 +157,29 @@ fn open_settled(repo: &FixtureRepo) -> App {
 }
 
 impl App {
-    fn debug(&mut self) -> ViewportDebug {
+    pub(crate) fn debug(&mut self) -> ViewportDebug {
         let viewport = self.viewport.clone();
         self.cx.update(|cx| viewport.read(cx).debug())
     }
 
-    fn running(&mut self) -> bool {
+    pub(crate) fn running(&mut self) -> bool {
         let viewport = self.viewport.clone();
         self.cx.update(|cx| viewport.read(cx).motion_running())
     }
 
     /// The file in display slot `slot`.
-    fn file(&mut self, slot: usize) -> u32 {
+    pub(crate) fn file(&mut self, slot: usize) -> u32 {
         let viewport = self.viewport.clone();
         self.cx.update(|cx| viewport.read(cx).display_order()[slot])
     }
 
-    fn policy(&mut self, policy: MotionPolicy) {
+    pub(crate) fn policy(&mut self, policy: MotionPolicy) {
         self.cx.update(|cx| motion::set_override(Some(policy), cx));
     }
 
     /// The viewport's origin in the window (its debug frame is relative to
     /// it), from a painted card.
-    fn origin(&mut self) -> (f32, f32) {
+    pub(crate) fn origin(&mut self) -> (f32, f32) {
         let d = self.debug();
         let card = d.cards[0];
         let viewport = self.viewport.clone();
@@ -194,7 +194,7 @@ impl App {
     }
 
     /// The centre of the control doing `action`, in window points.
-    fn control(&mut self, action: ControlAction) -> Point<Pixels> {
+    pub(crate) fn control(&mut self, action: ControlAction) -> Point<Pixels> {
         let d = self.debug();
         let (x, y, w, h) = d
             .controls
@@ -206,7 +206,7 @@ impl App {
         point(px(o.0 + x + w / 2.0), px(o.1 + y + h / 2.0))
     }
 
-    fn dispatch(&mut self, input: PlatformInput) {
+    pub(crate) fn dispatch(&mut self, input: PlatformInput) {
         self.cx
             .update_window(self.window, |_, w, cx| {
                 w.dispatch_event(input, cx);
@@ -214,7 +214,7 @@ impl App {
             .expect("the window is open");
     }
 
-    fn press(&mut self, at: Point<Pixels>) {
+    pub(crate) fn press(&mut self, at: Point<Pixels>) {
         self.dispatch(PlatformInput::MouseMove(MouseMoveEvent {
             position: at,
             pressed_button: None,
@@ -229,7 +229,7 @@ impl App {
         }));
     }
 
-    fn release(&mut self, at: Point<Pixels>) {
+    pub(crate) fn release(&mut self, at: Point<Pixels>) {
         self.dispatch(PlatformInput::MouseUp(MouseUpEvent {
             position: at,
             button: MouseButton::Left,
@@ -248,7 +248,7 @@ impl App {
 
     /// Delivers the frames motion requested and draws one; how many were
     /// requested.
-    fn frame(&mut self) -> usize {
+    pub(crate) fn frame(&mut self) -> usize {
         let requested = self
             .cx
             .update_window(self.window, |_, w, cx| w.simulate_next_frame(cx))
@@ -260,13 +260,13 @@ impl App {
         requested
     }
 
-    fn advance(&mut self, by: Duration) -> usize {
+    pub(crate) fn advance(&mut self, by: Duration) -> usize {
         self.cx.advance_clock(by);
         self.frame()
     }
 
     /// From the commit, the frame `since` later by the stepping protocol.
-    fn step_to(&mut self, since: Duration) {
+    pub(crate) fn step_to(&mut self, since: Duration) {
         let first = since.min(FIRST_STEP);
         self.advance(first);
         if since > first {
@@ -295,7 +295,7 @@ impl App {
 }
 
 /// A pointer click at `at` in `window`: a move there, a press, a release.
-fn click_at(cx: &mut HeadlessAppContext, window: AnyWindowHandle, at: Point<Pixels>) {
+pub(crate) fn click_at(cx: &mut HeadlessAppContext, window: AnyWindowHandle, at: Point<Pixels>) {
     for input in [
         PlatformInput::MouseMove(MouseMoveEvent {
             position: at,

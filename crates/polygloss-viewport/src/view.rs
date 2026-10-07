@@ -43,7 +43,7 @@ use crate::paint_rows::DebugRow;
 use crate::paint_rows::{Frame, Marks, Painter, failed_label};
 use crate::pipeline::{Applied, Done, FileCounts, Pipeline, PipelineStats};
 use crate::provider::DiffProvider;
-use crate::reveal::Reveal;
+use crate::reveal::{BodyKind, Reveal, RevealGeom};
 use crate::section_band::Band;
 use crate::selection::{Drag, TextSelection};
 use crate::special::{BodyLabel, Specials, large_label, needs_blobs};
@@ -279,6 +279,9 @@ pub struct DiffViewport {
     pub(crate) find: Option<FindState>,
     /// The running reveal ([`crate::reveal`]).
     pub(crate) reveal: Option<Reveal>,
+    /// Its bodies as the frame being built places them (kept between
+    /// frames for their buffer).
+    reveal_geoms: Vec<RevealGeom>,
     /// [`DiffViewport::hold_layout`]: the layout, wrap and measurement
     /// widths stay at the held width instead of following the live one.
     held: bool,
@@ -360,6 +363,7 @@ impl DiffViewport {
             old_side_comments: true,
             find: None,
             reveal: None,
+            reveal_geoms: Vec::new(),
             held: false,
             #[cfg(feature = "debug-inspect")]
             relayouts: 0,
@@ -804,13 +808,13 @@ impl DiffViewport {
                     frame
                         .icons
                         .iter()
-                        .map(|(b, path, _, _)| crate::debug::IconDebug {
-                            path: path.to_string(),
+                        .map(|icon| crate::debug::IconDebug {
+                            path: icon.path.to_string(),
                             bounds: (
-                                (b.origin.x - o.x).as_f32(),
-                                (b.origin.y - o.y).as_f32(),
-                                b.size.width.as_f32(),
-                                b.size.height.as_f32(),
+                                (icon.bounds.origin.x - o.x).as_f32(),
+                                (icon.bounds.origin.y - o.y).as_f32(),
+                                icon.bounds.size.width.as_f32(),
+                                icon.bounds.size.height.as_f32(),
                             ),
                         })
                         .collect()
@@ -885,7 +889,15 @@ impl DiffViewport {
                 .as_ref()
                 .map(|f| f.slots.clone())
                 .unwrap_or_default(),
-            reveal: self.frame_pool.as_ref().and_then(|f| f.reveal),
+            reveal: self
+                .frame_pool
+                .as_ref()
+                .and_then(|f| f.reveals.first().copied()),
+            reveals: self
+                .frame_pool
+                .as_ref()
+                .map(|f| f.reveals.clone())
+                .unwrap_or_default(),
             chevrons: self
                 .frame_pool
                 .as_ref()
@@ -944,6 +956,9 @@ impl DiffViewport {
         let scale = window.scale_factor().max(1.0);
         let mut frame = self.frame_pool.take().unwrap_or_default();
         let misses = self.text_cache.misses;
+        // A block's or the prelude's reveal starts once this frame has
+        // measured it (an earlier pass of it did).
+        self.start_pending(cx);
         if self.reveal.is_some() && self.take_reveal_commit() {
             let mut settled = Frame::default();
             self.build_frame(&mut settled, bounds, marks, scale, false, window, cx);
@@ -972,12 +987,17 @@ impl DiffViewport {
         cx: &mut Context<Self>,
     ) {
         let prelude_width = self.prelude_width();
+        let mut reveals = std::mem::take(&mut self.reveal_geoms);
         for pass in 0..WRAP_PASSES {
             let scroll_top = self.snapped_scroll(scale);
-            let reveal = if moving {
-                self.reveal_geometry(scale, scroll_top, cx)
+            if moving {
+                self.reveal_geometry(scale, scroll_top, cx, &mut reveals);
             } else {
-                None
+                reveals.clear();
+            }
+            let ghosts = match self.reveal.as_ref().map(|r| &r.bodies[0].kind) {
+                Some(BodyKind::Section { ghosts, .. }) if moving => &ghosts[..],
+                _ => &[],
             };
             frame.clear();
             #[cfg(feature = "debug-inspect")]
@@ -1009,8 +1029,9 @@ impl DiffViewport {
                 cards: self.opts.cards,
                 prelude: self.prelude.as_ref().map(|p| &p.render),
                 scroll_top,
-                reveal,
-                in_reveal: false,
+                reveals: &reveals,
+                ghosts,
+                group: None,
                 rows_clip: None,
                 cache: &mut self.text_cache,
                 pipeline: &self.pipeline,
@@ -1047,12 +1068,14 @@ impl DiffViewport {
                 window.on_next_frame(move |_, cx| cx.notify(view));
             }
         }
+        self.reveal_geoms = reveals;
     }
 
     /// After paint: keeps the frame's buffers for the next one and reports
     /// its timing.
     pub(crate) fn finish_frame(&mut self, frame: Frame, stats: FrameStats, cx: &mut Context<Self>) {
         self.frame_pool = Some(frame);
+        self.finish_pending(cx);
         // First paint: every visible row is on screen. Only now do the blob
         // sizes and line counts of every other file start (design §6.3).
         if stats.loading_rows == 0 && !self.pipeline.background_started() {

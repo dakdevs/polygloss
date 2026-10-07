@@ -18,6 +18,7 @@
 //! header and label strings.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -32,14 +33,14 @@ use crate::blocks::{BlockSlot, Blocks, RenderBlock};
 use crate::card::{CardStyle, PreludeSlot};
 use crate::controls::{Control, ControlAction, ControlLayer};
 use crate::cursor::CursorPos;
-use crate::document::{BodyRow, Document, FileState};
+use crate::document::{BodyRow, Document, FileLayout, FileState, ShownFiles, SlotRange};
 use crate::file_flags::FileFlags;
 use crate::find::FindState;
 use crate::gap::Gaps;
 use crate::layout::{Columns, Geometry, Pane, digits, layout_for};
 use crate::materialize::MaterializedFile;
 use crate::pipeline::Pipeline;
-use crate::reveal::RevealGeom;
+use crate::reveal::{GeomKind, Ghost, RevealGeom, shift_at};
 use crate::section_band::Band;
 use crate::selection::{PlusHit, TextSelection};
 use crate::space::{gap, height, radius, stroke};
@@ -69,19 +70,35 @@ pub(crate) struct Layer {
     pub texts: Vec<(Point<Pixels>, Rc<ShapedText>)>,
 }
 
-/// Layer indexes: the whole row, the left (old) half, the right (new) half,
-/// the same three for a revealing body's rows ([`REVEAL`] on, each also cut
-/// at the curtain), and the file headers on top of them all.
+/// Layer indexes: the whole row, the left (old) half, the right (new) half
+/// and the file headers on top of them all. Each body of a running reveal
+/// has a group of four more, the same layers cut to its band
+/// ([`Painter::group`]): group `k`'s layer `l` is `(k + 1) · GROUP + l`.
 pub(crate) const FULL: usize = 0;
-pub(crate) const REVEAL: usize = 3;
-pub(crate) const HEADERS: usize = 6;
+pub(crate) const HEADERS: usize = 3;
+pub(crate) const GROUP: usize = 4;
+
+/// An SVG icon (`icons/<name>.svg`) in window coordinates: its color, its
+/// rotation in degrees about its centre (a turning chevron) and the header
+/// layer it is painted with.
+pub(crate) struct Icon {
+    pub bounds: Bounds<Pixels>,
+    pub path: SharedString,
+    pub color: Hsla,
+    pub degrees: f32,
+    pub layer: usize,
+}
 
 /// Everything one frame paints, in window coordinates.
 #[derive(Default)]
 pub(crate) struct Frame {
     /// The canvas and the cards, under everything else.
     pub cards: Layer,
-    pub layers: [Layer; 7],
+    /// The base layers ([`FULL`] … [`HEADERS`]), then `groups` groups of
+    /// [`GROUP`] (kept when unused, so warm frames allocate nothing).
+    pub layers: Vec<Layer>,
+    /// Groups in use this frame: one per body of the running reveal.
+    pub groups: usize,
     /// The viewport's top-left corner.
     pub origin: Point<Pixels>,
     /// Clickable controls, in paint order.
@@ -89,10 +106,10 @@ pub(crate) struct Frame {
     /// Every painted header strip: it takes the clicks over the rows it
     /// covers.
     pub header_areas: Vec<Bounds<Pixels>>,
-    /// A closing body's band ([`crate::reveal`]): it takes the pointer from
-    /// the host blocks still painted in it (ADR-0030 rule 9: what leaves is
-    /// inert, its live content under an occluding layer).
-    pub occluded: Option<Bounds<Pixels>>,
+    /// Each closing body's band ([`crate::reveal`]): it takes the pointer
+    /// from the host blocks still painted in it (ADR-0030 rule 9: what
+    /// leaves is inert, its live content under an occluding layer).
+    pub occluded: Vec<Bounds<Pixels>>,
     /// Every painted card's whole outer bounds, borders included (its quad
     /// is cut near the viewport's edges), top to bottom.
     pub card_bounds: Vec<(u32, Bounds<Pixels>)>,
@@ -122,23 +139,24 @@ pub(crate) struct Frame {
     pub cells: Vec<LineCell>,
     /// The "+" painted on the hovered line numbers.
     pub plus: Option<PlusHit>,
-    /// SVG icons (`icons/<name>.svg`) in window coordinates and their
-    /// rotation in degrees about their centre (a turning chevron), painted
-    /// after the header layer's quads and before its text.
-    pub icons: Vec<(Bounds<Pixels>, SharedString, Hsla, f32)>,
-    /// A Reduced fade's veil over a revealing body's rows: the card's
-    /// background at the share of the rows not yet (or no longer) shown,
-    /// painted over the rows and blocks, under the headers.
-    pub veil: Option<(Bounds<Pixels>, Hsla)>,
+    /// SVG icons, painted after their header layer's quads and before its
+    /// text.
+    pub icons: Vec<Icon>,
+    /// A Reduced fade's veils, one over each revealing body's content: its
+    /// container's background at the share of it not yet (or no longer)
+    /// shown, painted over the rows and blocks, under the headers (`false`),
+    /// or over the headers too (`true`: a section's, whose cards and
+    /// headers fade together).
+    pub veils: Vec<(Bounds<Pixels>, Hsla, bool)>,
     /// Each painted file's card top, viewport-relative.
     #[cfg(feature = "debug-inspect")]
     pub slots: Vec<(u32, f32)>,
     /// Each painted header's chevron angle, in degrees.
     #[cfg(feature = "debug-inspect")]
     pub chevrons: Vec<(u32, f32)>,
-    /// The running reveal as painted.
+    /// The running reveal's bodies as painted.
     #[cfg(feature = "debug-inspect")]
-    pub reveal: Option<crate::debug::RevealDebug>,
+    pub reveals: Vec<crate::debug::RevealDebug>,
 }
 
 /// A painted code cell, viewport-relative: the gutter (numbers and
@@ -174,32 +192,58 @@ pub(crate) struct Marks {
 
 impl Frame {
     pub fn clear(&mut self) {
+        while self.layers.len() < GROUP {
+            self.layers.push(Layer::default());
+        }
         for layer in std::iter::once(&mut self.cards).chain(&mut self.layers) {
             layer.clip = None;
             layer.quads.clear();
             layer.rounded.clear();
             layer.texts.clear();
         }
+        self.groups = 0;
         self.controls.clear();
         self.header_areas.clear();
-        self.occluded = None;
+        self.occluded.clear();
         self.card_bounds.clear();
         self.blocks.clear();
         self.prelude = None;
         self.cells.clear();
         self.plus = None;
         self.icons.clear();
-        self.veil = None;
+        self.veils.clear();
         #[cfg(feature = "debug-inspect")]
         {
             self.slots.clear();
             self.chevrons.clear();
-            self.reveal = None;
+            self.reveals.clear();
         }
         self.rows = 0;
         self.shaped = 0;
         self.loading = 0;
         self.unhighlighted = 0;
+    }
+
+    /// Makes `n` groups of layers ready, every layer cleared.
+    fn use_groups(&mut self, n: usize) {
+        while self.layers.len() < (n + 1) * GROUP {
+            self.layers.push(Layer::default());
+        }
+        self.groups = n;
+    }
+
+    /// The row layers in paint order: the base three, then each group's.
+    pub fn row_layers(&self) -> impl Iterator<Item = &Layer> {
+        (0..=self.groups).flat_map(move |g| (0..HEADERS).map(move |l| &self.layers[g * GROUP + l]))
+    }
+
+    /// The header layers in paint order with their indexes: the base one,
+    /// then each group's.
+    pub fn header_layers(&self) -> impl Iterator<Item = (usize, &Layer)> {
+        (0..=self.groups).map(move |g| {
+            let i = g * GROUP + HEADERS;
+            (i, &self.layers[i])
+        })
     }
 }
 
@@ -277,12 +321,15 @@ pub(crate) struct Painter<'a> {
     pub prelude: Option<&'a RenderBlock>,
     /// `scroll_top` snapped to device pixels.
     pub scroll_top: f64,
-    /// The running reveal, placed for this frame ([`crate::reveal`]).
-    pub reveal: Option<RevealGeom>,
-    /// Painting the revealing body's rows: row layers map to their
-    /// [`REVEAL`] twins.
-    pub in_reveal: bool,
-    /// While painting the revealing body: where its rows show, in window
+    /// The running reveal's bodies, placed for this frame
+    /// ([`crate::reveal`]), top to bottom.
+    pub reveals: &'a [RevealGeom],
+    /// A closing section's cards as they were ([`crate::reveal::Ghost`]).
+    pub ghosts: &'a [Ghost],
+    /// Painting a revealing body's content: the row and header layers map
+    /// to its group's ([`GROUP`]).
+    pub group: Option<usize>,
+    /// While painting a revealing body: where its content shows, in window
     /// coordinates (host blocks are cut to it too).
     pub rows_clip: Option<Bounds<Pixels>>,
     pub cache: &'a mut TextCache,
@@ -312,7 +359,55 @@ pub(crate) struct Painter<'a> {
     pub debug_text: &'a mut Vec<(f32, f32, Rc<ShapedText>)>,
 }
 
-impl Painter<'_> {
+/// What a group's content left in the frame before it painted: what
+/// [`Painter::leave_group`] cuts or drops.
+#[derive(Clone, Copy)]
+pub(crate) struct GroupMarks {
+    cells: usize,
+    controls: usize,
+    areas: usize,
+    pointer: Option<(f32, f32)>,
+}
+
+/// The shown files of a frame's visible slots and the y their cards are
+/// painted at, top to bottom: committed, plus the running reveal's shift.
+/// Past an opening section's frame its remaining files are skipped (its
+/// curtain hides them) for what follows the section.
+struct Walk<'a> {
+    doc: &'a Document,
+    reveals: &'a [RevealGeom],
+    scroll_top: f64,
+    end: u32,
+    files: ShownFiles<'a>,
+}
+
+impl Iterator for Walk<'_> {
+    type Item = (u32, f32);
+
+    fn next(&mut self) -> Option<(u32, f32)> {
+        loop {
+            let f = self.files.next()?;
+            let slot = self.doc.slot(f);
+            let top =
+                (self.doc.header_top(f) - self.scroll_top) as f32 + shift_at(self.reveals, slot);
+            let hidden = self
+                .reveals
+                .iter()
+                .find(|g| !g.closing && g.holds_slot(slot) && top >= g.frame_bottom);
+            if let Some(GeomKind::Section { last_slot, .. }) = hidden.map(|g| g.kind) {
+                let rest = SlotRange {
+                    start: last_slot + 1,
+                    end: self.end,
+                };
+                self.files = self.doc.shown_files(rest);
+                continue;
+            }
+            return Some((f, top));
+        }
+    }
+}
+
+impl<'a> Painter<'a> {
     /// Fills the frame with every row intersecting the viewport.
     pub fn paint_visible(&mut self) {
         let b = self.bounds;
@@ -324,25 +419,36 @@ impl Painter<'_> {
         // Rows never paint over a card's border or the canvas beside it.
         self.frame.layers[FULL].clip = Some(self.inner);
         self.frame.layers[HEADERS].clip = Some(b);
-        // A body opening moves the slots below it up from where the model
-        // has them: those further down come into view.
-        let lifted = self.reveal.map_or(0.0, |r| (-r.shift).max(0.0));
-        let visible = self.doc.visible(height + lifted);
-        self.paint_canvas(visible);
         if self.layout == Layout::Split {
             let [left, right] = self.halves(self.inner);
             self.frame.layers[1].clip = Some(left);
             self.frame.layers[2].clip = Some(right);
         }
+        self.cut_groups(height);
+        // A body opening moves what follows it up from where the model has
+        // it: what is further down comes into view.
+        let reveals = self.reveals;
+        let lifted = reveals.iter().map(|r| -r.shift).fold(0.0, f32::max);
+        let visible = self.doc.visible(height + lifted);
+        self.paint_canvas();
         #[cfg(feature = "debug-inspect")]
-        {
-            self.frame.reveal = self.reveal.map(|r| crate::debug::RevealDebug {
-                file_idx: r.file,
-                slot: r.slot,
-                height: r.frame_bottom - r.body_top,
-                curtain: r.curtain,
-                opacity: r.opacity,
-                frozen: r.frozen,
+        for g in reveals {
+            self.frame.reveals.push(crate::debug::RevealDebug {
+                kind: match g.kind {
+                    GeomKind::Card => crate::debug::RevealKind::Card,
+                    GeomKind::Section { section, .. } => {
+                        crate::debug::RevealKind::Section(self.doc.sections()[section].id)
+                    }
+                    GeomKind::Rows { .. } => crate::debug::RevealKind::Rows,
+                    GeomKind::Prelude => crate::debug::RevealKind::Prelude,
+                },
+                file_idx: g.file,
+                slot: g.slot,
+                top: g.top,
+                height: g.frame_bottom - g.top,
+                curtain: g.curtain,
+                opacity: g.opacity,
+                frozen: g.frozen,
             });
         }
         self.place_prelude();
@@ -352,12 +458,24 @@ impl Painter<'_> {
         // Bands in visible slots, painted in order with the files: a band
         // comes before the file whose lead holds it.
         let mut bands = doc.sections_in(visible).peekable();
-        for f in doc.shown_files(visible) {
+        let walk = Walk {
+            doc,
+            reveals,
+            scroll_top: self.scroll_top,
+            end: visible.end,
+            files: doc.shown_files(visible),
+        };
+        for (f, top) in walk {
             let slot = doc.slot(f);
             while let Some(s) = bands.next_if(|&s| doc.band_slot(s) <= slot) {
                 self.paint_band(s, height);
             }
-            let top = (self.doc.header_top(f) - self.scroll_top) as f32 + self.shift(slot);
+            // An opening section's files paint in its group, cut at its
+            // curtain.
+            let section = reveals
+                .iter()
+                .position(|g| !g.closing && g.holds_slot(slot));
+            self.file_card(f, top, section);
             if top >= height {
                 // Only its lead shows (the canvas above its card, or the
                 // prelude): nothing of the card is in view.
@@ -374,55 +492,92 @@ impl Painter<'_> {
             } else {
                 top
             };
+            let marks = section.map(|k| self.enter_group(k));
             if y + header_h > 0.0 {
                 self.header(f, y, header_h, y != top);
             }
-            if let Some(reveal) = self.reveal.filter(|r| r.file == f) {
-                self.reveal_body(reveal, height);
-                continue;
-            }
-            if self.doc.is_collapsed(f) {
-                continue;
-            }
-            let body_top = top + header_h;
-            match self.doc.file_layout(f) {
-                Some(layout) => {
-                    let skip = f64::from((-body_top).max(0.0));
-                    let (first, _) = layout.row_at(skip);
-                    let mut y = body_top + layout.row_top(first) as f32;
-                    for i in first..layout.len() {
-                        if y >= height {
-                            break;
-                        }
-                        let h = layout.row_height(i);
-                        if y + h > 0.0 {
-                            self.body_row(f, i as u32, layout.rows()[i], y, h);
-                        }
-                        y += h;
-                    }
-                }
-                None => {
-                    // Not laid out yet. The view lays out every file in the
-                    // materialization window before painting (a failed file
-                    // gets its error as a placeholder), so this is a body
-                    // whose data is on its way.
-                    let label = match self.doc.state(f) {
-                        FileState::Failed(msg) => failed_label(msg),
-                        _ => {
-                            self.count_loading();
-                            "Loading…".to_owned()
-                        }
-                    };
-                    // Centered as a placeholder's would be, in the body's
-                    // first placeholder height.
-                    let h = self.doc.body_height(f);
-                    let placeholder = self.doc.metrics().placeholder_height;
-                    self.label_row(f, &label, body_top, h.min(placeholder));
-                }
+            // An opening section's rows stop at its curtain.
+            let bottom = section.map_or(height, |k| reveals[k].curtain.min(height));
+            self.file_body(f, top + header_h, (height, bottom));
+            if let (Some(k), Some(marks)) = (section, marks) {
+                self.leave_group(k, marks);
             }
         }
         for s in bands {
             self.paint_band(s, height);
+        }
+        for k in 0..reveals.len() {
+            self.veil(k);
+        }
+    }
+
+    /// File `f`'s body below its top `body_top`: a revealing card's rows
+    /// ([`Painter::reveal_body`]), a revealing run of rows
+    /// ([`Painter::reveal_rows`]), its rows down to `bottom`, or the label
+    /// of a body whose rows are on their way.
+    fn file_body(&mut self, f: u32, body_top: f32, (height, bottom): (f32, f32)) {
+        let reveals = self.reveals;
+        let find =
+            |kind: fn(&GeomKind) -> bool| reveals.iter().position(|g| g.file == f && kind(&g.kind));
+        if let Some(k) = find(|k| *k == GeomKind::Card) {
+            self.reveal_body(k, height);
+            return;
+        }
+        if self.doc.is_collapsed(f) {
+            return;
+        }
+        match self.doc.file_layout(f) {
+            Some(layout) => match find(|k| matches!(k, GeomKind::Rows { .. })) {
+                Some(k) => self.reveal_rows(k, layout, body_top, height),
+                None => self.paint_rows(f, layout, 0..layout.len(), body_top, (0.0, bottom)),
+            },
+            None => {
+                // Not laid out yet. The view lays out every file in the
+                // materialization window before painting (a failed file
+                // gets its error as a placeholder), so this is a body
+                // whose data is on its way.
+                let label = match self.doc.state(f) {
+                    FileState::Failed(msg) => failed_label(msg),
+                    _ => {
+                        self.count_loading();
+                        "Loading…".to_owned()
+                    }
+                };
+                // Centered as a placeholder's would be, in the body's
+                // first placeholder height.
+                let h = self.doc.body_height(f);
+                let placeholder = self.doc.metrics().placeholder_height;
+                self.label_row(f, &label, body_top, h.min(placeholder));
+            }
+        }
+    }
+
+    /// Rows `rows` of file `f`'s `layout` below `body_top` that reach into
+    /// `lo..hi` (viewport-relative).
+    fn paint_rows(
+        &mut self,
+        f: u32,
+        layout: &FileLayout,
+        rows: Range<usize>,
+        body_top: f32,
+        (lo, hi): (f32, f32),
+    ) {
+        let end = rows.end.min(layout.len());
+        if rows.start >= end {
+            return;
+        }
+        let skip = f64::from(lo - body_top).max(0.0);
+        let first = layout.row_at(skip).0.max(rows.start);
+        let mut y = body_top + layout.row_top(first) as f32;
+        for i in first..end {
+            if y >= hi {
+                break;
+            }
+            let h = layout.row_height(i);
+            if y + h > lo {
+                self.body_row(f, i as u32, layout.rows()[i], y, h);
+            }
+            y += h;
         }
     }
 
@@ -438,95 +593,238 @@ impl Painter<'_> {
         ]
     }
 
-    /// How far a slot is painted from where the model has it: by the running
-    /// reveal's frame, for every slot after its body's.
-    pub(crate) fn shift(&self, slot: u32) -> f32 {
-        match self.reveal {
-            Some(r) if slot > r.slot => r.shift,
-            _ => 0.0,
+    /// One group of layers per body of the running reveal, each cut to the
+    /// band its content shows in (a card's, a section's from its top to its
+    /// curtain; a run of rows' and the prelude's to the frame's edge).
+    fn cut_groups(&mut self, height: f32) {
+        let reveals = self.reveals;
+        self.frame.use_groups(reveals.len());
+        let o = self.bounds.origin;
+        for (k, g) in reveals.iter().enumerate() {
+            let (top, bottom) = match g.kind {
+                GeomKind::Card | GeomKind::Section { .. } => g.band(),
+                GeomKind::Rows { .. } | GeomKind::Prelude => (g.top, g.frame_bottom),
+            };
+            let lo = top.max(0.0);
+            let hi = bottom.min(height).max(lo);
+            let band = |r: Bounds<Pixels>| {
+                Bounds::new(
+                    point(r.origin.x, o.y + px(lo)),
+                    size(r.size.width, px(hi - lo)),
+                )
+            };
+            let base = (k + 1) * GROUP;
+            let [left, right] = self.halves(self.inner);
+            self.frame.layers[base + FULL].clip = Some(band(self.inner));
+            self.frame.layers[base + 1].clip = Some(band(left));
+            self.frame.layers[base + 2].clip = Some(band(right));
+            self.frame.layers[base + HEADERS].clip = Some(band(self.bounds));
         }
     }
 
-    /// The revealing body (ADR-0030 M3): its rows at the screen y they had
-    /// before the commit, cut at the curtain into the [`REVEAL`] layers (and
-    /// its hit targets with them), and a Reduced fade's veil over them. A
-    /// closing body is closed in the model from the commit, so its rows take
-    /// no clicks or hover, and its band occludes its host blocks (rule 9:
-    /// what leaves is inert).
-    fn reveal_body(&mut self, reveal: RevealGeom, height: f32) {
-        let f = reveal.file;
-        let (lo, hi) = (reveal.body_top.max(0.0), reveal.curtain.min(height));
-        let Some(layout) = self.doc.file_layout(f).filter(|_| hi > lo) else {
-            return;
+    /// The band revealing body `k`'s content shows in, in window
+    /// coordinates: a section's across the viewport, any other's across the
+    /// rows.
+    fn group_band(&self, k: usize) -> Bounds<Pixels> {
+        let base = (k + 1) * GROUP;
+        let layer = match self.reveals[k].kind {
+            GeomKind::Section { .. } | GeomKind::Prelude => base + HEADERS,
+            GeomKind::Card | GeomKind::Rows { .. } => base + FULL,
         };
-        let band = |rows: Bounds<Pixels>| {
-            let o = self.bounds.origin;
-            Bounds::new(
-                point(rows.origin.x, o.y + px(lo)),
-                size(rows.size.width, px(hi - lo)),
-            )
+        self.frame.layers[layer].clip.unwrap_or(self.bounds)
+    }
+
+    /// Starts painting revealing body `k`'s content into its group; a
+    /// closing one shows no "+".
+    fn enter_group(&mut self, k: usize) -> GroupMarks {
+        let marks = GroupMarks {
+            cells: self.frame.cells.len(),
+            controls: self.frame.controls.len(),
+            areas: self.frame.header_areas.len(),
+            pointer: self.marks.pointer,
         };
-        let shown = band(self.inner);
-        self.frame.layers[REVEAL + FULL].clip = Some(shown);
-        if self.layout == Layout::Split {
-            let [left, right] = self.halves(self.inner);
-            self.frame.layers[REVEAL + 1].clip = Some(band(left));
-            self.frame.layers[REVEAL + 2].clip = Some(band(right));
-        }
-        let (cells, controls) = (self.frame.cells.len(), self.frame.controls.len());
-        let closing = self.doc.is_collapsed(f);
-        let pointer = self.marks.pointer;
-        if closing {
+        if self.reveals[k].closing {
             self.marks.pointer = None;
         }
-        self.in_reveal = true;
-        self.rows_clip = Some(shown);
-        let skip = f64::from(lo - reveal.rows_y).max(0.0);
-        let (first, _) = layout.row_at(skip);
-        let mut y = reveal.rows_y + layout.row_top(first) as f32;
-        for i in first..layout.len() {
-            if y >= hi {
-                break;
-            }
-            let h = layout.row_height(i);
-            if y + h > lo {
-                self.body_row(f, i as u32, layout.rows()[i], y, h);
-            }
-            y += h;
-        }
-        self.in_reveal = false;
+        self.group = Some(k);
+        self.rows_clip = Some(self.group_band(k));
+        marks
+    }
+
+    /// Ends painting body `k`'s content. A closing body is closed in the
+    /// model from the commit: its cells, controls and header strips go and
+    /// its band occludes its host blocks (rule 9: what leaves is inert).
+    /// An opening one's hit targets are cut to where it shows.
+    fn leave_group(&mut self, k: usize, marks: GroupMarks) {
+        let band = self.group_band(k);
+        self.group = None;
         self.rows_clip = None;
-        self.marks.pointer = pointer;
-        if closing {
-            self.frame.cells.truncate(cells);
-            self.frame.controls.truncate(controls);
-            self.frame.occluded = Some(shown);
-        } else {
-            // What is cut away takes no clicks.
-            for c in &mut self.frame.cells[cells..] {
-                c.h = c.h.min(hi - c.y);
-            }
-            self.frame.cells.retain(|c| c.h > 0.0);
-            for c in &mut self.frame.controls[controls..] {
-                c.bounds = c.bounds.intersect(&shown);
-            }
+        self.marks.pointer = marks.pointer;
+        if self.reveals[k].closing {
+            self.frame.cells.truncate(marks.cells);
+            self.frame.controls.truncate(marks.controls);
+            self.frame.header_areas.truncate(marks.areas);
+            self.frame.occluded.push(band);
+            return;
         }
-        if reveal.opacity < 1.0 {
-            let background = match self.cards {
-                Some(_) => self.theme.card_background,
-                None => self.theme.background,
-            };
-            let veil = background.opacity(1.0 - reveal.opacity);
-            self.frame.veil = Some((shown, veil));
+        let o = self.bounds.origin.y;
+        let (lo, hi) = (
+            (band.origin.y - o).as_f32(),
+            (band.origin.y + band.size.height - o).as_f32(),
+        );
+        for c in &mut self.frame.cells[marks.cells..] {
+            let (top, bottom) = (c.y.max(lo), (c.y + c.h).min(hi));
+            c.y = top;
+            c.h = bottom - top;
+        }
+        let cells = marks.cells;
+        let mut i = 0;
+        self.frame.cells.retain(|c| {
+            i += 1;
+            i <= cells || c.h > 0.0
+        });
+        for c in &mut self.frame.controls[marks.controls..] {
+            c.bounds = c.bounds.intersect(&band);
+        }
+        for a in &mut self.frame.header_areas[marks.areas..] {
+            *a = a.intersect(&band);
         }
     }
 
-    /// Section `s`'s band, when it reaches into the viewport (`height` tall).
+    /// How far a slot is painted from where the model has it: by the running
+    /// reveal's frames, for every slot after a revealing body's.
+    pub(crate) fn shift(&self, slot: u32) -> f32 {
+        shift_at(self.reveals, slot)
+    }
+
+    /// The revealing card `k` (ADR-0030 M3, M5): its rows at the screen y
+    /// they had before the commit, cut at the curtain into its group (and
+    /// its hit targets with them).
+    fn reveal_body(&mut self, k: usize, height: f32) {
+        let g = self.reveals[k];
+        let (lo, hi) = (g.top.max(0.0), g.curtain.min(height));
+        let Some(layout) = self.doc.file_layout(g.file).filter(|_| hi > lo) else {
+            return;
+        };
+        let marks = self.enter_group(k);
+        self.paint_rows(g.file, layout, 0..layout.len(), g.rows_y, (lo, hi));
+        self.leave_group(k, marks);
+    }
+
+    /// File `f`'s rows with a revealing run among them (ADR-0030 M6, M7):
+    /// those above it at their place, the run in its group cut at the
+    /// frame's edge (↑20's riding with what follows), those below it
+    /// riding by the run's change.
+    fn reveal_rows(&mut self, k: usize, layout: &FileLayout, body_top: f32, height: f32) {
+        let g = self.reveals[k];
+        let GeomKind::Rows {
+            r0,
+            r1,
+            from_bottom,
+        } = g.kind
+        else {
+            return;
+        };
+        let (f, r0, r1) = (g.file, r0 as usize, r1 as usize);
+        let after = g.shift - g.before;
+        self.paint_rows(f, layout, 0..r0, body_top, (0.0, height));
+        let (lo, hi) = (g.top.max(0.0), g.frame_bottom.min(height));
+        if hi > lo {
+            let marks = self.enter_group(k);
+            let dy = if from_bottom { after } else { 0.0 };
+            self.paint_rows(f, layout, r0..r1, body_top + dy, (lo, hi));
+            self.leave_group(k, marks);
+        }
+        self.paint_rows(f, layout, r1..layout.len(), body_top + after, (0.0, height));
+    }
+
+    /// A Reduced fade's veil over revealing body `k`'s band: its
+    /// container's background (a card's under rows, the canvas under a
+    /// section or the prelude) at the share not yet (or no longer) shown.
+    fn veil(&mut self, k: usize) {
+        let g = self.reveals[k];
+        if g.opacity >= 1.0 {
+            return;
+        }
+        let background = match (g.kind, self.cards) {
+            (_, None) => self.theme.background,
+            (GeomKind::Section { .. } | GeomKind::Prelude, Some(_)) => self.theme.canvas,
+            (GeomKind::Card | GeomKind::Rows { .. }, Some(_)) => self.theme.card_background,
+        };
+        let band = match g.kind {
+            GeomKind::Prelude => self.frame.prelude.as_ref().map(|p| p.clip),
+            _ => Some(self.group_band(k)),
+        };
+        if let Some(band) = band {
+            let veil = background.opacity(1.0 - g.opacity);
+            let over_headers = matches!(g.kind, GeomKind::Section { .. });
+            self.frame.veils.push((band, veil, over_headers));
+        }
+    }
+
+    /// File `f`'s card, its top at `top`: its frame ends at a revealing
+    /// card's frame, below a revealing run of its rows, at an opening
+    /// section's frame edge (`section`), or where the model has it.
+    fn file_card(&mut self, f: u32, top: f32, section: Option<usize>) {
+        let committed = (self.doc.card_bottom(f) - self.scroll_top) as f32;
+        let own = self
+            .reveals
+            .iter()
+            .find(|g| g.file == f && matches!(g.kind, GeomKind::Card | GeomKind::Rows { .. }));
+        let mut bottom = match own {
+            Some(g) if g.kind == GeomKind::Card => g.frame_bottom,
+            Some(g) => committed + g.shift,
+            None => committed + self.shift(self.doc.slot(f)),
+        };
+        if let Some(k) = section {
+            bottom = bottom.min(self.reveals[k].frame_bottom);
+        }
+        self.card_at(f, top, bottom);
+    }
+
+    /// Section `s`'s band, when it reaches into the viewport (`height` tall),
+    /// and, while it closes, its cards as they were under its curtain.
     fn paint_band(&mut self, s: usize, height: f32) {
         let y = (self.doc.band_top(s) - self.scroll_top) as f32 + self.shift(self.doc.band_slot(s));
         if y < height && y + self.doc.metrics().band_height > 0.0 {
             self.band(s, y);
         }
+        let closing = self.reveals.iter().position(|g| {
+            g.closing && matches!(g.kind, GeomKind::Section { section, .. } if section == s)
+        });
+        if let Some(k) = closing {
+            self.paint_ghosts(k, height);
+        }
+    }
+
+    /// A closing section's cards as they were before the commit (its files
+    /// are hidden in the model): frames, headers and rows, cut at its
+    /// frame's edge and curtain, inert.
+    fn paint_ghosts(&mut self, k: usize, height: f32) {
+        let g = self.reveals[k];
+        let header_h = self.doc.metrics().header_height;
+        let (lo, hi) = (g.top.max(0.0), g.curtain.min(height));
+        let marks = self.enter_group(k);
+        let ghosts = self.ghosts;
+        for ghost in ghosts {
+            let top = ghost.top + g.before;
+            if top >= g.frame_bottom.min(height) {
+                break;
+            }
+            let bottom = (ghost.bottom + g.before).min(g.frame_bottom);
+            self.card_at(ghost.file, top, bottom);
+            #[cfg(feature = "debug-inspect")]
+            self.frame.slots.push((ghost.file, top));
+            if top + header_h > 0.0 {
+                self.header(ghost.file, top, header_h, false);
+            }
+            let layout = self.doc.file_layout(ghost.file);
+            if let Some(layout) = layout.filter(|_| !self.doc.is_collapsed(ghost.file)) {
+                let rows = 0..layout.len();
+                self.paint_rows(ghost.file, layout, rows, top + header_h, (lo, hi));
+            }
+        }
+        self.leave_group(k, marks);
     }
 
     pub(crate) fn materialized(&self, f: u32) -> Option<&Arc<MaterializedFile>> {
@@ -844,12 +1142,17 @@ impl Painter<'_> {
         (x, y, w, h): (f32, f32, f32, f32),
         radius: f32,
     ) {
+        let paint = self.layer(match layer {
+            ControlLayer::Body => FULL,
+            ControlLayer::Header => HEADERS,
+        });
         self.frame.controls.push(Control {
             action,
             bounds: self.bounds_at(x, y, w, h),
             layer,
             radius,
             run: None,
+            paint,
         });
     }
 
@@ -1074,16 +1377,22 @@ impl Painter<'_> {
         degrees: f32,
     ) {
         let bounds = self.bounds_at(x, y, size, size);
-        self.frame.icons.push((bounds, path.into(), color, degrees));
+        let layer = self.layer(HEADERS);
+        self.frame.icons.push(Icon {
+            bounds,
+            path: path.into(),
+            color,
+            degrees,
+            layer,
+        });
     }
 
-    /// The layer `layer` goes to: a row layer's [`REVEAL`] twin while the
-    /// revealing body paints.
-    fn layer(&self, layer: usize) -> usize {
-        if self.in_reveal && layer < REVEAL {
-            layer + REVEAL
-        } else {
-            layer
+    /// The layer `layer` goes to: its twin in the group of the revealing
+    /// body being painted.
+    pub(crate) fn layer(&self, layer: usize) -> usize {
+        match self.group {
+            Some(k) if layer < GROUP => (k + 1) * GROUP + layer,
+            _ => layer,
         }
     }
 

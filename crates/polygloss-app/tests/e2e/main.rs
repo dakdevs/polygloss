@@ -27,6 +27,7 @@ mod kit_fonts;
 mod ligatures;
 mod live;
 mod motion_chrome;
+mod motion_sections;
 mod motion_viewport;
 mod open_flow;
 mod overlay_geometry;
@@ -81,5 +82,6 @@ fn main() -> std::process::ExitCode {
         block_geometry::TESTS,
         motion_viewport::TESTS,
         motion_chrome::TESTS,
+        motion_sections::TESTS,
     ])
 }

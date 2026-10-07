@@ -86,6 +86,14 @@
         "linux": 50
       }
     },
+    "section_anim_p95_ms": {
+      "label": "section motion p95",
+      "unit": "ms",
+      "budget": {
+        "synthetic": 8.3,
+        "linux": 8.3
+      }
+    },
     "shell_idle_draw_p95_ms": {
       "label": "idle chrome p95",
       "unit": "ms",

@@ -50,6 +50,7 @@ use crate::app_state::AppState;
 use crate::keymap::actions::{tree as tree_actions, viewport as viewport_actions};
 use crate::keymap::handlers;
 use crate::live::DiffRefreshed;
+use crate::motion::Initiator;
 use crate::palette::MenuEntry;
 use crate::review_tab::ReviewTab;
 use crate::review_tab::toolbar::{self, Narrow};
@@ -297,7 +298,7 @@ pub fn toggle_file(tab: &mut ReviewTab, idx: u32, cx: &mut Context<ReviewTab>) {
     }
     let viewed = !is_viewed(tab, idx);
     let hidden = tab.viewport.read(cx).is_hidden(idx);
-    mark(tab, &[idx], viewed, cx);
+    mark(tab, &[idx], viewed, None, cx);
     if viewed && !hidden {
         jump_to_next_unviewed(tab, idx, cx);
     }
@@ -315,20 +316,55 @@ pub fn toggle_folder(tab: &mut ReviewTab, files: Vec<u32>, cx: &mut Context<Revi
 /// anchor's) and it is shown, from the last of them in display order
 /// (design §9); marking files in a closed section never moves the view.
 pub fn set_viewed(tab: &mut ReviewTab, files: &[u32], viewed: bool, cx: &mut Context<ReviewTab>) {
+    mark_many(tab, files, viewed, None, cx);
+}
+
+/// [`set_viewed`] from a section band's Mark all viewed (or unviewed)
+/// (ADR-0030 M5): the files collapse (or expand) through one compound
+/// reveal of the cards on screen when `initiator` animates it (`Pointer`;
+/// the palette's Mark Section Viewed passes `Keyboard`, which snaps).
+pub fn set_viewed_by(
+    tab: &mut ReviewTab,
+    files: &[u32],
+    viewed: bool,
+    initiator: Initiator,
+    window: &mut Window,
+    cx: &mut Context<ReviewTab>,
+) {
+    mark_many(tab, files, viewed, Some((initiator, window)), cx);
+}
+
+/// [`set_viewed`] with the collapse's `motion`, if any ([`mark`]).
+fn mark_many(
+    tab: &mut ReviewTab,
+    files: &[u32],
+    viewed: bool,
+    motion: Option<(Initiator, &mut Window)>,
+    cx: &mut Context<ReviewTab>,
+) {
     let v = tab.viewport.read(cx);
     let current = v.cursor().map_or(v.anchor().file_idx, |c| c.file_idx);
     let jump_from = (viewed && files.contains(&current) && !v.is_hidden(current))
         .then(|| files.iter().copied().max_by_key(|&f| v.display_rank(f)))
         .flatten();
-    mark(tab, files, viewed, cx);
+    mark(tab, files, viewed, motion, cx);
     if let Some(last) = jump_from {
         jump_to_next_unviewed(tab, last, cx);
     }
 }
 
 /// Marks `files` viewed or not: updates the state and the flags at once,
-/// collapses (or expands) them, and queues the store write.
-fn mark(tab: &mut ReviewTab, files: &[u32], viewed: bool, cx: &mut Context<ReviewTab>) {
+/// collapses (or expands) them, and queues the store write. With `motion`,
+/// the files collapse through the viewport's compound reveal as its
+/// initiator asks; without it, they snap (the auto-collapse of a Viewed
+/// toggle is programmatic, ADR-0030 "Never animated").
+fn mark(
+    tab: &mut ReviewTab,
+    files: &[u32],
+    viewed: bool,
+    motion: Option<(Initiator, &mut Window)>,
+    cx: &mut Context<ReviewTab>,
+) {
     let target = if viewed {
         ViewedState::Viewed
     } else {
@@ -357,9 +393,14 @@ fn mark(tab: &mut ReviewTab, files: &[u32], viewed: bool, cx: &mut Context<Revie
     let writes: Vec<FileChange> = changed.iter().map(|&f| all[f as usize].clone()).collect();
     queue_write(tab, writes, viewed, cx);
     push_flags(tab, cx);
-    tab.viewport.update(cx, |v, cx| {
-        for &f in &changed {
-            v.set_collapsed(f, viewed, cx);
+    tab.viewport.update(cx, |v, cx| match motion {
+        Some((initiator, window)) => {
+            v.set_collapsed_many_by(&changed, viewed, initiator, window, cx)
+        }
+        None => {
+            for &f in &changed {
+                v.set_collapsed(f, viewed, cx);
+            }
         }
     });
     cx.notify();

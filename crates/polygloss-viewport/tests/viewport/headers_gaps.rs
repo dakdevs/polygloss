@@ -1941,3 +1941,261 @@ fn pressed_control_paints_pressed_ink(cx: &mut TestAppContext) {
     let ink = lit(cx, hover);
     assert!(ink.len() == 1 && near_painted(ink[0], viewed), "{ink:?}");
 }
+
+// ---------------------------------------------------------------------------
+// gap reveals (T7.11, ADR-0030 M6)
+
+mod gap_motion {
+    use gpui_kit::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+    use polygloss_diff::rows::ExpandBy;
+    use polygloss_viewport::motion::{MotionPolicy, Settle};
+    use polygloss_viewport::{ControlAction, DiffViewport, LayoutMode, RevealKind, ViewportDebug};
+
+    use crate::reveal::{
+        FIRST_STEP, advance, assert_y, center, click, frame, ms, q, requested_frames, running,
+        set_policy, slide, step_to,
+    };
+    use crate::support::*;
+
+    /// The y of the visible row showing `text`.
+    fn row_y(d: &ViewportDebug, text: &str) -> f32 {
+        let i = d
+            .visible_rows
+            .iter()
+            .position(|r| r == text)
+            .unwrap_or_else(|| panic!("no row {text:?}: {:?}", d.visible_rows));
+        d.row_bounds[i].0
+    }
+
+    /// The painted expander of the gap with "↓ 20" (`Down`) or "↑ 20"
+    /// (`Up`), or the first "Expand all".
+    fn expander(d: &ViewportDebug, by: ExpandBy) -> (f32, f32, f32, f32) {
+        d.controls
+            .iter()
+            .find(|c| matches!(c.action, ControlAction::Expand { by: b, .. } if b == by))
+            .unwrap_or_else(|| panic!("no {by:?} expander: {:?}", d.controls))
+            .bounds
+    }
+
+    /// `one_hundred_lines` (gap 1 hides old lines 9..87) in cards, settled,
+    /// under Full.
+    fn hundred(
+        cx: &mut TestAppContext,
+        height: f32,
+    ) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+        let (view, cx) = open(
+            cx,
+            super::one_hundred_lines(),
+            card_options(LayoutMode::Unified),
+            1000.,
+            height,
+        );
+        set_policy(cx, MotionPolicy::Full);
+        (view, cx)
+    }
+
+    #[gpui_kit::test]
+    fn gap_reveal_takes_quick(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        let (view, cx) = hundred(cx, 900.0);
+        let before = debug(&view, cx);
+        let gap = row_y(&before, "⋯ 78 unchanged lines");
+        let tail = before.headers[1].y;
+        click(cx, center(expander(&before, ExpandBy::Down(20))));
+        assert!(running(&view, cx));
+        let d = debug(&view, cx);
+        assert_eq!(d.reveal.expect("revealing").kind, RevealKind::Rows);
+        // ↓20 with 20 pt rows inserts 400 pt over QUICK (150 ms): the gap
+        // row left and what follows ride below a curtain over the new rows.
+        assert_y(row_y(&d, "⋯ 58 unchanged lines"), gap, "commit frame");
+        step_to(cx, FIRST_STEP);
+        let first = f64::from(gap) + 400.0 * slide(16.667 / 150.0);
+        assert_y(
+            row_y(&debug(&view, cx), "⋯ 58 unchanged lines"),
+            q(first),
+            "first step",
+        );
+        advance(cx, ms(75.0) - FIRST_STEP);
+        let d = debug(&view, cx);
+        let half = 400.0 * slide(0.5);
+        assert_y(
+            row_y(&d, "⋯ 58 unchanged lines"),
+            q(f64::from(gap) + half),
+            "75 ms",
+        );
+        assert_y(
+            d.headers[1].y,
+            q(f64::from(tail) + half),
+            "the next card rides",
+        );
+        // The new rows show from the gap row's old top, cut at the curtain.
+        let curtain = d.reveal.unwrap().curtain;
+        assert_y(curtain, q(f64::from(gap) + half), "the curtain");
+        assert_y(
+            row_y(&d, &unified(Some(10), Some(10), ' ', "line 9")),
+            gap,
+            "the first new row",
+        );
+        advance(cx, ms(75.0));
+        assert_y(
+            row_y(&debug(&view, cx), "⋯ 58 unchanged lines"),
+            gap + 400.0,
+            "150 ms",
+        );
+        assert!(!running(&view, cx));
+    }
+
+    #[gpui_kit::test]
+    fn gap_up_20_reveals_rows_riding_out_from_under_the_gap_row(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        let (view, cx) = hundred(cx, 900.0);
+        let before = debug(&view, cx);
+        let gap = row_y(&before, "⋯ 78 unchanged lines");
+        let hunk = unified(Some(88), Some(88), ' ', "line 87");
+        let hunk_y = row_y(&before, &hunk);
+        click(cx, center(expander(&before, ExpandBy::Up(20))));
+        step_to(cx, ms(75.0));
+        let d = debug(&view, cx);
+        // The gap row stays; the hunk below rides down by 400 · SLIDE(½), the
+        // last new line right above it, the rows above cut at the gap row.
+        assert_y(row_y(&d, "⋯ 58 unchanged lines"), gap, "the gap row stays");
+        let at = q(f64::from(hunk_y) + 400.0 * slide(0.5));
+        assert_y(row_y(&d, &hunk), at, "the hunk below");
+        assert_y(
+            row_y(&d, &unified(Some(87), Some(87), ' ', "line 86")),
+            at - 20.0,
+            "line 87",
+        );
+        let gap_bottom = gap + 32.0;
+        let new_lines =
+            (68..=87).map(|n| unified(Some(n), Some(n), ' ', &format!("line {}", n - 1)));
+        for line in new_lines {
+            if let Some(i) = d.visible_rows.iter().position(|r| *r == line) {
+                assert!(
+                    d.row_bounds[i].0 + 20.0 > gap_bottom,
+                    "{line} above the gap row"
+                );
+            }
+        }
+        advance(cx, ms(75.0));
+        assert_y(row_y(&debug(&view, cx), &hunk), hunk_y + 400.0, "150 ms");
+    }
+
+    #[gpui_kit::test]
+    fn expand_all_takes_its_reveal_duration(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        // 40 lines, lines 2 and 36 changed: a gap of old lines 6..33 (27
+        // lines). Expand all puts 540 pt of rows in the 32 pt gap row's
+        // place: Δ 508 pt, so reveal(Δ) = 200 ms.
+        let old = numbered("line", 40);
+        let mut new = old.clone();
+        new[2] = "LINE 2\n".to_owned();
+        new[36] = "LINE 36\n".to_owned();
+        let provider = MemProvider::new(vec![
+            Spec::modified("src/a.rs", &old.concat(), &new.concat()),
+            Spec::added("src/tail.rs", &numbered("tail", 10).concat()),
+        ]);
+        let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 900.);
+        set_policy(cx, MotionPolicy::Full);
+        let before = debug(&view, cx);
+        let gap = row_y(&before, "⋯ 27 unchanged lines");
+        let hunk = unified(Some(34), Some(34), ' ', "line 33");
+        let hunk_y = row_y(&before, &hunk);
+        click(cx, center(expander(&before, ExpandBy::All)));
+        let d = debug(&view, cx);
+        // The commit frame: the new rows in the gap row's place, the hunk
+        // where it was.
+        assert_y(
+            row_y(&d, &unified(Some(7), Some(7), ' ', "line 6")),
+            gap,
+            "the first new row",
+        );
+        assert_y(row_y(&d, &hunk), hunk_y, "commit frame");
+        step_to(cx, ms(100.0));
+        assert_y(
+            row_y(&debug(&view, cx), &hunk),
+            q(f64::from(hunk_y) + 508.0 * slide(0.5)),
+            "100 ms",
+        );
+        advance(cx, ms(100.0));
+        assert_y(row_y(&debug(&view, cx), &hunk), hunk_y + 508.0, "200 ms");
+        assert!(!running(&view, cx));
+    }
+
+    #[gpui_kit::test]
+    fn large_gap_expand_snaps(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        // A gap of 306 lines: more than 200 rows.
+        let old = numbered("line", 320);
+        let mut new = old.clone();
+        new[2] = "LINE 2\n".to_owned();
+        new[315] = "LINE 315\n".to_owned();
+        let provider = MemProvider::new(vec![Spec::modified(
+            "src/a.rs",
+            &old.concat(),
+            &new.concat(),
+        )]);
+        let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 900.);
+        set_policy(cx, MotionPolicy::Full);
+        let before = debug(&view, cx);
+        assert!(
+            before
+                .visible_rows
+                .iter()
+                .any(|r| r == "⋯ 306 unchanged lines")
+        );
+        click(cx, center(expander(&before, ExpandBy::All)));
+        assert!(!running(&view, cx), "a 306-row insert snaps");
+        assert_eq!(requested_frames(cx), 0);
+        assert!(
+            !debug(&view, cx)
+                .visible_rows
+                .iter()
+                .any(|r| r.contains("306 unchanged"))
+        );
+    }
+
+    #[gpui_kit::test]
+    fn gap_clicks_in_a_burst_each_land_first(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        // Tall enough that the gap row stays in view after three inserts.
+        let (view, cx) = hundred(cx, 1600.0);
+        let gap = row_y(&debug(&view, cx), "⋯ 78 unchanged lines");
+        // Three ↓20 clicks 50 ms apart. Each mouse down freezes the running
+        // reveal (the app's settle root does it before the viewport sees the
+        // press); each click settles it and starts its own; then the
+        // deferred `Settle::Frozen` leaves that one running.
+        let press = |view: &Entity<DiffViewport>, cx: &mut VisualTestContext| {
+            let link = center(expander(&debug(view, cx), ExpandBy::Down(20)));
+            let at = point(px(link.0), px(link.1));
+            let now = cx.update(|_, cx| cx.background_executor().now());
+            view.update(cx, |v, cx| v.freeze_motion(now, cx));
+            cx.simulate_mouse_move(at, None, Modifiers::default());
+            cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+            view.update(cx, |v, cx| v.settle_motion(Settle::Frozen, cx));
+            frame(cx);
+        };
+        let first = center(expander(&debug(&view, cx), ExpandBy::Down(20)));
+        click(cx, first);
+        step_to(cx, ms(50.0));
+        press(&view, cx);
+        // The first click's 400 pt are all in at the second's commit.
+        assert_y(
+            row_y(&debug(&view, cx), "⋯ 38 unchanged lines"),
+            gap + 400.0,
+            "second commit",
+        );
+        step_to(cx, ms(50.0));
+        press(&view, cx);
+        assert_y(
+            row_y(&debug(&view, cx), "⋯ 18 unchanged lines"),
+            gap + 800.0,
+            "third commit",
+        );
+        assert!(running(&view, cx), "the last click's reveal runs");
+        step_to(cx, ms(75.0));
+        let y = row_y(&debug(&view, cx), "⋯ 18 unchanged lines");
+        assert!(y > gap + 800.0 && y < gap + 1200.0, "between at ½: {y}");
+    }
+}

@@ -56,6 +56,7 @@ pub(crate) use totals::{breakdown_tooltip, chips_element, chips_text};
 use crate::keymap::actions::categories as actions;
 use crate::keymap::handlers;
 use crate::live::DiffRefreshed;
+use crate::motion::Initiator;
 use crate::review_tab::ReviewTab;
 use crate::settings::{SETTINGS_FILE, Settings, SettingsStore};
 
@@ -329,7 +330,7 @@ pub fn categories(tab: &ReviewTab) -> Option<Entity<Categories>> {
 /// Partitions a new tab before its first frame and follows its viewport's
 /// sections, settings loads, refreshes and its threads' first load. Runs
 /// after threads and before view state, which restores the open sections.
-pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<ReviewTab>) {
+pub fn attach(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     let settings = cx.try_global::<SettingsStore>().map(SettingsStore::shared);
     let entity = cx.new(|_| Categories {
         overrides: BTreeMap::new(),
@@ -345,11 +346,15 @@ pub fn attach(tab: &mut ReviewTab, _window: &mut Window, cx: &mut Context<Review
     let partition = Partition::new(shared(cx), &tab.opened.files);
     apply(tab, partition, &[], cx);
 
-    cx.subscribe(
-        &tab.viewport,
-        |tab: &mut ReviewTab, _, event: &ViewportEvent, cx| match *event {
+    // The band's Mark all viewed is a pointer's (ADR-0030 M5).
+    cx.subscribe_in(
+        &tab.viewport.clone(),
+        window,
+        |tab: &mut ReviewTab, _, event: &ViewportEvent, window, cx| match *event {
             ViewportEvent::SectionToggled { id, open } => toggled(tab, id, open, cx),
-            ViewportEvent::SectionMarkViewed(id) => mark_section_viewed(tab, id, cx),
+            ViewportEvent::SectionMarkViewed(id) => {
+                mark_section_viewed(tab, id, Initiator::Pointer, window, cx)
+            }
             _ => {}
         },
     )
@@ -598,8 +603,15 @@ fn waiting_questions(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
 }
 
 /// A band's Mark all viewed (or the action): every file of the section
-/// viewed, or unviewed once all are (design §9).
-fn mark_section_viewed(tab: &mut ReviewTab, viewport_id: u32, cx: &mut Context<ReviewTab>) {
+/// viewed, or unviewed once all are (design §9); the band's (`Pointer`)
+/// collapses them through one compound reveal, the action's snaps.
+fn mark_section_viewed(
+    tab: &mut ReviewTab,
+    viewport_id: u32,
+    initiator: Initiator,
+    window: &mut Window,
+    cx: &mut Context<ReviewTab>,
+) {
     let Some(current) = partition(tab) else {
         return;
     };
@@ -611,7 +623,7 @@ fn mark_section_viewed(tab: &mut ReviewTab, viewport_id: u32, cx: &mut Context<R
         .files
         .iter()
         .all(|&f| states.get(f as usize) == Some(&ViewedState::Viewed));
-    crate::viewed::set_viewed(tab, &section.files, !all_viewed, cx);
+    crate::viewed::set_viewed_by(tab, &section.files, !all_viewed, initiator, window, cx);
     tab.viewport.update(cx, |v, cx| {
         v.set_band_all_viewed(viewport_id, !all_viewed, cx)
     });
@@ -649,7 +661,9 @@ fn register_actions(cx: &mut App) {
     );
     handlers::on_action(
         cx,
-        |tab: &mut ReviewTab, _: &actions::MarkSectionViewed, _, cx| mark_section(tab, cx),
+        |tab: &mut ReviewTab, _: &actions::MarkSectionViewed, window, cx| {
+            mark_section(tab, window, cx)
+        },
     );
     handlers::on_action(
         cx,
@@ -707,7 +721,7 @@ fn hide_section(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
 
 /// Mark Section Viewed: like the band of the current file's section, else
 /// of the next section below it.
-fn mark_section(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
+fn mark_section(tab: &mut ReviewTab, window: &mut Window, cx: &mut Context<ReviewTab>) {
     let Some(current) = partition(tab) else {
         return;
     };
@@ -722,7 +736,7 @@ fn mark_section(tab: &mut ReviewTab, cx: &mut Context<ReviewTab>) {
             .map(|s| s.viewport_id)
     });
     if let Some(id) = id {
-        mark_section_viewed(tab, id, cx);
+        mark_section_viewed(tab, id, Initiator::Keyboard, window, cx);
     }
 }
 

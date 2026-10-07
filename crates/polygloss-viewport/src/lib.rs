@@ -72,7 +72,7 @@ pub use controls::ControlAction;
 pub use cursor::{CursorPos, Direction};
 pub use debug::{
     BandDebug, CardDebug, ControlDebug, HeaderDebug, IconDebug, MenuDebug, PlusDebug, RevealDebug,
-    TitleStyle, ViewportDebug,
+    RevealKind, TitleStyle, ViewportDebug,
 };
 pub use document::{
     BlockAnchor, BlockId, BodyRow, Document, FileLayout, FileState, HeightIndex, Metrics,

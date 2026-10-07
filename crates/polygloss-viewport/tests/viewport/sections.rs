@@ -1075,3 +1075,617 @@ fn bands_align_with_file_headers(cx: &mut TestAppContext) {
     assert_eq!(flask[0].0, path_2);
     assert!(near(text_at(&d, "flask").0, path_2 + 16.0 + 6.0));
 }
+
+// ---------------------------------------------------------------------------
+// motion (T7.11, ADR-0030 M4 and M5)
+
+use std::time::{Duration, Instant};
+
+use gpui_kit::{Modifiers, MouseButton, point};
+use polygloss_viewport::RevealKind;
+use polygloss_viewport::motion::{Initiator, MotionPolicy, Settle};
+
+use crate::reveal::{
+    FIRST_STEP, VIEW_H, advance, assert_y, center, frame, header_y, ms, q, requested_frames,
+    running, set_policy, slide, step_to,
+};
+
+/// Section A (id 1: `a0.txt`, `a1.txt`, 12 lines each) after `m.txt` (3
+/// lines), and section B (id 2: `b0.txt`) after it, in cards, unified, in a
+/// 900 pt viewport at scale 2. `m.txt`'s card is 46 + 60 + 8 = 114 pt; A's
+/// band is 12 below it (126..162); A's cards are 46 + 240 + 8 = 294 pt, 12
+/// apart, so A's region below its band is 600 pt open (162..762) and empty
+/// closed; B's band is 12 below that: at 774 open, 174 closed.
+fn motion_sections(
+    cx: &mut TestAppContext,
+    a_open: bool,
+    height: f32,
+) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+    let provider = MemProvider::new(vec![
+        Spec::added("m.txt", &numbered("m", 3).concat()),
+        Spec::added("a0.txt", &numbered("a0", 12).concat()),
+        Spec::added("a1.txt", &numbered("a1", 12).concat()),
+        Spec::added("b0.txt", &numbered("b0", 3).concat()),
+    ]);
+    let (view, cx) = open(
+        cx,
+        provider,
+        card_options(LayoutMode::Unified),
+        1000.,
+        height,
+    );
+    set_sections(
+        &view,
+        cx,
+        vec![
+            section(1, "2 test files", &[1, 2], a_open),
+            section(2, "1 generated file", &[3], false),
+        ],
+    );
+    (view, cx)
+}
+
+const B_CLOSED: f32 = 174.0;
+const B_OPEN: f32 = 774.0;
+const REGION: f32 = 600.0;
+
+/// A's band's chevron, as painted.
+fn band_chevron(d: &ViewportDebug, id: u32) -> f32 {
+    band(d, id).chevron
+}
+
+/// Clicks section `id`'s Show / Hide link, as painted.
+fn click_show(view: &Entity<DiffViewport>, cx: &mut VisualTestContext, id: u32) {
+    let link = *controls_of(&debug(view, cx), ControlAction::SectionToggle(id))
+        .first()
+        .expect("the band's Show / Hide link");
+    crate::reveal::click(cx, center(link));
+}
+
+#[gpui_kit::test]
+fn section_open_reveals_over_time(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = motion_sections(cx, false, VIEW_H);
+    set_policy(cx, MotionPolicy::Full);
+    assert_eq!(band(&debug(&view, cx), 2).y, B_CLOSED);
+    click_show(&view, cx, 1);
+    // reveal(600 pt in a 900 pt viewport) = 150 + 60, capped at 200 ms.
+    let total = 200.0;
+    assert_eq!(read(&view, cx, |v| v.section_open(1)), Some(true));
+    assert!(running(&view, cx));
+    let d = debug(&view, cx);
+    assert_y(band(&d, 2).y, B_CLOSED, "commit frame");
+    assert_eq!(band_chevron(&d, 1), -90.0, "commit frame: closed");
+    let reveal = d.reveal.expect("revealing");
+    assert_eq!(reveal.kind, RevealKind::Section(1));
+    assert_y(reveal.top, 162.0, "the region starts at the band's bottom");
+    // Nothing of the region shows on the commit frame.
+    assert_eq!(reveal.height, 0.0);
+    let region: Vec<_> = d.cards.iter().filter(|c| c.file_idx != 0).collect();
+    assert!(region.is_empty(), "commit frame: {region:?}");
+    let quads: Vec<_> = shaped_quads(cx)
+        .into_iter()
+        .filter(|q| q.bounds.1 >= 162.0 && q.bounds.1 < 774.0 && q.bounds.2 > 900.0)
+        .collect();
+    assert!(
+        quads.is_empty(),
+        "commit frame paints in the region: {quads:?}"
+    );
+    step_to(cx, FIRST_STEP);
+    let first = f64::from(B_CLOSED) + f64::from(REGION) * slide(16.667 / total);
+    assert_y(band(&debug(&view, cx), 2).y, q(first), "first step");
+    advance(cx, ms(100.0) - FIRST_STEP);
+    let d = debug(&view, cx);
+    let half = f64::from(B_CLOSED) + f64::from(REGION) * slide(0.5);
+    assert_y(band(&d, 2).y, q(half), "100 ms");
+    let angle = f64::from(band_chevron(&d, 1));
+    assert!(
+        (angle - -90.0 * (1.0 - slide(0.5))).abs() < 1e-2,
+        "the chevron turns with the region: {angle}"
+    );
+    // The section's cards are cut where the region's frame is: nothing of
+    // them below it.
+    let edge = d.reveal.unwrap().top + d.reveal.unwrap().height;
+    for c in d.cards.iter().filter(|c| [1, 2].contains(&c.file_idx)) {
+        assert!(c.bounds.1 + c.bounds.3 <= edge + 1e-3, "{c:?} past {edge}");
+    }
+    let curtain = d.reveal.unwrap().curtain;
+    for (text, (y, _)) in d.visible_rows.iter().zip(&d.row_bounds) {
+        if text.contains(" a0 ") || text.contains(" a1 ") {
+            assert!(*y < curtain, "{text} at {y}, below the curtain {curtain}");
+        }
+    }
+    advance(cx, ms(100.0));
+    let d = debug(&view, cx);
+    assert_y(band(&d, 2).y, B_OPEN, "200 ms");
+    assert_eq!(band_chevron(&d, 1), 0.0);
+    assert!(!running(&view, cx));
+}
+
+#[gpui_kit::test]
+fn section_close_takes_its_exit_duration(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = motion_sections(cx, true, VIEW_H);
+    set_policy(cx, MotionPolicy::Full);
+    assert_eq!(band(&debug(&view, cx), 2).y, B_OPEN);
+    let before = debug(&view, cx);
+    click_show(&view, cx, 1);
+    assert_eq!(read(&view, cx, |v| v.section_open(1)), Some(false));
+    let d = debug(&view, cx);
+    assert_y(band(&d, 2).y, B_OPEN, "commit frame");
+    // The closing cards show where they were, though the model hides them.
+    assert_eq!(header_y(&d, 1), header_y(&before, 1));
+    // exit(200 ms) = 150 ms.
+    step_to(cx, ms(75.0));
+    let d = debug(&view, cx);
+    let half = f64::from(B_OPEN) - f64::from(REGION) * slide(0.5);
+    assert_y(band(&d, 2).y, q(half), "75 ms");
+    assert_y(header_y(&d, 1), header_y(&before, 1), "a0's card stays put");
+    // Closed in the model: the closing cards take no clicks.
+    assert!(
+        !d.controls
+            .iter()
+            .any(|c| c.action == ControlAction::Collapse(1)),
+        "a closing card's chevron is inert"
+    );
+    advance(cx, ms(75.0));
+    assert_y(band(&debug(&view, cx), 2).y, B_CLOSED, "150 ms");
+    assert!(!running(&view, cx));
+}
+
+#[gpui_kit::test]
+fn section_open_commit_stays_under_budget(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // 300 files of 10 lines behind the band of the second file.
+    let (view, cx) = open(
+        cx,
+        added_files(302, 10),
+        card_options(LayoutMode::Unified),
+        1000.,
+        VIEW_H,
+    );
+    let files: Vec<u32> = (1..301).collect();
+    set_sections(&view, cx, vec![section(1, "300 test files", &files, false)]);
+    set_policy(cx, MotionPolicy::Full);
+    let started = Instant::now();
+    click_show(&view, cx, 1);
+    frame(cx);
+    let elapsed = started.elapsed();
+    assert!(running(&view, cx), "the open glides");
+    // The M6 timing-test rule: wall-clock budgets only below a load of 4.
+    let load = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.split_whitespace().find_map(|w| w.parse::<f64>().ok()));
+    match load {
+        Some(load) if load < 4.0 => assert!(
+            elapsed < Duration::from_millis(50),
+            "the commit frame took {elapsed:?} (load {load})"
+        ),
+        load => eprintln!("the commit frame took {elapsed:?}; load {load:?}: not asserted"),
+    }
+}
+
+#[gpui_kit::test]
+fn band_off_screen_or_anchor_move_snaps(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // A 100 pt viewport: A's band (126..162) is below it.
+    let (view, cx) = motion_sections(cx, false, 100.0);
+    set_policy(cx, MotionPolicy::Full);
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.toggle_section_by(0, Initiator::Pointer, window, cx)
+        })
+    });
+    assert_eq!(read(&view, cx, |v| v.section_open(1)), Some(true));
+    assert!(!running(&view, cx), "a band off screen snaps");
+    assert_eq!(requested_frames(cx), 0);
+
+    // A's band half above the viewport's top (in a 500 pt viewport, where
+    // the 822 pt document scrolls): the anchor is in its lead (a0's, 32 pt
+    // in), so closing A moves it to the band's top.
+    cx.simulate_resize(gpui_kit::size(px(1000.), px(500.)));
+    settle(cx);
+    wheel(cx, 146.0);
+    assert_eq!(
+        read(&view, cx, |v| v.anchor()),
+        anchor(1, RowKey::Lead, 32.0)
+    );
+    set_policy(cx, MotionPolicy::Full);
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.toggle_section_by(0, Initiator::Pointer, window, cx)
+        })
+    });
+    assert_eq!(read(&view, cx, |v| v.section_open(1)), Some(false));
+    assert_eq!(
+        read(&view, cx, |v| v.anchor()),
+        anchor(1, RowKey::Lead, 0.0)
+    );
+    assert!(!running(&view, cx), "a close that moves the anchor snaps");
+    assert_eq!(requested_frames(cx), 0);
+
+    // The keyboard (the palette's) and programmatic paths snap.
+    for initiator in [Initiator::Keyboard, Initiator::Programmatic] {
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| v.toggle_section_by(0, initiator, window, cx))
+        });
+        assert!(!running(&view, cx), "{initiator:?} snaps");
+    }
+}
+
+#[gpui_kit::test]
+fn explicit_targets_open_sections_without_motion(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = motion_sections(cx, false, VIEW_H);
+    type Target = fn(&mut DiffViewport, &mut gpui_kit::Context<DiffViewport>);
+    let targets: [(&str, Target); 5] = [
+        // A tree row and ⌘P.
+        ("go_to_file", |v, cx| v.go_to_file(1, cx)),
+        // A thread and a URL.
+        ("scroll_to", |v, cx| {
+            v.scroll_to(
+                ScrollTarget::Line {
+                    file_idx: 2,
+                    side: Side::New,
+                    line: 3,
+                },
+                cx,
+            )
+        }),
+        ("scroll_to file", |v, cx| {
+            v.scroll_to(ScrollTarget::File(2), cx)
+        }),
+        // Find.
+        ("reveal_line", |v, cx| v.reveal_line(1, Side::New, 4, cx)),
+        ("set_cursor", |v, cx| v.set_cursor(Some(new_line(2, 1)), cx)),
+    ];
+    for (what, target) in targets {
+        set_policy(cx, MotionPolicy::Off);
+        view.update(cx, |v, cx| {
+            v.set_section_open(1, false, cx);
+            v.scroll_to(ScrollTarget::File(0), cx);
+        });
+        settle(cx);
+        set_policy(cx, MotionPolicy::Full);
+        view.update(cx, target);
+        frame(cx);
+        assert_eq!(read(&view, cx, |v| v.section_open(1)), Some(true), "{what}");
+        assert!(!running(&view, cx), "{what} opens without motion");
+        assert_eq!(requested_frames(cx), 0, "{what}");
+    }
+}
+
+#[gpui_kit::test]
+fn section_open_reduced_fades_the_region_in(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = motion_sections(cx, false, VIEW_H);
+    set_policy(cx, MotionPolicy::Reduced);
+    let canvas = read(&view, cx, |v| v.options().theme.canvas);
+    click_show(&view, cx, 1);
+    let check = |d: &ViewportDebug, what: &str| {
+        assert_y(band(d, 2).y, B_OPEN, &format!("{what}: no displacement"));
+        assert_eq!(band_chevron(d, 1), 0.0, "{what}: no rotation");
+    };
+    check(&debug(&view, cx), "commit frame");
+    step_to(cx, ms(75.0));
+    check(&debug(&view, cx), "75 ms");
+    // Half of QUICK: a veil of the canvas over the region, strictly
+    // between transparent and opaque.
+    let veil = region_veil(cx, canvas).expect("a fade over the region");
+    assert!(veil > 0.0 && veil < 1.0, "veil {veil}");
+    // Over the cards' headers too: the region fades as one.
+    let header = read(&view, cx, |v| v.options().theme.header_background);
+    let quads = shaped_quads(cx);
+    let strip = quads
+        .iter()
+        .position(|q| q.fill == Some(header) && q.bounds.1 == 162.0)
+        .expect("a0's header strip");
+    let over = quads.iter().position(|q| {
+        q.fill.is_some_and(|f| f.l == canvas.l && f.a < canvas.a) && q.bounds.1 <= 162.0
+    });
+    assert!(
+        over.is_some_and(|v| v > strip),
+        "veil {over:?}, strip {strip}"
+    );
+    advance(cx, ms(75.0));
+    assert_eq!(region_veil(cx, canvas), None);
+    assert!(!running(&view, cx));
+}
+
+/// The alpha (as a share of `color`'s) of a veil of `color` painted over
+/// A's region (162..762).
+fn region_veil(cx: &mut VisualTestContext, color: gpui_kit::Hsla) -> Option<f32> {
+    shaped_quads(cx).into_iter().find_map(|q| {
+        let fill = q.fill?;
+        let (_, y, _, h) = q.bounds;
+        let same = fill.h == color.h && fill.s == color.s && fill.l == color.l;
+        (same && fill.a < color.a && y <= 162.0 && y + h >= 700.0).then_some(fill.a / color.a)
+    })
+}
+
+#[gpui_kit::test]
+fn band_button_mid_reveal_animates_its_own_reveal(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = motion_sections(cx, false, VIEW_H);
+    view.update(cx, |v, cx| v.set_collapsed(0, true, cx));
+    settle(cx);
+    set_policy(cx, MotionPolicy::Full);
+    // m.txt opens: 68 pt (its rows and padding), reveal(68) = 156.8 ms.
+    let chevron = center(control(&debug(&view, cx), ControlAction::Collapse(0)));
+    crate::reveal::click(cx, chevron);
+    step_to(cx, ms(60.0));
+    let link = *controls_of(&debug(&view, cx), ControlAction::SectionToggle(1))
+        .first()
+        .unwrap();
+    let at = point(px(center(link).0), px(center(link).1));
+    // The mouse down freezes the card's reveal (the app's settle root does
+    // it before the viewport sees the press), three frames pass, and the
+    // mouse up there clicks Show; then the deferred `Settle::Frozen`.
+    let now = cx.update(|_, cx| cx.background_executor().now());
+    view.update(cx, |v, cx| v.freeze_motion(now, cx));
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        advance(cx, FIRST_STEP);
+    }
+    assert_eq!(debug(&view, cx).reveal.unwrap().kind, RevealKind::Card);
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    view.update(cx, |v, cx| v.settle_motion(Settle::Frozen, cx));
+    frame(cx);
+    // m.txt ended open; A's reveal runs from B's band at its settled y.
+    let d = debug(&view, cx);
+    assert_eq!(read(&view, cx, |v| v.section_open(1)), Some(true));
+    let reveal = d.reveal.expect("the section's reveal runs on");
+    assert_eq!(reveal.kind, RevealKind::Section(1));
+    assert!(!reveal.frozen);
+    assert_eq!(d.cards[0].bounds.3, 114.0, "m.txt's card is open");
+    assert_y(band(&d, 2).y, B_CLOSED, "the section's commit");
+    step_to(cx, ms(100.0));
+    let y = band(&debug(&view, cx), 2).y;
+    assert!(y > B_CLOSED && y < B_OPEN, "between at ½: {y}");
+}
+
+// Mark all viewed (M5): one compound reveal of the cards on screen.
+
+/// Five added files of 10 lines (cards of 254 pt, 12 apart: a 0, b 266, c
+/// 532, d 798, e 1,064), in a 900 pt viewport at scale 2.
+fn five_cards(cx: &mut TestAppContext) -> (Entity<DiffViewport>, &mut VisualTestContext) {
+    open(
+        cx,
+        added_files(5, 10),
+        card_options(LayoutMode::Unified),
+        1000.,
+        VIEW_H,
+    )
+}
+
+/// The body of a 10-line card collapsing: 200 pt of rows and 8 of padding.
+const BODY: f32 = 208.0;
+const D_OPEN: f32 = 798.0;
+const D_CLOSED: f32 = D_OPEN - 2.0 * BODY;
+
+fn collapse_many(
+    view: &Entity<DiffViewport>,
+    cx: &mut VisualTestContext,
+    files: &[u32],
+    collapsed: bool,
+) {
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.set_collapsed_many_by(files, collapsed, Initiator::Pointer, window, cx)
+        })
+    });
+    frame(cx);
+}
+
+#[gpui_kit::test]
+fn mark_all_viewed_reveals_only_the_visible_strip(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = five_cards(cx);
+    set_policy(cx, MotionPolicy::Full);
+    assert_eq!(header_y(&debug(&view, cx), 3), D_OPEN);
+    // b and c are on screen; e (at 1,064) is not.
+    collapse_many(&view, cx, &[1, 2, 4], true);
+    assert!(read(&view, cx, |v| (1..5)
+        .filter(|&f| f != 3)
+        .all(|f| v.document().is_collapsed(f))));
+    let d = debug(&view, cx);
+    let bodies: Vec<(RevealKind, u32)> = d.reveals.iter().map(|r| (r.kind, r.file_idx)).collect();
+    assert_eq!(bodies, [(RevealKind::Card, 1), (RevealKind::Card, 2)]);
+    // The commit frame: d where it was, its committed y 2 · 208 pt higher:
+    // the travel is the visible collapsing height.
+    assert_y(header_y(&d, 3), D_OPEN, "commit frame");
+    // reveal(416) = 191.6 ms; exit(191.6) = 140 ms. Each body's height is
+    // quantized on its own (rule 11), and d rides by both.
+    step_to(cx, ms(70.0));
+    let each = q(f64::from(BODY) * (1.0 - slide(0.5)));
+    assert_y(
+        header_y(&debug(&view, cx), 3),
+        D_CLOSED + 2.0 * each,
+        "70 ms",
+    );
+    // b's frame and c's card follow it.
+    let d = debug(&view, cx);
+    let b_bottom = crate::reveal::card(&d, 1).1 + crate::reveal::card(&d, 1).3;
+    assert_y(
+        crate::reveal::card(&d, 2).1,
+        b_bottom + 12.0,
+        "c rides below b",
+    );
+    advance(cx, ms(70.0));
+    assert_y(header_y(&debug(&view, cx), 3), D_CLOSED, "140 ms");
+    assert!(!running(&view, cx));
+}
+
+#[gpui_kit::test]
+fn mark_all_viewed_commits_files_above_still(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // Eight cards (a document of 2,124 pt) in a 900 pt viewport.
+    let (view, cx) = open(
+        cx,
+        added_files(8, 10),
+        card_options(LayoutMode::Unified),
+        1000.,
+        VIEW_H,
+    );
+    // b's header at the top: a (0..254) is above the viewport.
+    wheel(cx, 266.0);
+    let before = debug(&view, cx);
+    assert_eq!((header_y(&before, 1), header_y(&before, 3)), (0.0, 532.0));
+    set_policy(cx, MotionPolicy::Full);
+    collapse_many(&view, cx, &[0, 2], true);
+    let d = debug(&view, cx);
+    // a closed above without moving anything; c on screen glides.
+    let bodies: Vec<u32> = d.reveals.iter().map(|r| r.file_idx).collect();
+    assert_eq!(bodies, [2]);
+    assert_eq!(header_y(&d, 1), 0.0, "b holds the top");
+    assert_y(header_y(&d, 3), 532.0, "commit frame: d where it was");
+    // exit(reveal(208)) = 130 ms.
+    step_to(cx, ms(150.0));
+    assert_y(header_y(&debug(&view, cx), 3), 532.0 - BODY, "settled");
+    assert!(!running(&view, cx));
+
+    // At the document's end, collapsing c pulls the content down (the
+    // scroll position is clamped): that snaps.
+    set_policy(cx, MotionPolicy::Off);
+    view.update(cx, |v, cx| {
+        v.set_collapsed(0, false, cx);
+        v.set_collapsed(2, false, cx);
+    });
+    settle(cx);
+    wheel(cx, 5_000.0);
+    set_policy(cx, MotionPolicy::Full);
+    collapse_many(&view, cx, &[6], true);
+    assert!(!running(&view, cx), "a clamped scroll snaps");
+}
+
+#[gpui_kit::test]
+fn mark_all_viewed_reduced_fades_then_snaps(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = five_cards(cx);
+    set_policy(cx, MotionPolicy::Reduced);
+    let background = read(&view, cx, |v| v.options().theme.card_background);
+    collapse_many(&view, cx, &[1, 2], true);
+    assert_y(header_y(&debug(&view, cx), 3), D_OPEN, "commit frame");
+    step_to(cx, ms(50.0));
+    assert_y(
+        header_y(&debug(&view, cx), 3),
+        D_OPEN,
+        "50 ms: the frames hold",
+    );
+    let veils = card_veils(cx, background);
+    assert_eq!(veils.len(), 2, "a veil over each body: {veils:?}");
+    assert!(veils.iter().all(|&a| a > 0.0 && a < 1.0), "{veils:?}");
+    advance(cx, ms(50.0));
+    assert_y(header_y(&debug(&view, cx), 3), D_CLOSED, "100 ms: snapped");
+    assert!(!running(&view, cx));
+}
+
+#[gpui_kit::test]
+fn mark_all_unviewed_reduced_fades_rows_in(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = five_cards(cx);
+    view.update(cx, |v, cx| {
+        v.set_collapsed(1, true, cx);
+        v.set_collapsed(2, true, cx);
+    });
+    settle(cx);
+    set_policy(cx, MotionPolicy::Reduced);
+    let background = read(&view, cx, |v| v.options().theme.card_background);
+    collapse_many(&view, cx, &[1, 2], false);
+    assert_y(
+        header_y(&debug(&view, cx), 3),
+        D_OPEN,
+        "commit frame: in place",
+    );
+    step_to(cx, ms(75.0));
+    assert_y(
+        header_y(&debug(&view, cx), 3),
+        D_OPEN,
+        "75 ms: no displacement",
+    );
+    let veils = card_veils(cx, background);
+    assert_eq!(veils.len(), 2, "{veils:?}");
+    assert!(veils.iter().all(|&a| a > 0.0 && a < 1.0), "{veils:?}");
+    advance(cx, ms(75.0));
+    assert!(card_veils(cx, background).is_empty());
+    assert!(!running(&view, cx));
+}
+
+/// The alphas (as shares of `color`'s) of the veils of `color` painted
+/// over a card's 200 pt of rows.
+fn card_veils(cx: &mut VisualTestContext, color: gpui_kit::Hsla) -> Vec<f32> {
+    shaped_quads(cx)
+        .into_iter()
+        .filter_map(|q| {
+            let fill = q.fill?;
+            let same = fill.h == color.h && fill.s == color.s && fill.l == color.l;
+            (same && fill.a < color.a && q.bounds.3 >= 190.0).then_some(fill.a / color.a)
+        })
+        .collect()
+}
+
+#[gpui_kit::test]
+fn the_last_section_opens_from_its_band(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    // A is the document's last section: the gap below the last card is not
+    // part of its region, so nothing of it shows on the commit frame.
+    let provider = MemProvider::new(vec![
+        Spec::added("m.txt", &numbered("m", 3).concat()),
+        Spec::added("a0.txt", &numbered("a0", 12).concat()),
+        Spec::added("a1.txt", &numbered("a1", 12).concat()),
+    ]);
+    let (view, cx) = open(
+        cx,
+        provider,
+        card_options(LayoutMode::Unified),
+        1000.,
+        VIEW_H,
+    );
+    set_sections(&view, cx, vec![section(1, "2 test files", &[1, 2], false)]);
+    set_policy(cx, MotionPolicy::Full);
+    click_show(&view, cx, 1);
+    let d = debug(&view, cx);
+    let reveal = d.reveal.expect("revealing");
+    assert_eq!((reveal.top, reveal.height), (162.0, 0.0), "commit frame");
+    assert!(d.cards.iter().all(|c| c.file_idx == 0), "{:?}", d.cards);
+    // reveal(600) = 200 ms: at ½ the region is 600 · SLIDE(½) tall.
+    step_to(cx, ms(100.0));
+    let h = debug(&view, cx).reveal.expect("revealing").height;
+    assert_y(h, q(f64::from(REGION) * slide(0.5)), "100 ms");
+    advance(cx, ms(100.0));
+    assert!(!running(&view, cx));
+    // Settled: a1's card ends 600 below the band.
+    let d = debug(&view, cx);
+    let a1 = crate::reveal::card(&d, 2);
+    assert_eq!(a1.1 + a1.3, 162.0 + REGION);
+}
+
+#[gpui_kit::test]
+fn second_band_click_reverses_from_the_painted_height(cx: &mut TestAppContext) {
+    let _sb = sandbox();
+    let (view, cx) = motion_sections(cx, false, VIEW_H);
+    set_policy(cx, MotionPolicy::Full);
+    click_show(&view, cx, 1);
+    step_to(cx, ms(100.0));
+    let painted = debug(&view, cx);
+    let b = band(&painted, 2).y;
+    assert!(b > B_CLOSED && b < B_OPEN, "{b}");
+    // Hide, mid-open: closed in the model, from where it is painted, the
+    // cards on screen kept where they were.
+    click_show(&view, cx, 1);
+    assert_eq!(read(&view, cx, |v| v.section_open(1)), Some(false));
+    let d = debug(&view, cx);
+    assert_y(band(&d, 2).y, b, "the reversal's commit");
+    assert_eq!(header_y(&d, 1), header_y(&painted, 1), "a0 stays put");
+    // It closes over exit(200) = 150 ms × the share travelled.
+    step_to(cx, ms(60.0));
+    let y = band(&debug(&view, cx), 2).y;
+    assert!(y > B_CLOSED && y < b, "closing: {y}");
+    advance(cx, ms(100.0));
+    assert_y(band(&debug(&view, cx), 2).y, B_CLOSED, "closed");
+    assert!(!running(&view, cx));
+}

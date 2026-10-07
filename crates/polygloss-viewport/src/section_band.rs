@@ -16,24 +16,28 @@
 //! sets file flags, never per frame.
 //!
 //! Who opens a section: the host ([`DiffViewport::set_sections`],
-//! [`DiffViewport::set_section_open`]: no event), the band's controls and
-//! explicit targets ([`DiffViewport::scroll_to`] but
-//! [`crate::ScrollTarget::Restore`], [`DiffViewport::go_to_file`],
-//! [`DiffViewport::set_cursor`], [`DiffViewport::reveal_line`]), which emit
+//! [`DiffViewport::set_section_open`]: no event), the band's controls
+//! ([`DiffViewport::toggle_section_by`] with `Pointer`: the region below the
+//! band is revealed, ADR-0030 M4) and explicit targets
+//! ([`DiffViewport::scroll_to`] but [`crate::ScrollTarget::Restore`],
+//! [`DiffViewport::go_to_file`], [`DiffViewport::set_cursor`],
+//! [`DiffViewport::reveal_line`]: at once), which emit
 //! [`ViewportEvent::SectionToggled`].
 
 use std::rc::Rc;
 
-use gpui_kit::{Context, SharedString};
+use gpui_kit::{Context, SharedString, Window};
 
 use crate::controls::{ControlAction, ControlLayer};
-use crate::document::SectionFiles;
+use crate::document::{SectionFiles, SlotRange};
 use crate::file_flags::FileFlags;
 use crate::header::{
     CHEVRON_DOWN, CHEVRON_RIGHT, SLOT_ACCENT, SLOT_ADDED, SLOT_HEADER, SLOT_MUTED, SLOT_REMOVED,
 };
+use crate::motion::{self, Initiator, Play, tokens};
 use crate::numbers::group_digits;
 use crate::paint_rows::{HEADERS, Painter, link_width};
+use crate::reveal::{BodyKind, DISCLOSURE, GeomKind, Ghost, RevealBody, disclosure};
 use crate::space::{card, edge, gap, height, radius, size};
 use crate::text_cache::ShapedText;
 use crate::view::{DiffViewport, ViewportEvent};
@@ -190,13 +194,91 @@ impl DiffViewport {
         }
     }
 
-    /// The band's Show / Hide: toggles section `id` and tells the host.
-    pub(crate) fn toggle_section(&mut self, id: u32, cx: &mut Context<Self>) {
-        let Some(open) = self.section_open(id).map(|open| !open) else {
+    /// Opens or closes section `section` (an index into
+    /// [`crate::Document::sections`]) as `initiator` asks, and tells the
+    /// host ([`ViewportEvent::SectionToggled`]). The band's chevron, label
+    /// and Show / Hide pass `Pointer`, which reveals the region below the
+    /// band (ADR-0030 M4): its cards are cut by a curtain from the band's
+    /// bottom edge, the bands and cards after it ride below, and its
+    /// chevron turns with it, over `reveal(Δ)` (open) or `exit(reveal(Δ))`
+    /// (close). A second click reverses from the painted height. A band off
+    /// screen, a close that moves the anchor, `Keyboard` and `Programmatic`
+    /// snap (the palette's section actions, explicit targets and Find keep
+    /// [`DiffViewport::set_section_open`] and its snap).
+    pub fn toggle_section_by(
+        &mut self,
+        section: usize,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(s) = self.doc.sections().get(section) else {
             return;
+        };
+        let (id, open) = (s.id, !s.open);
+        let policy = motion::policy(cx);
+        let reversing = self.reveal.take().filter(|r| {
+            r.pending.is_none()
+                && matches!(r.bodies[0].kind, BodyKind::Section { section: s, .. } if s == section)
+        });
+        let scale = window.scale_factor().max(1.0);
+        let scroll0 = self.snapped_scroll(scale);
+        let vh = self.doc.viewport_height();
+        let band = (self.doc.band_top(section) - scroll0) as f32;
+        let on_screen = band < vh && band + self.doc.metrics().band_height > 0.0;
+        let animates =
+            on_screen && motion::play(&DISCLOSURE, open, initiator, policy) != Play::Snap;
+        let (top, end) = self.doc.section_region(section);
+        let h0 = (end - top) as f32;
+        let ghosts: Rc<[Ghost]> = if animates && !open {
+            self.ghosts(section, scroll0).into()
+        } else {
+            Rc::from([])
         };
         self.set_section_open(id, open, cx);
         cx.emit(ViewportEvent::SectionToggled { id, open });
+        if !animates || self.snapped_scroll(scale) != scroll0 {
+            return;
+        }
+        let (top, end) = self.doc.section_region(section);
+        let body = RevealBody {
+            kind: BodyKind::Section {
+                section,
+                last_slot: self.doc.last_section_slot(section),
+                ghosts,
+            },
+            slot: self.doc.band_slot(section),
+            h0,
+            h1: (end - top) as f32,
+            rows_screen_y: 0.0,
+        };
+        let motion = disclosure(DISCLOSURE, body.travel(vh), vh);
+        let track = reversing.map(|r| r.track);
+        self.start_reveal(vec![body], motion, open, initiator, track, None, cx);
+    }
+
+    /// Section `section`'s cards painted on screen at `scroll_top`, as a
+    /// closing reveal keeps them ([`Ghost`]).
+    fn ghosts(&self, section: usize, scroll_top: f64) -> Vec<Ghost> {
+        let doc = &self.doc;
+        let vh = f64::from(doc.viewport_height());
+        let slots = SlotRange {
+            start: doc.band_slot(section),
+            end: doc.last_section_slot(section) + 1,
+        };
+        let mut ghosts = Vec::new();
+        for f in doc.shown_files(slots) {
+            let top = doc.header_top(f) - scroll_top;
+            if top >= vh {
+                break;
+            }
+            ghosts.push(Ghost {
+                file: f,
+                top: top as f32,
+                bottom: (doc.card_bottom(f) - scroll_top) as f32,
+            });
+        }
+        ghosts
     }
 
     /// Recomputes every band's counts from the pipeline's (when counts land,
@@ -271,13 +353,25 @@ impl Painter<'_> {
 
         // The chevron, the icon and the label (cut to the room left), one
         // toggle from the chevron's button to the label's end.
-        let chevron = if section.open {
-            CHEVRON_DOWN
-        } else {
-            CHEVRON_RIGHT
+        // While its region moves the chevron turns with it (ADR-0030: 0°
+        // open, −90° closed); at rest the closed one is `chevron-right`.
+        let turning = self
+            .reveals
+            .iter()
+            .find(|g| matches!(g.kind, GeomKind::Section { section: k, .. } if k == s));
+        let (chevron, turn) = match turning {
+            Some(g) => (CHEVRON_DOWN, g.angle),
+            None if section.open => (CHEVRON_DOWN, 0.0),
+            None => (CHEVRON_RIGHT, 0.0),
+        };
+        let angle = match turning {
+            Some(g) => g.angle,
+            None if section.open => 0.0,
+            None => tokens::CHEVRON_CLOSED_DEG,
         };
         let chevron_x = x0 + card::CHEVRON_X;
-        self.icon(chevron, chevron_x, icon_y, size::ICON, theme.muted);
+        let icon = (chevron_x, icon_y, size::ICON);
+        self.turned_icon(chevron, icon, theme.muted, turn);
         let mut x = x0 + card::PATH_X;
         if let Some(icon) = &band.icon {
             self.icon(icon.clone(), x, icon_y, size::ICON, theme.muted);
@@ -378,10 +472,11 @@ impl Painter<'_> {
                 badges,
                 dot: dot_shown,
                 links: vec![show.to_owned(), mark.to_owned()],
+                chevron: angle,
             });
         }
         #[cfg(not(feature = "debug-inspect"))]
-        let _ = (shown_counts, dot_shown);
+        let _ = (shown_counts, dot_shown, angle);
     }
 
     /// `text` in the UI font and the header color, cut with `…` to `room`

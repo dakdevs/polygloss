@@ -68,8 +68,12 @@ pub struct ViewportDebug {
     /// its header sits in place) relative to the viewport, as painted (a
     /// reveal displaces the slots below its body), top to bottom.
     pub slots: Vec<(u32, f32)>,
-    /// The running reveal (ADR-0030 M3), as the last frame painted it.
+    /// The running reveal's first body (ADR-0030 M3–M8), as the last frame
+    /// painted it.
     pub reveal: Option<RevealDebug>,
+    /// Every body of the running reveal (several for Mark all viewed, M5),
+    /// top to bottom.
+    pub reveals: Vec<RevealDebug>,
     /// Every painted file header's chevron: `(file_idx, degrees)`, 0 open
     /// (pointing down), −90 closed, between while its body moves.
     pub chevrons: Vec<(u32, f32)>,
@@ -79,17 +83,40 @@ pub struct ViewportDebug {
     pub relayouts: u32,
 }
 
-/// A running reveal: a file's body opening or closing (ADR-0030 M3).
+/// What a reveal's body is (ADR-0030 M3–M8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevealKind {
+    /// A file card's body below its header (M3, M5).
+    Card,
+    /// The region below the band of the section with this id (M4).
+    Section(u32),
+    /// A run of a file's rows: a gap's inserted rows (M6), a host block's
+    /// row (M7).
+    Rows,
+    /// The prelude (M8).
+    Prelude,
+}
+
+/// A body of a running reveal: a file's body, a section's region, a run
+/// of rows or the prelude opening or closing (ADR-0030 M3–M8).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RevealDebug {
+    pub kind: RevealKind,
+    /// The card's or the rows' file; a section's first file; the top file
+    /// for the prelude.
     pub file_idx: u32,
-    /// The file's display slot: every slot after it rides below the frame.
+    /// Its display slot: every slot after it (after a section's last) rides
+    /// below the frame.
     pub slot: u32,
-    /// The body's painted height below its header, the card's bottom
-    /// padding included: the card's frame ends this far below the header.
+    /// Where the body starts, relative to the viewport: below a card's
+    /// header, at a section's band's bottom, at the first row of a run.
+    pub top: f32,
+    /// The body's painted height from its top, a card's bottom padding
+    /// included: its frame ends this far below `top`.
     pub height: f32,
-    /// Where the body's rows are cut (`CARD_Y` above the frame's bottom,
-    /// never above the body's top), relative to the viewport.
+    /// Where the body's content is cut (a card's and a section's `CARD_Y`
+    /// above the frame's bottom, never above its top; a run's and the
+    /// prelude's at it), relative to the viewport.
     pub curtain: f32,
     /// The rows' opacity: 1, or a Reduced fade's.
     pub opacity: f32,
@@ -168,6 +195,9 @@ pub struct BandDebug {
     /// Its links, left to right: "Show" or "Hide", then "Mark all viewed" or
     /// "Mark all unviewed".
     pub links: Vec<String>,
+    /// Its chevron, in degrees: 0 open (pointing down), −90 closed, between
+    /// while its region moves (ADR-0030 M4).
+    pub chevron: f32,
 }
 
 /// A painted file card: its whole outer bounds, borders included, as

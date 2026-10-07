@@ -598,6 +598,40 @@ mod motion_scenario {
         assert_eq!(state(&mut shell), (false, true), "expanding by pointer");
     }
 
+    /// T7.11: the section driver opens and closes the first section by
+    /// pointer, its band at the top, and the reveal is registered with the
+    /// window's settling.
+    #[gpui_kit::test]
+    fn section_driver_opens_and_closes_the_first_section_by_pointer(cx: &mut TestAppContext) {
+        let _sb = Sandbox::isolate();
+        let repo = crate::categories::mixed_repo(3);
+        let mut shell = shell::start(cx);
+        let tab = shell
+            .open(shell::compare_req(repo.path()))
+            .expect("open the review");
+        shell::draw(shell.cx);
+        shell
+            .cx
+            .update(|_, cx| motion::set_override(Some(MotionPolicy::Full), cx));
+        let viewport = tab.read_with(shell.cx, |t, _| t.viewport.clone());
+        let section = scenario::DRIVERS
+            .iter()
+            .find(|d| d.name == "section")
+            .expect("the section driver");
+        let state = |shell: &mut shell::Shell| {
+            viewport.read_with(shell.cx, |v, _| {
+                (v.document().sections()[0].open, v.motion_running())
+            })
+        };
+        assert_eq!(state(&mut shell), (false, false), "closed by default");
+        shell.cx.update(|window, cx| (section.open)(window, cx));
+        assert_eq!(state(&mut shell), (true, true), "opening by pointer");
+        shell.cx.simulate_keystrokes("escape");
+        assert_eq!(state(&mut shell), (true, false), "settled by a key down");
+        shell.cx.update(|window, cx| (section.close)(window, cx));
+        assert_eq!(state(&mut shell), (false, true), "closing by pointer");
+    }
+
     #[test]
     fn motion_metrics_cover_every_registered_budget() {
         // benches/budgets.json registers the M7 app-shell metrics; the app

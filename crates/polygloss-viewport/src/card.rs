@@ -13,8 +13,9 @@
 use gpui_kit::{Bounds, Context, Corners, Edges, Pixels, Point, point, px, size};
 
 use crate::blocks::RenderBlock;
-use crate::document::SlotRange;
+use crate::motion::{self, Initiator, MotionPolicy, Track};
 use crate::paint_rows::{FULL, HEADERS, Painter, RoundedQuad};
+use crate::reveal::{BodyKind, DISCLOSURE, GeomKind, Pending, Reveal, RevealBody};
 use crate::space::{edge, gap, radius, stroke};
 use crate::view::DiffViewport;
 
@@ -106,8 +107,12 @@ impl DiffViewport {
     /// fresh document opens at its top, and an anchor at the top of the
     /// document stays there while it loads or grows. Setting it again keeps
     /// the last measured height until it is measured again (on the next
-    /// frame). [`DiffViewport::set_provider`] keeps it.
+    /// frame). [`DiffViewport::set_provider`] keeps it. Its height may
+    /// change, so it settles a running reveal (ADR-0030 rule 4); a host
+    /// that changed it by a user action calls [`DiffViewport::reveal_prelude`]
+    /// after it.
     pub fn set_prelude(&mut self, render: Option<RenderBlock>, cx: &mut Context<Self>) {
+        self.reveal = None;
         match render {
             Some(render) => {
                 self.prelude = Some(Prelude {
@@ -123,6 +128,49 @@ impl DiffViewport {
                 self.doc.set_prelude_height(None);
             }
         }
+        cx.notify();
+    }
+
+    /// The prelude's height changed from `from_h` by a user action (the
+    /// header card's commit list, ADR-0030 M8): its change is revealed, the
+    /// prelude cut at the frame's edge while the cards below ride. Call it
+    /// after [`DiffViewport::set_prelude`]; the reveal waits for the
+    /// prelude's measured height (on the next frame) and takes
+    /// `reveal(Δ)` in, `exit(reveal(Δ))` out. `Pointer` glides; `Keyboard`
+    /// and `Programmatic` snap, and so does a prelude off screen or a
+    /// measurement that moves the scroll position (an anchor below it).
+    pub fn reveal_prelude(&mut self, from_h: Pixels, initiator: Initiator, cx: &mut Context<Self>) {
+        let policy = motion::policy(cx);
+        let from_h = from_h.as_f32().max(0.0);
+        let top = -self.doc.scroll_top() as f32;
+        let on_screen = top < self.doc.viewport_height() && top + from_h > 0.0;
+        if self.prelude.is_none()
+            || !on_screen
+            || !DISCLOSURE.animates.contains(&initiator)
+            || policy == MotionPolicy::Off
+        {
+            return;
+        }
+        let slot = self.doc.slot(self.doc.top_anchor().file_idx);
+        self.reveal = Some(Reveal {
+            bodies: vec![RevealBody {
+                kind: BodyKind::Prelude,
+                slot,
+                h0: from_h,
+                h1: from_h,
+                rows_screen_y: 0.0,
+            }],
+            track: Track::new(0.0, 1.0),
+            restore: None,
+            primed: false,
+            painted_at: None,
+            pending: Some(Pending {
+                motion: DISCLOSURE,
+                initiator,
+                scroll_top: self.doc.scroll_top(),
+                block: None,
+            }),
+        });
         cx.notify();
     }
 
@@ -164,48 +212,48 @@ impl Painter<'_> {
     }
 
     /// What is behind the rows: the viewport's background in the flat
-    /// layout; with cards, the canvas and one rounded quad per visible card
-    /// (their own layer), each cut to the viewport plus its corners and its
-    /// border, so a long card never makes a huge quad and its cut edges stay
-    /// out of view. Each card's whole outer bounds go into the frame
-    /// ([`crate::DiffViewport::card_bounds`]). A revealing card's frame
-    /// closes at its reveal's frame bottom, and the cards after it ride
-    /// below ([`crate::reveal`]).
-    pub(crate) fn paint_canvas(&mut self, visible: SlotRange) {
+    /// layout; with cards, the canvas, under the cards ([`Painter::card_at`])
+    /// in their own layer.
+    pub(crate) fn paint_canvas(&mut self) {
         let b = self.bounds;
         let (width, height) = (b.size.width.as_f32(), b.size.height.as_f32());
-        let Some(style) = self.cards else {
+        if self.cards.is_none() {
             self.quad(FULL, 0.0, 0.0, width, height, self.theme.background);
             return;
-        };
+        }
         let layer = &mut self.frame.cards;
         layer.clip = Some(b);
         layer.quads.push((b, self.theme.canvas));
+    }
+
+    /// File `f`'s card from `top` to `bottom` (relative to the viewport):
+    /// one rounded quad, cut to the viewport plus its corners and its
+    /// border, so a long card never makes a huge quad and its cut edges stay
+    /// out of view. Its whole outer bounds go into the frame
+    /// ([`crate::DiffViewport::card_bounds`]). A revealing card's frame
+    /// closes at its reveal's frame bottom, and the cards after it ride
+    /// below ([`crate::reveal`]). Nothing in the flat layout.
+    pub(crate) fn card_at(&mut self, f: u32, top: f32, bottom: f32) {
+        let Some(style) = self.cards else {
+            return;
+        };
+        let height = self.bounds.size.height.as_f32();
         let (x, w) = self.card_x_w();
         let reach = style.radius + style.border;
-        let doc = self.doc;
-        for f in doc.shown_files(visible) {
-            let shift = self.shift(doc.slot(f));
-            let top = (doc.header_top(f) - self.scroll_top) as f32 + shift;
-            let bottom = match self.reveal {
-                Some(r) if r.file == f => r.frame_bottom,
-                _ => (doc.card_bottom(f) - self.scroll_top) as f32 + shift,
-            };
-            let (cut_top, cut_bottom) = (top.max(-reach), bottom.min(height + reach));
-            if cut_bottom <= cut_top {
-                continue;
-            }
-            let whole = self.bounds_at(x, top, w, bottom - top);
-            self.frame.card_bounds.push((f, whole));
-            let bounds = self.bounds_at(x, cut_top, w, cut_bottom - cut_top);
-            self.frame.cards.rounded.push(RoundedQuad {
-                bounds,
-                background: self.theme.card_background,
-                border: Some(self.theme.card_border),
-                border_widths: Edges::all(px(style.border)),
-                radius: Corners::all(px(style.radius)),
-            });
+        let (cut_top, cut_bottom) = (top.max(-reach), bottom.min(height + reach));
+        if cut_bottom <= cut_top {
+            return;
         }
+        let whole = self.bounds_at(x, top, w, bottom - top);
+        self.frame.card_bounds.push((f, whole));
+        let bounds = self.bounds_at(x, cut_top, w, cut_bottom - cut_top);
+        self.frame.cards.rounded.push(RoundedQuad {
+            bounds,
+            background: self.theme.card_background,
+            border: Some(self.theme.card_border),
+            border_widths: Edges::all(px(style.border)),
+            radius: Corners::all(px(style.radius)),
+        });
     }
 
     /// The header's strip and the area that takes the clicks over the rows
@@ -241,8 +289,9 @@ impl Painter<'_> {
         } else {
             // A revealing body counts while any of it shows.
             let revealing = self
-                .reveal
-                .is_some_and(|g| g.file == f && g.frame_bottom > g.body_top);
+                .reveals
+                .iter()
+                .any(|g| g.kind == GeomKind::Card && g.file == f && g.frame_bottom > g.top);
             let bottom = if self.doc.body_height(f) > 0.0 || revealing {
                 px(0.)
             } else {
@@ -256,7 +305,8 @@ impl Painter<'_> {
             };
             (radius, Edges::all(b))
         };
-        self.frame.layers[HEADERS].rounded.push(RoundedQuad {
+        let layer = self.layer(HEADERS);
+        self.frame.layers[layer].rounded.push(RoundedQuad {
             bounds,
             background: theme.header_background,
             border: Some(theme.card_border),
@@ -269,14 +319,20 @@ impl Painter<'_> {
     /// Places the prelude at the top of the document, at a card's width, when
     /// it reaches into the viewport (a prelude not measured yet is 0 px tall
     /// and placed at the top, so it gets measured). A held layout keeps the
-    /// width it is laid out at; it is cut to the live card.
+    /// width it is laid out at; it is cut to the live card. While it
+    /// reveals (ADR-0030 M8), laid out at its new height, it is cut at the
+    /// frame's edge and everything below rides.
     pub(crate) fn place_prelude(&mut self) {
         let Some(render) = self.prelude else {
             return;
         };
         let h = self.doc.prelude_height().unwrap_or(0.0);
         let y = -self.scroll_top as f32;
-        if y + h < 0.0 || y > self.bounds.size.height.as_f32() {
+        let shown = match self.reveals.iter().find(|g| g.kind == GeomKind::Prelude) {
+            Some(g) => g.frame_bottom - y,
+            None => h,
+        };
+        if y + h.max(shown) < 0.0 || y > self.bounds.size.height.as_f32() {
             return;
         }
         let (x, w) = self.card_x_w();
@@ -286,7 +342,7 @@ impl Painter<'_> {
             origin,
             width: self.prelude_width,
             height: h,
-            clip: Bounds::new(origin, size(px(w), px(h))).intersect(&self.bounds),
+            clip: Bounds::new(origin, size(px(w), px(h.min(shown)))).intersect(&self.bounds),
             render: render.clone(),
         });
     }

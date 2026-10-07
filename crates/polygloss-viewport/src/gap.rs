@@ -8,13 +8,15 @@
 //! shares between versions. Revealing context builds that file's rows again
 //! with its expansions (linear in its rows, on the main thread, once per
 //! change) and lays it out on the spot; the scroll anchor keeps everything
-//! above the change still.
+//! above the change still. A painted link's click reveals the inserted rows
+//! from the gap row's edge ([`DiffViewport::expand_gap_by`], ADR-0030 M6);
+//! every other path shows them at once.
 
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use gpui_kit::Context;
+use gpui_kit::{Context, Window};
 use polygloss_diff::Side;
 use polygloss_diff::hunks::FileDiff;
 use polygloss_diff::rows::{ExpandBy, Expansions, GapId, Layout, Row, build_rows};
@@ -23,7 +25,9 @@ use crate::controls::{ControlAction, ControlLayer};
 use crate::document::{BodyRow, FileState};
 use crate::header::SLOT_ACCENT;
 use crate::materialize::MaterializedFile;
+use crate::motion::{self, Initiator, Play};
 use crate::paint_rows::{FULL, Painter};
+use crate::reveal::{BodyKind, GAP, MAX_GAP_ROWS, RevealBody, disclosure};
 use crate::space::gap;
 use crate::view::DiffViewport;
 
@@ -212,8 +216,8 @@ impl DiffViewport {
         }
     }
 
-    /// Reveals a clicked expander's lines: `by` applied to the hidden run
-    /// `run` it was painted on.
+    /// Reveals a clicked expander's lines at once (`e`): `by` applied to
+    /// the hidden run `run` it was painted on.
     pub(crate) fn expand_run(
         &mut self,
         file_idx: u32,
@@ -228,6 +232,139 @@ impl DiffViewport {
         {
             self.after_reveal(file_idx, cx);
         }
+    }
+
+    /// [`DiffViewport::expand`] as `initiator` asks: the painted links pass
+    /// `Pointer`, which reveals the inserted rows from the gap row's edge
+    /// (ADR-0030 M6): down for ↓20 and Expand all (the gap row and what
+    /// follows ride below a curtain over the new rows), up for ↑20 (the new
+    /// rows ride out from under the gap row with what follows them), the
+    /// card's frame following. ↑20 and ↓20 take QUICK, Expand all
+    /// `reveal(Δ)`. `e`, `E`, the ⋯ menu and Find keep their snap
+    /// (`Keyboard`, `Programmatic`), and an insert over one viewport or
+    /// [`crate::reveal::MAX_GAP_ROWS`] rows snaps.
+    pub fn expand_gap_by(
+        &mut self,
+        file_idx: u32,
+        gap: GapId,
+        by: ExpandBy,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let run = self.doc.file_layout(file_idx).and_then(|l| {
+            l.rows().iter().find_map(|r| match *r {
+                BodyRow::Gap {
+                    id, old_start, len, ..
+                } if id == gap => Some(old_start..old_start + len),
+                _ => None,
+            })
+        });
+        match run {
+            Some(run) => self.expand_run_by(file_idx, run, by, initiator, window, cx),
+            None => self.expand(file_idx, gap, by, cx),
+        }
+    }
+
+    /// Reveals a clicked expander's lines: `by` applied to the hidden run
+    /// `run` it was painted on, as `initiator` asks
+    /// ([`DiffViewport::expand_gap_by`]).
+    pub(crate) fn expand_run_by(
+        &mut self,
+        file_idx: u32,
+        run: Range<u32>,
+        by: ExpandBy,
+        initiator: Initiator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if file_idx >= self.doc.len() {
+            return;
+        }
+        let policy = motion::policy(cx);
+        let scale = window.scale_factor().max(1.0);
+        let scroll0 = self.snapped_scroll(scale);
+        // The gap row before the commit: its index, its height and how many
+        // rows the file had.
+        let before = (motion::play(&GAP, true, initiator, policy) != Play::Snap)
+            .then(|| self.doc.file_layout(file_idx))
+            .flatten()
+            .and_then(|l| {
+                let i = l.rows().iter().position(|r| {
+                    matches!(*r, BodyRow::Gap { old_start, len, .. }
+                        if (old_start..old_start + len) == run)
+                })?;
+                Some((i, l.row_height(i), l.len()))
+            });
+        if !self
+            .gaps
+            .update(file_idx, |e| e.reveal(run_reveal(run, by)))
+        {
+            return;
+        }
+        self.after_reveal(file_idx, cx);
+        let Some((i, gap_h, rows0)) = before else {
+            return;
+        };
+        if self.snapped_scroll(scale) != scroll0 {
+            return;
+        }
+        let Some(layout) = self.doc.file_layout(file_idx) else {
+            return;
+        };
+        // Where the new rows are: ↓20's above the gap row that is left,
+        // ↑20's below it; Expand all's in its place.
+        let added = layout.len() as i64 - rows0 as i64;
+        let (r0, r1, h0, from_bottom) = match by {
+            ExpandBy::Down(_) => (i, i as i64 + added, 0.0, false),
+            ExpandBy::Up(_) => (i + 1, i as i64 + 1 + added, 0.0, true),
+            ExpandBy::All => (i, i as i64 + added + 1, gap_h, false),
+        };
+        let Ok(r1) = usize::try_from(r1) else {
+            return;
+        };
+        let rows = layout.rows();
+        let inserted = r1.saturating_sub(r0);
+        let lines = r1 <= rows.len()
+            && rows[r0.min(r1)..r1]
+                .iter()
+                .all(|r| matches!(r, BodyRow::Line { .. }));
+        let gap_left = match by {
+            ExpandBy::Down(_) => rows.get(r1),
+            ExpandBy::Up(_) => rows.get(i),
+            ExpandBy::All => None,
+        };
+        let vh = self.doc.viewport_height();
+        let h1 = (layout.row_top(r1.min(rows.len())) - layout.row_top(r0.min(rows.len()))) as f32;
+        let top =
+            (self.doc.body_top(file_idx) + layout.row_top(r0.min(rows.len())) - scroll0) as f32;
+        let fits = inserted > 0
+            && inserted <= MAX_GAP_ROWS as usize
+            && h1 <= vh
+            && (0.0..vh).contains(&top);
+        let left_ok = match by {
+            ExpandBy::All => true,
+            _ => matches!(gap_left, Some(BodyRow::Gap { .. })),
+        };
+        if !lines || !left_ok || !fits {
+            return;
+        }
+        let body = RevealBody {
+            kind: BodyKind::Rows {
+                r0: r0 as u32,
+                r1: r1 as u32,
+                from_bottom,
+            },
+            slot: self.doc.slot(file_idx),
+            h0,
+            h1,
+            rows_screen_y: 0.0,
+        };
+        let motion = match by {
+            ExpandBy::All => disclosure(GAP, body.travel(vh), vh),
+            _ => GAP,
+        };
+        self.start_reveal(vec![body], motion, true, initiator, None, None, cx);
     }
 
     /// Reveals every line of file `file_idx` (`E`, "Expand all" in the file

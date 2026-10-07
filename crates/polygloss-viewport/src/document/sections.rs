@@ -143,6 +143,30 @@ impl Document {
         self.slot(self.sections[section].files[0])
     }
 
+    /// The slot of section `section`'s last file.
+    pub(crate) fn last_section_slot(&self, section: usize) -> u32 {
+        let files = &self.sections[section].files;
+        self.slot(files[files.len() - 1])
+    }
+
+    /// The region below section `section`'s band as `(top, end)` document
+    /// offsets (ADR-0030 M4): from the band's bottom, where its first card
+    /// starts, to its last card's bottom (the canvas below it is the next
+    /// band's lead, or the gap below the document's last card). A closed
+    /// section's is empty.
+    pub(crate) fn section_region(&self, section: usize) -> (f64, f64) {
+        let top = self.header_top(self.sections[section].files[0]);
+        let (first, last) = (self.band_slot(section), self.last_section_slot(section));
+        let mut end = self.heights.prefix(last as usize + 1);
+        if self
+            .last_shown_slot()
+            .is_some_and(|l| (first..=last).contains(&l))
+        {
+            end -= f64::from(self.metrics.card_gap);
+        }
+        (top, end.max(top))
+    }
+
     /// Where an anchor in hidden file `file_idx` goes: its section's band
     /// (the top of the section's first file), else the top of where the
     /// file is.

@@ -161,6 +161,12 @@ describe("budgets", () => {
       synthetic: 16.7,
       linux: 50,
     });
+    // T7.11: a section's reveal in the viewport alone (< 8.3 p95), on the
+    // corpora with sections at scale.
+    expect(metric("section_anim_p95_ms")).toEqual({
+      synthetic: 8.3,
+      linux: 8.3,
+    });
     for (const s of surfaces) expect(metric(`${s}_late_frames`)).toEqual({});
   });
 
@@ -645,7 +651,7 @@ case "$scenario" in
   highlight) metrics='"highlight_ms": 40' ;;
   blocks) metrics='"comment_repaint_ms": 12' ;;
   sections) metrics="\\"sections_scroll_p95_ms\\": \${SECTIONS_SCROLL:-2.7}, \\"section_toggle_ms\\": \${SECTION_TOGGLE:-18}" ;;
-  reveal) metrics="\\"collapse_anim_p95_ms\\": \${COLLAPSE_ANIM:-3.1}, \\"collapse_commit_ms\\": \${COLLAPSE_COMMIT:-6.2}" ;;
+  reveal) metrics="\\"collapse_anim_p95_ms\\": \${COLLAPSE_ANIM:-3.1}, \\"collapse_commit_ms\\": \${COLLAPSE_COMMIT:-6.2}, \\"section_anim_p95_ms\\": \${SECTION_ANIM:-2.4}" ;;
 esac
 printf '{"scenario":"%s","corpus":"%s","layout":"%s","metrics":{%s},"info":{"repo":"%s","base":"%s","head":"%s","mode":"%s","home":"%s"}}\\n' \\
   "$scenario" "$corpus" "$layout" "$metrics" "$repo" "$base" "$head" "$mode" "$HOME"
@@ -1004,7 +1010,7 @@ describe("run-perf CLI", () => {
   );
 
   test(
-    "reveal scenario reports the collapse metrics",
+    "reveal scenario reports the collapse and section metrics",
     () => {
       const out = join(sandbox.home, "results", "reveal.json");
       const r = runPerf([
@@ -1024,6 +1030,7 @@ describe("run-perf CLI", () => {
         expect(x.metrics).toMatchObject({
           collapse_anim_p95_ms: 3.1,
           collapse_commit_ms: 6.2,
+          section_anim_p95_ms: 2.4,
         });
       // polygloss-perf runs it by name.
       const run = results.runs.find((x) => x.scenario === "reveal")!;
@@ -1046,6 +1053,29 @@ describe("run-perf CLI", () => {
       expect(slow.code).toBe(1);
       expect(slow.stderr).toContain("collapse_commit_ms typical split = 20");
       expect(slow.stderr).not.toContain("collapse_commit_ms linux split");
+      // A section motion of 9 ms misses linux (< 8.3); typical has no
+      // section budget.
+      const sectionSlow = runPerf(
+        [
+          "--corpus",
+          "typical,linux",
+          "--layouts",
+          "split",
+          "--scenarios",
+          "reveal",
+          "--check-budgets",
+          "--out",
+          join(sandbox.home, "results", "reveal-section-slow.json"),
+        ],
+        { SECTION_ANIM: "9" },
+      );
+      expect(sectionSlow.code).toBe(1);
+      expect(sectionSlow.stderr).toContain(
+        "section_anim_p95_ms linux split = 9",
+      );
+      expect(sectionSlow.stderr).not.toContain(
+        "section_anim_p95_ms typical split",
+      );
     },
     cliTimeout,
   );

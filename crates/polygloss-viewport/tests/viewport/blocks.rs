@@ -1374,3 +1374,168 @@ fn blocks_in_hidden_files_are_not_measured(cx: &mut TestAppContext) {
     let rows = debug(&view, cx).visible_rows;
     assert!(rows.iter().any(|r| r == "[block 2]"), "{rows:?}");
 }
+
+// ---------------------------------------------------------------------------
+// block and prelude reveals (T7.11, ADR-0030 M7 and M8, for T7.14)
+
+mod reveal_motion {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui_kit::{IntoElement as _, Styled as _, TestAppContext, div, px};
+    use polygloss_diff::Side;
+    use polygloss_viewport::motion::{Initiator, MotionPolicy};
+    use polygloss_viewport::{BlockAnchor, BlockId, BlockSpec, LayoutMode, RevealKind};
+
+    use crate::reveal::{
+        FIRST_STEP, advance, assert_y, frame, header_y, ms, q, running, set_policy, slide, step_to,
+    };
+    use crate::support::*;
+
+    /// A host element `height` tall that counts its renders.
+    fn counting(height: Rc<Cell<f32>>, renders: Rc<Cell<u32>>) -> polygloss_viewport::RenderBlock {
+        Rc::new(move |_, _| {
+            renders.set(renders.get() + 1);
+            div().w_full().h(px(height.get())).into_any_element()
+        })
+    }
+
+    #[gpui_kit::test]
+    fn block_reveal_measures_the_block_once(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        let provider = MemProvider::new(vec![
+            Spec::added("a.rs", &numbered("a", 10).concat()),
+            Spec::added("b.rs", &numbered("b", 10).concat()),
+        ]);
+        let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 900.);
+        let (height, renders) = (Rc::new(Cell::new(28.0)), Rc::new(Cell::new(0)));
+        let id = BlockId(1);
+        let spec = BlockSpec {
+            id,
+            anchor: BlockAnchor::Line {
+                side: Side::New,
+                line: 2,
+            },
+            render: counting(height.clone(), renders.clone()),
+        };
+        view.update(cx, |v, cx| v.set_blocks(0, vec![spec], cx));
+        settle(cx);
+        let b0 = header_y(&debug(&view, cx), 1);
+        set_policy(cx, MotionPolicy::Full);
+        // The chip opens into a card 100 pt taller: reveal(100) = 160 ms.
+        height.set(128.0);
+        view.update(cx, |v, cx| {
+            v.invalidate_block(id, cx);
+            v.reveal_block(id, px(28.), Initiator::Pointer, cx);
+        });
+        renders.set(0);
+        frame(cx);
+        let d = debug(&view, cx);
+        assert!(running(&view, cx));
+        assert_eq!(d.reveal.expect("revealing").kind, RevealKind::Rows);
+        // Measured on the commit frame, at its final height, once.
+        assert_eq!(renders.get(), 1, "the commit frame measured it once");
+        assert_eq!(
+            view.read_with(cx, |v, _| v.document().blocks(0)[0].height),
+            128.0
+        );
+        assert_y(header_y(&d, 1), b0, "commit frame: b.rs where it was");
+        let mut frames = 1;
+        step_to(cx, FIRST_STEP);
+        frames += 1;
+        assert_y(
+            header_y(&debug(&view, cx), 1),
+            q(f64::from(b0) + 100.0 * slide(16.667 / 160.0)),
+            "first step",
+        );
+        advance(cx, ms(80.0) - FIRST_STEP);
+        frames += 1;
+        assert_y(
+            header_y(&debug(&view, cx), 1),
+            q(f64::from(b0) + 100.0 * slide(0.5)),
+            "80 ms",
+        );
+        // Every frame renders the block to paint it, laid out once at its
+        // final height: never measured again at an intermediate one.
+        assert_eq!(renders.get(), frames, "one layout per frame");
+        assert_eq!(
+            view.read_with(cx, |v, _| v.document().blocks(0)[0].height),
+            128.0
+        );
+        advance(cx, ms(80.0));
+        assert_y(header_y(&debug(&view, cx), 1), b0 + 100.0, "160 ms");
+        assert!(!running(&view, cx));
+
+        // Back to the chip: the card closes over exit(160) = 120 ms.
+        height.set(28.0);
+        view.update(cx, |v, cx| {
+            v.invalidate_block(id, cx);
+            v.reveal_block(id, px(128.), Initiator::Pointer, cx);
+        });
+        frame(cx);
+        assert_y(header_y(&debug(&view, cx), 1), b0 + 100.0, "commit frame");
+        step_to(cx, ms(60.0));
+        assert_y(
+            header_y(&debug(&view, cx), 1),
+            q(f64::from(b0) + 100.0 * (1.0 - slide(0.5))),
+            "60 ms",
+        );
+        advance(cx, ms(60.0));
+        assert_y(header_y(&debug(&view, cx), 1), b0, "120 ms");
+
+        // The keyboard's change snaps.
+        height.set(128.0);
+        view.update(cx, |v, cx| {
+            v.invalidate_block(id, cx);
+            v.reveal_block(id, px(28.), Initiator::Keyboard, cx);
+        });
+        frame(cx);
+        assert!(!running(&view, cx));
+        assert_y(header_y(&debug(&view, cx), 1), b0 + 100.0, "snapped");
+    }
+
+    #[gpui_kit::test]
+    fn prelude_reveal_waits_for_the_measured_height(cx: &mut TestAppContext) {
+        let _sb = sandbox();
+        let provider = MemProvider::new(vec![Spec::added("a.rs", &numbered("a", 10).concat())]);
+        let (view, cx) = open(cx, provider, card_options(LayoutMode::Unified), 1000., 900.);
+        let (height, renders) = (Rc::new(Cell::new(60.0)), Rc::new(Cell::new(0)));
+        view.update(cx, |v, cx| {
+            v.set_prelude(Some(counting(height.clone(), renders.clone())), cx)
+        });
+        settle(cx);
+        // The prelude's 60 pt and the 12 pt gap below it.
+        assert_eq!(header_y(&debug(&view, cx), 0), 72.0);
+        set_policy(cx, MotionPolicy::Full);
+        // The commit list opens: 100 pt taller, known only once measured.
+        height.set(160.0);
+        view.update(cx, |v, cx| {
+            v.set_prelude(Some(counting(height.clone(), renders.clone())), cx);
+            v.reveal_prelude(px(60.), Initiator::Pointer, cx);
+        });
+        frame(cx);
+        let d = debug(&view, cx);
+        assert_eq!(d.reveal.expect("revealing").kind, RevealKind::Prelude);
+        assert_eq!(
+            view.read_with(cx, |v, _| v.document().prelude_height()),
+            Some(160.0)
+        );
+        assert_y(header_y(&d, 0), 72.0, "commit frame: the card where it was");
+        // Its duration is the measured change's: reveal(100) = 160 ms.
+        step_to(cx, FIRST_STEP);
+        assert_y(
+            header_y(&debug(&view, cx), 0),
+            q(72.0 + 100.0 * slide(16.667 / 160.0)),
+            "first step",
+        );
+        advance(cx, ms(80.0) - FIRST_STEP);
+        assert_y(
+            header_y(&debug(&view, cx), 0),
+            q(72.0 + 100.0 * slide(0.5)),
+            "80 ms",
+        );
+        advance(cx, ms(80.0));
+        assert_y(header_y(&debug(&view, cx), 0), 172.0, "160 ms");
+        assert!(!running(&view, cx));
+    }
+}

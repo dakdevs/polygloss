@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 use polygloss_diff::rows::{ExpandBy, GapId};
 
+use crate::motion::Initiator::Pointer;
 use crate::paint_rows::Frame;
 use crate::view::{DiffViewport, ViewportEvent};
 
@@ -72,6 +73,9 @@ pub(crate) struct Control {
     pub layer: ControlLayer,
     /// The corner radius of its ink.
     pub radius: f32,
+    /// The frame layer it was painted with (a revealing body's group's,
+    /// [`crate::paint_rows::GROUP`]): its ink goes with that layer.
+    pub paint: usize,
     /// A gap expander's hidden run (old lines): a click acts on the run it
     /// was painted on, also when reveals split its gap into several runs.
     pub run: Option<Range<u32>>,
@@ -111,8 +115,8 @@ pub(crate) fn insert_hitboxes(frame: &Frame, window: &mut Window) -> Rc<[Target]
         }
     };
     insert(ControlLayer::Body, window);
-    if let Some(band) = frame.occluded {
-        window.insert_hitbox(band, HitboxBehavior::BlockMouseExceptScroll);
+    for band in &frame.occluded {
+        window.insert_hitbox(*band, HitboxBehavior::BlockMouseExceptScroll);
     }
     for area in &frame.header_areas {
         window.insert_hitbox(*area, HitboxBehavior::BlockMouseExceptScroll);
@@ -126,17 +130,19 @@ pub(crate) fn hovered(targets: &[Target], window: &Window) -> Option<usize> {
     targets.iter().position(|t| t.hitbox.is_hovered(window))
 }
 
-/// The ink over the control under the pointer in `layer`, as `(bounds,
-/// pressed, radius)`: pressed while the press that went down on it holds.
-/// While a press holds, no other control is inked.
+/// The ink over the control under the pointer in `layer` painted with frame
+/// layer `paint` (any, for `None`), as `(bounds, pressed, radius)`: pressed
+/// while the press that went down on it holds. While a press holds, no
+/// other control is inked.
 pub(crate) fn ink(
     targets: &[Target],
     hovered: Option<usize>,
     pressed: Option<&Pressed>,
     layer: ControlLayer,
+    paint: Option<usize>,
 ) -> Option<(Bounds<Pixels>, bool, f32)> {
     let c = &targets[hovered?].control;
-    if c.layer != layer {
+    if c.layer != layer || paint.is_some_and(|p| p != c.paint) {
         return None;
     }
     let on_pressed = match pressed {
@@ -229,9 +235,7 @@ impl DiffViewport {
         cx: &mut Context<Self>,
     ) {
         match control.action {
-            ControlAction::Collapse(f) => {
-                self.toggle_collapsed_by(f, crate::motion::Initiator::Pointer, window, cx)
-            }
+            ControlAction::Collapse(f) => self.toggle_collapsed_by(f, Pointer, window, cx),
             ControlAction::Viewed(f) => cx.emit(ViewportEvent::ViewedToggled(f)),
             ControlAction::Menu(f) => self.open_menu(f, control.bounds, window, cx),
             ControlAction::OpenInEditor(f) => {
@@ -243,14 +247,18 @@ impl DiffViewport {
                 });
             }
             ControlAction::Expand { file_idx, gap, by } => match &control.run {
-                Some(run) => self.expand_run(file_idx, run.clone(), by, cx),
-                None => self.expand(file_idx, gap, by, cx),
+                Some(run) => self.expand_run_by(file_idx, run.clone(), by, Pointer, window, cx),
+                None => self.expand_gap_by(file_idx, gap, by, Pointer, window, cx),
             },
             ControlAction::LoadDiff(f) => {
                 self.load_diff(f, cx);
                 cx.emit(ViewportEvent::LoadDiffRequested(f));
             }
-            ControlAction::SectionToggle(id) => self.toggle_section(id, cx),
+            ControlAction::SectionToggle(id) => {
+                if let Some(section) = self.doc.section_by_id(id) {
+                    self.toggle_section_by(section, Pointer, window, cx);
+                }
+            }
             ControlAction::SectionMarkViewed(id) => cx.emit(ViewportEvent::SectionMarkViewed(id)),
         }
     }
