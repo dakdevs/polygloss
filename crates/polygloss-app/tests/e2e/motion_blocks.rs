@@ -207,7 +207,7 @@ fn with_note(app: &mut App) -> String {
         name: "claude-code".into(),
         session_id: None,
     };
-    let mut add = |line: u32, kind: ThreadKind, body: &str| {
+    let add = |line: u32, kind: ThreadKind, body: &str| {
         core.create_thread(
             &NewThread {
                 review_id: review_id.clone(),
