@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use polygloss_diff::testing::assert_ratio_below;
+use polygloss_diff::testing::assert_wall_ratio_below;
 use polygloss_highlight::{
     Budget, HighlightError, Highlighter, Language, Span, StyleId, SyntaxTheme, Tokens,
 };
@@ -196,7 +196,7 @@ fn highlight_cancel_from_another_thread_stops_early() {
     );
     // Stopping early takes about 10 ms whatever the source; checked only at
     // the end, it would take the whole highlight, 10x longer for 10x lines.
-    assert_ratio_below(
+    assert_wall_ratio_below(
         "cancelling 10 ms in, 20k -> 200k lines",
         4.0,
         [&sources[0], &sources[1]],
@@ -227,7 +227,7 @@ fn highlight_budget_exceeded_returns_within_budget() {
     // Returning at the budget takes about 20 ms whatever the source; checked
     // only at the end, it would take the whole highlight, 10x longer for 10x
     // lines.
-    let [_, large] = assert_ratio_below(
+    let [_, large] = assert_wall_ratio_below(
         "a 20 ms budget, 20k -> 200k lines",
         4.0,
         [&sources[0], &sources[1]],

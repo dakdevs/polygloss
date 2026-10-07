@@ -853,9 +853,10 @@ fn tree_builds_13k_files_in_linear_time(cx: &mut TestAppContext) {
     // Every file and folder of the open panel is a row (all expanded).
     let dirs = tree.read_with(shell.cx, |t, _| t.model().dir_paths().len());
     assert_eq!(rows, 8_642 + dirs);
-    // Building every panel: 10x the files cost at most 10x (less with the
-    // fixed costs); 100x if quadratic. Sizes past 13k, where a quadratic term
-    // outgrows the linear work.
+    // Building every panel: 10x the files cost at most 10x (about 6x with the
+    // fixed costs); 100x if quadratic, and a quadratic term fails once it
+    // doubles the large run. Sizes past 13k, where a quadratic term outgrows
+    // the linear work.
     let inputs = [
         tree_inputs(&mut shell, 5_000),
         tree_inputs(&mut shell, 50_000),
@@ -864,17 +865,22 @@ fn tree_builds_13k_files_in_linear_time(cx: &mut TestAppContext) {
         build_tree(&mut shell, &inputs[0]),
         build_tree(&mut shell, &inputs[1]),
     ];
+    // GPUI frees a dropped entity at the next effect flush; the empty update
+    // frees each tree in its own run, not in the next (other size's) one.
     assert_ratio_below(
         "building every panel, 5k -> 50k files",
-        30.0,
+        15.0,
         [&inputs[0], &inputs[1]],
-        |inputs| build_tree(&mut shell, inputs),
+        |inputs| {
+            drop(build_tree(&mut shell, inputs));
+            shell.cx.update(|_, _| ());
+        },
     );
     // Filtering with nucleo, every panel, and clearing the query again: as
-    // linear.
+    // linear (about 6x).
     assert_ratio_below(
         "fuzzy filter and clear, 5k -> 50k files",
-        30.0,
+        15.0,
         trees,
         |tree| {
             shell.cx.update(|window, cx| {

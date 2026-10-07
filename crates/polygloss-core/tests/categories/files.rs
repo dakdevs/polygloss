@@ -166,12 +166,12 @@ fn categorizing_13k_paths_with_every_category_on_scales_linearly() {
     assert_eq!(id(3).as_deref(), Some("tests"));
     assert_eq!(id(52).as_deref(), Some("docs"));
     assert_eq!(id(1), None);
-    // One pass per path: 10x the paths cost about 10x; 100x if each path's
-    // cost grew with the number of paths. Below about 5k paths the per-path
-    // cost hides a cheap quadratic term.
+    // One pass per path: 10x the paths cost about 10x; a quadratic term fails
+    // once it doubles the large run (an `insert(0, ..)` per result does).
+    // Below about 5k paths the per-path cost hides a cheap quadratic term.
     assert_ratio_below(
         "categorizing, 5k -> 50k paths",
-        30.0,
+        20.0,
         [&files[..5_000], &files[..]],
         |files| c.categorize_files(files),
     );

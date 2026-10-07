@@ -213,9 +213,25 @@ fn git_binary_bypasses_the_xcode_shim() {
     let first_on_path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|d| d.join("git"))
         .find(|g| g.is_file());
+    // What one process costs now, for the bound below: the slowest of two
+    // spawns before and two after the lookup, so load during it raises the
+    // bound too (one sample before it could miss that).
+    let spawn = || {
+        let started = std::time::Instant::now();
+        std::process::Command::new("/usr/bin/true")
+            .status()
+            .unwrap();
+        started.elapsed()
+    };
+    let spawns_before = [spawn(), spawn()];
     let started = std::time::Instant::now();
     let bin = git_binary();
     let lookup = started.elapsed();
+    let one_spawn = spawns_before
+        .into_iter()
+        .chain([spawn(), spawn()])
+        .max()
+        .unwrap();
     if let Some(chosen) = chosen {
         // S13: a caller's `POLYGLOSS_GIT_BIN=<older git> nextest run` is the
         // git under test, whatever `PATH` holds; the bypass never replaces it.
@@ -228,11 +244,6 @@ fn git_binary_bypasses_the_xcode_shim() {
         // while `xcrun --find git` takes ≈ 75 ms there. The bound grows with
         // what one process costs right now, so a loaded host (parallel
         // nextest) does not fail it.
-        let spawn_started = std::time::Instant::now();
-        std::process::Command::new("/usr/bin/true")
-            .status()
-            .unwrap();
-        let one_spawn = spawn_started.elapsed();
         let bound = std::time::Duration::from_millis(40).max(one_spawn * 4);
         assert!(lookup < bound, "{lookup:?} (one process: {one_spawn:?})");
         assert_ne!(bin, PathBuf::from("git"));

@@ -6,7 +6,7 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use polygloss_core::paths::socket_path_fits;
 use polygloss_core::review::Core;
@@ -90,7 +90,10 @@ fn nudge_without_an_app_neither_launches_nor_waits() {
     drop(listener);
     assert!(ctx.core.paths.socket.exists());
     nudge_app(&ctx, 2);
-    assert!(started.elapsed() < Duration::from_millis(150));
+    // Waiting would cost at least one timeout; the two nudges together stay
+    // under one.
+    let took = started.elapsed();
+    assert!(took < NUDGE_TIMEOUT, "{took:?}");
     assert!(launcher.calls.lock().unwrap().is_empty());
 }
 

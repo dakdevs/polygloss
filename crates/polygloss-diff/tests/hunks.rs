@@ -382,13 +382,14 @@ fn line_index_ranges_and_trailing_newline() {
     assert!(idx.has_trailing_newline());
 }
 
-/// `n` lines and a copy with every 997th line changed.
+/// `n` lines and a copy with every 97th line changed: edits dense enough that
+/// a cost per line per edit outgrows the linear diff.
 fn scattered_edits(n: usize) -> (Vec<u8>, Vec<u8>) {
     let old: Vec<String> = (0..n)
         .map(|i| format!("    let v{i} = compute({i});\n"))
         .collect();
     let mut new = old.clone();
-    for i in (0..n).step_by(997) {
+    for i in (0..n).step_by(97) {
         new[i] = format!("    let v{i} = changed({i});\n");
     }
     (join(&old), join(&new))
@@ -406,8 +407,9 @@ fn hunks_200k_lines_stay_fast() {
     );
     let (old, new) = scattered_edits(200_000);
     let fd = diff_blobs(&old, &new, &DiffOptions::default());
-    assert_eq!(fd.additions, 201);
-    assert_eq!(fd.deletions, 201);
+    // Lines 0, 97, ..., 199,917: 2,062 edits.
+    assert_eq!(fd.additions, 2_062);
+    assert_eq!(fd.deletions, 2_062);
 }
 
 /// Compact, stable rendering of a `FileDiff`'s structure for snapshots.
