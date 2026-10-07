@@ -109,9 +109,13 @@ function submit(
 }
 
 function db(): Database {
-  return new Database(join(sandbox.dataDir, "polygloss.db"), {
+  const conn = new Database(join(sandbox.dataDir, "polygloss.db"), {
     readwrite: true,
   });
+  // Like every store connection (design §7.1): a waiter's lock or WAL recovery
+  // is waited out, not reported as SQLITE_BUSY.
+  conn.run("PRAGMA busy_timeout = 5000");
+  return conn;
 }
 
 function query<T>(sql: string, ...params: (string | number)[]): T | null {

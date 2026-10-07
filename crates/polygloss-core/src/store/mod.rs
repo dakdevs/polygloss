@@ -114,7 +114,7 @@ impl Store {
         migrations: &Migrations<'_>,
     ) -> Result<Store, StoreError> {
         ensure_private_dir(&paths.data_dir)?;
-        ensure_private_file(&paths.db)?;
+        ensure_private_db(&paths.db)?;
 
         let mut conn = Connection::open(&paths.db)?;
         bootstrap_connection(&conn)?;
@@ -231,6 +231,29 @@ fn ensure_private_dir(dir: &Path) -> Result<(), StoreError> {
         .map_err(|e| StoreError::io("create dir", dir, e))?;
     fs::set_permissions(dir, Permissions::from_mode(0o700))
         .map_err(|e| StoreError::io("chmod 0700", dir, e))
+}
+
+/// Creates the database file with mode `0600` if missing, else tightens it to
+/// `0600` by path. It never opens an existing database: closing any descriptor of
+/// a file drops every POSIX lock the process holds on it, so a second
+/// [`Store::open`] in a process (an [`events::EventFeed`] next to a `Core`) would
+/// strip the SHARED lock of its open WAL connections, and other processes could
+/// then lock the database exclusively while it is in use
+/// (<https://sqlite.org/howtocorrupt.html>, §2.2).
+fn ensure_private_db(db: &Path) -> Result<(), StoreError> {
+    let private = Permissions::from_mode(0o600);
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(db)
+    {
+        // A new file: no connection of this process can hold locks on it.
+        Ok(file) => file.set_permissions(private),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => fs::set_permissions(db, private),
+        Err(e) => return Err(StoreError::io("open", db, e)),
+    }
+    .map_err(|e| StoreError::io("chmod 0600", db, e))
 }
 
 /// Creates `file` with mode `0600` if missing, tightens it to `0600`, and returns it.

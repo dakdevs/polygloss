@@ -9,11 +9,13 @@
 //! (T1.2 owns `polygloss_core::testing::Sandbox`; later tasks can switch to it.)
 //!
 //! The multi-process tests re-run this test binary as children (`child_process_entry`,
-//! a no-op unless `POLYGLOSS_STORE_CHILD` is set).
+//! a no-op unless `POLYGLOSS_STORE_CHILD` is set; `lock_probe_entry`, a no-op unless
+//! `POLYGLOSS_STORE_LOCK_PROBE` is set).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,7 @@ use std::time::{Duration, Instant};
 use polygloss_core::DiffId;
 use polygloss_core::paths::{DataPaths, PathsError, SOCKET_PATH_MAX, socket_path_fits};
 use polygloss_core::review::Core;
+use polygloss_core::store::events::{EventFeed, EventFilter};
 use polygloss_core::store::migrations::{LATEST_VERSION, migrations};
 use polygloss_core::store::{Store, StoreError};
 use polygloss_diff::GeneratedAttr;
@@ -772,4 +775,89 @@ fn store_parallel_writers_never_surface_busy() {
         )
         .unwrap();
     assert_eq!(n, 4 * 500);
+}
+
+const LOCK_PROBE_ENV: &str = "POLYGLOSS_STORE_LOCK_PROBE";
+
+/// Child mode for `store_reopen_keeps_the_open_connections_lock`: prints the
+/// POSIX lock another process holds on the database at `$POLYGLOSS_STORE_LOCK_PROBE`
+/// (`LOCK-PROBE none`, or `LOCK-PROBE read|write <pid>`); a no-op in a normal run.
+/// `F_GETLK` never reports the caller's own locks, so only a child can see the
+/// test process's.
+#[test]
+fn lock_probe_entry() {
+    let Some(db) = std::env::var_os(LOCK_PROBE_ENV) else {
+        return;
+    };
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&db)
+        .unwrap();
+    // A write lock on the whole file (l_start 0, l_len 0): F_GETLK describes a
+    // lock that would block it.
+    let mut lock = libc::flock {
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+        l_type: libc::F_WRLCK,
+        l_whence: libc::SEEK_SET as libc::c_short,
+    };
+    // SAFETY: F_GETLK reads and fills in `lock`, which outlives the call.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) };
+    assert_eq!(rc, 0, "F_GETLK: {}", std::io::Error::last_os_error());
+    match lock.l_type {
+        libc::F_UNLCK => println!("LOCK-PROBE none"),
+        libc::F_RDLCK => println!("LOCK-PROBE read {}", lock.l_pid),
+        _ => println!("LOCK-PROBE write {}", lock.l_pid),
+    }
+}
+
+/// The lock a child process sees on `db`, as `lock_probe_entry` prints it.
+fn lock_seen_by_child(db: &Path) -> String {
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "lock_probe_entry", "--nocapture"])
+        .env(LOCK_PROBE_ENV, db)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "lock probe failed: {}\n{stdout}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("LOCK-PROBE "))
+        .unwrap_or_else(|| panic!("no probe line in:\n{stdout}"))
+        .to_owned()
+}
+
+/// A WAL connection holds SQLite's SHARED lock (a read lock on the database file)
+/// while it is open, so no other process can lock the database exclusively, as the
+/// last connection does to checkpoint and delete the WAL on close, while it is in
+/// use. Opening the store again in the same process, as the `EventFeed` next to a
+/// `Core` in `polygloss wait`, `polygloss mcp` and the app does, must keep it.
+#[test]
+fn store_reopen_keeps_the_open_connections_lock() {
+    let (_root, paths) = fresh_paths();
+    let held = format!("read {}", std::process::id());
+    let store = Store::open(&paths).unwrap();
+    assert_eq!(lock_seen_by_child(&paths.db), held, "an open store");
+
+    let again = Store::open(&paths).unwrap();
+    let feed = EventFeed::open(&paths, 0, EventFilter::default()).unwrap();
+    assert_eq!(
+        lock_seen_by_child(&paths.db),
+        held,
+        "reopening the store dropped the lock of the open connections"
+    );
+
+    drop((store, again, feed));
+    assert_eq!(
+        lock_seen_by_child(&paths.db),
+        "none",
+        "every connection closed"
+    );
 }
