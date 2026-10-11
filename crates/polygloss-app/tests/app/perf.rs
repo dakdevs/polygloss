@@ -126,6 +126,60 @@ fn perf_runs_keep_every_path_in_their_private_dir() {
 }
 
 // ---------------------------------------------------------------------------
+// The watcher-banner scenario (T3.11): when the next write may start.
+
+mod watcher_banner_gate {
+    use std::time::{Duration, Instant};
+
+    use polygloss_app::perf::watcher_banner::{Gate, QuietGate, TabState};
+
+    const QUIET: Duration = Duration::from_millis(300);
+
+    fn at(t0: Instant, ms: u64) -> Instant {
+        t0 + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_write_waits_for_a_quiet_period_without_a_break() {
+        let t0 = Instant::now();
+        let mut gate = QuietGate::new(QUIET);
+        assert_eq!(gate.observe(TabState::Idle, t0), Gate::Wait);
+        assert_eq!(gate.observe(TabState::Idle, at(t0, 299)), Gate::Wait);
+        assert_eq!(gate.observe(TabState::Idle, at(t0, 300)), Gate::Write);
+    }
+
+    #[test]
+    fn a_busy_poll_restarts_the_quiet_period() {
+        // A refresh landed (idle on a stale settled frame), then the
+        // reloaded rows paint (busy), or a late watcher batch recomputes.
+        let t0 = Instant::now();
+        let mut gate = QuietGate::new(QUIET);
+        assert_eq!(gate.observe(TabState::Idle, t0), Gate::Wait);
+        assert_eq!(gate.observe(TabState::Busy, at(t0, 200)), Gate::Wait);
+        assert_eq!(gate.observe(TabState::Idle, at(t0, 250)), Gate::Wait);
+        // 300 ms after the first idle poll, but only 250 ms of quiet.
+        assert_eq!(gate.observe(TabState::Idle, at(t0, 500)), Gate::Wait);
+        assert_eq!(gate.observe(TabState::Idle, at(t0, 550)), Gate::Write);
+    }
+
+    #[test]
+    fn the_previous_banner_is_waited_out_but_a_new_one_is_a_change() {
+        let t0 = Instant::now();
+        let mut gate = QuietGate::new(QUIET);
+        // The last write's banner, until the refresh lands.
+        assert_eq!(gate.observe(TabState::Banner, t0), Gate::Wait);
+        assert_eq!(gate.observe(TabState::Busy, at(t0, 10)), Gate::Wait);
+        assert_eq!(gate.observe(TabState::Idle, at(t0, 20)), Gate::Wait);
+        // Once the tab was idle, a banner means the review changed without
+        // a write.
+        assert_eq!(
+            gate.observe(TabState::Banner, at(t0, 30)),
+            Gate::ChangedWithoutWrite
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The motion scenario (T7.3, design §12.1): the frame sentinel, the idle
 // phase, the drivers and the metrics.
 

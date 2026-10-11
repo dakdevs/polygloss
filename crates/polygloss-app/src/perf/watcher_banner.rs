@@ -52,8 +52,9 @@ const EDITED_FILES: usize = 5;
 /// Longest wait for one write's banner.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Quiet time before each write (the previous refresh's frames and any
-/// late events have passed).
+/// Quiet time before each write: the tab idle for this long without a
+/// break ([`QuietGate`]), so the previous refresh's frames and any late
+/// watcher batch have passed.
 const QUIET: Duration = Duration::from_millis(300);
 
 /// Longest wait for the tab to open and settle, and for a refresh.
@@ -245,6 +246,69 @@ pub fn run(args: PerfArgs, spec: CorpusSpec, clock: Clock) -> ExitCode {
     })
 }
 
+/// What the tab shows at one poll while the run waits to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabState {
+    /// Settled, its watcher running, nothing recomputing or refreshing, no
+    /// banner.
+    Idle,
+    /// Rows loading or highlighting, a recompute or a refresh running.
+    Busy,
+    /// The live-changes banner shows.
+    Banner,
+}
+
+/// What the run does after a poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    Wait,
+    /// The tab was idle for the whole quiet period: write now.
+    Write,
+    /// The banner showed after the tab was idle: the review changed with no
+    /// write.
+    ChangedWithoutWrite,
+}
+
+/// Decides when the next write may start: once the tab has been
+/// [`TabState::Idle`] for `quiet` without a break. A busy poll (the rows a
+/// refresh reloaded painting, a late watcher batch recomputing to the same
+/// state) restarts the period; the last write's banner is waited out until
+/// its refresh lands, but a banner after the tab was idle is a change.
+pub struct QuietGate {
+    quiet: Duration,
+    idle_since: Option<Instant>,
+    seen_idle: bool,
+}
+
+impl QuietGate {
+    pub fn new(quiet: Duration) -> Self {
+        Self {
+            quiet,
+            idle_since: None,
+            seen_idle: false,
+        }
+    }
+
+    pub fn observe(&mut self, state: TabState, now: Instant) -> Gate {
+        match state {
+            TabState::Idle => {
+                self.seen_idle = true;
+                let since = *self.idle_since.get_or_insert(now);
+                if now.saturating_duration_since(since) >= self.quiet {
+                    Gate::Write
+                } else {
+                    Gate::Wait
+                }
+            }
+            TabState::Banner if self.seen_idle => Gate::ChangedWithoutWrite,
+            TabState::Busy | TabState::Banner => {
+                self.idle_since = None;
+                Gate::Wait
+            }
+        }
+    }
+}
+
 fn has_banner(tab: &Entity<ReviewTab>, cx: &App) -> bool {
     tab.read(cx)
         .banners
@@ -279,16 +343,46 @@ async fn wait(
     }
 }
 
-/// Whether the tab is idle: settled, its watcher running, no banner, no
-/// recompute or refresh running.
-fn idle(tab: &Entity<ReviewTab>, state: &Rc<RefCell<Run>>, cx: &mut AsyncApp) -> bool {
+/// The tab's state for [`QuietGate`]: idle when settled, its watcher
+/// running, no banner, no recompute or refresh running.
+fn tab_state(tab: &Entity<ReviewTab>, state: &Rc<RefCell<Run>>, cx: &mut AsyncApp) -> TabState {
     let settled = state.borrow().settled;
-    settled
-        && cx.update(|cx| {
-            let t = tab.read(cx);
-            let watching = live::live(t).is_some_and(|l| l.watcher().is_some() && !l.busy());
-            watching && !has_banner(tab, cx)
-        })
+    cx.update(|cx| {
+        if has_banner(tab, cx) {
+            return TabState::Banner;
+        }
+        let t = tab.read(cx);
+        let watching = live::live(t).is_some_and(|l| l.watcher().is_some() && !l.busy());
+        if settled && watching {
+            TabState::Idle
+        } else {
+            TabState::Busy
+        }
+    })
+}
+
+/// Polls the tab until [`QuietGate`] lets write `n` start.
+async fn wait_quiet(
+    tab: &Entity<ReviewTab>,
+    state: &Rc<RefCell<Run>>,
+    n: usize,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let mut gate = QuietGate::new(QUIET);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let now_state = tab_state(tab, state, cx);
+        match gate.observe(now_state, Instant::now()) {
+            Gate::Write => return Ok(()),
+            Gate::ChangedWithoutWrite => {
+                anyhow::bail!("the review changed without a write before write {n}")
+            }
+            Gate::Wait if Instant::now() >= deadline => {
+                anyhow::bail!("the review did not settle before write {n} ({now_state:?})")
+            }
+            Gate::Wait => cx.background_executor().timer(POLL).await,
+        }
+    }
 }
 
 async fn drive(
@@ -308,13 +402,7 @@ async fn drive(
         edited: files.len(),
     };
     for n in 0..WRITES {
-        if !wait(cx, SETTLE_TIMEOUT, |cx| idle(tab, state, cx)).await {
-            anyhow::bail!("the review did not settle before write {n}");
-        }
-        cx.background_executor().timer(QUIET).await;
-        if !idle(tab, state, cx) {
-            anyhow::bail!("the review changed without a write before write {n}");
-        }
+        wait_quiet(tab, state, n, cx).await?;
         let path = &files[n % files.len()];
         let start = Instant::now();
         {
