@@ -541,6 +541,12 @@ type RunRecord = {
 /** The binaries of the two runners. */
 export type Bins = { perf: string; app: string };
 
+/** The cargo package that builds each runner's binary. */
+export const runnerPackages = {
+  perf: "polygloss-perf",
+  app: "polygloss-app",
+} as const satisfies Record<Scenario["runner"], string>;
+
 /**
  * The command for one run over `entry`: `polygloss-perf --corpus … --scenario
  * <name>`, or the app's `Polygloss --perf-scenario <name> --corpus …` (run
@@ -875,12 +881,11 @@ async function main(argv: string[]): Promise<number> {
     );
     return 2;
   }
-  const packages = { perf: "polygloss-perf", app: "polygloss-app" } as const;
   if (values.build)
     // One package per build, so features are not unified across them.
     for (const runner of runners) {
       const build = ["scripts/cargo.sh", "build", "--profile", "perf"];
-      const r = Bun.spawnSync([...build, "-p", packages[runner]], {
+      const r = Bun.spawnSync([...build, "-p", runnerPackages[runner]], {
         cwd: repoRoot,
         stdout: "inherit",
         stderr: "inherit",
@@ -891,7 +896,7 @@ async function main(argv: string[]): Promise<number> {
     const bin = bins[runner];
     if (!existsSync(bin)) {
       process.stderr.write(
-        `run-perf: no ${runner === "app" ? "app" : "harness"} at ${bin}; run scripts/cargo.sh build --profile perf -p ${packages[runner]} (or pass --build)\n`,
+        `run-perf: no ${runner === "app" ? "app" : "harness"} at ${bin}; run scripts/cargo.sh build --profile perf -p ${runnerPackages[runner]} (or pass --build)\n`,
       );
       return 2;
     }

@@ -6,7 +6,7 @@
 # (v6.10..v6.11, compared --direct). perf (plan T2.9, design §12): the perf
 # matrix over all four corpora in both layouts, compared with the baseline
 # recorded for this runner class (budgets are gated on the developer's machine,
-# OQ-P9).
+# OQ-P9); until benches/baseline.json has one, it records a candidate.
 name: nightly
 
 on:
@@ -103,7 +103,12 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
+      # run-perf.ts launches both runners' binaries: polygloss-perf and the
+      # app (its app-open, watcher-banner, comment-roundtrip and motion
+      # scenarios). One package per build, as its --build does, so their
+      # features are not unified.
       - run: scripts/cargo.sh build --profile perf -p polygloss-perf
+      - run: scripts/cargo.sh build --profile perf -p polygloss-app
       # Generated corpora are deterministic; the Linux corpus is two depth-1
       # tag fetches (the only network use; the app and CLI never fetch).
       - name: Make the corpora
@@ -114,9 +119,23 @@ jobs:
           benches/corpora/fetch-linux.sh
         env:
           POLYGLOSS_CORPORA: ${{ runner.temp }}/corpora
-      # Headed GPUI windows on the runner's desktop session.
+      # Headed GPUI windows on the runner's desktop session. run-perf.ts finds
+      # its baseline entry by CPU, and with none it compares nothing and
+      # passes. So when benches/baseline.json has no entry for this runner's
+      # CPU, the run records one instead (benches/results/baseline.json in the
+      # perf-results artifact, starting from the committed file) and warns;
+      # committing that file makes later runs compare.
       - name: Run the perf matrix
-        run: bun benches/run-perf.ts --corpus all --layouts split,unified --compare-baseline
+        run: |
+          cpu="$(sysctl -n machdep.cpu.brand_string)"
+          if jq -e --arg cpu "$cpu" 'any(.entries[]; .machine.cpu == $cpu)' benches/baseline.json > /dev/null; then
+            bun benches/run-perf.ts --corpus all --layouts split,unified --compare-baseline
+          else
+            echo "::warning title=No perf baseline for this runner::benches/baseline.json has no entry for $cpu, so nothing was compared; this run records one in benches/results/baseline.json (perf-results artifact): commit it to compare from then on"
+            mkdir -p benches/results
+            cp benches/baseline.json benches/results/baseline.json
+            bun benches/run-perf.ts --corpus all --layouts split,unified --write-baseline --baseline benches/results/baseline.json
+          fi
         env:
           POLYGLOSS_CORPORA: ${{ runner.temp }}/corpora
       - uses: actions/upload-artifact@v7
